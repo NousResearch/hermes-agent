@@ -18,17 +18,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   archive-inputs:
     name: Preserve every pinned HTTP input
-    if: github.repository == 'ethernet8023/hermes-agent' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
     runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 60
     env:
-      GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}

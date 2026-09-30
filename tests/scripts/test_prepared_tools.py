@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -111,7 +112,7 @@ def test_publication_requires_current_head_review_by_repository_writer(monkeypat
 
     monkeypatch.setattr(prepared_tools, "_run", response)
     approved = lambda: prepared_tools._approved_head(
-        "ethernet8023/hermes-agent", 1, sha, "pr-author")
+        "NousResearch/hermes-agent", 1, sha, "pr-author")
     assert not approved()
     reviews.append({"user": {"login": "maintainer"}, "state": "APPROVED", "commit_id": sha})
     assert approved()
@@ -120,9 +121,6 @@ def test_publication_requires_current_head_review_by_repository_writer(monkeypat
     permission = "write"
     reviews.append({"user": {"login": "maintainer"}, "state": "DISMISSED", "commit_id": sha})
     assert not approved()
-    assert prepared_tools._fork_owner_authorized("ethernet8023/hermes-agent", "ethernet8023")
-    assert not prepared_tools._fork_owner_authorized("NousResearch/hermes-agent", "ethernet8023")
-    assert not prepared_tools._fork_owner_authorized("ethernet8023/hermes-agent", "other-author")
 
 
 @pytest.mark.platforms("posix")
@@ -211,16 +209,18 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     original_archive = (directory / filename).read_bytes()
     (directory / filename).write_bytes(original_archive + b"tamper")
     with pytest.raises(ValueError, match="tampered archive"):
-        prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
+        prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
     assert not mirror.objects
     assert git("ls-remote", "origin", "refs/heads/feature/prepared").split()[0] == head
     (directory / filename).write_bytes(original_archive)
     monkeypatch.setattr(prepared_tools, "_approved_head", lambda *_: False)
     with pytest.raises(ValueError, match="approve the exact PR head"):
-        prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
+        prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
     assert not mirror.objects
-    author["login"] = "ethernet8023"
-    commit = prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
+    monkeypatch.setattr(prepared_tools, "_approved_head", lambda *_: True)
+    monkeypatch.setattr(prepared_tools, "R2Mirror", lambda *_: mirror, raising=False)
+    monkeypatch.setattr(prepared_tools, "r2", SimpleNamespace(credentials=lambda: ({}, "", "")), raising=False)
+    commit = prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head)
     assert git("rev-parse", "HEAD") == trusted_sha
     assert git("rev-parse", f"{commit}^") == head
     assert git("ls-remote", "origin", "refs/heads/feature/prepared").split()[0] == commit
@@ -233,5 +233,5 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     assert git("ls-tree", head, "--", "scripts/install.sh").split()[0] == "100755"
     assert git("ls-tree", commit, "--", "scripts/install.sh").split()[0] == "100755"
     with pytest.raises(ValueError, match="branch moved"):
-        prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
-    assert prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, commit, mirror=mirror) == commit
+        prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
+    assert prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, commit, mirror=mirror) == commit

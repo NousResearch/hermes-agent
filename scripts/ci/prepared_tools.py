@@ -21,7 +21,8 @@ from pm.lock import Lockfile, SCHEMA
 from pm.prepare import prepare, preparation_requirements, source_identity
 from pm.registry import all_packages, get_package
 from pm.store import ALL_TARGETS, extract, tree_digest
-from scripts.ci.archive_inputs import GhCli, GitHubMirror, Mirror
+from scripts.ci.archive_inputs import Mirror, R2Mirror
+from scripts.releases import r2
 
 _SHA = re.compile(r"[a-f0-9]{40}")
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -154,11 +155,6 @@ def _pr(repository: str, number: int, expected_sha: str) -> dict:
     return data
 
 
-def _fork_owner_authorized(repository: str, author: str) -> bool:
-    """The personal staging fork's owner explicitly admits her own PR heads."""
-    return repository.lower() == "ethernet8023/hermes-agent" and author.lower() == "ethernet8023"
-
-
 def _approved_head(repository: str, number: int, head_sha: str, author: str) -> bool:
     """A different repository writer must have approved these exact PR bytes."""
     pages = json.loads(_run("gh", "api", "--paginate", "--slurp",
@@ -221,7 +217,7 @@ def publish(receipts: Path, repository: str, number: int, head_sha: str,
         lock_path.write_bytes(raw)
         lock = _read_lock(lock_path)
         verified = validate(receipts, lock)
-        mirror = mirror or GitHubMirror(GhCli(repository))
+        mirror = mirror or R2Mirror(*r2.credentials())
         changed = any(lock.prepared(name, target) != pin for name, target, _, pin in verified)
         sizes = {}
         for _, _, archive, pin in verified:
@@ -231,20 +227,17 @@ def publish(receipts: Path, repository: str, number: int, head_sha: str,
             if size is not None and size != archive.stat().st_size:
                 raise ValueError(f"existing asset size differs: {sha}")
             sizes[sha] = size
-        # The fork owner admitted her own PR head for this staging repo; all
-        # other authors still need a writer's exact-head review. A bot-commit
-        # rerun with unchanged pins and assets is read-only.
-        author = pr["user"]["login"]
-        admitted = _fork_owner_authorized(repository, author) or _approved_head(
-            repository, number, head_sha, author)
+        # Executables need another repository writer's approval of these exact
+        # bytes. A bot-commit rerun with unchanged pins and assets is read-only.
+        admitted = _approved_head(repository, number, head_sha, pr["user"]["login"])
         if (changed or any(size is None for size in sizes.values())) and not admitted:
             raise ValueError("a repository writer must approve the exact PR head SHA before publication")
         for name, target, _, pin in verified:
             lock.set_prepared(name, target, pin)
         lock.save()
         updates = _bootstrap_updates(head_sha, lock_path, scratch) if changed else {}
-        # Asset transport is last: never write a release before every receipt
-        # and generated bootstrap fragment is validated.
+        # Asset transport is last: never write R2 before every receipt and
+        # generated bootstrap fragment is validated.
         for _, _, archive, pin in verified:
             sha = pin["sha256"]
             if sizes[sha] is None:

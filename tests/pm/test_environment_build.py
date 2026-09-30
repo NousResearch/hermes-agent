@@ -90,6 +90,28 @@ def locked_project(tmp_path):
     return source, Path(uv), env
 
 
+def test_exact_private_relock_selects_local_wheel_without_changing_source(locked_project, tmp_path):
+    from pm.environment import PythonEnvironment
+    import tomllib
+
+    source, uv, env = locked_project
+    original = (source / "uv.lock").read_bytes()
+    workspace = tmp_path / "private workspace"
+    shutil.copytree(source, workspace)
+    wheels = tmp_path / "verified wheels"
+    wheels.mkdir()
+    reviewed = next((source.parent / "wheels").glob("base_dep-1.0-*.whl"))
+    shutil.copy2(reviewed, wheels / "base_dep-1.0-1-py3-none-any.whl")
+    builder = PythonEnvironment(uv=uv, python=Path(sys.executable), destination=tmp_path / "venv",
+                                cache=tmp_path / "cache", env=env, offline=True)
+    builder.lock(workspace, find_links=wheels, upgrade_packages={"base-dep": "1.0"})
+    resolved = tomllib.loads((workspace / "uv.lock").read_text(encoding="utf-8"))["package"]
+    row = next(package for package in resolved if package["name"] == "base-dep")
+    assert row["version"] == "1.0"
+    assert row["source"]["registry"] == str(wheels)
+    assert (source / "uv.lock").read_bytes() == original
+
+
 def test_frozen_build_never_prepares_native_compilers(locked_project, tmp_path, monkeypatch):
     from pm.operations import build_environment
     import pm.native_build

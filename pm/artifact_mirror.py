@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from pm.downloader import Source
 from pm.index_config import npm_registry_url
@@ -40,16 +40,21 @@ def github_repository() -> str:
 
 
 def github_release_tag(sha256: str) -> str:
-    """The release holding this input. Sharded on the first hex digit because a release
-    caps at 1000 assets and installers embed these URLs forever, so the tag must be
-    derivable from the digest alone and never need a lookup."""
+    """Name the existing release without creating a tag or changing /releases/latest."""
     object_key(sha256)
-    return _github_layout()["tag_prefix"] + sha256[0]
+    return _github_layout()["release_tag"]
 
 
 def github_asset_url(sha256: str) -> str:
     return (f"https://github.com/{github_repository()}/releases/download/"
             f"{github_release_tag(sha256)}/{sha256}")
+
+
+def wheel_source(filename: str, sha256: str, dest: Path) -> Source:
+    """The existing release is read-only; the pinned R2 object is its fallback."""
+    release = (f"https://github.com/{github_repository()}/releases/download/"
+               f"{github_release_tag(sha256)}/{quote(filename, safe='')}")
+    return Source(release, dest, sha256, fallbacks=(mirror_url(sha256),))
 
 
 def pinned_source(url: str, dest: Path, sha256: str) -> Source:
@@ -59,9 +64,9 @@ def pinned_source(url: str, dest: Path, sha256: str) -> Source:
     if urlsplit(url).hostname in ("127.0.0.1", "localhost", "::1"):
         return Source(url, dest, sha256, fallbacks=() if url == archive else (archive,))
     release = github_asset_url(sha256)
-    # A configured npm registry remains first (#123132); otherwise prefer our
-    # reviewed release, then upstream, then the original R2 last resort.
+    # A configured npm registry remains first (#123132). The existing release
+    # is read-only; R2 holds the same pinned bytes when the release lacks an asset.
     registry_url = npm_registry_url(url, os.environ)
-    candidates = (registry_url, release, url, archive) if registry_url != url else (release, url, archive)
+    candidates = (registry_url, release, archive, url) if registry_url != url else (release, archive, url)
     first, *fallbacks = dict.fromkeys(candidates)
     return Source(first, dest, sha256, fallbacks=tuple(fallbacks))

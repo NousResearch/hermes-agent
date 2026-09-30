@@ -1,37 +1,135 @@
-"""Windows ARM64 wheel URLs must stay disjoint from other platform resolutions."""
+"""Native wheel delivery is optional, hash-locked, and never masks corruption."""
 
-import re
+import hashlib
+import shutil
 import tomllib
-from pathlib import Path
 
-from packaging.markers import Marker, default_environment
+import pytest
+
+from pm.downloader import HashError, Source
+from pm.package import InstallError
+from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
-ROOT = Path(__file__).resolve().parents[2]
+def _project(tmp_path, pins):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        "[tool.hermes.win-arm64-wheels]\n" + "\n".join(
+            f'{name} = {{ filename = "{filename}", sha256 = "{sha}" }}'
+            for name, (filename, sha) in pins.items()) + "\n", encoding="utf-8")
+    (project / "uv.lock").write_text("\n".join(
+        f'[[package]]\nname = "{name}"\nversion = "1.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        f'sdist = {{ url = "https://example.invalid/{name}-1.0.tar.gz", '
+        f'hash = "sha256:{hashlib.sha256(name.encode()).hexdigest()}" }}\n'
+        for name in pins), encoding="utf-8")
+    return project
 
 
-def test_wheelhouse_sources_are_locked_only_for_windows_arm64():
-    manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8-sig"))
-    packages = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8-sig"))["package"]
-    sources = manifest["tool"]["uv"]["sources"]
-    wheelhouse = {name: entries for name, entries in sources.items()
-                  if any("/releases/download/wheelhouse/" in entry.get("url", "") for entry in entries)}
-    assert wheelhouse
+def _source(server):
+    def source(filename, sha, dest):
+        return Source(url(server, "/release/" + filename), dest, sha,
+                      (url(server, "/r2/" + filename),))
+    return source
 
-    for name, entries in wheelhouse.items():
-        assert len(entries) == 1
-        entry = entries[0]
-        assert entry["url"].startswith("https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/")
-        marker = Marker(entry["marker"])
-        for system, machine, selected in (("win32", "ARM64", True), ("win32", "AMD64", False),
-                                          ("linux", "aarch64", False), ("darwin", "arm64", False)):
-            env = default_environment()
-            env.update(sys_platform=system, platform_machine=machine)
-            assert marker.evaluate(env) is selected, (name, system, machine)
-        rows = [row for row in packages if row["name"] == name]
-        direct = [row for row in rows if row["source"].get("url") == entry["url"]]
-        registry = [row for row in rows if "registry" in row["source"]]
-        assert len(direct) == len(registry) == 1, name
-        assert direct[0]["version"] == registry[0]["version"]
-        assert any(wheel["url"] == entry["url"] and re.fullmatch(r"sha256:[0-9a-f]{64}", wheel["hash"])
-                   for wheel in direct[0]["wheels"]), name
+
+def test_missing_native_wheel_uses_locked_registry_sdist(tmp_path, dl_server):
+    from pm.wheel_sources import stage_wheels
+
+    first, second = "first-1.0-cp314-abi3-win_arm64.whl", "second-1.0-cp314-abi3-win_arm64.whl"
+    body = b"verified native wheel"
+    project = _project(tmp_path, {
+        "first": (first, hashlib.sha256(body).hexdigest()),
+        "second": (second, hashlib.sha256(b"not published").hexdigest()),
+    })
+    RangeHandler.payloads["/r2/" + first] = body
+    wheels = tmp_path / "wheels"
+    result = stage_wheels(project, project / "uv.lock", wheels, _source(dl_server), target="win32-arm64")
+    assert result.available == ("first",) and result.missing == ("second",)
+    assert (wheels / first).read_bytes() == body
+    assert RangeHandler.requests_seen.index("/release/" + first) < RangeHandler.requests_seen.index("/r2/" + first)
+    assert RangeHandler.requests_seen.index("/release/" + second) < RangeHandler.requests_seen.index("/r2/" + second)
+
+
+def test_corrupt_native_wheel_does_not_try_another_url(tmp_path, dl_server):
+    from pm.wheel_sources import stage_wheels
+
+    filename = "first-1.0-cp314-abi3-win_arm64.whl"
+    project = _project(tmp_path, {"first": (filename, hashlib.sha256(b"reviewed").hexdigest())})
+    RangeHandler.payloads["/release/" + filename] = b"tampered"
+    RangeHandler.payloads["/r2/" + filename] = b"reviewed"
+    with pytest.raises(HashError):
+        stage_wheels(project, project / "uv.lock", tmp_path / "wheels", _source(dl_server), target="win32-arm64")
+    assert not any(path.startswith("/r2/") for path in RangeHandler.requests_seen)
+
+
+def test_repair_rebinds_verified_wheels_without_current_inputs(tmp_path):
+    from pm.wheel_sources import relocate_wheels
+
+    filename = "first-1.0-cp314-abi3-win_arm64.whl"
+    body = b"locked wheel"
+    digest = hashlib.sha256(body).hexdigest()
+    recorded = _project(tmp_path, {
+        "first": (filename, digest),
+        "second": ("second-1.0-cp314-abi3-win_arm64.whl", hashlib.sha256(b"absent").hexdigest()),
+    })
+    directory = recorded / "wheels"
+    directory.mkdir()
+    (directory / filename).write_bytes(body)
+    original_lock = (recorded / "uv.lock").read_text(encoding="utf-8")
+    registry_row = original_lock[original_lock.index('[[package]]\nname = "second"'):]
+    (recorded / "uv.lock").write_text(
+        '[[package]]\nname = "first"\nversion = "1.0"\n'
+        f'source = {{ registry = "{directory}" }}\n'
+        f'wheels = [{{ path = "{directory / filename}" }}]\n'
+        + registry_row, encoding="utf-8")
+
+    repair = tmp_path / "repair"
+    shutil.copytree(recorded, repair)
+    assert relocate_wheels(repair, recorded, target="win32-arm64") == ("second",)
+    rows = tomllib.loads((repair / "uv.lock").read_text(encoding="utf-8"))["package"]
+    assert rows[0]["source"]["registry"] == str(repair / "wheels")
+    assert rows[0]["wheels"][0]["path"] == str(repair / "wheels" / filename)
+    assert rows[1]["source"]["registry"] == "https://pypi.org/simple"
+
+    corrupt = tmp_path / "corrupt-repair"
+    shutil.copytree(recorded, corrupt)
+    (corrupt / "wheels" / filename).write_bytes(b"tampered")
+    with pytest.raises(HashError):
+        relocate_wheels(corrupt, recorded, target="win32-arm64")
+
+
+def test_private_resolution_preserves_wheel_and_sdist_pins(tmp_path):
+    from pm.wheel_sources import WheelSelection, verify_selected_wheels
+
+    filename = "first-1.0-cp314-abi3-win_arm64.whl"
+    digest = hashlib.sha256(b"native wheel").hexdigest()
+    recorded = _project(tmp_path, {
+        "first": (filename, digest),
+        "second": ("second-1.0-cp314-abi3-win_arm64.whl", "a" * 64),
+    })
+    resolved = tmp_path / "resolved"
+    resolved.mkdir()
+    shutil.copy2(recorded / "pyproject.toml", resolved / "pyproject.toml")
+    directory = resolved / "wheels"
+    directory.mkdir()
+    (directory / filename).write_bytes(b"native wheel")
+    source = (recorded / "uv.lock").read_text(encoding="utf-8")
+    second = source[source.index('[[package]]\nname = "second"'):]
+    private = ('[[package]]\nname = "first"\nversion = "1.0"\n'
+               f'source = {{ registry = "{directory}" }}\n'
+               f'wheels = [{{ path = "{directory / filename}" }}]\n'
+               + second)
+    lock = resolved / "uv.lock"
+    lock.write_text(private, encoding="utf-8")
+    selection = WheelSelection(("first",), ("second",), {"first": "1.0", "second": "1.0"})
+    verify_selected_wheels(recorded / "uv.lock", lock, directory, selection)
+    wrong_sdist = hashlib.sha256(b"second").hexdigest()
+    lock.write_text(private.replace(wrong_sdist, "0" * 64), encoding="utf-8")
+    with pytest.raises(InstallError, match="source distribution"):
+        verify_selected_wheels(recorded / "uv.lock", lock, directory, selection)
+    lock.write_text(private, encoding="utf-8")
+    (directory / filename).write_bytes(b"tampered")
+    with pytest.raises(HashError, match="native wheel"):
+        verify_selected_wheels(recorded / "uv.lock", lock, directory, selection)

@@ -79,13 +79,13 @@ $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://gi
 $script:UvPinVersion = "0.12.3"
 $script:UvPinFiles = @{
     "win32-x64" = @{
-        GitHubUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-b/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
         Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
         Sha256 = "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
     }
     "win32-arm64" = @{
-        GitHubUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-4/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
         Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-pc-windows-msvc.zip"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
         Sha256 = "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
@@ -95,21 +95,21 @@ $script:UvPinFiles = @{
 $script:GitPinVersion = "2.53.0+3"
 $script:GitPinFiles = @{
     "win32-x64" = @{
-        GitHubUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-b/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
         Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
-        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-c/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
         PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
         PreparedSha256 = "caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
         PreparedDigest = "1b05d5a2897e92438f0bd4fcbf0fe6797e379c0e989aab55e8a7bf02137cf1aa"
     }
     "win32-arm64" = @{
-        GitHubUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-0/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
-        PreparedUrl = "https://github.com/ethernet8023/hermes-agent/releases/download/inputs-9/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
         PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
         PreparedSha256 = "934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
         PreparedDigest = "ce0003b888f0a7ea43f5442406a27675377ea139951f83f33d0120cf0ae58782"
@@ -393,7 +393,7 @@ function Invoke-VerifiedDownload {
         [string]$GitHubUrl = "",
         [switch]$AllowMissing
     )
-    $urls = @($GitHubUrl, $Url, $MirrorUrl) | Where-Object { $_ } | Select-Object -Unique
+    $urls = @($GitHubUrl, $MirrorUrl, $Url) | Where-Object { $_ } | Select-Object -Unique
     $httpFailure = ""
     $fatalPreparedFailure = ""
     foreach ($candidate in $urls) {

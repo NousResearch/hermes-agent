@@ -1,20 +1,14 @@
-name: Build locked Windows ARM64 wheels on the fork
+name: Build locked Windows ARM64 wheels for R2
 
 on:
   workflow_dispatch:
-    inputs:
-      build_tag:
-        description: 'PEP 427 build tag for a new immutable filename when rebuilding a version'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
 
 jobs:
   produce:
-    if: github.repository == 'ethernet8023/hermes-agent' && github.ref == 'refs/heads/main'
+    if: github.repository == 'NousResearch/hermes-agent' && github.ref == 'refs/heads/main'
     name: Build ${{ matrix.package }} on native Windows ARM64
     runs-on: windows-11-arm
     timeout-minutes: 180
@@ -47,12 +41,10 @@ jobs:
         shell: bash
         env:
           PACKAGE: ${{ matrix.package }}
-          BUILD_TAG: ${{ inputs.build_tag }}
         run: |
           set -euo pipefail
           python -m scripts.wheelhouse.build build --package "$PACKAGE" \
-            --python "$HERMES_PYTHON" --out "$RUNNER_TEMP/wheel-$PACKAGE" \
-            --build-tag "$BUILD_TAG"
+            --python "$HERMES_PYTHON" --out "$RUNNER_TEMP/wheel-$PACKAGE"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheel-${{ matrix.package }}
@@ -63,12 +55,12 @@ jobs:
 
   publish:
     needs: produce
-    if: needs.produce.result == 'success' && github.repository == 'ethernet8023/hermes-agent' && github.ref == 'refs/heads/main'
+    if: needs.produce.result == 'success' && github.repository == 'NousResearch/hermes-agent' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: trusted-automation
+    environment: release-signing
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -78,9 +70,12 @@ jobs:
         with:
           pattern: wheel-*
           path: ${{ runner.temp }}/receipts
-      - name: Validate and publish immutable wheels on the fork
+      - name: Validate and publish immutable wheels to R2
         env:
-          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
         run: |
           set -euo pipefail
           python3 -m scripts.wheelhouse.build publish \

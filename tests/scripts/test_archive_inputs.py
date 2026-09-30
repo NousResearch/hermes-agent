@@ -12,7 +12,7 @@ from pm.artifact_mirror import object_key
 from pm.downloader import HashError
 from scripts.ci import archive_inputs as inputs
 from scripts.releases import r2
-from tests.pm._range_server import dl_server  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 from tests.scripts.test_termux_runtime_libs import _Server, _build_deb
 
@@ -258,90 +258,28 @@ def test_historical_recovery_keeps_the_original_digest(tmp_path, upstream, r2_se
     assert dest.read_bytes() == body
 
 
-def test_github_release_and_r2_share_verified_bytes(tmp_path, upstream, r2_server, dl_server):
-    from pm.artifact_mirror import github_release_tag
-    from tests.pm._range_server import RangeHandler, url
-
-    server, root = upstream
-    body = (root / "lib.deb").read_bytes()
+def test_r2_publisher_rechecks_public_bytes_not_only_signed_storage(tmp_path, r2_server, dl_server):
+    body = b"reviewed mirror input"
     sha = hashlib.sha256(body).hexdigest()
-    pin = inputs.InputPin("lib", server.url + "/lib.deb", sha, "library")
-    assets = {}
-    tags = set()
-
-    class Api:
-        def release_assets(self, tag):
-            if tag not in tags:
-                return None
-            return [dict(id=i, name=name, size=len(data), state="uploaded")
-                    for i, (name, data) in enumerate(assets.items(), 1)]
-
-        def create_release(self, tag):
-            tags.add(tag)
-
-        def upload(self, tag, path):
-            assert tag in tags and path.name == sha
-            assets[path.name] = path.read_bytes()
-            RangeHandler.payloads["/assets/" + path.name] = assets[path.name]
-
-        def delete_asset(self, asset_id):
-            raise AssertionError("no uploaded asset may be deleted")
-
-    github = inputs.GitHubMirror(Api(), asset_url=lambda digest: url(dl_server, "/assets/" + digest))
-    r2mirror = inputs.R2Mirror(*r2.credentials())
-    archive = inputs.Archive((github, r2mirror))
     r2_server.store[object_key(sha)] = (body, '"etag"')
-    (root / "lib.deb").unlink()
-    output = tmp_path / "verified"
-    assert archive.fetch(pin, output) == "R2"
-    assert output.read_bytes() == assets[sha] == body
-    assert github_release_tag(sha) in tags
-    r2_server.store.pop(object_key(sha))
-    output.unlink()
-    assert archive.fetch(pin, output) == "GitHub"
-    assert output.read_bytes() == r2_server.store[object_key(sha)][0] == body
-    RangeHandler.payloads["/assets/" + sha] = b"corrupt"
-    output.write_bytes(b"previous")
-    with pytest.raises(HashError):
-        archive.fetch(pin, output)
-    assert output.read_bytes() == b"previous"
+    public_path = "/" + object_key(sha)
+    RangeHandler.payloads[public_path] = b"wrong public bytes"
+    mirror = inputs.R2Mirror(*r2.credentials(), public_base=url(dl_server, ""))
+    destination = tmp_path / "read-back"
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        mirror.read_back(sha, destination, len(body))
+    assert not destination.exists()
+    RangeHandler.payloads[public_path] = body
+    mirror.read_back(sha, destination, len(body))
+    assert destination.read_bytes() == body
 
 
-def test_archive_from_env_requires_an_owned_mirror(monkeypatch):
-    from pm.artifact_mirror import github_repository
-
-    for name in ("CLOUDFLARE_R2_ACCOUNT_ID", "GH_TOKEN", "GITHUB_REPOSITORY"):
-        monkeypatch.delenv(name, raising=False)
-    with pytest.raises(ValueError, match="need GitHub release access or R2"):
-        inputs.archive_from_env()
+def test_archive_from_env_never_grants_release_write_access(monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_R2_ACCOUNT_ID", raising=False)
     monkeypatch.setenv("GH_TOKEN", "test-token")
-    monkeypatch.setenv("GITHUB_REPOSITORY", github_repository())
-    assert [m.name for m in inputs.archive_from_env().mirrors] == ["GitHub"]
-    monkeypatch.setenv("GITHUB_REPOSITORY", "other/fork")
-    with pytest.raises(ValueError, match="need GitHub release access or R2"):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "NousResearch/hermes-agent")
+    with pytest.raises(ValueError, match="R2 credentials required"):
         inputs.archive_from_env()
-
-
-def test_gh_cli_release_is_non_latest_and_reads_paginated_assets(tmp_path):
-    import subprocess
-
-    calls = []
-    def run(args, **kwargs):
-        calls.append(args)
-        if args[1:3] == ["api", "repos/ethernet8023/hermes-agent/releases/tags/inputs-a"]:
-            return subprocess.CompletedProcess(args, 0, '{"id": 12}', "")
-        if args[1:3] == ["api", "--paginate"]:
-            return subprocess.CompletedProcess(args, 0, '[[{"name": "a", "state": "uploaded", "size": 2}]]', "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    api = inputs.GhCli("ethernet8023/hermes-agent", run=run)
-    assert api.release_assets("inputs-a") == [{"name": "a", "state": "uploaded", "size": 2}]
-    api.create_release("inputs-a")
-    api.upload("inputs-a", tmp_path / "a")
-    assert "--latest=false" in calls[2]
-    assert "--prerelease" in calls[2]
-    assert calls[3][1:4] == ["release", "upload", "inputs-a"]
-    assert all("--repo" in args for args in calls[2:])
 
 
 def test_committed_inventory_matches_every_http_pin():

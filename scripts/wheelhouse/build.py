@@ -1,4 +1,4 @@
-"""Build fork-hosted Windows ARM64 wheels from hash-locked PyPI sdists."""
+"""Build Windows ARM64 wheels from hash-locked PyPI sdists for the R2 mirror."""
 
 from __future__ import annotations
 
@@ -11,14 +11,13 @@ import re
 import subprocess
 import tempfile
 import tomllib
-from urllib.parse import quote
 from zipfile import ZipFile
 
-from pm.artifact_mirror import github_repository
+from pm.artifact_mirror import github_repository, mirror_url, object_key
 from pm.downloader import Download, Source
-from scripts.ci.archive_inputs import GhCli
+from scripts.ci.archive_inputs import Mirror, R2Mirror
+from scripts.releases import r2
 
-_RELEASE = "wheelhouse"
 _WHEEL = re.compile(
     r"(?P<name>[A-Za-z0-9_]+)-(?P<version>[A-Za-z0-9_.!+]+)"
     r"(?:-(?P<build>[0-9][A-Za-z0-9_]*))?"
@@ -94,13 +93,11 @@ def inspect_wheel(path: Path, name: str, version: str) -> str:
     return sha.hexdigest()
 
 
-def build(name: str, lock_path: Path, output: Path, python: Path, *, build_tag: str = "") -> Path:
+def build(name: str, lock_path: Path, output: Path, python: Path) -> Path:
     from pm.store import current_target
 
     if current_target() != "win32-arm64":
         raise ValueError("wheelhouse builds require a native Windows ARM64 host")
-    if build_tag and not re.fullmatch(r"[0-9][A-Za-z0-9_]*", build_tag):
-        raise ValueError("wheel build tag must begin with a digit and contain only alphanumerics/underscores")
     version, _, source_hash = _locked_sdist(lock_path, name)
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="wheelhouse-", dir=output.parent) as scratch:
@@ -111,9 +108,6 @@ def build(name: str, lock_path: Path, output: Path, python: Path, *, build_tag: 
     if len(wheels) != 1:
         raise ValueError(f"{name}: expected one built wheel, got {len(wheels)}")
     wheel = wheels[0]
-    if build_tag:
-        parts = wheel.name.split("-")
-        wheel = wheel.rename(wheel.with_name("-".join([*parts[:2], build_tag, *parts[2:]])))
     digest = inspect_wheel(wheel, name, version)
     receipt = {"name": name, "version": version, "filename": wheel.name,
                "sha256": digest, "source_sha256": source_hash}
@@ -121,7 +115,7 @@ def build(name: str, lock_path: Path, output: Path, python: Path, *, build_tag: 
     return wheel
 
 
-def publish(receipts: Path, lock_path: Path, repository: str) -> list[dict]:
+def publish(receipts: Path, lock_path: Path, repository: str, *, mirror: Mirror | None = None) -> list[dict]:
     if repository != github_repository():
         raise ValueError(f"wheelhouse publication is restricted to {github_repository()}")
     candidates = []
@@ -144,35 +138,26 @@ def publish(receipts: Path, lock_path: Path, repository: str) -> list[dict]:
     if not candidates:
         raise ValueError("no wheels were produced")
 
-    api = GhCli(repository)
-    current = api.release_assets(_RELEASE)
-    if current is None:
-        subprocess.run(["gh", "release", "create", _RELEASE, "--repo", repository,
-                        "--latest=false", "--prerelease", "--title", "Windows ARM64 wheelhouse",
-                        "--notes", "Hash-locked wheels built from uv.lock sdists. Assets are immutable by filename."],
-                       check=True)
-        current = api.release_assets(_RELEASE)
-    view = subprocess.run(["gh", "release", "view", _RELEASE, "--repo", repository,
-                           "--json", "isPrerelease"], check=True, capture_output=True, text=True)
-    if not json.loads(view.stdout)["isPrerelease"]:
-        raise ValueError("wheelhouse release must be a prerelease, never /releases/latest")
-    assets = {asset["name"]: asset for asset in current or []}
+    mirror = mirror or R2Mirror(*r2.credentials())
     verified = []
     for wheel, receipt in candidates:
-        asset = assets.get(wheel.name)
-        if asset is not None and (asset["state"] != "uploaded" or asset["size"] != wheel.stat().st_size):
-            raise ValueError(f"existing wheel asset differs: {wheel.name}")
-        if asset is None:
-            api.upload(_RELEASE, wheel)
-        public_url = f"https://github.com/{repository}/releases/download/{_RELEASE}/{quote(wheel.name)}"
+        sha = receipt["sha256"]
+        object_key(sha)
+        size = mirror.size(sha)
+        if size is not None and size != wheel.stat().st_size:
+            raise ValueError(f"existing wheel object differs: {wheel.name}")
+        if size is None:
+            mirror.put(sha, wheel)
+        public_url = mirror_url(sha)
         with tempfile.TemporaryDirectory(prefix="wheelhouse-readback-") as scratch:
-            public = Path(scratch) / wheel.name
-            Download([Source(public_url, public, receipt["sha256"])],
-                     partials_dir=Path(scratch) / "partials").run()
+            destination = Path(scratch)
+            mirror.read_back(sha, destination / "r2", wheel.stat().st_size)
+            public = destination / wheel.name
+            Download([Source(public_url, public, sha)], partials_dir=destination / "partials").run()
             if public.stat().st_size != wheel.stat().st_size:
                 raise ValueError(f"published wheel size differs: {wheel.name}")
         verified.append({**receipt, "url": public_url})
-        print(f"{receipt['name']}=={receipt['version']}: {public_url} sha256:{receipt['sha256']}", flush=True)
+        print(f"{receipt['name']}=={receipt['version']}: {public_url} sha256:{sha}", flush=True)
     return verified
 
 
@@ -184,14 +169,13 @@ def main(argv: list[str] | None = None) -> None:
     producer.add_argument("--lock", type=Path, default=Path("uv.lock"))
     producer.add_argument("--out", type=Path, required=True)
     producer.add_argument("--python", type=Path, required=True)
-    producer.add_argument("--build-tag", default="")
     publisher = sub.add_parser("publish")
     publisher.add_argument("--receipts", type=Path, required=True)
     publisher.add_argument("--lock", type=Path, default=Path("uv.lock"))
     publisher.add_argument("--repository", required=True)
     args = parser.parse_args(argv)
     if args.command == "build":
-        print(build(args.package, args.lock, args.out, args.python, build_tag=args.build_tag))
+        print(build(args.package, args.lock, args.out, args.python))
     else:
         publish(args.receipts, args.lock, args.repository)
 

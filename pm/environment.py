@@ -340,10 +340,15 @@ class PythonEnvironment:
         if result.returncode:
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
 
-    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
+    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800,
+             find_links: Path | None = None, upgrade_packages: Mapping[str, str] | None = None) -> None:
         command = ["lock", "--python", str(self.python)]
         if upgrade:
             command.append("--upgrade")
+        for name, version in sorted((upgrade_packages or {}).items()):
+            command += ["--upgrade-package", f"{name}=={version}"]
+        if find_links is not None:
+            command += ["--find-links", str(find_links)]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)

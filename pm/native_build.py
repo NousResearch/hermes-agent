@@ -1,8 +1,8 @@
-"""Windows ARM64 compiler environment for product builds and checkout plugins.
+"""Windows ARM64 compiler environment for product and dependency builds.
 
-Core source installs use locked native wheels. A checkout with plugin members
-can retry a failed dependency build with compilers; sealed payloads omit the
-provider script. Bundle builders still prepare their native product tools.
+Source checkouts prefer verified wheels. A failed native dependency build may
+retry with compilers when a wheel is unavailable or plugins expand the graph;
+sealed payloads omit the provider script. Bundle builders prepare their tools.
 """
 from __future__ import annotations
 
@@ -43,10 +43,10 @@ def prepare_windows_environment(*, source: Path, state: Path, env: Mapping[str, 
 
 
 def plugin_build_environment(source: Path) -> dict[str, str] | None:
-    """Prepare compilers after a plugin-expanded checkout build fails.
+    """Prepare compilers after a checkout dependency build actually fails.
 
-    Bundle builders use prepare_windows_environment directly. Core source
-    installs have locked wheels and never call this function.
+    Bundle builders use prepare_windows_environment directly. Source installs
+    reach this only when a wheel is unavailable or plugins require a build.
     """
     from pm.paths import store_root
     from pm.store import current_target

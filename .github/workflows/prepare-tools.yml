@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   identify:
-    if: github.repository == 'ethernet8023/hermes-agent' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.repository == 'NousResearch/hermes-agent' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     outputs:
       number: ${{ steps.pr.outputs.number }}
@@ -36,7 +36,7 @@ jobs:
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          [ "$REPOSITORY" = 'ethernet8023/hermes-agent' ]
+          [ "$REPOSITORY" = 'NousResearch/hermes-agent' ]
           data=$(gh api "repos/$REPOSITORY/pulls/$NUMBER")
           sha=$(jq -r --arg repo "$REPOSITORY" 'select(.state == "open" and .head.repo.full_name == $repo) | .head.sha' <<< "$data")
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
@@ -70,7 +70,6 @@ jobs:
           - { name: linux-arm64-bionic, runner: ubuntu-24.04-arm, musl: false }
           - { name: darwin-x64, runner: macos-15-intel, musl: false }
           - { name: darwin-arm64, runner: macos-15, musl: false }
-          # The fork cannot schedule the organization's larger Windows runners.
           - { name: win32-x64, runner: windows-latest, musl: false }
           - { name: win32-arm64, runner: windows-11-arm, musl: false }
     steps:
@@ -117,7 +116,7 @@ jobs:
     if: ${{ needs.produce.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    environment: trusted-automation
+    environment: release-signing
     permissions:
       contents: write
       pull-requests: read
@@ -136,6 +135,10 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ needs.identify.outputs.number }}
           ORIGINAL_SHA: ${{ needs.identify.outputs.sha }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
         run: |
           set -euo pipefail
           gh auth setup-git

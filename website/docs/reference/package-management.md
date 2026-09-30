@@ -551,64 +551,61 @@ launchers, and invokes native packaging. Maintainers can read
 
 ## Pinned artifact sources
 
-PM fetches a pinned artifact from the `ethernet8023/hermes-agent` fork's public
-GitHub input release first (the current staging destination), then its locked
-upstream URL, then the content-addressed R2 archive. Release assets are named
-by the full SHA-256 digest under a release tag derived from its
-first hex character (`inputs-<hex>`); `pm/artifact-mirror.json` defines the
-repository and tag prefix. Input shards are prereleases, so a fork with no
-published stable release cannot select an input shard through `/releases/latest`.
-A user-configured npm registry remains first for npm tarballs, ahead of the
-release, official registry, and R2 archive. These source choices do not change
-the pin: the same locked SHA-256 verifies every downloaded
-archive, and a digest mismatch stops rather than trying another source.
-Loopback-pinned developer inputs stay local rather than contacting a public release.
+PM tries the existing `NousResearch/hermes-agent` release configured in
+`pm/artifact-mirror.json` as a **read-only** candidate, then the Nous Research
+content-addressed R2 mirror, then the pinned upstream URL. The release asset
+name is the full SHA-256 digest; R2 stores the same bytes under
+`upstream/sha256/<digest>`. The archival workflows publish only to R2 and do
+not create GitHub releases or tags. A user-configured npm registry stays first
+for npm tarballs, ahead of the release, R2 and official registry. Every
+candidate must match the same locked SHA-256; a downloaded mismatch is fatal,
+not a reason to try another source. Loopback-pinned developer inputs stay local.
 
 The standalone shell and PowerShell installers embed the pinned uv (and Windows
-PortableGit) URLs because they run before a checkout exists. Their generated
-fragments are derived from `pm/lock.json` and `pm/artifact-mirror.json` by
-`python3 scripts/gen-bootstrap-pins.py`; maintainers can run it with `--check`
-to detect drift. Bootstrap downloads use the same release -> upstream -> R2
-order. Source fallback applies to transport failures, not bad hashes.
+PortableGit) URLs because they run before a checkout exists. Their fragments
+come from `pm/lock.json` and `pm/artifact-mirror.json` via
+`python3 scripts/gen-bootstrap-pins.py` (`--check` detects drift). They also try
+the read-only release, R2, then the pinned upstream on absence or transport
+failure; they never fall back after a hash mismatch.
 
 Where `pm/lock.json` carries a `prepared` row for a package and target, PM first
-fetches a post-staging store tree from the release (then R2), checks its archive
-SHA-256 and extracted tree digest, and runs the normal package verification. The
-row also binds the target, the hashes of every dependency in the package's
-source closure, and the staging implementation's source files. A changed staging
-transform invalidates the old prepared row. An absent prepared asset falls back
-to the original pinned archive path; a wrong hash or tree digest fails closed.
+fetches a post-staging store tree from the release, then R2, checks its archive
+SHA-256 and extracted tree digest, and runs normal package verification. The
+row also binds the target, source closure and staging implementation. Changed
+staging code invalidates the old prepared row. An absent prepared archive falls
+back to the original pinned inputs; a wrong hash or tree digest fails closed.
 Prepared archives are ZIP on Windows and tar.gz on POSIX, with no installer
-executable needed on the consumer. The standalone PowerShell bootstrap likewise
-uses the prepared Git ZIP when pinned; its raw PortableGit self-extractor stays
-as a fallback only for a missing or temporarily unavailable prepared asset.
+executable needed on the consumer. The standalone PowerShell bootstrap uses the
+prepared Git ZIP when pinned, with raw PortableGit only as an availability fallback.
 
-The `prepare-tools` CI workflow builds every supported package-target tree on
-its native userland. On the staging fork, the owner may publish from her own
-PR head; other authors need an exact-head approval from a repository writer.
-The trusted job bot-commits prepared pins and regenerated installer fragments.
-A code change to the bootstrap generator must land before a pin-only PR can use
-that trusted job.
+The `prepare-tools` workflow builds every supported package-target tree on its
+native userland. Its trusted, default-branch publisher requires another
+repository writer's approval of the exact PR head before publishing executable
+bytes to R2; it bot-commits reviewed pins and regenerated installer fragments.
+The bootstrap generator must land before a pin-only PR can use that trusted job.
 
 ### Windows ARM64 Python wheels
 
-The Python wheelhouse is separate from PM tool-tree archives. PyPI has no
-`win_arm64` wheel for eight native dependencies in the current lock. The
-fork-only `wheelhouse-build` workflow verifies their PyPI sdist hashes against
-`uv.lock`, builds with the pinned Python on native Windows ARM64, and publishes
-immutable-by-name wheels to the public `wheelhouse` prerelease on
-`ethernet8023/hermes-agent`. Its read-only producer cannot upload; the trusted
-publisher checks wheel metadata, native tags and public SHA-256 readback. The
-prerelease cannot replace a stable `/releases/latest` endpoint.
+Python dependency wheels are separate from prepared PM tool trees. The
+`[tool.hermes.win-arm64-wheels]` table in `pyproject.toml` records optional
+filename/SHA-256 pairs for native gaps in the locked Windows ARM64/Python 3.14
+graph. `uv.lock` keeps the normal registry versions and sdist hashes for every
+platform; it contains no direct wheel URL. On Windows ARM64, PM checks each
+wheel at the existing release and then R2, verifies the hash, and offers only
+verified local files to uv in a private generation. A missing wheel keeps the
+locked registry sdist at the same version and hash. A corrupt download stops.
+Other platforms use the committed registry lock without wheel requests.
 
-Each `[tool.uv.sources]` entry selects the exact fork release URL only when
-`sys_platform == 'win32'` and `platform_machine == 'ARM64'`. `uv.lock` pins that
-wheel's SHA-256; all other targets keep the PyPI registry entry at the same
-version. A missing asset or wrong hash fails the uv sync rather than switching
-to a different sdist. After publishing a new wheel filename, change its source
-URL, run `hermes pm lock`, and review and commit `pyproject.toml` with `uv.lock`.
-Transitive-only packages also need an explicit pin in the extra that owns them,
-so uv applies their source mapping without making those features core deps.
+When a source checkout actually fails to build an unavailable native wheel's
+sdist, PM prepares Windows build tools and retries once before publishing a
+venv. Plugin-expanded builds retain their existing on-demand retry; sealed
+payloads have no compiler provider. Repair verifies copied wheels and rebinds
+only generation-local paths; it does not fetch current manifests or change the
+recorded versions. The `wheelhouse-build` workflow produces wheels from locked
+sdists on native Windows ARM64 and its protected publisher uploads immutable
+SHA-addressed objects to R2, checks metadata/tags, and reads back the public
+hash. No GitHub release is created. Until an object is present on R2, that
+wheel uses the source-build path rather than claiming a compiler-free install.
 
 ## Network retries
 

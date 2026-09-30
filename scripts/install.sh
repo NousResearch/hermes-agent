@@ -175,37 +175,37 @@ UV_PIN_VERSION="0.12.3"
 uv_bootstrap_pin() {
     case "$1" in
         linux-x64)
-            UV_PIN_GITHUB="https://github.com/ethernet8023/hermes-agent/releases/download/inputs-6/600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
+            UV_PIN_GITHUB="https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-gnu.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
             UV_PIN_SHA256="600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
             ;;
         linux-arm64)
-            UV_PIN_GITHUB="https://github.com/ethernet8023/hermes-agent/releases/download/inputs-b/bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
+            UV_PIN_GITHUB="https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-gnu.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             UV_PIN_SHA256="bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             ;;
         linux-x64-musl)
-            UV_PIN_GITHUB="https://github.com/ethernet8023/hermes-agent/releases/download/inputs-0/0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            UV_PIN_GITHUB="https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-musl.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
             UV_PIN_SHA256="0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
             ;;
         linux-arm64-musl)
-            UV_PIN_GITHUB="https://github.com/ethernet8023/hermes-agent/releases/download/inputs-f/fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            UV_PIN_GITHUB="https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-musl.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
             UV_PIN_SHA256="fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
             ;;
         darwin-x64)
-            UV_PIN_GITHUB="https://github.com/ethernet8023/hermes-agent/releases/download/inputs-4/4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
+            UV_PIN_GITHUB="https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
             UV_PIN_SHA256="4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
             ;;
         darwin-arm64)
-            UV_PIN_GITHUB="https://github.com/ethernet8023/hermes-agent/releases/download/inputs-5/546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843"
+            UV_PIN_GITHUB="https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843"
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843"
             UV_PIN_SHA256="546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843"
@@ -291,7 +291,7 @@ ensure_uv() {
         mkdir -p "$_tmp"
         local _fetched_from="" _candidate _curl_status
         # A transport failure may try the next source; wrong bytes never may.
-        for _candidate in "${UV_PIN_GITHUB:-}" "$UV_PIN_URL" "${UV_PIN_MIRROR:-}"; do
+        for _candidate in "${UV_PIN_GITHUB:-}" "${UV_PIN_MIRROR:-}" "$UV_PIN_URL"; do
             [ -n "$_candidate" ] || continue
             if curl -LsSf "$_candidate" -o "$_tmp/uv.tar.gz"; then
                 _fetched_from="$_candidate"
@@ -306,7 +306,7 @@ ensure_uv() {
         done
         if [ -z "$_fetched_from" ]; then
             rm -rf "$_tmp"
-            fail "failed to download pinned uv from ${UV_PIN_GITHUB:-no GitHub release} or $UV_PIN_URL or ${UV_PIN_MIRROR:-no R2 mirror}"
+            fail "failed to download pinned uv from ${UV_PIN_GITHUB:-no GitHub release} or ${UV_PIN_MIRROR:-no R2 mirror} or $UV_PIN_URL"
         fi
         local _digest
         if command -v sha256sum >/dev/null 2>&1; then

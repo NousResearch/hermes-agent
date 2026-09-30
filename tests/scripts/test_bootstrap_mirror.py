@@ -77,12 +77,12 @@ def test_windows_download_uses_only_verified_candidates(tmp_path, server, mode):
 
 
 @pytest.mark.platforms("windows")
-@pytest.mark.parametrize("available", ["github", "upstream", "r2", "corrupt", "all-missing"])
-def test_windows_bootstrap_prefers_release_then_upstream_then_r2(tmp_path, server, available):
+@pytest.mark.parametrize("available", ["github", "r2", "upstream", "corrupt", "all-missing"])
+def test_windows_bootstrap_prefers_release_then_r2_then_upstream(tmp_path, server, available):
     http, base = server
     body = b"verified bootstrap input"
     digest = hashlib.sha256(body).hexdigest()
-    candidates = ["github", "upstream", "r2"]
+    candidates = ["github", "r2", "upstream"]
     if available in candidates:
         for name in candidates[candidates.index(available):]:
             http.files["/" + name] = body
@@ -143,12 +143,12 @@ def uv_archive():
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("available", ["github", "upstream", "r2", "corrupt", "all-missing"])
-def test_posix_bootstrap_prefers_release_then_upstream_then_r2(tmp_path, server, available):
+@pytest.mark.parametrize("available", ["github", "r2", "upstream", "corrupt", "all-missing"])
+def test_posix_bootstrap_prefers_release_then_r2_then_upstream(tmp_path, server, available):
     http, base = server
     body = uv_archive()
     digest = hashlib.sha256(body).hexdigest()
-    candidates = ["github", "upstream", "r2"]
+    candidates = ["github", "r2", "upstream"]
     if available in candidates:
         for name in candidates[candidates.index(available):]:
             http.files["/" + name] = body
@@ -171,28 +171,6 @@ ensure_uv
             assert "digest mismatch" in result.stderr
         expected = ["github"] if available == "corrupt" else candidates
     assert http.requests == ["/" + name for name in expected]
-
-
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("mode", ["primary", "missing", "corrupt", "both-missing"])
-def test_posix_download_keeps_the_pinned_hash(tmp_path, server, mode):
-    primary, mirror, digest = fixture_bytes(server, mode, uv_archive())
-    if mode == "both-missing":
-        server[0].files.clear()
-    script = f"""
-source '{ROOT / 'scripts/install.sh'}'
-command() {{ if [ "$*" = '-v uv' ]; then return 1; fi; builtin command "$@"; }}
-uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_GITHUB=''; UV_PIN_URL='{primary}'; UV_PIN_MIRROR='{mirror}'; UV_PIN_SHA256='{digest}'; }}
-ensure_uv
-"""
-    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
-    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
-    assert (result.returncode == 0) == (mode in ("primary", "missing")), result.stdout + result.stderr
-    if mode == "corrupt":
-        assert "digest mismatch" in result.stderr
-    if mode == "both-missing":
-        assert primary in result.stderr and mirror in result.stderr
-    assert server[0].requests == (["/primary", "/mirror"] if mode in ("missing", "both-missing") else ["/primary"])
 
 
 @pytest.mark.platforms("windows")

@@ -58,8 +58,8 @@ def test_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monk
     assert any(path == "/archive/" + digest for path, *_ in RangeHandler.ranges_seen)
 
 
-@pytest.mark.parametrize("available", ["github", "upstream", "archive"])
-def test_pinned_download_tries_our_release_before_upstream_then_r2(tmp_path, dl_server, monkeypatch, available):
+@pytest.mark.parametrize("available", ["github", "archive", "upstream"])
+def test_pinned_download_tries_release_then_r2_then_upstream(tmp_path, dl_server, monkeypatch, available):
     from pm import artifact_mirror, downloader
     from pm.downloader import Download
 
@@ -67,7 +67,7 @@ def test_pinned_download_tries_our_release_before_upstream_then_r2(tmp_path, dl_
     digest = hashlib.sha256(body).hexdigest()
     monkeypatch.setattr(artifact_mirror, "PUBLIC_PREFIX", url(dl_server, "/archive/"))
     monkeypatch.setattr(artifact_mirror, "github_asset_url", lambda _: url(dl_server, "/github/" + digest))
-    candidates = ["github", "upstream", "archive"]
+    candidates = ["github", "archive", "upstream"]
     for candidate in candidates[candidates.index(available):]:
         RangeHandler.payloads[f"/{candidate}/{digest}"] = body
     upstream = f"https://upstream.example.invalid/upstream/{digest}"
@@ -84,8 +84,8 @@ def test_pinned_download_tries_our_release_before_upstream_then_r2(tmp_path, dl_
 
     monkeypatch.setattr(downloader, "_OPENER", FixtureUpstream())
     source = artifact_mirror.pinned_source(upstream, tmp_path / "input", digest)
-    assert (source.url, *source.fallbacks) == (url(dl_server, "/github/" + digest), upstream,
-                                               url(dl_server, "/archive/" + digest))
+    assert (source.url, *source.fallbacks) == (url(dl_server, "/github/" + digest),
+                                               url(dl_server, "/archive/" + digest), upstream)
     assert Download([source], partials_dir=tmp_path / "partials").run() == [source.dest]
     assert source.dest.read_bytes() == body
     assert RangeHandler.ranges_seen[0][0] == f"/{available}/{digest}"
@@ -113,12 +113,23 @@ def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
     from pm.artifact_mirror import github_asset_url, mirror_url
     release, r2 = github_asset_url(digest), mirror_url(digest)
     source = pinned_source(lock_url, tmp_path / "npm.tgz", digest)
-    assert (source.url, *source.fallbacks) == (release, lock_url, r2)
+    assert (source.url, *source.fallbacks) == (release, r2, lock_url)
     (tmp_path / ".npmrc").write_text("; corp\nregistry = https://npm.corp.example/npm/\n", encoding="utf-8")
     source = pinned_source(lock_url, tmp_path / "npm.tgz", digest)
-    assert (source.url, *source.fallbacks) == ("https://npm.corp.example/npm/npm/-/npm-10.9.2.tgz", release, lock_url, r2)
+    assert (source.url, *source.fallbacks) == ("https://npm.corp.example/npm/npm/-/npm-10.9.2.tgz", release, r2, lock_url)
     monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://env.corp.example")
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://env.corp.example/npm/-/npm-10.9.2.tgz"
     other = "https://github.com/x/y/releases/download/v1/y.tgz"
     source = pinned_source(other, tmp_path / "y.tgz", digest)
-    assert (source.url, *source.fallbacks) == (release, other, r2)
+    assert (source.url, *source.fallbacks) == (release, r2, other)
+
+
+def test_native_wheel_sources_try_existing_release_then_r2(tmp_path):
+    from pm.artifact_mirror import github_release_tag, github_repository, mirror_url, wheel_source
+
+    filename = "demo-1.0-cp314-abi3-win_arm64.whl"
+    sha = "a" * 64
+    source = wheel_source(filename, sha, tmp_path / filename)
+    assert source.url == (f"https://github.com/{github_repository()}/releases/download/"
+                          f"{github_release_tag(sha)}/{filename}")
+    assert source.fallbacks == (mirror_url(sha),)

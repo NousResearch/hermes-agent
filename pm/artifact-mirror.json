@@ -2,7 +2,7 @@
   "origin": "https://hermes-assets.nousresearch.com",
   "prefix": "upstream/sha256/",
   "github": {
-    "repository": "ethernet8023/hermes-agent",
-    "tag_prefix": "inputs-"
+    "repository": "NousResearch/hermes-agent",
+    "release_tag": "v2026.9.24"
   }
 }

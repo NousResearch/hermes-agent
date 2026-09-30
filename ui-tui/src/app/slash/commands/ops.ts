@@ -780,6 +780,10 @@ export const opsCommands: SlashCommand[] = [
               ctx.transcript.sys(t('slashCmd.ops.tools.unknownToolsets', r.unknown.join(', ')))
             }
 
+            for (const reason of Object.values(r.rejected ?? {})) {
+              ctx.transcript.sys(reason)
+            }
+
             if (r.missing_servers?.length) {
               ctx.transcript.sys(t('slashCmd.ops.tools.missingServers', r.missing_servers.join(', ')))
             }

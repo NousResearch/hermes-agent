@@ -83,10 +83,15 @@ class ToolsConfigureParams(Params):
 
 
 class ToolsConfigureResult(Result):
+    """``unknown`` lists names that match no toolset. ``rejected`` maps each toolset that exists but is
+    not available on the ``cli`` platform to the error that ``hermes tools enable|disable`` prints for
+    it. The handler applies neither kind, and ``changed`` includes neither."""
+
     changed: list[str]
     enabled_toolsets: list[str]
     info: SessionLiveInfo | None = None
     missing_servers: list[str]
+    rejected: dict[str, str]
     reset: bool
     unknown: list[str]
 

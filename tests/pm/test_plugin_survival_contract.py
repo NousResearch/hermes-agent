@@ -370,7 +370,7 @@ def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
     text = (home / "config.yaml").read_text(encoding="utf-8")
     assert "# operator note" in text
     assert "too-old" in yaml.safe_load(text)["plugins"]["disabled"]
-    assert yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["memory"]["provider"] == "too-old"
+    assert yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["memory"]["provider"] == ""
     assert "too-old" in json.dumps(_latest_receipt(home).get("warnings"))
     assert venv_is_current(project_root=core) is True
 

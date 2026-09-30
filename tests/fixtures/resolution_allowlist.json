@@ -683,5 +683,10 @@
     "path": "tools/file_operations_lint.py",
     "symbol": "LintMixin._run_managed_node_linter",
     "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/commands_completion.py",
+    "symbol": "_bounded_listing_command",
+    "kind": "bare_which"
   }
 ]

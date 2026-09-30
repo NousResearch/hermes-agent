@@ -18,7 +18,6 @@ from nio import (
     ProfileSetDisplayNameResponse,
     RoomCreateResponse,
     RoomMessageText,
-    RoomPutStateResponse,
     RoomSendResponse,
     RoomVisibility,
 )
@@ -35,13 +34,13 @@ class DiscoveryRoom(LiveRoom):
     bot_only_room: str
 
 
-def _client(account: MatrixAccount, homeserver: str) -> AsyncClient:
+def _client(account: MatrixAccount, homeserver: str, *, request_timeout: float = 5) -> AsyncClient:
     client = AsyncClient(
         homeserver,
         account.user_id,
         config=AsyncClientConfig(
             encryption_enabled=False,
-            request_timeout=5,
+            request_timeout=request_timeout,
             max_timeouts=0,
             max_limit_exceeded=0,
         ),
@@ -71,56 +70,59 @@ async def _wait_for_directory_entry(
             await asyncio.sleep(0.25)
 
 
+_SETUP_SECONDS = 30
+
+
 @pytest.fixture
 def live_room(live_room: LiveRoom) -> DiscoveryRoom:
-    async def prepare() -> DiscoveryRoom:
-        alice = _client(live_room.observer, live_room.homeserver)
-        bot = _client(live_room.bot, live_room.homeserver)
-        try:
-            profile = await alice.set_displayname("Alice Discovery")
-            assert isinstance(profile, ProfileSetDisplayNameResponse), profile
-            ordinary = await alice.room_create(
-                name="Joined discovery room", invite=[live_room.bot.user_id]
-            )
-            space = await alice.room_create(
+    async def create_rooms(alice: AsyncClient, bot: AsyncClient) -> tuple[str, str, str, str]:
+        public = await alice.room_create(
+            name="Unjoined public child", visibility=RoomVisibility.public
+        )
+        assert isinstance(public, RoomCreateResponse), public
+        ordinary, space, bot_only = await asyncio.gather(
+            alice.room_create(name="Joined discovery room", invite=[live_room.bot.user_id]),
+            alice.room_create(
                 name="Joined discovery Space",
                 room_type="m.space",
                 invite=[live_room.bot.user_id],
-            )
-            public = await alice.room_create(
-                name="Unjoined public child", visibility=RoomVisibility.public
-            )
-            bot_only = await bot.room_create(name="Bot-only discovery room")
-            for response in (ordinary, space, public, bot_only):
-                assert isinstance(response, RoomCreateResponse), response
-            for room in (ordinary.room_id, space.room_id):
-                joined = await bot.join(room)
-                assert isinstance(joined, JoinResponse), joined
-            child = await alice.room_put_state(
-                space.room_id,
-                "m.space.child",
-                {"via": ["matrix.test"]},
-                state_key=public.room_id,
-            )
-            assert isinstance(child, RoomPutStateResponse), child
-            await _wait_for_directory_entry(
-                live_room.bot, live_room.homeserver, live_room.observer.user_id, "Alice Discovery",
+                initial_state=[{
+                    "type": "m.space.child",
+                    "state_key": public.room_id,
+                    "content": {"via": ["matrix.test"]},
+                }],
+            ),
+            bot.room_create(name="Bot-only discovery room"),
+        )
+        for response in (ordinary, space, bot_only):
+            assert isinstance(response, RoomCreateResponse), response
+        joins = await asyncio.gather(bot.join(ordinary.room_id), bot.join(space.room_id))
+        for joined in joins:
+            assert isinstance(joined, JoinResponse), joined
+        return ordinary.room_id, space.room_id, public.room_id, bot_only.room_id
+
+    async def prepare() -> DiscoveryRoom:
+        # One deadline bounds the whole set-up. createRoom is not idempotent, so
+        # the clients never retry a request that timed out.
+        alice = _client(live_room.observer, live_room.homeserver, request_timeout=_SETUP_SECONDS)
+        bot = _client(live_room.bot, live_room.homeserver, request_timeout=_SETUP_SECONDS)
+        try:
+            profile = await alice.set_displayname("Alice Discovery")
+            assert isinstance(profile, ProfileSetDisplayNameResponse), profile
+            rooms, _ = await asyncio.gather(
+                create_rooms(alice, bot),
+                _wait_for_directory_entry(
+                    live_room.bot, live_room.homeserver, live_room.observer.user_id, "Alice Discovery",
+                ),
             )
             return DiscoveryRoom(
-                live_room.homeserver,
-                live_room.room_id,
-                live_room.bot,
-                live_room.observer,
-                ordinary.room_id,
-                space.room_id,
-                public.room_id,
-                bot_only.room_id,
+                live_room.homeserver, live_room.room_id, live_room.bot, live_room.observer, *rooms,
             )
         finally:
             await alice.close()
             await bot.close()
 
-    return asyncio.run(asyncio.wait_for(prepare(), timeout=30))
+    return asyncio.run(asyncio.wait_for(prepare(), timeout=_SETUP_SECONDS))
 
 
 def test_model_discovers_joined_rooms_spaces_and_users_without_autojoin(

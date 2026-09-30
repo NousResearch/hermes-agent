@@ -70,7 +70,7 @@ class TestEmptyReasonFallback:
             coro.close()
             raise exc
 
-        monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", boom)
+        monkeypatch.setattr("agent.async_utils.WithdrawableDispatch.schedule", boom)
 
         class _Adapter:
             async def send_voice(self, **kw):  # pragma: no cover - never awaited
@@ -93,3 +93,93 @@ class TestEmptyReasonFallback:
     def test_exception_with_message_keeps_it(self, tmp_path, monkeypatch):
         err = self._run(tmp_path, monkeypatch, RuntimeError("bridge closed"))
         assert "bridge closed" in err
+
+
+@pytest.mark.parametrize("stage", ["unstarted", "started", "completed"])
+def test_media_timeout_preserves_dispatch_and_fallback_contract(
+    tmp_path, monkeypatch, stage
+):
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from cron import scheduler_delivery, scheduler_script
+    from gateway.config import Platform
+
+    media = tmp_path / "media.png"
+    media.write_bytes(b"png")
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path,))
+    monkeypatch.setattr(scheduler_script, "_get_media_send_timeout", lambda: 2.0)
+    loop = asyncio.new_event_loop()
+    released = threading.Event()
+    blocked = threading.Event()
+    events = []
+
+    def block_loop():
+        blocked.set()
+        assert released.wait(timeout=15)
+
+    class Adapter:
+        platform = Platform.TELEGRAM
+
+        async def send_image_file(self, **kwargs):
+            events.append("started")
+            try:
+                if stage == "started":
+                    while not released.is_set():
+                        await asyncio.sleep(0.01)
+                events.append("finished")
+                return SimpleNamespace(success=True)
+            except asyncio.CancelledError:
+                events.append("cancelled")
+                raise
+
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    if stage == "unstarted":
+        loop.call_soon_threadsafe(block_loop)
+        assert blocked.wait(timeout=5)
+    target = scheduler_delivery._TargetDelivery(
+        job={"id": "media-dispatch"},
+        platform=Platform.TELEGRAM,
+        platform_name="telegram",
+        chat_id="chat",
+        thread_id=None,
+        transport=None,
+        pconfig=None,
+        runtime_adapter=Adapter(),
+        target_adapters={},
+        config=None,
+        loop=loop,
+        notify_delivery=False,
+        origin={},
+        origin_target=False,
+        origin_user_id=None,
+        is_dm_target=False,
+        mirror_text="",
+        mirror_this_target=False,
+        in_channel_surface=False,
+        inchannel_continuable=False,
+        opened_thread_id=None,
+    )
+    try:
+        missing = scheduler_delivery._live_send_media(
+            target, {}, [(str(media), False)], [], []
+        )
+        released.set()
+
+        async def settle():
+            await asyncio.sleep(0.05)
+
+        asyncio.run_coroutine_threadsafe(settle(), loop).result(timeout=5)
+    finally:
+        released.set()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+    expected = (
+        ([(str(media), False)], [])
+        if stage == "unstarted"
+        else ([], ["started", "finished"])
+    )
+    assert (missing, events) == expected

@@ -219,18 +219,30 @@ class TestFilteredResultIsNotDelivered:
 
 
 @pytest.mark.parametrize(
-    ("failed", "resent"),
-    [((), []), (("b.png",), [["b.png"]]), (("a.png", "b.png"), [["a.png", "b.png"]])],
+    ("outcomes", "resent", "reported"),
+    [
+        ({}, [], []),
+        ({"b.png": "failed"}, [["b.png"]], []),
+        ({"a.png": "failed", "b.png": "failed"}, [["a.png", "b.png"]], []),
+        ({"a.png": "timed out", "b.png": "failed"}, [["b.png"]], ["a.png"]),
+    ],
 )
-def test_media_only_output_resends_only_undelivered_attachments(tmp_path, failed, resent):
-    """The standalone lane sends again only the attachments that the live adapter did not accept."""
+def test_media_only_output_resends_only_undelivered_attachments(tmp_path, outcomes, resent, reported):
+    """The standalone lane sends again only the attachments that the live adapter did not accept.
+    A send that timed out may still arrive, so it is reported and not sent again (#38922)."""
     paths = [tmp_path / "a.png", tmp_path / "b.png"]
     for path in paths:
         path.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
-        return [f"media send failed for {path}: rejected"
-                for path, _ in media_files if path.rsplit("/", 1)[-1] in failed]
+    def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None, in_flight=None):
+        errors = []
+        for path, _ in media_files:
+            outcome = outcomes.get(path.rsplit("/", 1)[-1])
+            if outcome == "timed out" and in_flight is not None:
+                in_flight.append(path)
+            if outcome:
+                errors.append(f"media send {outcome}: {path.rsplit('/', 1)[-1]}")
+        return errors
 
     with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
          patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
@@ -242,7 +254,9 @@ def test_media_only_output_resends_only_undelivered_attachments(tmp_path, failed
 
     resent_names = [[path.rsplit("/", 1)[-1] for path, _ in call["kwargs"]["media_files"]]
                     for call in standalone_calls]
-    assert (error, resent_names) == (None, resent)
+    expected_error = "; ".join(
+        f"media send timed out: {name} (target telegram:{CHAT_ID})" for name in reported) or None
+    assert (error, resent_names) == (expected_error, resent)
 
 
 def test_confirmation_timeout_skips_continuation_bookkeeping():
@@ -325,7 +339,7 @@ class TestLiveDeliveryIsAFinalNotification:
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
         sent = []
 
-        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None, in_flight=None):
             sent.append({"media": list(media_files), "metadata": metadata})
             return []
 
@@ -365,7 +379,7 @@ class TestNotifyIsConfigurable:
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
         sent = []
 
-        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None, in_flight=None):
             sent.append(metadata)
             return []
 

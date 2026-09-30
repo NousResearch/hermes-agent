@@ -27,7 +27,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "openai-chatgpt", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
@@ -258,6 +258,15 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         fields=lambda creds, provider: {
             "refresh_token": creds["tokens"].get("refresh_token"),
             "base_url": creds.get("base_url"),
+            "last_refresh": creds.get("last_refresh")},
+        activate_first=True),
+    "openai-chatgpt": _OAuthAddSpec(
+        login=_codex_login,
+        token=lambda creds: creds["tokens"]["access_token"],
+        source=_codex_pool_source,
+        fields=lambda creds, provider: {
+            "refresh_token": creds["tokens"].get("refresh_token"),
+            "base_url": auth_mod.DEFAULT_CHATGPT_PLAN_BASE_URL,
             "last_refresh": creds.get("last_refresh")},
         activate_first=True),
     "xai-oauth": _OAuthAddSpec(

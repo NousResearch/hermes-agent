@@ -89,6 +89,15 @@ STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+# Sign in with ChatGPT (SIWC) plan usage: ChatGPT Plus/Pro/Team quota spent directly against
+# api.openai.com (Responses API) instead of the Codex backend. Same ChatGPT account issuer as
+# Codex, but a SEPARATE stored + refreshed credential (provider openai-chatgpt) so one
+# session's single-use refresh rotation can never invalidate the other.
+DEFAULT_CHATGPT_PLAN_BASE_URL = "https://api.openai.com/v1"
+SIWC_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+# SIWC OAuth client ("dynamic_agent_client"): dynamically registered per install, override via
+# HERMES_SIWC_CLIENT_ID. Defaults to the shared ChatGPT OAuth app id used by the Codex login.
+SIWC_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
@@ -162,6 +171,7 @@ def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
 _nous_err = _provider_error_factory("nous")
 _xai_err = _provider_error_factory("xai-oauth")
 _codex_err = _provider_error_factory("openai-codex")
+_siwc_err = _provider_error_factory("openai-chatgpt")
 _spotify_err = _provider_error_factory("spotify")
 _qwen_err = _provider_error_factory("qwen-oauth")
 _minimax_err = _provider_error_factory("minimax-oauth")

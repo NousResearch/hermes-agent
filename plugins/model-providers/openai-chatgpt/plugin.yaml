@@ -1,0 +1,5 @@
+name: openai-chatgpt-provider
+kind: model-provider
+version: 1.0.0
+description: ChatGPT plan usage via Sign in with ChatGPT (Responses API)
+author: Nous Research

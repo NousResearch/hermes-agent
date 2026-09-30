@@ -31,6 +31,8 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
     "openai-codex": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
                                   base_url_override="https://chatgpt.com/backend-api/codex"),
+    "openai-chatgpt": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
+                                  base_url_override="https://api.openai.com/v1"),
     "openai-api": HermesOverlay(transport="codex_responses", base_url_override="https://api.openai.com/v1",
                                 base_url_env_var="OPENAI_BASE_URL"),
     "xai-oauth": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
@@ -120,6 +122,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
     "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
     "copilot-acp": ("github-copilot-acp",), "openai-codex": ("chatgpt", "chatgpt-codex"),
+    "openai-chatgpt": ("chatgpt-plan", "siwc"),
     "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
     "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
     "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
@@ -143,6 +146,7 @@ ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
+    "openai-chatgpt": "ChatGPT Plan (Sign in with ChatGPT)",
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",

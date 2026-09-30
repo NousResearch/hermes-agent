@@ -81,6 +81,10 @@ from hermes_cli.auth_codex import (  # noqa: F401  re-exported
     _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
+from hermes_cli.auth_siwc import (  # noqa: F401  re-exported
+    _login_openai_chatgpt, _read_siwc_tokens, _refresh_siwc_auth_tokens,
+    _save_siwc_tokens, _siwc_access_token_is_expiring, get_siwc_auth_status,
+    refresh_siwc_oauth_pure, resolve_siwc_runtime_credentials)
 from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
     _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
     resolve_spotify_runtime_credentials)
@@ -103,7 +107,8 @@ from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL, DEFAULT_SPOTIFY_API_BASE_URL, SPOTIFY_DOCS_URL,
-    DEFAULT_SPOTIFY_SCOPE, SERVICE_PROVIDER_NAMES, LMSTUDIO_NOAUTH_PLACEHOLDER,
+    DEFAULT_SPOTIFY_SCOPE, DEFAULT_CHATGPT_PLAN_BASE_URL, SIWC_OAUTH_CLIENT_ID, SIWC_OAUTH_TOKEN_URL,
+    SERVICE_PROVIDER_NAMES, LMSTUDIO_NOAUTH_PLACEHOLDER,
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
 
 logger = logging.getLogger(__name__)
@@ -178,6 +183,8 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
         inference_base_url=DEFAULT_NOUS_INFERENCE_URL, client_id=DEFAULT_NOUS_CLIENT_ID,
         scope=DEFAULT_NOUS_SCOPE),
     ProviderConfig("openai-codex", "OpenAI Codex", "oauth_external", inference_base_url=DEFAULT_CODEX_BASE_URL),
+    ProviderConfig("openai-chatgpt", "ChatGPT Plan (Sign in with ChatGPT)", "oauth_external",
+                   inference_base_url=DEFAULT_CHATGPT_PLAN_BASE_URL),
     ("openai-api", "OpenAI API", "https://api.openai.com/v1", ("OPENAI_API_KEY",), "OPENAI_BASE_URL"),
     ProviderConfig(
         "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",
@@ -1994,6 +2001,10 @@ OAUTH_PROVIDER_FLOWS: Dict[str, OAuthProviderFlow] = {
         "openai-codex", "resolve_codex_runtime_credentials", "get_codex_auth_status",
         terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"codex_refresh_failed", "codex_auth_missing_refresh_token"},
         logout_from_config=True),
+    "openai-chatgpt": OAuthProviderFlow(
+        "openai-chatgpt", "resolve_siwc_runtime_credentials", "get_siwc_auth_status",
+        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"siwc_auth_missing_refresh_token"},
+        logout_from_config=True),
     "xai-oauth": OAuthProviderFlow(
         "xai-oauth", "resolve_xai_oauth_runtime_credentials", "get_xai_oauth_auth_status",
         terminal_refresh_codes=frozenset({"xai_refresh_failed", "xai_auth_missing_refresh_token"}),
@@ -2014,6 +2025,8 @@ _is_terminal_nous_refresh_error = partial(_is_terminal_refresh_error, provider="
 _is_terminal_xai_oauth_refresh_error = partial(_is_terminal_refresh_error, provider="xai-oauth")
 _is_terminal_codex_oauth_refresh_error = partial(
     _is_terminal_refresh_error, provider="openai-codex")
+_is_terminal_siwc_oauth_refresh_error = partial(
+    _is_terminal_refresh_error, provider="openai-chatgpt")
 
 
 def _codex_pool_rate_limited_status() -> Optional[Dict[str, Any]]:

@@ -21,9 +21,11 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 )
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
+    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_CHATGPT_PLAN_BASE_URL,
+    DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
-    resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
+    resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_siwc_runtime_credentials,
+    resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,  # noqa: F401
     has_usable_secret, is_actual_local_base_url, looks_like_openrouter_key, normalize_actual_base_url,
@@ -511,6 +513,7 @@ from hermes_cli.runtime_provider_backends import (  # noqa: E402,F401
 # OpenAI-compatible provider is never honoured for it (it would 404 on /chat/completions).
 _POOL_ENTRY_SIMPLE_MODES: Dict[str, tuple] = {
     "openai-codex": ("codex_responses", DEFAULT_CODEX_BASE_URL), "xai-oauth": ("codex_responses", DEFAULT_XAI_OAUTH_BASE_URL),
+    "openai-chatgpt": ("codex_responses", DEFAULT_CHATGPT_PLAN_BASE_URL),
     "qwen-oauth": ("chat_completions", DEFAULT_QWEN_BASE_URL), "openrouter": ("chat_completions", OPENROUTER_BASE_URL),
     "minimax-oauth": ("anthropic_messages", lambda: getattr(PROVIDER_REGISTRY.get("minimax-oauth"), "inference_base_url", "")),
     "xai": ("codex_responses", ""),
@@ -677,6 +680,13 @@ def _creds_fallback(api_key, explicit_base_url, base_url, expiry, expiry_key, re
     return creds.get("api_key", ""), explicit_base_url or creds.get("base_url", "").rstrip("/") or base_url, creds.get(expiry_key)
 
 
+def _explicit_siwc(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
+    api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CHATGPT_PLAN_BASE_URL,
+                                                      None, "last_refresh", resolve_siwc_runtime_credentials)
+    return _runtime("openai-chatgpt", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
+                    requested_provider=requested_provider)
+
+
 def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
     api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,
                                                       None, "last_refresh", resolve_codex_runtime_credentials)
@@ -733,7 +743,7 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
 # Providers with a dedicated explicit-credential builder; everything else goes through the
 # registry ``api_key`` path (or None when the provider takes no explicit creds).
 _EXPLICIT_RESOLVERS: Dict[str, Callable[..., Dict[str, Any]]] = {
-    "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex, "nous": _explicit_nous,
+    "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex, "openai-chatgpt": _explicit_siwc, "nous": _explicit_nous,
     "azure-foundry": lambda rq, mc, key, url, tm: _resolve_azure_foundry_runtime(requested_provider=rq, model_cfg=mc,
                                                                                  explicit_api_key=key, explicit_base_url=url),
 }
@@ -777,6 +787,9 @@ _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
                               "Auto-detected Nous provider but credentials failed"),
     "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(), "codex_responses", "hermes-auth-store",
                                       "last_refresh", "Auto-detected Codex provider but credentials failed"),
+    "openai-chatgpt": _OAuthRuntimeSpec(lambda: resolve_siwc_runtime_credentials(), "codex_responses", "hermes-auth-store",
+                                      "last_refresh", "Auto-detected ChatGPT plan provider but credentials failed",
+                                      DEFAULT_CHATGPT_PLAN_BASE_URL),
     "xai-oauth": _OAuthRuntimeSpec(lambda: resolve_xai_oauth_runtime_credentials(), "codex_responses", "hermes-auth-store",
                                    "last_refresh", "Auto-detected xAI OAuth provider but credentials failed", DEFAULT_XAI_OAUTH_BASE_URL),
     "qwen-oauth": _OAuthRuntimeSpec(lambda: resolve_qwen_runtime_credentials(), "chat_completions", "qwen-cli",

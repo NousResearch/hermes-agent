@@ -463,7 +463,7 @@ class TestImageModeBackwardCompat:
 
 class TestProfileScopedNamesLabels:
     """daytona_name_prefix, daytona_name_scope, daytona_labels.
-    
+
     All sandboxes carry three mandatory labels:
     - hermes_task_id:    the task ID
     - hermes_profile_id: short SHA-256 hash of the profile home dir
@@ -951,6 +951,15 @@ class TestJsonTypeValidation:
         importlib.reload(tt)
         config = tt._get_env_config()
         assert config["daytona_volume_mounts"] == []
+
+    def test_invalid_daytona_settings_do_not_break_local_backend(self, monkeypatch):
+        from tools.terminal_tool import _get_env_config
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        for key in ("LABELS", "ENV_VARS", "VOLUME_MOUNTS", "AUTO_STOP_INTERVAL",
+                    "AUTO_ARCHIVE_INTERVAL", "AUTO_DELETE_INTERVAL", "GPU"):
+            monkeypatch.setenv(f"TERMINAL_DAYTONA_{key}", "invalid")
+        assert _get_env_config()["env_type"] == "local"
 
     def test_terminal_tool_bad_json_returns_clean_error(self, monkeypatch):
         """Runtime path should return a clean tool error for malformed JSON config."""

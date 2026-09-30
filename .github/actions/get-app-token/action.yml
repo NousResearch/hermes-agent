@@ -1,0 +1,69 @@
+name: Get GitHub App Token
+description: >-
+  Mint a short-lived (1-hour) installation access token from the repo's
+  GitHub App, replacing the long-lived AUTOFIX_BOT_PAT. App tokens get
+  5,000 req/hr per installation (vs 1,000 for the default GITHUB_TOKEN)
+  and are scoped to the App's installation permissions, not a user account.
+
+  Callers must source App credentials from a protected, main-only environment.
+  Never pass an App private key to a pull_request job, a local action, or a
+  reusable workflow resolved from an untrusted PR ref. The fallback keeps a
+  trusted caller functional when its protected environment is misconfigured.
+
+  Composite actions cannot access contexts directly, so callers pass the
+  public vars.APP_CLIENT_ID and protected secrets.APP_PRIVATE_KEY as inputs.
+  When the private key is empty, the fallback fires.
+
+inputs:
+  client-id:
+    description: GitHub App Client ID. Pass vars.APP_CLIENT_ID from the calling workflow.
+    required: false
+    default: ''
+  private-key:
+    description: GitHub App private key PEM. Pass secrets.APP_PRIVATE_KEY from the calling workflow.
+    required: false
+    default: ''
+  owner:
+    description: GitHub App installation owner. Empty scopes the token to the current repository.
+    required: false
+    default: ''
+  repositories:
+    description: Comma- or newline-separated repositories to scope within the installation owner.
+    required: false
+    default: ''
+
+outputs:
+  token:
+    description: A GitHub App installation access token (1-hour TTL), or GITHUB_TOKEN on forks.
+    value: ${{ steps.app-token.outputs.token || steps.fallback.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check if App credentials exist
+      id: check
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client-id }}
+      run: |
+        if [ -n "$CLIENT_ID" ]; then
+          echo "has_app=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_app=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Create GitHub App token
+      id: app-token
+      if: steps.check.outputs.has_app == 'true'
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
+
+    - name: Fall back to GITHUB_TOKEN
+      id: fallback
+      if: steps.check.outputs.has_app != 'true'
+      shell: bash
+      run: echo "token=${{ github.token }}" >> "$GITHUB_OUTPUT"

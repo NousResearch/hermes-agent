@@ -1,13 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it } from 'vitest'
 
-// Locate textInput.tsx relative to this test file so the assertion
-// survives moves of the test fixture itself.
-const TEXT_INPUT_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'components', 'textInput.tsx')
-const source = readFileSync(TEXT_INPUT_PATH, 'utf8')
+import { fastAppendEffect, fastBackspaceEffect, resolveCursorLayout } from '../components/textInput.js'
+import { cursorLayout } from '../lib/inputMetrics.js'
 
 // Closes Copilot follow-up on PR #26717: the original cursor-drift
 // fix bumped Ink's displayCursor / cursorDeclaration on fast-echo, but
@@ -18,33 +12,51 @@ const source = readFileSync(TEXT_INPUT_PATH, 'utf8')
 // bump. The fix is structural: read `curRef.current` (always
 // up-to-date) when computing the layout, not the `cur` state.
 //
-// This file pins that invariant. Switching back to `cur` state — or
-// re-introducing a memo keyed on `cur` that uses `curRef.current`
-// inside but stops re-computing on rerender — is a regression and
-// should be caught here, not via a flaky integration test that mounts
-// Ink + stdin.
-describe('textInput cursor-layout source of truth', () => {
-  it('reads curRef.current (not the cur React state) for cursorLayout', () => {
-    // The line we care about. We allow whitespace / formatting drift,
-    // but the call itself must use `curRef.current`.
-    expect(source).toMatch(/cursorLayout\(\s*display\s*,\s*curRef\.current\s*,\s*columns\s*\)/)
+// These tests exercise the real, exported `resolveCursorLayout`,
+// `fastBackspaceEffect`, and `fastAppendEffect` helpers that
+// `textInput.tsx` calls at its render site and fast-echo call sites —
+// no source-text regex, no readFileSync.
+describe('resolveCursorLayout', () => {
+  it('uses curRefCurrent (the fresh ref value), not the stale cur state', () => {
+    // Simulate the exact bug scenario: `cur` (React state) is stale —
+    // it still reflects the value before a fast-echo append — while
+    // `curRef.current` has already advanced past it.
+    const display = 'hello world'
+    const staleCur = 5
+    const freshCurRefCurrent = 11
+    const columns = 80
+
+    const result = resolveCursorLayout(display, staleCur, freshCurRefCurrent, columns)
+    const expected = cursorLayout(display, freshCurRefCurrent, columns)
+
+    expect(result).toEqual(expected)
   })
+})
 
-  it('does not pass the bare `cur` React state into cursorLayout', () => {
-    // Any `cursorLayout(display, cur, columns)` invocation would
-    // reintroduce the stale-declaration window.
-    expect(source).not.toMatch(/cursorLayout\(\s*display\s*,\s*cur\s*,\s*columns\s*\)/)
+describe('fastBackspaceEffect', () => {
+  it('removes the last character, moves the cursor back one, and pairs the write with the advance delta', () => {
+    const effect = fastBackspaceEffect('hello', 5)
+
+    expect(effect.newValue).toBe('hell')
+    expect(effect.newCursor).toBe(4)
+    expect(effect.removed).toBe('o')
+    // Both the stdout write and the noteCursorAdvance delta live on the
+    // same returned object — a caller cannot apply `write` without also
+    // having `advanceDelta` in hand, so the pairing can't silently drift.
+    expect(effect.write).toBe('\b \b')
+    expect(effect.advanceDelta).toBe(-1)
   })
+})
 
-  it('keeps the fast-echo notifier calls paired with the stdout writes', () => {
-    // Both fast-echo paths must call noteCursorAdvance, otherwise Ink
-    // never learns about the out-of-band write and drifts again. We
-    // tolerate explanatory comments in between (the rationale block is
-    // intentionally long), but the pairing itself must hold.
-    const backspacePattern = /stdout!\.write\(['"`]\\b \\b['"`]\)[\s\S]{0,1000}?noteCursorAdvance\(-1\)/
-    expect(source).toMatch(backspacePattern)
+describe('fastAppendEffect', () => {
+  it('appends the text, advances the cursor by the inserted length, and pairs the write with the advance delta', () => {
+    const effect = fastAppendEffect('hello', 5, ' world')
 
-    const appendPattern = /stdout!\.write\(text\)[\s\S]{0,1000}?noteCursorAdvance\(text\.length\)/
-    expect(source).toMatch(appendPattern)
+    expect(effect.newValue).toBe('hello world')
+    expect(effect.newCursor).toBe(11)
+    // The stdout write is exactly the inserted text, and the
+    // noteCursorAdvance delta is bundled into the same object.
+    expect(effect.write).toBe(' world')
+    expect(effect.advanceDelta).toBe(' world'.length)
   })
 })

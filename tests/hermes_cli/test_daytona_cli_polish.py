@@ -5,6 +5,7 @@
 - hermes setup: image vs snapshot branching (tested indirectly via status/doctor)
 """
 
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -433,40 +434,22 @@ class TestDaytonaDoctorConfigBackedPolish:
     def _run_doctor_with_config(self, monkeypatch, tmp_path, terminal_cfg):
         import contextlib
         import io
-        import sys as _sys
-        import types
-        from argparse import Namespace
-        from pathlib import Path
-
-        from hermes_cli import doctor as doctor_mod
+        from hermes_cli.doctor_tools import _check_daytona_backend
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("DAYTONA_API_KEY", "dcs-test-key")
-        monkeypatch.delenv("TERMINAL_ENV", raising=False)
         for key in list(os.environ):
             if key.startswith("TERMINAL_DAYTONA_") or key == "TERMINAL_CONTAINER_DISK":
                 monkeypatch.delenv(key, raising=False)
-
-        config = {"terminal": {"backend": "daytona", **terminal_cfg}}
-        raw_config = {"terminal": dict(config["terminal"])}
-        monkeypatch.setattr(doctor_mod, "load_config", lambda: config, raising=False)
-        monkeypatch.setattr(doctor_mod, "read_raw_config", lambda: raw_config, raising=False)
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home, raising=False)
-        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path, raising=False)
-        monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home), raising=False)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "daytona" else None)
-        monkeypatch.setitem(
-            _sys.modules,
-            "model_tools",
-            types.SimpleNamespace(check_tool_availability=lambda *a, **kw: ([], []), TOOLSET_REQUIREMENTS={}),
-        )
+        (hermes_home / "config.yaml").write_text(json.dumps({
+            "terminal": {"backend": "daytona", **terminal_cfg},
+        }))
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            doctor_mod.run_doctor(Namespace(fix=False, ack=None))
+            _check_daytona_backend([])
         return buf.getvalue()
 
     def test_config_backend_daytona_missing_snapshot_is_reported(self, monkeypatch, tmp_path):
@@ -579,7 +562,7 @@ class TestDaytonaConfigSetStructuredEnvSync:
 
         config_mod.set_config_value("terminal.daytona_labels", '{"team":"agents","env":"dev"}')
 
-        assert saved_env["TERMINAL_DAYTONA_LABELS"] == '{"env":"dev","team":"agents"}'
+        assert json.loads(saved_env["TERMINAL_DAYTONA_LABELS"]) == {"env": "dev", "team": "agents"}
 
     def test_daytona_volume_mounts_are_saved_to_env_as_json_array(self, monkeypatch, tmp_path):
         from hermes_cli import config as config_mod
@@ -594,7 +577,7 @@ class TestDaytonaConfigSetStructuredEnvSync:
 
         config_mod.set_config_value("terminal.daytona_volume_mounts", '[{"volume_id":"vol-1","mount_path":"/data"}]')
 
-        assert saved_env["TERMINAL_DAYTONA_VOLUME_MOUNTS"] == '[{"mount_path":"/data","volume_id":"vol-1"}]'
+        assert json.loads(saved_env["TERMINAL_DAYTONA_VOLUME_MOUNTS"]) == [{"mount_path": "/data", "volume_id": "vol-1"}]
 
 
 # ---------------------------------------------------------------------------
@@ -674,10 +657,10 @@ class TestDaytonaConfigShowSnapshotMode:
 # ---------------------------------------------------------------------------
 
 class TestDaytonaSetupSnapshotSkipsResources:
-    """Snapshot mode setup must NOT call _prompt_container_resources.
+    """Snapshot mode setup must skip resource prompts.
 
     When the user selects snapshot create mode, the setup wizard should:
-    1. Save TERMINAL_DAYTONA_CREATE_MODE = "snapshot" and a snapshot value.
+    1. Save daytona_create_mode = "snapshot" and a snapshot value in config.yaml.
     2. Skip container resource prompts (CPU, memory, disk) entirely.
     """
 
@@ -704,6 +687,8 @@ class TestDaytonaSetupSnapshotSkipsResources:
             raise AssertionError(f"Unexpected prompt_choice: {question}")
 
         def fake_prompt(message, default="", **kwargs):
+            if message.strip().startswith(("CPU cores", "Memory in MB", "Disk in MB")):
+                resource_call_log.append(message)
             # Snapshot name prompt
             if "snapshot" in message.lower() and ("name" in message.lower() or "id" in message.lower()):
                 return snapshot_name
@@ -727,13 +712,10 @@ class TestDaytonaSetupSnapshotSkipsResources:
                 return False  # Don't update API key
             return default
 
-        def fake_container_resources(cfg):
-            resource_call_log.append(cfg)
-
         monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
         monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
         monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-        monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", fake_container_resources)
+        monkeypatch.setattr("hermes_cli.setup.save_config", lambda cfg: None)
         monkeypatch.setattr("hermes_cli.setup.cfg_get", lambda c, section, key, default=None: default)
         monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *a, **kw: None)
         monkeypatch.setattr("hermes_cli.setup.get_env_value", lambda key: "dcs-test-key" if key == "DAYTONA_API_KEY" else "")
@@ -746,7 +728,7 @@ class TestDaytonaSetupSnapshotSkipsResources:
         return config, resource_call_log
 
     def test_snapshot_mode_saves_create_mode(self, monkeypatch, tmp_path):
-        """Snapshot mode saves TERMINAL_DAYTONA_CREATE_MODE = snapshot."""
+        """Snapshot mode saves daytona_create_mode = snapshot."""
         config, _ = self._make_setup_mocks(monkeypatch, tmp_path)
 
         from hermes_cli.setup import setup_terminal_backend
@@ -764,20 +746,20 @@ class TestDaytonaSetupSnapshotSkipsResources:
         assert config["terminal"].get("daytona_snapshot") == "my-cool-snapshot"
 
     def test_snapshot_mode_skips_container_resources(self, monkeypatch, tmp_path):
-        """Snapshot mode must NOT call _prompt_container_resources."""
+        """Snapshot mode must skip resource prompts."""
         config, resource_call_log = self._make_setup_mocks(monkeypatch, tmp_path)
 
         from hermes_cli.setup import setup_terminal_backend
         setup_terminal_backend(config)
 
         assert len(resource_call_log) == 0, (
-            f"_prompt_container_resources was called {len(resource_call_log)} time(s) "
+            f"Resource prompts were shown {len(resource_call_log)} time(s) "
             f"in snapshot mode, but should not have been called"
         )
 
 
 class TestDaytonaSetupImageModeIncludesResources:
-    """Image mode setup must still call _prompt_container_resources."""
+    """Image mode setup must still prompt for resources."""
 
     def _make_setup_mocks(self, monkeypatch, tmp_path, image_name="python-nodejs:latest"):
         """Return (config, call_log) with Daytona setup mocks for image mode."""
@@ -802,6 +784,8 @@ class TestDaytonaSetupImageModeIncludesResources:
             raise AssertionError(f"Unexpected prompt_choice: {question}")
 
         def fake_prompt(message, default="", **kwargs):
+            if message.strip().startswith(("CPU cores", "Memory in MB", "Disk in MB")):
+                resource_call_log.append(message)
             if "image" in message.lower() and "sandbox" in message.lower():
                 return image_name
             return default if default else ""
@@ -815,13 +799,10 @@ class TestDaytonaSetupImageModeIncludesResources:
                 return False
             return default
 
-        def fake_container_resources(cfg):
-            resource_call_log.append(cfg)
-
         monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
         monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
         monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-        monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", fake_container_resources)
+        monkeypatch.setattr("hermes_cli.setup.save_config", lambda cfg: None)
         monkeypatch.setattr("hermes_cli.setup.cfg_get", lambda c, section, key, default=None: default)
         monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *a, **kw: None)
         monkeypatch.setattr("hermes_cli.setup.get_env_value", lambda key: "dcs-test-key" if key == "DAYTONA_API_KEY" else "")
@@ -833,13 +814,13 @@ class TestDaytonaSetupImageModeIncludesResources:
         return config, resource_call_log
 
     def test_image_mode_calls_container_resources(self, monkeypatch, tmp_path):
-        """Image mode must call _prompt_container_resources."""
+        """Image mode must prompt for CPU, memory and disk."""
         config, resource_call_log = self._make_setup_mocks(monkeypatch, tmp_path)
 
         from hermes_cli.setup import setup_terminal_backend
         setup_terminal_backend(config)
 
-        assert len(resource_call_log) == 1, (
-            f"_prompt_container_resources was called {len(resource_call_log)} time(s) "
-            f"in image mode, but should have been called exactly once"
+        assert len(resource_call_log) == 3, (
+            f"Resource prompts were shown {len(resource_call_log)} time(s) "
+            f"in image mode, but should have prompted for CPU, memory and disk"
         )

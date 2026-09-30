@@ -1,10 +1,12 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
-import yaml
+import threading
+
 import pytest
+import hermes_yaml as yaml
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -26,38 +28,34 @@ def _make_event(text="/model"):
 
 
 @pytest.mark.asyncio
-async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkeypatch):
+async def test_direct_model_switch_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """A direct `/model <name>` switch must run switch_model() on a worker thread so the
+    blocking models.dev HTTP fetch can't freeze the gateway event loop (#20525)."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "model": {
-                    "default": "gpt-5.4",
-                    "provider": "openai-codex",
-                    "base_url": "https://chatgpt.com/backend-api/codex",
-                },
-                "providers": {},
-                "custom_providers": [
-                    {
-                        "name": "Local (127.0.0.1:4141)",
-                        "base_url": "http://127.0.0.1:4141/v1",
-                        "model": "rotator-openrouter-coding",
-                    }
-                ],
-            }
-        ),
+        yaml.safe_dump({"model": {"default": "gpt-5.4", "provider": "openrouter"}}),
         encoding="utf-8",
     )
 
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
 
-    result = await _make_runner()._handle_model_command(_make_event())
+    switch_threads: list[int] = []
 
-    assert result is not None
-    assert "Local (127.0.0.1:4141)" in result
-    assert "custom:local-(127.0.0.1:4141)" in result
-    assert "rotator-openrouter-coding" in result
+    # Fail the switch so the handler returns before _finish_switch (which needs
+    # full runner state) — only where the switch ran matters here.
+    def _fake_switch(**kwargs):
+        switch_threads.append(threading.get_ident())
+        return ModelSwitchResult(success=False, error_message="nope")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
+
+    result = await _make_runner()._handle_model_command(_make_event("/model gpt-5.4"))
+
+    assert switch_threads, "switch_model never ran"
+    assert threading.get_ident() not in switch_threads, "switch_model ran inline on the event-loop thread"
+    assert result is not None and "nope" in result

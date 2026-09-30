@@ -96,10 +96,9 @@ class TestDaytonaSyncCwdBridgeConsistency:
 
     def test_key_in_cli_env_mappings(self):
         """daytona_sync_cwd must map to TERMINAL_DAYTONA_SYNC_CWD in cli.py."""
-        from tests.tools.test_terminal_config_env_sync import _cli_env_map_keys, skip_if_no_prompt_toolkit
+        from tests.tools.test_terminal_config_env_sync import _cli_env_map
 
-        skip_if_no_prompt_toolkit()
-        keys = _cli_env_map_keys()
+        keys = _cli_env_map()
         assert "daytona_sync_cwd" in keys, (
             "daytona_sync_cwd missing from env_mappings in cli.py"
         )
@@ -107,39 +106,32 @@ class TestDaytonaSyncCwdBridgeConsistency:
     def test_key_in_gateway_env_map(self):
         """daytona_sync_cwd must map to TERMINAL_DAYTONA_SYNC_CWD in gateway/run.py."""
         pytest.importorskip("httpx", reason="gateway/run.py requires httpx")
-        from tests.tools.test_terminal_config_env_sync import _gateway_env_map_keys
+        from tests.tools.test_terminal_config_env_sync import _gateway_env_map
 
-        keys = _gateway_env_map_keys()
+        keys = _gateway_env_map()
         assert "daytona_sync_cwd" in keys, (
             "daytona_sync_cwd missing from _terminal_env_map in gateway/run.py"
         )
 
-    def test_env_var_in_terminal_tool(self):
-        """TERMINAL_DAYTONA_SYNC_CWD must be consumed by terminal_tool._get_env_config."""
-        pytest.importorskip("requests", reason="terminal_tool requires requests")
-        from tests.tools.test_terminal_config_env_sync import _terminal_tool_env_var_names
+    def test_env_var_in_terminal_tool(self, monkeypatch):
+        from tools.terminal_tool import _get_env_config
 
-        env_vars = _terminal_tool_env_var_names()
-        assert "TERMINAL_DAYTONA_SYNC_CWD" in env_vars, (
-            "TERMINAL_DAYTONA_SYNC_CWD not read by terminal_tool._get_env_config()"
-        )
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
+        assert _get_env_config()["daytona_sync_cwd"] is True
 
-    def test_sync_source_bridged_and_consumed(self):
-        """Explicit Daytona sync source must be bridged and consumed."""
-        pytest.importorskip("requests", reason="terminal_tool requires requests")
+    def test_sync_source_bridged_and_consumed(self, monkeypatch, tmp_path):
         from tests.tools.test_terminal_config_env_sync import (
-            _cli_env_map_keys,
-            _gateway_env_map_keys,
-            _save_config_env_sync_keys,
-            _terminal_tool_env_var_names,
-            skip_if_no_prompt_toolkit,
+            _cli_env_map, _gateway_env_map, _save_config_env_sync_keys,
         )
+        from tools.terminal_tool import _get_env_config
 
-        skip_if_no_prompt_toolkit()
         assert "daytona_sync_cwd_source" in _save_config_env_sync_keys()
-        assert "daytona_sync_cwd_source" in _cli_env_map_keys()
-        assert "daytona_sync_cwd_source" in _gateway_env_map_keys()
-        assert "TERMINAL_DAYTONA_SYNC_CWD_SOURCE" in _terminal_tool_env_var_names()
+        assert "daytona_sync_cwd_source" in _cli_env_map()
+        assert "daytona_sync_cwd_source" in _gateway_env_map()
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", str(tmp_path))
+        assert _get_env_config()["daytona_sync_cwd_source"] == str(tmp_path)
 
     def test_terminal_tool_passes_daytona_expansion_config_to_create_environment(self, monkeypatch):
         """Real terminal_tool creation path must forward Daytona keys into container_config."""
@@ -179,8 +171,8 @@ class TestDaytonaSyncCwdBridgeConsistency:
         monkeypatch.setenv("TERMINAL_DAYTONA_GPU", "1")
         monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
 
-        monkeypatch.setattr(terminal_mod, "_create_environment", fake_create_environment)
-        monkeypatch.setattr(terminal_mod, "_check_all_guards", lambda command, env_type: {"approved": True})
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
+        monkeypatch.setattr(terminal_mod, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
 
         try:
             result = json.loads(terminal_mod.terminal_tool("true"))
@@ -245,7 +237,7 @@ class TestDaytonaSyncCwdBridgeConsistency:
         monkeypatch.setenv("TERMINAL_DAYTONA_GPU", "2")
         monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
 
-        monkeypatch.setattr(terminal_mod, "_create_environment", fake_create_environment)
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
 
         try:
             file_tools._get_file_ops("daytona-file-tools-parity")
@@ -308,7 +300,7 @@ class TestDaytonaSyncCwdBridgeConsistency:
         monkeypatch.setenv("TERMINAL_DAYTONA_GPU", "3")
         monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD", "true")
 
-        monkeypatch.setattr(terminal_mod, "_create_environment", fake_create_environment)
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
 
         try:
             code_execution_tool._get_or_create_env("daytona-exec-parity")
@@ -338,6 +330,84 @@ class TestDaytonaSyncCwdBridgeConsistency:
 # ---------------------------------------------------------------------------
 # 3. Exclusion rules: excluded paths must NOT be synced
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("creator", ["terminal", "file_tools", "execute_code"])
+def test_config_yaml_reaches_daytona_sdk_across_profiles(creator, monkeypatch, tmp_path):
+    """Real gateway scope and tool factories; mock only Daytona network calls."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import daytona
+    from gateway.run import _profile_runtime_scope
+    from tools import code_execution_tool, file_tools, terminal_tool
+
+    sandbox = MagicMock()
+    sandbox.process.exec.return_value = SimpleNamespace(result="ok", exit_code=0)
+    client = MagicMock()
+    client.create.return_value = sandbox
+    monkeypatch.setattr(daytona, "Daytona", lambda: client)
+    monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", lambda extra: None)
+    monkeypatch.setattr("tools.environments.daytona.iter_sync_files", lambda *args: iter(()))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *args, **kw: {"approved": True})
+    # Ambient launch-profile values must not leak into profile B's omitted settings.
+    monkeypatch.setenv("TERMINAL_DAYTONA_ENV_VARS", '{"OWNER":"ambient"}')
+    monkeypatch.setenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "true")
+    homes = []
+    for name in ("a", "b"):
+        home = tmp_path / name
+        home.mkdir()
+        terminal = {
+            "backend": "daytona", "container_persistent": False,
+            "daytona_create_mode": "snapshot", "daytona_snapshot": f"snapshot-{name}",
+            "daytona_name_scope": "profile", "daytona_labels": {"owner": name},
+        }
+        if name == "a":
+            terminal.update({
+                "daytona_env_vars": {"OWNER": name}, "daytona_auto_stop_interval": 30,
+                "daytona_network_block_all": True, "daytona_network_allow_list": "10.0.0.0/8",
+                "daytona_volume_mounts": [{"volume_id": "vol-a", "mount_path": "/data"}],
+            })
+        (home / "config.yaml").write_text(json.dumps({"terminal": terminal}))
+        homes.append(home)
+
+    names = []
+    try:
+        for home in (homes[0], homes[1], homes[0]):
+            with terminal_tool._env_lock:
+                terminal_tool._active_environments.clear()
+                terminal_tool._last_activity.clear()
+            file_tools.clear_file_ops_cache()
+            with _profile_runtime_scope(home, prepared_secret_scope={}):
+                if creator == "terminal":
+                    result = json.loads(terminal_tool.terminal_tool("true"))
+                    assert result["exit_code"] == 0, result
+                elif creator == "file_tools":
+                    file_tools._get_file_ops()
+                else:
+                    code_execution_tool._get_or_create_env("default")
+            params = client.create.call_args.args[0]
+            assert isinstance(params, daytona.CreateSandboxFromSnapshotParams)
+            assert params.snapshot == f"snapshot-{home.name}"
+            assert params.labels["owner"] == home.name
+            assert params.env_vars == ({"OWNER": "a"} if home.name == "a" else None)
+            assert params.auto_stop_interval == (30 if home.name == "a" else 0)
+            assert bool(params.network_block_all) == (home.name == "a")
+            if home.name == "a":
+                assert params.network_allow_list == "10.0.0.0/8"
+                assert params.volumes[0].volume_id == "vol-a"
+            else:
+                assert not params.volumes
+            names.append(params.name)
+        assert client.create.call_count == 3
+        assert names[0] == names[2] and names[0] != names[1]
+    finally:
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.clear()
+            terminal_tool._last_activity.clear()
+        file_tools.clear_file_ops_cache()
+
 
 class TestDaytonaSyncCwdExcludes:
     """Validate _CWD_EXCLUDE_DIRS, _CWD_EXCLUDE_FILES, and _CWD_MAX_BYTES."""

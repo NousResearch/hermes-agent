@@ -1,30 +1,15 @@
 import type { ThreadMessage } from '@assistant-ui/react'
+import type { ModelOptionsResult } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
-import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
+import type { ClientSessionState } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { foldPersonalityName } from '@/lib/personalities'
 import type { ComposerAttachment } from '@/store/composer'
-import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/hermes'
 
-export const INTERRUPTED_MARKER = '\n\n_[interrupted]_'
-export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
-export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
-]
+export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 const THINKING_STATUS_PREFIX_RE =
   /^\s*(?:(?:[^\s.]{1,16})\s+)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -41,18 +26,48 @@ export function createClientSessionState(
     messages,
     branch: '',
     cwd: '',
+    model: '',
+    provider: '',
+    reasoningEffort: '',
+    reasoningEffortWire: '',
+    serviceTier: '',
+    fast: false,
+    yolo: false,
+    personality: '',
     busy: false,
     awaitingResponse: false,
     streamId: null,
     sawAssistantPayload: false,
+    adoptedRunningTurn: false,
     pendingBranchGroup: null,
-    interrupted: false
+    interrupted: false,
+    interimBoundaryPending: false,
+    needsInput: false,
+    runtimeStartedAt: Date.now(),
+    turnStartedAt: null,
+    turnLive: false,
+    usage: null
   }
+}
+
+/**
+ * Mark a freshly resumed slice's effort as not-yet-known. The deferred-build
+ * resume reply has no `reasoning_effort`, and falling through to the profile
+ * default would paint a level the built agent's `session.info` then replaces
+ * (#79807). A slice whose effort was already reported (a fast build can beat
+ * the resume reply) keeps it.
+ */
+export function markReasoningEffortPending(state: ClientSessionState): ClientSessionState {
+  return state.reasoningEffortPending === false ? state : { ...state, reasoningEffortPending: true }
 }
 
 export function sessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
+
+/** What a session is called before it has been sent — and before its composer
+ *  has been typed into, which is the only thing that can name it earlier. */
+export const NEW_SESSION_TITLE = 'New session'
 
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {
@@ -138,8 +153,37 @@ export function contextPath(path: string, cwd: string): string {
   return path.startsWith(normalizedCwd) ? path.slice(normalizedCwd.length) : path
 }
 
+// IDs are content-derived (`kind:value`), not uuids, so upsertAttachment's
+// exact-match dedupe only catches a re-attach when the raw value matches
+// byte-for-byte. Normalize the value first so a trailing slash, a `\` path
+// separator, etc. don't slip past dedupe as a "different" attachment.
+function normalizeAttachmentValue(kind: ComposerAttachment['kind'], value: string): string {
+  const trimmed = value.trim()
+
+  if (kind === 'url') {
+    try {
+      // The WHATWG URL parser only collapses an EMPTY path to '/' (bare
+      // origin) — it does not treat '/a' and '/a/' as equivalent, so strip a
+      // trailing slash ourselves once the URL is otherwise canonicalized
+      // (scheme/host case, default ports, etc.).
+      return new URL(trimmed).toString().replace(/\/+$/, '')
+    } catch {
+      return trimmed
+    }
+  }
+
+  if (kind === 'file' || kind === 'folder' || kind === 'image') {
+    const posix = trimmed.replace(/\\/g, '/')
+
+    // Don't collapse a bare root ('/' or 'C:/') down to an empty string.
+    return posix.length > 1 ? posix.replace(/\/+$/, '') : posix
+  }
+
+  return trimmed
+}
+
 export function attachmentId(kind: ComposerAttachment['kind'], value: string): string {
-  return `${kind}:${value}`
+  return `${kind}:${normalizeAttachmentValue(kind, value)}`
 }
 
 export function pathLabel(path: string): string {
@@ -147,6 +191,13 @@ export function pathLabel(path: string): string {
 }
 
 export function attachmentDisplayText(attachment: ComposerAttachment): string | null {
+  // Session switches / draft restores can leave undefined holes in the
+  // composer attachments array (see AttachmentList's filter(Boolean) + #49624).
+  // Every consumer funnels through here, so guard the chokepoint too.
+  if (!attachment) {
+    return null
+  }
+
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
   }
@@ -164,58 +215,109 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
   return null
 }
 
-export function personalityNamesFromConfig(config: unknown): string[] {
-  const root = config && typeof config === 'object' ? (config as Record<string, unknown>) : {}
-  const agent = root.agent && typeof root.agent === 'object' ? (root.agent as Record<string, unknown>) : {}
-  const personalities = agent.personalities
-
-  return personalities && typeof personalities === 'object' && !Array.isArray(personalities)
-    ? Object.keys(personalities as Record<string, unknown>)
-    : []
-}
-
-export function normalizePersonalityValue(value: string): string {
-  const trimmed = value.trim().toLowerCase()
-
-  return !trimmed || trimmed === 'default' || trimmed === 'none' ? '' : trimmed
-}
-
-export function parseSlashCommand(command: string) {
-  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/)
-
-  return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
-}
-
-export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | null {
-  if (!raw || typeof raw !== 'object') {
+/**
+ * Display ref for the optimistic (in-flight) user bubble.
+ *
+ * Images prefer their bounded base64 thumbnail over a file path. A raw `data:`
+ * URL renders inline with zero network, while an `@image:<localpath>` ref would
+ * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
+ * are loaded separately for the model and on-demand lightbox, not retained in
+ * the optimistic message. `blob:` previews from OS drops bypass the data-URL
+ * extract path and render as a markdown image instead (#63682).
+ *
+ * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
+ * through to `attachmentDisplayText`.
+ */
+export function optimisticAttachmentRef(attachment: ComposerAttachment): string | null {
+  if (!attachment) {
     return null
   }
 
-  const row = raw as Record<string, unknown>
-  const str = (value: unknown) => (typeof value === 'string' ? value : undefined)
+  if (attachment.kind === 'image') {
+    // Object-URL previews from OS drops take precedence over the path ref:
+    // markdown image keeps them out of the data-URL extract path while still
+    // rendering inline in the optimistic bubble (#63682).
+    if (attachment.previewUrl?.startsWith('blob:')) {
+      // Percent-encode the alt text: a filename with `]` or parens in it would
+      // otherwise break the Markdown-image form the directive parser matches
+      // below, and the raw expression would leak into visible text (#123368).
+      const alt = encodeURIComponent(attachment.label || 'image')
 
-  switch (row.type) {
-    case 'exec':
+      return `![${alt}](${attachment.previewUrl})`
+    }
 
-    case 'plugin':
-      return { type: row.type, output: str(row.output) }
+    // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
+    // renders through the same DirectiveImage path as a reloaded turn. That
+    // component shows a bounded thumbnail inline (no full-resolution paint, so
+    // the multi-image send freeze this design guards against does not return)
+    // and hands the full-resolution file to the lightbox/download — fixing the
+    // live-vs-reload fidelity gap where a sent screenshot stayed 512px until a
+    // session reload rehydrated it (#93204). Remote gateways resolve the same
+    // path over the authenticated media API, so no /api/media 403.
+    const pathRef = attachment.path || attachment.detail
 
-    case 'alias':
-      return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null
+    if (pathRef) {
+      return `@image:${formatRefValue(pathRef)}`
+    }
 
-    case 'skill':
-      return typeof row.name === 'string' ? { type: 'skill', name: row.name, message: str(row.message) } : null
+    if (attachment.thumbnailUrl?.startsWith('data:')) {
+      // No path to rehydrate from (e.g. pasted bytes): render the bounded
+      // thumbnail inline. Full bytes remain available for the model upload.
+      return attachment.thumbnailUrl
+    }
 
-    case 'send':
-      return typeof row.message === 'string' ? { type: 'send', message: row.message } : null
+    if (attachment.previewUrl?.startsWith('data:')) {
+      // Backward compatibility for drafts created by older shells without a
+      // separate thumbnail.
+      return attachment.previewUrl
+    }
 
-    default:
-      return null
+    // A newly attached image with no path and no thumbnail yet: the queued
+    // resize is still pending. Render nothing rather than paint the full source
+    // and recreate the freeze if Send wins the race.
+    return null
   }
+
+  return attachmentDisplayText(attachment)
+}
+
+export function personalityNamesFromConfig(config: unknown): string[] {
+  const root = config && typeof config === 'object' ? (config as Record<string, unknown>) : {}
+  const agent = root.agent && typeof root.agent === 'object' ? (root.agent as Record<string, unknown>) : {}
+
+  // The Python runtime (`hermes_cli.personality.available_personalities`) overlays
+  // built-ins with the root-level `personalities` block, then `agent.personalities`
+  // (agent wins on a name clash). Read both here so a root-registered persona the
+  // CLI/gateway honour also reaches the GUI (#123297).
+  // Fold each key the way the runtime does (`available_personalities`:
+  // `str(name).strip().lower()`, dropping neutral spellings) so a case-variant,
+  // whitespace-padded, or neutral-named block doesn't surface a row the runtime
+  // can never resolve, and a root/agent case clash dedupes to one canonical name.
+  const names = new Set<string>()
+
+  for (const block of [root.personalities, agent.personalities]) {
+    if (block && typeof block === 'object' && !Array.isArray(block)) {
+      for (const name of Object.keys(block as Record<string, unknown>)) {
+        const key = foldPersonalityName(name)
+
+        if (key) {
+          names.add(key)
+        }
+      }
+    }
+  }
+
+  return [...names]
+}
+
+export function normalizePersonalityValue(value: string): string {
+  // Share the runtime's canonical form with the dropdown reader (foldPersonalityName),
+  // which also folds the `neutral` spelling this previously missed.
+  return foldPersonalityName(value)
 }
 
 export function quickModelOptions(
-  data: ModelOptionsResponse | undefined,
+  data: ModelOptionsResult | undefined,
   currentProvider: string,
   currentModel: string
 ): QuickModelOption[] {
@@ -282,13 +384,36 @@ export function quickModelOptions(
   return options.slice(0, 8)
 }
 
+// A message's display time. `timestamp` (Unix seconds) is authoritative when
+// present. Without it we fall back to *now* rather than digging digits out of
+// the id: message ids come in incompatible shapes — `assistant-<ms>`,
+// `<seconds>-<i>-<role>`, session-style `20260728_184420_…` — and feeding any
+// of them to `new Date()` (which reads ms) lands on the 1970 epoch, rendering
+// as an absurd "20663d ago". A timestamp-less message is a freshly created
+// optimistic/streaming one, so *now* is the right age anyway.
+export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs = Date.now()): Date {
+  return typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+    ? new Date(message.timestamp * 1000)
+    : new Date(nowMs)
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
 
-  const createdAt = message.timestamp
-    ? new Date(message.timestamp * 1000)
-    : new Date(Number(message.id.match(/\d+/)?.[0]) || Date.now())
+  const createdAt = messageCreatedAt(message)
+
+  // Reactions and the durable row id ride metadata.custom for every role — the
+  // established channel for per-message extras (attachmentRefs below).
+  const reactionMeta = {
+    ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
+    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+  }
+
+  const timelineMeta =
+    typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+      ? { timelineTimestamp: message.timestamp }
+      : {}
 
   if (role === 'user') {
     return {
@@ -297,7 +422,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [] } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta } }
     } as ThreadMessage
   }
 
@@ -309,7 +434,13 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       role,
       content: [textPart(text)],
       createdAt,
-      metadata: { custom: {} }
+      metadata: {
+        custom: {
+          ...timelineMeta,
+          ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+        }
+      }
     } as ThreadMessage
   }
 
@@ -328,7 +459,122 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      custom: {}
+      // Carries ChatMessage.interim to AssistantMessage's footer gate.
+      custom: {
+        ...(message.interim ? { interim: true } : {}),
+        ...timelineMeta,
+        ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
+        ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
+        // Structured failure layer for the error card (see lib/error-surface).
+        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
+        ...reactionMeta
+      }
     }
   } as ThreadMessage
+}
+
+export type ToolMergeCache = WeakMap<
+  ChatMessage,
+  { merged: ChatMessage; parts: ChatMessagePart[]; prev: ChatMessage; prevParts: ChatMessagePart[] }
+>
+
+export function createToolMergeCache(): ToolMergeCache {
+  return new WeakMap()
+}
+
+// A settled assistant message with only tool calls — no prose, no reasoning.
+// The model routinely emits a follow-up batch of calls as its own text-less
+// message; on screen it looks like one continuous run, but assistant-ui can't
+// group tool calls across a message boundary.
+function isToolOnlyAssistant(message: ChatMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    !message.pending &&
+    !message.error &&
+    !message.hidden &&
+    message.parts.length > 0 &&
+    message.parts.every(part => part.type === 'tool-call')
+  )
+}
+
+/**
+ * Concatenate a tool-only follow-up message's parts onto its predecessor's,
+ * dropping any incoming `tool-call` part whose `toolCallId` the predecessor
+ * already carries. A repeated id here is the SAME call re-attached (structural
+ * carry-over re-adding a cached row's tool calls, or a live-turn projection
+ * that also exists as a committed row — #87857): folding both copies into one
+ * message manufactures the duplicate key that crashes assistant-ui's
+ * `useResources`, and renaming it would render the same call twice. Genuinely
+ * new calls in the same follow-up row are preserved.
+ */
+export function concatToolPartsUnique(
+  prevParts: readonly ChatMessagePart[],
+  nextParts: readonly ChatMessagePart[]
+): ChatMessagePart[] {
+  const seen = new Set<string>()
+
+  for (const part of prevParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      seen.add(part.toolCallId)
+    }
+  }
+
+  const out = [...prevParts]
+
+  for (const part of nextParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      if (seen.has(part.toolCallId)) {
+        continue
+      }
+
+      seen.add(part.toolCallId)
+    }
+
+    out.push(part)
+  }
+
+  return out
+}
+
+/**
+ * Fold each settled tool-only assistant message into the preceding assistant
+ * message so its calls join that message's tool group (and can collapse into
+ * the auto-scrolling window). Render-only — never mutates the `$messages` store
+ * — and settle-only: pending messages are left alone, so a live turn is never
+ * merged/un-merged mid-stream. `cache` keys merged results by source identity,
+ * so a stable turn yields stable merged objects (no re-render churn).
+ */
+export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolMergeCache): ChatMessage[] {
+  const out: ChatMessage[] = []
+
+  for (const message of messages) {
+    const prev = out.at(-1)
+
+    if (prev && prev.role === 'assistant' && !prev.pending && !prev.hidden && isToolOnlyAssistant(message)) {
+      const cached = cache.get(message)
+
+      const merged =
+        cached && cached.prev === prev && cached.prevParts === prev.parts && cached.parts === message.parts
+          ? cached.merged
+          : {
+              ...prev,
+              completedAt: [prev.completedAt, message.completedAt, ...message.parts.map(part => part.completedAt)]
+                .filter((value): value is number => value !== undefined)
+                .reduce<number | undefined>(
+                  (latest, value) => (latest === undefined ? value : Math.max(latest, value)),
+                  undefined
+                ),
+              parts: concatToolPartsUnique(prev.parts, message.parts)
+            }
+
+      cache.set(message, { merged, parts: message.parts, prev, prevParts: prev.parts })
+      out[out.length - 1] = merged
+
+      continue
+    }
+
+    out.push(message)
+  }
+
+  return out
 }

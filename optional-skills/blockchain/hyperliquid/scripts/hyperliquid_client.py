@@ -115,7 +115,7 @@ def _resolve_user(user: Optional[str]) -> str:
 
     sys.exit(
         "Missing Hyperliquid address. Pass <address> explicitly or set "
-        f"{DEFAULT_USER_ENV} in your environment or ~/.hermes/.env."
+        f"{DEFAULT_USER_ENV} in your environment or {_hermes_home() / '.env'}."
     )
 
 
@@ -171,7 +171,7 @@ def _format_timestamp_ms(value: Any) -> str:
         ts_ms = int(value)
     except (TypeError, ValueError):
         return "-"
-    return dt.datetime.utcfromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return dt.datetime.fromtimestamp(ts_ms / 1000, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _compact_number(value: Any, decimals: int = 2) -> str:

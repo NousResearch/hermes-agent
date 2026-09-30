@@ -44,7 +44,9 @@ export function recordParentLifecycle(line: string): void {
     const oneLine = line.replace(/[\r\n]+/g, ' ↵ ')
 
     const capped =
-      oneLine.length > MAX_BREADCRUMB ? `${oneLine.slice(0, MAX_BREADCRUMB)}… [truncated ${oneLine.length} chars]` : oneLine
+      oneLine.length > MAX_BREADCRUMB
+        ? `${oneLine.slice(0, MAX_BREADCRUMB)}… [truncated ${oneLine.length} chars]`
+        : oneLine
 
     mkdirSync(logDir, { recursive: true })
     appendFileSync(CRASH_LOG, `[tui-parent] ${new Date().toISOString()} ${capped}\n`)

@@ -6,10 +6,10 @@ description: "How to build an image-generation backend plugin for Hermes Agent"
 
 # Building an Image Generation Provider Plugin
 
-Image-gen provider plugins register a backend that services every `image_generate` tool call — DALL·E, gpt-image, Grok, Flux, Imagen, Stable Diffusion, fal, Replicate, a local ComfyUI rig, anything. Built-in providers (OpenAI, OpenAI-Codex, xAI) all ship as plugins. You can add a new one, or override a bundled one, by dropping a directory into `plugins/image_gen/<name>/`.
+Image-gen provider plugins register a backend that services every `image_generate` tool call — DALL·E, gpt-image, Grok, Flux, Imagen, Stable Diffusion, fal, Replicate, a local ComfyUI rig, anything. Built-in providers (OpenAI, OpenAI-Codex, xAI, FAL, Krea, DeepInfra, OpenRouter, Meta Model API) all ship as plugins. You can add a new one, or override a bundled one, by dropping a directory into `plugins/image_gen/<name>/`.
 
 :::tip
-Image-gen is one of several **backend plugins** Hermes supports. The others (with more specialized ABCs) are [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/guides/build-a-hermes-plugin).
+Image-gen is one of several **backend plugins** Hermes supports. The others (with more specialized ABCs) are [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
 :::
 
 ## How discovery works
@@ -47,6 +47,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_reference_images,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -112,10 +113,20 @@ class MyBackendImageGenProvider(ImageGenProvider):
             ],
         }
 
+    def capabilities(self) -> Dict[str, Any]:
+        # Declare whether this backend supports image-to-image / editing.
+        # The tool layer surfaces this in the dynamic schema so the model
+        # knows when `image_url` is honored. Default (if you omit this) is
+        # text-only: {"modalities": ["text"], "max_reference_images": 0}.
+        return {"modalities": ["text", "image"], "max_reference_images": 4}
+
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
@@ -130,6 +141,15 @@ class MyBackendImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
+        # Routing: if image_url (or reference_image_urls) is set, the call is
+        # an image-to-image / edit request; otherwise text-to-image. Report
+        # which path you took via the `modality` field of success_response.
+        sources = []
+        if image_url:
+            sources.append(image_url)
+        sources.extend(normalize_reference_images(reference_image_urls) or [])
+        modality = "image" if sources else "text"
+
         # Model selection precedence: env var → config → default. The helper
         # _resolve_model() in the built-in openai plugin is a good reference.
         model_id = kwargs.get("model") or self.default_model() or "my-model-fast"
@@ -137,11 +157,18 @@ class MyBackendImageGenProvider(ImageGenProvider):
         try:
             import my_backend_sdk
             client = my_backend_sdk.Client(api_key=os.environ["MY_BACKEND_API_KEY"])
-            result = client.generate(
-                prompt=prompt,
-                model=model_id,
-                aspect_ratio=aspect_ratio,
-            )
+            if modality == "image":
+                result = client.edit(
+                    prompt=prompt,
+                    model=model_id,
+                    image_urls=sources,
+                )
+            else:
+                result = client.generate(
+                    prompt=prompt,
+                    model=model_id,
+                    aspect_ratio=aspect_ratio,
+                )
 
             # Two shapes supported:
             #   - URL string: return it as `image`
@@ -162,6 +189,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 aspect_ratio=aspect_ratio,
                 provider=self.name,
+                modality=modality,
             )
         except Exception as exc:
             return error_response(
@@ -248,7 +276,7 @@ Drop a user plugin at `~/.hermes/plugins/image_gen/<name>/` with the same `name`
 ## Testing
 
 ```bash
-export HERMES_HOME=/tmp/hermes-imggen-test
+export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-imggen-test
 mkdir -p $HERMES_HOME/plugins/image_gen/my-backend
 # …copy __init__.py + plugin.yaml into that dir…
 
@@ -269,7 +297,7 @@ Or interactively: `hermes tools` → "Image Generation" → select `my-backend` 
 
 - **`plugins/image_gen/openai/__init__.py`** — gpt-image-2 at low/medium/high tiers as three virtual model IDs sharing one API model with different `quality` params. Good example of tiered models under a single backend + config.yaml precedence chain.
 - **`plugins/image_gen/xai/__init__.py`** — Grok Imagine via xAI. Different shape (URL output, simpler catalog).
-- **`plugins/image_gen/openai-codex/__init__.py`** — Codex-style Responses API variant reusing the OpenAI SDK with a different routing base URL.
+- **`plugins/image_gen/openai-codex/__init__.py`** — same catalog as `openai`, but authenticated with the ChatGPT/Codex OAuth token and posted with plain `httpx` to the Codex backend's native `images/generations` / `images/edits` endpoints. Good example of a provider that fetches remote source images client-side and inlines them as data URLs, and that reports backend-returned metadata separately from the request.
 
 ## Distribute via pip
 
@@ -279,10 +307,10 @@ Or interactively: `hermes tools` → "Image Generation" → select `my-backend` 
 my-backend-imggen = "my_backend_imggen_package"
 ```
 
-`my_backend_imggen_package` must expose a top-level `register` function. See [Distribute via pip](/guides/build-a-hermes-plugin#distribute-via-pip) in the general plugin guide for the full setup.
+`my_backend_imggen_package` must expose a top-level `register` function. See [Distribute via pip](./plugins/index.md#distribute-via-pip) in the general plugin guide for the full setup.
 
 ## Related pages
 
-- [Image Generation](/user-guide/features/image-generation) — user-facing feature documentation
-- [Plugins overview](/user-guide/features/plugins) — all plugin types at a glance
-- [Build a Hermes Plugin](/guides/build-a-hermes-plugin) — general tools/hooks/slash commands guide
+- [Image Generation](../user-guide/features/image-generation.md) — user-facing feature documentation
+- [Plugins overview](../user-guide/features/plugins.md) — all plugin types at a glance
+- [Build a Hermes Plugin](./plugins/index.md) — general tools/hooks/slash commands guide

@@ -189,14 +189,18 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
-    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
-    if session.get("active_session_lease") is not None:
+    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream. A closing
+    session claims nothing and is not refused; later checks stop its turn."""
+    if session.get("active_session_lease") is not None or session.get("_closing"):
         return None
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
         _attach_lease(session, lease)
+        if session.get("_closing"):
+            # Close may have finalized while this claim ran; until the orphan sweep, nothing else releases the lease.
+            _release_active_session_slot(session)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
@@ -236,7 +240,7 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     """
     from hermes_cli.active_sessions import transfer_active_session
     with _session_resume_lock, _sessions_lock:
-        if (found := _detached_lease_holder(session, key)) is None:
+        if session.get("_closing") or (found := _detached_lease_holder(session, key)) is None:
             return False
         other_sid, other = found
         lease = other["active_session_lease"]

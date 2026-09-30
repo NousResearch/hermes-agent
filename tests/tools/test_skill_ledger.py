@@ -780,3 +780,180 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
         assert survivors == seq[len(seq) - len(survivors):], (
             f"writer {k}: rows missing from the middle — a concurrent sweep dropped an append"
         )
+
+
+# ---------------------------------------------------------------------------
+# File-tool writes (write_file / patch) into a live skills tree — the
+# skill_manage bypass. Entries must carry REAL before/after manifests so the
+# mutation is recoverable, not just attributed.
+# ---------------------------------------------------------------------------
+
+
+def _seed_skill_file(skills_dir, name="obs-gap", body="Original body."):
+    skill_md = skills_dir / name / "SKILL.md"
+    skill_md.parent.mkdir(parents=True, exist_ok=True)
+    skill_md.write_text(
+        VALID_SKILL_CONTENT.replace("name: my-skill", f"name: {name}").replace(
+            "Original body.", body),
+        encoding="utf-8")
+    return skill_md
+
+
+def test_classify_file_tool_target_skills_tree(ledger_env):
+    from tools import skill_ledger
+
+    skill_md = _seed_skill_file(ledger_env["skills"])
+    info = skill_ledger.classify_file_tool_target(str(skill_md))
+    assert info is not None
+    assert info["skill"] == "obs-gap"
+    assert info["path"] == str(skill_md.resolve())
+    # A supporting file resolves to the containing skill, not the root.
+    ref = skill_md.parent / "references" / "api.md"
+    ref.parent.mkdir()
+    ref.write_text("x", encoding="utf-8")
+    ref_info = skill_ledger.classify_file_tool_target(str(ref))
+    assert ref_info is not None and ref_info["skill"] == "obs-gap"
+
+
+def test_classify_file_tool_target_skips_sidecars_transients_and_outsiders(ledger_env, tmp_path):
+    from tools import skill_ledger
+
+    for rel in (".usage.json", ".curator_ledger.jsonl", ".hub/lock.json",
+                ".archive/old-skill/SKILL.md", "some-skill/.venv/pyvenv.cfg"):
+        p = ledger_env["skills"] / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}", encoding="utf-8")
+        assert skill_ledger.classify_file_tool_target(str(p)) is None, rel
+    outsider = tmp_path / "notes.txt"
+    outsider.write_text("hi", encoding="utf-8")
+    assert skill_ledger.classify_file_tool_target(str(outsider)) is None
+    assert skill_ledger.classify_file_tool_target("relative/path.md") is None
+
+
+def test_write_file_create_in_skills_tree_is_ledgered(ledger_env, monkeypatch):
+    """A brand-new skill file written by the generic write_file tool appends a
+    ledger entry (action='write_file') whose rollback removes the created file."""
+    from tools import skill_ledger
+    from tools.file_tools import write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    target = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    content = VALID_SKILL_CONTENT.replace("name: my-skill", "name: obs-gap")
+    result = json.loads(write_file_tool(str(target), content))
+    assert not result.get("error"), result
+    assert target.exists()
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "obs-gap"]
+    assert len(rows) == 1
+    entry = rows[0]
+    assert entry["action"] == "write_file"
+    assert entry["evidence"].get("source") == "write_file"
+    assert entry["before"] == []  # a creation, not a hollow capture
+    assert any(i["path"].endswith("SKILL.md") for i in entry["after"])
+
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert not target.exists()
+
+
+def test_patch_in_skills_tree_captures_before_and_rolls_back(ledger_env, monkeypatch):
+    """The discriminator for the bypass fix: a patch-tool modification must carry
+    the PRE-WRITE content in its before manifest, and single-entry rollback must
+    restore that content byte-for-byte (an entry with before=[] would instead
+    DELETE the patched file)."""
+    import hashlib
+
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool, write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    target = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    content = VALID_SKILL_CONTENT.replace("name: my-skill", "name: obs-gap")
+    assert not json.loads(write_file_tool(str(target), content)).get("error")
+    original = target.read_text(encoding="utf-8")
+
+    patched = json.loads(patch_tool(
+        mode="replace", path=str(target),
+        old_string="Original body.", new_string="Patched body."))
+    assert not patched.get("error"), patched
+    assert "Patched body." in target.read_text(encoding="utf-8")
+
+    patch_rows = [r for r in skill_ledger.list_entries(skill="obs-gap")
+                  if r["action"] == "patch"]
+    assert len(patch_rows) == 1
+    entry = patch_rows[0]
+    assert entry["evidence"].get("source") == "patch"
+    before_paths = {i["path"]: i["sha256"] for i in entry["before"]}
+    assert str(target.resolve()) in before_paths, (
+        "a file-tool modification must capture its before-state — before=[] makes "
+        "rollback delete the file and leaves the pre-write version unrecoverable")
+    assert before_paths[str(target.resolve())] == hashlib.sha256(
+        original.encode("utf-8")).hexdigest()
+
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_tool_write_outside_skills_tree_is_not_ledgered(ledger_env, tmp_path, monkeypatch):
+    from tools import skill_ledger
+    from tools.file_tools import write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    outsider = tmp_path / "notes.txt"
+    result = json.loads(write_file_tool(str(outsider), "hello"))
+    assert not result.get("error"), result
+    assert outsider.exists()
+    assert skill_ledger.list_entries() == []
+
+
+def test_file_tool_write_in_sibling_profile_is_attributed(ledger_env, monkeypatch):
+    """A direct write into ANOTHER profile's skills tree (the documented fallback the
+    cross-profile not-found error teaches) still lands in the acting profile's ledger,
+    with the owning tree named in evidence, and rolls back."""
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    sibling_skills = ledger_env["home"] / "profiles" / "sibling" / "skills"
+    target = _seed_skill_file(sibling_skills, name="shared-skill")
+    original = target.read_text(encoding="utf-8")
+
+    patched = json.loads(patch_tool(
+        mode="replace", path=str(target),
+        old_string="Original body.", new_string="Patched body.", cross_profile=True))
+    assert not patched.get("error"), patched
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "shared-skill"]
+    assert len(rows) == 1
+    assert rows[0]["evidence"].get("skills_root", "").endswith(
+        str(Path("profiles") / "sibling" / "skills"))
+    ok, msg = skill_ledger.rollback_entry(rows[0]["id"])
+    assert ok is True, msg
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_begin_file_tool_write_skips_entry_when_before_capture_fails(ledger_env, monkeypatch):
+    """A modification whose before-state cannot be captured gets NO entry rather than
+    a hollow before=[] one (which rollback would read as 'delete this file')."""
+    from tools import skill_ledger
+
+    skill_md = _seed_skill_file(ledger_env["skills"])
+    monkeypatch.setattr(skill_ledger, "capture_before", lambda *a, **k: None)
+    assert skill_ledger.begin_file_tool_write(str(skill_md)) is None
+
+
+def test_sibling_ledger_counts_names_other_profiles(ledger_env, monkeypatch):
+    from tools import skill_ledger
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    assert skill_ledger.sibling_ledger_counts() == []
+    sibling = ledger_env["home"] / "profiles" / "warden" / "skills"
+    sibling.mkdir(parents=True)
+    (sibling / ".curator_ledger.jsonl").write_text('{"id": "abc"}\n' * 3, encoding="utf-8")
+    counts = skill_ledger.sibling_ledger_counts()
+    assert ("warden", 3) in counts
+    # The active profile's own ledger is never listed as a sibling.
+    skill_ledger.append_entry("edit", "my-skill", before=[], after=[])
+    labels = [label for label, _ in skill_ledger.sibling_ledger_counts()]
+    assert ledger_env["home"].name not in labels or ledger_env["home"].name == "home"

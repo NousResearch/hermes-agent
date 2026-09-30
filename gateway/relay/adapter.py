@@ -152,6 +152,10 @@ class RelayAdapter(BasePlatformAdapter):
         self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: Dict[str, None] = {}
+        # Discord labels the text lane carries (connector-resolved) and a forwarded interaction does
+        # not: (scope, chat) -> (chat_name, chat_topic), (scope, user) -> display name.
+        self._discord_chat_labels: Dict[tuple, tuple] = {}
+        self._discord_user_labels: Dict[tuple, str] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -886,6 +890,7 @@ class RelayAdapter(BasePlatformAdapter):
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
         self._capture_scope(event)
+        self._remember_discord_labels(event.source)
         self._stamp_slack_session_thread(event)
         # A structured prompt answer resolves its waiting primitive and is CONSUMED —
         # never also dispatched as chat.
@@ -895,6 +900,21 @@ class RelayAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     _SEEN_INBOUND_MAX = 512
+    _DISCORD_LABELS_MAX = 2048
+
+    def _remember_discord_labels(self, source) -> None:
+        """Keep the text lane's Discord chat/user labels for the interaction lane: the pinned
+        session-context prompt renders them, so a slash turn without them re-rendered the cached
+        prefix and the next message rendered it back."""
+        if getattr(source, "platform", None) != Platform.DISCORD or not source.chat_id:
+            return
+        scope = str(source.scope_id or "")
+        if source.chat_name or source.chat_topic:
+            self._discord_chat_labels[(scope, str(source.chat_id))] = (source.chat_name, source.chat_topic)
+            self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
+        if source.user_id and source.user_name:
+            self._discord_user_labels[(scope, str(source.user_id))] = source.user_name
+            self._evict_oldest(self._discord_user_labels, self._DISCORD_LABELS_MAX)
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
         """Stable replay identity: (platform, chat, platform message id). The platform
@@ -1174,6 +1194,14 @@ class RelayAdapter(BasePlatformAdapter):
         if not isinstance(user, dict):
             user = {}
         guild_id = payload.get("guild_id")
+        scope, user_id = str(guild_id or ""), str(user.get("id") or "")
+        # The text lane's user_display_name is the native author.display_name (guild nick, else
+        # global name, else username); prefer what that lane last carried for this user.
+        user_name = self._discord_user_labels.get((scope, user_id)) or next(
+            (str(v) for v in ((member.get("nick") if isinstance(member, dict) else None),
+                              user.get("global_name"), user.get("username")) if v), None)
+        chat_name, chat_topic = self._discord_chat_labels.get(
+            (scope, str(payload.get("channel_id") or "")), (None, None))
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
             # capability binding (platform="discord"), /sethome must file under the
@@ -1184,7 +1212,9 @@ class RelayAdapter(BasePlatformAdapter):
             # native Discord adapter key guild channels as "group".
             chat_type="group" if guild_id else "dm",
             user_id=str(user["id"]) if user.get("id") else None,
-            user_name=str(user["username"]) if user.get("username") else None,
+            user_name=user_name,
+            chat_name=chat_name,
+            chat_topic=chat_topic,
             scope_id=str(guild_id) if guild_id else None,
             message_id=str(payload.get("id")) if payload.get("id") else None,
             # Same upstream-trust marker the relay text lane stamps. Set locally, never

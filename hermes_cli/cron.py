@@ -603,8 +603,14 @@ def _print_active_jobs_summary(jobs) -> None:
 
 def _scripts_dir_for_cron() -> Path:
     """Scripts dir for the currently active profile."""
+    from cron.jobs import CRON_DIR
     from hermes_constants import get_hermes_home
-    return get_hermes_home().resolve() / "scripts"
+
+    active_cron_dir = get_hermes_home().resolve() / "cron"
+    # Keep test/in-process overrides of CRON_DIR working, but do not trust the
+    # import-time value when a shared gateway switches the active profile.
+    cron_dir = CRON_DIR if CRON_DIR != active_cron_dir else active_cron_dir
+    return cron_dir.parent / "scripts"
 
 
 def _script_health_issue(script: str) -> Optional[str]:

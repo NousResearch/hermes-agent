@@ -479,7 +479,7 @@ def gateway(
                 "                from plugins.platforms.matrix.read_context import read_matrix_context\n"
                 "                target = json.loads(request.read_text(encoding='utf-8'))\n"
                 "                result = await read_matrix_context(matrix_adapter, 'event', target['room'], target['event'], 1, requester=target['sender'])\n"
-                "                done.write_text(json.dumps(result), encoding='utf-8')\n"
+                "                signal('effective-event-read', json.dumps(result))\n"
                 "            await asyncio.sleep(0.01)\n"
                 "        return 'Live enrichment completed'\n"
                 "def register(ctx):\n"

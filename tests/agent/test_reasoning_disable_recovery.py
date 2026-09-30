@@ -161,3 +161,16 @@ def test_rejected_reasoning_level_retries_without_the_effort():
     _recover(agent, _REVERSED_400)
     assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}
     assert any("rejects disabling reasoning" in n for n in agent.notices)
+
+
+def test_mistral_not_enabled_rejection_retries_without_reasoning():
+    """Mistral's codestral-2508 answers every ``reasoning_effort`` with "reasoning_effort is not
+    enabled for this model" (#119249): the retry must carry no reasoning config, whether the 400ed
+    request sent a level or the disable."""
+    msg = "reasoning_effort is not enabled for this model"
+    for sent in ({"enabled": True, "effort": "xhigh"}, {"enabled": False, "effort": "none"}):
+        agent = _WireAgent(sent)
+        agent.model = "codestral-2508"
+        assert _wire_reasoning_config(agent) == sent  # the request that 400ed
+        _recover(agent, msg)
+        assert _wire_reasoning_config(agent) is None, sent

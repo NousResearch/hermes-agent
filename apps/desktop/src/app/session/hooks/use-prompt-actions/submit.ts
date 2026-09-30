@@ -18,6 +18,8 @@ import {
   $composerAttachments,
   type ComposerAttachment,
   freezeComposerTransportPayload,
+  freshDraftScope,
+  isFreshDraftScope,
   mainComposerScope,
   revokeDiscardedAttachmentPreviews
 } from '@/store/composer'
@@ -406,6 +408,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
+      // The composer prong compares the submit-time composer snapshot against
+      // the resolved target. For a fresh-chat draft the snapshot is the
+      // fresh-draft key, and the create pipeline legitimately re-keys it onto
+      // the created stored id — but only when the captured key is still the
+      // CURRENT fresh draft. Whether it is can only be known after the create
+      // (a user starting a different fresh draft mid-create rotates the key),
+      // so the snapshot lives in a mutable local the drift closure re-reads —
+      // options stays the caller's object.
+      let capturedComposerScope = options?.composerScope
+
       // Reason string (or null) for why the session context genuinely drifted
       // under this in-flight submit. sessionContextDrift ignores the churn a
       // busy gateway produces (selection null-resets on a gateway/profile
@@ -424,7 +436,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               startSelectedStoredId: startingSelectedStoredSessionId,
               nowSelectedStoredId: selectedStoredSessionIdRef.current,
               submitTargetStoredId: startingStoredSessionId,
-              composerScope: options?.composerScope,
+              composerScope: capturedComposerScope,
               // The composer keys drafts/attachments on the durable lineage
               // root (survives auto-compression tip rotation), while
               // startingStoredSessionId is the live tip — resolve the target
@@ -863,6 +875,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // tile route / owner hint / row, probed REST by a runtime id, and fell
         // to the ambient socket — the fresh-chat owner loss behind #94071.
         targetStoredSessionId = selectedStoredSessionIdRef.current
+
+        // A fresh-draft composer snapshot legitimately re-homes onto the
+        // created session — but only when the captured key is still the
+        // current fresh draft. If the user started a DIFFERENT fresh draft
+        // while session.create was in flight, the fresh-draft key rotated and
+        // the snapshot is stale: the composer is no longer showing the text
+        // this submit carries, so the snapshot must keep failing the composer
+        // prong instead of being exempted wholesale.
+        if (
+          capturedComposerScope !== undefined &&
+          capturedComposerScope !== null &&
+          isFreshDraftScope(capturedComposerScope)
+        ) {
+          if (freshDraftScope() === capturedComposerScope) {
+            // The create re-keyed exactly this draft — treat the snapshot as
+            // the created session's lineage scope, which is what the composer
+            // prong compares it against.
+            capturedComposerScope = resolveComposerSessionKey(startingStoredSessionId, $sessions.get())
+          }
+        }
 
         seedOptimistic(sessionId)
       }

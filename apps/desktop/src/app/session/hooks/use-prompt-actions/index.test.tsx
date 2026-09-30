@@ -9,7 +9,13 @@ import { en } from '@/i18n/en'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  $composerDraft,
+  type ComposerAttachment,
+  freshDraftScope,
+  setComposerDraft
+} from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
@@ -4877,6 +4883,107 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
       session_id: 'rt-new-chat'
     })
+  })
+
+  it('re-homes a CURRENT fresh-draft composer snapshot onto the created session (first send, #129011)', async () => {
+    // The composer prong compares the submit-time composer snapshot against the
+    // resolved target. For a first send the snapshot can be the fresh-draft key
+    // while the target is the just-created stored id — the create pipeline's
+    // own re-key, not drift. submit.ts must re-home the captured scope when it
+    // is still the current fresh draft, or the first send aborts again.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-new-chat'
+      selectedStoredSessionIdRef.current = 'stored-new-chat'
+      routeToken = '/stored-new-chat'
+
+      return 'rt-new-chat'
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const ok = await handle!.submitText('first message of a brand-new chat', { composerScope: freshDraftScope() })
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: 'rt-new-chat'
+    })
+  })
+
+  it('aborts a submit whose composer snapshot is a STALE fresh-draft key (a different draft became current mid-create, #129011)', async () => {
+    // A fresh-draft key is a legitimate snapshot only while it is still the
+    // CURRENT fresh draft. If a different draft became current while
+    // session.create was in flight, the key rotated and the snapshot is stale:
+    // the composer is showing text this submit does not carry. The composer
+    // prong must still abort — the re-home must not exempt every
+    // `__new__:<uuid>` scope.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-new-chat'
+      selectedStoredSessionIdRef.current = 'stored-new-chat'
+      routeToken = '/stored-new-chat'
+
+      return 'rt-new-chat'
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const ok = await handle!.submitText('typed in a draft that was abandoned mid-create', {
+      composerScope: '__new__:old-draft'
+    })
+
+    expect(ok).toBe(false)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
   })
 
   it('still submits the first message when a background event retargets only the active runtime during create', async () => {

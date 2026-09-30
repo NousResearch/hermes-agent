@@ -1,5 +1,4 @@
 import { isNewChatRoute, routeSessionId } from '../../routes'
-import { isFreshDraftScope } from '@/store/composer'
 
 /**
  * The chat a route token points at: the stored/routed session id, `'__new__'`
@@ -130,17 +129,15 @@ export function sessionContextDrift({
   // submitTargetStoredId (live tip) — see the field doc on
   // SessionContextDriftArgs for why those two must not be conflated.
   //
-  // A fresh-chat draft scope (`__new__` / `__new__:<uuid>`) transitioning onto
-  // a stored session is the create pipeline re-keying the composer, not drift:
-  // every first send of a new chat snapshots the draft scope while the
-  // resolved target is the just-created stored id. Flagging that mismatch
-  // aborted EVERY first send (no prompt.submit, no DB row).
-  if (
-    composerScope !== undefined &&
-    composerScope !== null &&
-    composerScope !== submitTargetComposerScope &&
-    !isFreshDraftScope(composerScope)
-  ) {
+  // ANY mismatch — including a fresh-draft scope (`__new__` / `__new__:<uuid>`)
+  // against a stored target — is drift HERE. The one legitimate fresh-draft
+  // transition, the create pipeline re-keying the submit's OWN draft onto the
+  // created session, is decided by the submit pipeline (use-prompt-actions/
+  // submit.ts): it knows whether the captured draft key is still the current
+  // fresh draft and re-homes the snapshot before this comparison runs. This
+  // pure function stays fail-closed — it cannot tell a stale draft key from
+  // the create's own re-key.
+  if (composerScope !== undefined && composerScope !== null && composerScope !== submitTargetComposerScope) {
     return `composer:${composerScope}->${submitTargetComposerScope}`
   }
 

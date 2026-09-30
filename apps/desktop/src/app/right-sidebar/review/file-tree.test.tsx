@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
 import { $sidebarWorkspaceNodeOpen } from '@/store/layout'
-import { $reviewFiles, $reviewOpen } from '@/store/review'
+import { $reviewFiles, $reviewGitRoot, $reviewOpen } from '@/store/review'
 
 import { ReviewFileTree } from './file-tree'
 
@@ -41,6 +41,7 @@ describe('ReviewFileTree', () => {
   beforeEach(() => {
     $reviewOpen.set(true)
     $reviewFiles.set([])
+    $reviewGitRoot.set(null)
     $sidebarWorkspaceNodeOpen.set({})
 
     // jsdom has no layout: report the real row height for virtualized rows and
@@ -126,5 +127,15 @@ describe('ReviewFileTree', () => {
     expect(screen.getByText('b.ts')).toBeTruthy()
     expect(screen.getByText('src')).toBeTruthy()
     expect(screen.getByText('c.ts')).toBeTruthy()
+  })
+
+  it('resolves drag and context menu absolute paths using $reviewGitRoot when available', () => {
+    $reviewGitRoot.set('/top-level-repo')
+    $reviewFiles.set([file('src/c.ts')])
+
+    const { container } = renderTree()
+    const row = container.querySelector('[draggable="true"]')
+    expect(row).toBeTruthy()
+    expect(row?.getAttribute('title')).toBe('/top-level-repo/src/c.ts')
   })
 })

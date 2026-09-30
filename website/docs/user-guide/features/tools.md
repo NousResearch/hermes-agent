@@ -165,10 +165,10 @@ hermes config set terminal.backend modal
 ```bash
 python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 hermes config set terminal.backend vercel_sandbox
-hermes config set terminal.vercel_runtime node24
+hermes config set terminal.vercel_image vercel/sandbox/universal:latest
 ```
 
-Authenticate with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This access-token setup is the supported path for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts. Supported runtimes are `node24`, `node22`, and `python3.13`; Hermes defaults to `/vercel/sandbox` as the remote workspace root.
+Authenticate with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This access-token setup is the supported path for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts. Fresh sandboxes start from `terminal.vercel_image` (default `vercel/sandbox/universal:latest`; the legacy `vercel_runtime` presets are deprecated by Vercel); Hermes defaults to `/vercel/sandbox` as the remote workspace root.
 
 For one-off local development, Hermes also accepts short-lived Vercel OIDC tokens:
 

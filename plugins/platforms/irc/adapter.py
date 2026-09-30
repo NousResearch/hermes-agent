@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from gateway.platforms._shared import (
     coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
+from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -196,7 +197,7 @@ class IRCAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         if self._writer and not self._writer.is_closing():
             with contextlib.suppress(Exception):
-                await self._send_raw("QUIT :Hermes Agent shutting down")
+                await self._send_raw("QUIT :" + t("platform.irc.quit_message"))
                 await asyncio.sleep(0.5)
             with contextlib.suppress(Exception):
                 self._writer.close()
@@ -568,7 +569,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             await asyncio.sleep(0.3)
         if not lines:
             return _sa_error("empty message after stripping")
-        await conn.raw("QUIT :delivered")
+        await conn.raw("QUIT :" + t("platform.irc.standalone_quit"))
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(reader.read(1024), timeout=2.0)
         return {"success": True, "message_id": _ms_id()}
@@ -610,11 +611,3 @@ def register(ctx):
             "line (long messages are automatically split). In channels, users "
             "address you by prefixing your nick. Keep responses concise and "
             "conversational."))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

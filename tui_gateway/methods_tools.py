@@ -215,10 +215,24 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _session_toolsets(session) -> tuple:
+    """``(enabled, disabled)`` a session's read-back RPCs must reflect: the live agent's sets once built,
+    else what that session's profile would build with — ``_load_enabled_toolsets`` under the session's
+    profile scope, the same read ``_build_agent``/``_refresh_live_sessions`` make and the key
+    ``profiles.configure`` pins. A session whose agent is not built yet (``session.create`` with no
+    prompt) otherwise read back as "everything enabled" (#117977). ``None`` = all toolsets.
+    No session → the launch profile's config."""
+    agent = session.get("agent") if session else None
+    if agent is not None:
+        return getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
+    with _session_profile_runtime_scope(session or {}):
+        return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    enabled = set(_session_toolsets(session)[0] or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
@@ -478,7 +492,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.scan_skill_commands().items()):
+    for k, info in sorted(sc.get_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -547,7 +561,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
     if r:
-        return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
+        return _ok(rid, {"canonical": r.name, "description": r.describe(), "category": r.category})
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
 
@@ -757,7 +771,8 @@ def _cmd_moa(rid, params, session, name, arg):
             try:  # persist_override=False: turn-scoped, never persist the MoA provider to config.yaml
                 _apply_model_switch(
                     params.get("session_id", ""), session, f"{preset} --provider moa",
-                    confirm_expensive_model=False, pin_session_override=True, persist_override=False)
+                    confirm_expensive_model=False, pin_session_override=True, persist_override=False,
+                    count_switch=False)
             except Exception:
                 session.pop("moa_one_shot_restore", None)
                 raise
@@ -814,7 +829,15 @@ def _cmd_retry(rid, params, session, name, arg):
         if err:
             return err
         content = cc.retryable_user_text(rewound[1].get("content"))
+    _tui_model_friction("retry", session)
     return _ok(rid, {"type": "send", "message": content})
+
+
+def _tui_model_friction(signal, session, turns=1):
+    from hermes_cli.observability.shared_metrics_model import record_model_friction
+    record_model_friction(
+        signal, session_id=session.get("session_key"), agent=session.get("agent"),
+        hermes_home=session.get("profile_home"), turns=turns)
 
 
 def _cmd_steer(rid, params, session, name, arg):
@@ -912,6 +935,7 @@ def _cmd_undo(rid, params, session, name, arg):
         ):
             with contextlib.suppress(Exception):
                 step()
+    _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
@@ -1072,8 +1096,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        keys = ("hash", "timestamp", "message")
-        rows = [{k: c.get(k, "") for k in keys} for c in mgr.list_checkpoints(cwd)]
+        # The TUI renders ``message``; the manager calls it ``reason``.
+        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", "")}
+                for c in mgr.list_checkpoints(cwd)]
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 
@@ -1177,8 +1202,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
-    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else _load_disabled_toolsets()
+    enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                     skip_tool_search_assembly=True)
@@ -1304,7 +1328,7 @@ del _name, _fn, _keys
 def _skills_search(rid, params, query):
     search, gh = _tools_mod("tools.skills_hub_search"), _tools_mod("tools.skills_hub_github")
     raw = search.unified_search(query, search.create_source_router(gh.GitHubAuth()), source_filter="all", limit=20) or []
-    return _ok(rid, {"results": [{"name": r.name, "description": r.description} for r in raw]})
+    return _ok(rid, {"results": [{"name": r.name, "description": r.describe()} for r in raw]})
 
 
 def _skills_install(rid, params, query):
@@ -1425,8 +1449,9 @@ def _(rid, params: dict) -> dict:
     # Explicit url/command wins. Otherwise a desktop catalog id is resolved
     # before the CLI preset registry — that registry raises, and the wrapper
     # turns the raise into 5024 before the 4063 check below can run.
+    catalog = _tools_mod("hermes_cli.mcp_catalog")
+    entry = None
     if preset and not (server_config.get("url") or server_config.get("command")):
-        catalog = _tools_mod("hermes_cli.mcp_catalog")
         entry = catalog.get_entry(preset)
         if entry is not None:
             for key, value in catalog._build_server_config(entry, install_dir=None).items():
@@ -1443,7 +1468,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
-    if not mc._save_mcp_server(name, server_config):
+    saved_ok = mc._save_mcp_server(name, server_config)
+    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
+    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
     return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})

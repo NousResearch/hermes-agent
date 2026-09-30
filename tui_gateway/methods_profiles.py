@@ -56,14 +56,15 @@ def _best_effort(fn) -> bool:
     return _try(lambda: (fn(), True)[1], False)
 
 
-@contextlib.contextmanager
 def _hermes_home_scope(path):
-    """Scope config/auth resolution to ``path`` for the block."""
-    token = set_hermes_home_override(str(path))
-    try:
-        yield
-    finally:
-        reset_hermes_home_override(token)
+    """Bind ``path``'s full runtime scope (home + secrets + terminal) for the block — the same
+    composition ``@_profile_scoped`` binds. Home alone is half-bound: under multi-profile hosting
+    every credential read raised ``UnscopedSecretError``, which a best-effort ``_try`` turned into
+    a plausible wrong answer (the toolset snapshot's ``XAI_API_KEY`` probe → "every toolset off",
+    #120726). The launch home maps to None so it keeps its frozen launch env (systemd / ``op run``
+    keys). No external-source hydration: these bodies read and write config, never call a provider."""
+    launch = Path(path).resolve() == Path(_hermes_home).resolve()
+    return _session_profile_runtime_scope({"profile_home": None if launch else str(path)}, hydrate_secrets=False)
 
 
 def _resolve_profile(rid, params):
@@ -473,8 +474,10 @@ def _mirror_voice_sections(path) -> bool:
     """Copy stt/tts/voice sections from the launch profile (a fresh profile has only ``model``,
     so voice fell back to defaults); True if written."""
     try:
-        from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
-        src_cfg = load_config_readonly() or {}
+        from hermes_cli.config import read_user_config_raw, save_config
+        # Launch file RAW too: the loaded config has ${VAR} refs expanded, and the new profile
+        # must get the ref (resolved against its own .env), never the launch profile's secret.
+        src_cfg = read_user_config_raw()
         sections = {k: src_cfg[k] for k in ("stt", "tts", "voice") if src_cfg.get(k)}
         if not sections:
             return False
@@ -508,7 +511,8 @@ def _inherit_launch_model(path) -> bool:
     # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
     if custom:
         from hermes_cli.config import load_config, save_config
         with _hermes_home_scope(path):
@@ -688,7 +692,8 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
     want_mcp = isinstance(params.get("enabled_mcp_servers"), list)
     launch_mcp = {}
     if want_mcp:  # launch catalog read BEFORE the home override flips config resolution
-        load_launch = _lazy("hermes_cli.config", "load_config_readonly")
+        # RAW: a copied entry keeps its ${VAR} refs instead of the launch profile's expanded secrets.
+        load_launch = _lazy("hermes_cli.config", "read_user_config_raw")
         launch_mcp = _try(lambda: (load_launch() or {}).get("mcp_servers"), {})
         launch_mcp = launch_mcp if isinstance(launch_mcp, dict) else {}
     with _hermes_home_scope(profile_dir):

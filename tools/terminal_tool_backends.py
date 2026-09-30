@@ -61,7 +61,7 @@ _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 51
                   ("disk", "container_disk", 51200), ("persistent_filesystem", "container_persistent", True))
 _CONTAINER_KEYS = (
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
-    ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
+    ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""), ("vercel_image", ""),
     ("apple_container_image", "python:3.11-slim-bookworm"),
     ("apple_container_volumes", []), ("apple_container_extra_args", []),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
@@ -189,7 +189,8 @@ _SANDBOX_ROWS = {
     "daytona": (lambda: importlib.import_module("tools.environments.daytona").DaytonaEnvironment, True,
                 lambda cc, kw: {"cpu": int(kw["cpu"])}),
     "vercel_sandbox": (lambda: importlib.import_module("tools.environments.vercel_sandbox").VercelSandboxEnvironment,
-                       False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None}),
+                       False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None,
+                                       "image": cc.get("vercel_image") or None}),
 }
 
 

@@ -700,7 +700,11 @@ def _setup_logging(agent):
     # agent.log (INFO+) + errors.log (WARNING+); idempotent so per-message gateway agents
     # don't duplicate handlers.
     from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds agents
+    # for several profiles inside set_hermes_home_override(), and the frozen launch home made
+    # setup_logging() see a home it already served, so it never adopted the profile and every
+    # profile's records landed in the launch profile's agent.log (#125974).
+    setup_logging(hermes_home=get_hermes_home())
 
     if agent.verbose_logging:
         setup_verbose_logging()
@@ -2299,8 +2303,12 @@ def _snapshot_primary_runtime(agent):
 
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
+    # Prefer the session's explicitly adopted workspace (a Desktop session created under the
+    # spawn-time home pin records none; a picked/adopted one does — agent.session_cwd is set
+    # at build time and on every workspace move). TERMINAL_CWD is the launch fallback.
+    working_dir = getattr(agent, "session_cwd", None) or scope_terminal_cwd() or None
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=scope_terminal_cwd() or None, enabled=not agent.skip_context_files)
+        working_dir=working_dir, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
 
 
@@ -2499,25 +2507,3 @@ def init_agent(
 
 
 __all__ = ["init_agent"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'ToolGuardrailDecision': ('agent.tool_guardrails', 'ToolGuardrailDecision'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

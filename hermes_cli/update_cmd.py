@@ -26,7 +26,7 @@ from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
-from hermes_cli._early_recovery import interrupted_pull_marker
+from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pull_marker
 from hermes_cli import update_cmd_check as _check
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -70,11 +70,13 @@ from hermes_cli.update_cmd_zip import (  # noqa: F401
     _is_zip_preserved_entry_status_line, _is_zip_staging_artifact_status_line, _stage_replacement,
     _update_via_zip, _zip_overlay_block_reason)
 from hermes_cli.update_cmd_stash import (  # noqa: F401
-    _AUTOSTASH_NAME_PREFIX, _AUTOSTASH_WARN_AGE_DAYS, _discard_stashed_changes,
+    _AUTOSTASH_NAME_PREFIX, _AUTOSTASH_WARN_AGE_DAYS, _clear_pending_autostash,
+    _discard_stashed_changes,
     _git_untracked_paths, _park_stashed_changes, _print_stash_cleanup_guidance,
     _reject_unsafe_stash_restore, _resolve_stash_selector, _restore_stashed_changes,
     _restored_python_paths, _stash_apply_failed_only_on_existing_untracked,
-    _stash_local_changes_if_needed, _warn_orphaned_update_autostashes)
+    _stash_local_changes_if_needed, _unrestored_autostash_notice,
+    _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
     _print_items, _reload_config_modules, _run_config_check_fresh, _run_migrate_config_fresh)
@@ -204,7 +206,10 @@ def _no_prompt_git_kwargs() -> dict:
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
-    return {"stdin": subprocess.DEVNULL, "env": env}
+    # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
+    # desktop backend on Windows; hide the per-spawn console (#117781).
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
 
 
 _UPDATE_CRITICAL_FILES = (
@@ -254,15 +259,28 @@ def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
     _record_update_step("pre_update_backup", False, "no snapshot captured")
 
 
+def _record_snapshot_stage(args, snapshot_id) -> None:
+    skipped = not snapshot_id and _resolve_pre_update_backup_mode(args) == "off"
+    _completion_receipt.record_stage("snapshot", "success" if snapshot_id else "skipped" if skipped else "failed")
+
+
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait.
+
+    Every spawn carries ``windows_hide_flags()``: the updater's git children run under the
+    console-less desktop backend, and a bare spawn flashes a console window each (#117781)."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    # ``_no_prompt_git_kwargs()`` already carries the hide flags for network
+    # calls, so layer them instead of passing the keyword twice.
+    spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
+    spawn_kwargs.setdefault("creationflags", windows_hide_flags())
     try:
         return subprocess.run(
             git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
             text=True, encoding="utf-8", errors="replace", check=check,
-            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+            **spawn_kwargs)
     except subprocess.TimeoutExpired as exc:
         # subprocess.run already killed the child; the checkout stays consistent because
         # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
@@ -718,13 +736,23 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
 
 
 def _complete_source_update(request: dict | None) -> None:
+    # Never "Update complete!" while this run's local patches sit unrestored in the stash (#122557).
+    unrestored = _unrestored_autostash_notice()
     if request is None:
+        if unrestored:
+            print(unrestored)
         stop_for_relaunch(incomplete=True)
+    if unrestored:
+        request["completion_message"] = unrestored
     from copy import deepcopy
+    _completion_receipt.record_stage(
+        "apply", "skipped" if request.get("completion_message") else "success", mode=request.get("apply_mode", "git"))
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
-    _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or "")
+    # A head capture that came back empty must not arm an SHA-less record: it names no code the
+    # fleet can be proven current on, so the warning could never clear (#125952).
+    _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or _current_checkout_sha() or "")
     result = run_completion(request)
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
     token = request["windows_resume"]
@@ -743,8 +771,12 @@ def _complete_source_update(request: dict | None) -> None:
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
-    """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
-    same branch after parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
+    """Reconcile a proven non-fast-forwardable checkout.
+
+    The caller must first establish that HEAD is not an ancestor of the update target; ordinary
+    fast-forward failures (locks, object transport errors) must never reach this destructive path.
+    Merge on a custom branch (local commits survive) or reset --hard on the same branch after
+    parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
     # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
     # would discard that work: merge instead, stop on conflict.
     merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
@@ -762,12 +794,10 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: the reset below is right either way, but the two causes of divergence here
-    # are indistinguishable from the checkout alone. An upstream force-push/rebase loses
-    # nothing; local commits on this branch lose everything, and the reflog is the only way
-    # back — an expiring log the user has to know to reach for, in a directory Hermes updates
-    # unattended. So park pre_pull_sha behind a rescue ref for BOTH, orphan divergence (no
-    # common ancestor: corrupted HEAD, re-init) included.
+    # Same branch and proven non-ancestor: an upstream force-push/rebase may lose nothing,
+    # while local commits on this branch lose everything. The reflog is only an expiring
+    # recovery path, so park pre_pull_sha behind a rescue ref for BOTH, orphan divergence
+    # (no common ancestor: corrupted HEAD, re-init) included.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
     has_common_ancestor = bool(
         merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
@@ -898,8 +928,28 @@ def _pull_updates(
                 # untouched by checkout --detach; an autostash protects dirty files.
                 _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
-            elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
-                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+            else:
+                merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
+                if merge_result.returncode != 0:
+                    ancestry = _git_run(
+                        git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
+                    if ancestry.returncode == 1:
+                        _reconcile_diverged_checkout(
+                            git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+                    else:
+                        print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
+                        detail = (merge_result.stderr or merge_result.stdout or "").strip()
+                        if detail:
+                            print(f"  {detail}")
+                        if ancestry.returncode == 0:
+                            print(f"  HEAD is still an ancestor of {merge_ref}.")
+                        else:
+                            print(f"  Could not verify whether HEAD is an ancestor of {merge_ref}.")
+                            ancestry_detail = (ancestry.stderr or ancestry.stdout or "").strip()
+                            if ancestry_detail:
+                                print(f"  {ancestry_detail}")
+                        print("  Resolve the Git error and re-run `hermes update`; no reset was attempted.")
+                        sys.exit(1)
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
         except BaseException:
@@ -927,6 +977,7 @@ def _pull_updates(
             if not update_succeeded:
                 print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
                 print("  Restore manually with: git stash apply")
+                _clear_pending_autostash()  # named just above; a later boundary must not repeat it
             elif discard_local_changes:
                 # Non-interactive + updates.non_interactive_local_changes: discard.
                 _m()._discard_stashed_changes(git_cmd, _m().PROJECT_ROOT, auto_stash_ref)
@@ -1165,6 +1216,7 @@ def _begin_update_receipt_and_plan(args):
         # See #74973, #81193, #85753, #88848, #91277.
         from hermes_cli.update_receipt import begin_update_receipt
         begin_update_receipt()
+        _record_update_initiator()
 
     # Plan phase: snapshot runtimes/supervisors/version (read-only; probe failure records
     # nothing). Re-read AFTER the restart phase to reconcile — the plan is the worklist.
@@ -1182,8 +1234,19 @@ def _begin_update_receipt_and_plan(args):
             _n = len(_pre_update_plan.runtimes)
             _profiles = ", ".join(sorted({r.profile for r in _pre_update_plan.runtimes}))
             print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
-
+    _completion_receipt.record_stage("plan", "failed" if _pre_update_plan is None else "success")
     return _pre_update_plan
+
+
+def _record_update_initiator() -> None:
+    """We hold the update lock, so a claim naming another pid is our orchestrator's: the Desktop
+    hand-off (posix shim, windows script, Tauri updater) — the metric's ``kind``. Read the marker
+    raw: a liveness probe or stale-marker cleanup is lock policy, not a metrics side effect."""
+    with _best_effort('Update initiator unavailable: %s'):
+        from hermes_cli.update_lock import update_marker_path
+        first = update_marker_path().read_text(encoding="utf-8-sig").partition("\n")[0].strip()
+        if first.isdigit() and int(first) != os.getpid():
+            _completion_receipt.record_fact("initiator", "desktop")
 
 
 def _prepare_git_command() -> tuple[bool, list, bool]:
@@ -1277,6 +1340,8 @@ def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
     *, target_sha: str | None = None, target_repository: str | None = None, completion_request=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
+    if unrestored := _unrestored_autostash_notice():
+        print(unrestored)  # a stash taken this run that no settle step reported (#122557)
     stage = _format_update_failure_stage(e)
     if _should_zip_fallback_on_update_error(e):
         print(f"⚠ {stage}: {e}")
@@ -1367,6 +1432,17 @@ def _apply_pulled_update(
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
+    # Marks this frame as the CURRENT updater for
+    # _old_updater.in_historical_update(); historical on-disk updaters do not
+    # declare this local, so only they hand off through retired shims.
+    _hermes_current_updater_frame = True
+    git_operation = git_operation_in_progress(_m().PROJECT_ROOT)
+    if git_operation:
+        root = _m().PROJECT_ROOT
+        print(f"✗ Cannot update while a Git {git_operation} is in progress in {root}.")
+        print(f"  Finish it or run `git {git_operation} --abort`, then re-run `hermes update`.")
+        sys.exit(1)
+
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
@@ -1380,6 +1456,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # reason, not as a failed step (see _record_pre_update_backup_outcome).
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
+    _record_snapshot_stage(args, pre_update_snapshot_id)
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
@@ -1490,14 +1567,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
-        # One retry with the promisor machinery disabled clears the git 2.53/2.54
-        # partial-clone pack-objects crash (#124272).
+        # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
         fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args)
+            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
-                print("✗ git still crashed after the partial-clone retry. Heal the checkout once manually:")
-                print("  git -c remote.origin.promisor= fetch origin && git fetch origin")
+                print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
+                      " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
@@ -1544,14 +1620,3 @@ def _cmd_update_impl(args, gateway_mode: bool):
         finally:
             if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
                 _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -9,14 +9,20 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
+from agent.message_metadata import (
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields)
 from hermes_state_common import _id_chunks, _placeholders
+from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
-# role, active flag and the ones owned by the display index / timestamp / session linkage.
-_NON_PAYLOAD_COLUMNS = frozenset({"session_id", "role", "timestamp", "active", "display_identity"})
+# role, active flag and the ones owned by the display index / timestamp / session linkage. ``message_uid``
+# and a result row's ``tool_call_uid`` are identity too: a rewrite changes the message's content, never
+# which logical message (or which call occurrence) the row is. ``tool_call_uids`` IS payload: it follows
+# ``tool_calls`` (an assistant merge unions both), so it is rewritten with the row.
+_NON_PAYLOAD_COLUMNS = frozenset(
+    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uid"})
 _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
 # Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
 # backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
@@ -110,6 +116,7 @@ def resolve_and_repair_transcript_batch(
 
         target_id = int(target_row["id"])
         msg["_row_id"] = target_id
+        _fill_missing_tool_call_uids(target_row, msg)  # a dict that lost its uids must not rewrite them away
         expected = msg.get(DB_ROW_SNAPSHOT)
         canonical = None
         adopt = wrote = False
@@ -150,6 +157,9 @@ def resolve_and_repair_transcript_batch(
             "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_id, session_id)
         ).fetchone() if wrote else target_row
         msg["timestamp"] = final_row["timestamp"]
+        # A row-addressed rewrite keeps the row's identity: the stored uid wins over whatever the live dict
+        # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
+        _restore_row_identity(final_row, msg)
         msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
         if adopt:
             canonical = decode_row_fn(final_row)
@@ -271,6 +281,7 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
         written[_DB_PERSISTED_MARKER] = True
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
+        copy_identity_fields(row, written)
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
         if isinstance(row.get(DB_ROW_SNAPSHOT), str):
@@ -289,11 +300,3 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
                     written[key] = canonical[key]
                 elif key not in ("role", "content"):
                     written.pop(key, None)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

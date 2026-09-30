@@ -6,7 +6,11 @@ const host = vi.hoisted(() => ({
   state: { connectionId: { get: vi.fn() }, profile: { get: vi.fn() } }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host }))
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { captureGroupRequests } = await import('./group-test-utils')
+
+  return { host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
+})
 
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 

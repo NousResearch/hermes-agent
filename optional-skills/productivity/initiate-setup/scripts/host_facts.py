@@ -164,6 +164,12 @@ def _suggested_name(login: str, full: str) -> str | None:
     return name
 
 
+def suggested_name() -> str | None:
+    """``account.suggested_name`` alone: the desktop's name card offers it before the first model call."""
+    login, full, _home = _account()
+    return _suggested_name(login, full)
+
+
 def _home_age_days(home: str) -> int | None:
     """Home-folder birth time approximates account age. Linux exposes no birth time here."""
     if not home:

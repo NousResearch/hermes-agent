@@ -11,6 +11,8 @@ from typing import NamedTuple
 from hermes_constants import get_optional_skills_dir, hermes_home_key
 
 HEADER = "[/initiate-setup]"
+# The desktop opening the backend plays before the first model call (English only, app-owned copy).
+INTRO = "Hi, I'm Hermes.\n\nLet's set things up for you. Then we'll get something cool done."
 
 # The skill's inline-shell hook for host facts. The builder fills it in-process on every surface:
 # skills.inline_shell is on only in the setup profile, and on Windows it needs Git Bash.
@@ -79,3 +81,39 @@ def build_initiate_setup_prompt(surface: str, tools, primary_profile: str) -> st
     skill = _HOST_FACTS_HOOK.sub(lambda _: host, skill)
     facts = json.dumps(block, indent=2, ensure_ascii=False)
     return f"{HEADER}\n\n{skill}\n\n```json\n{facts}\n```"
+
+
+def _asks_setup_choose(message: dict) -> bool:
+    return any((call.get("function") or {}).get("name") == "setup_choose"
+               for call in message.get("tool_calls") or () if isinstance(call, dict))
+
+
+def initiate_setup_prelude(message, surface: str, tools, history):
+    """The desktop opening as a scripted prelude (``agent/turn_scripted_prelude.py``), or None.
+
+    Only a desktop ``/initiate-setup`` turn whose history holds no ``setup_choose`` call gets it: a
+    resumed or restarted setup chat already has the answers, and other surfaces keep the model-only
+    opening. The skill starts after the accent answer when these results are in the history.
+    """
+    if (surface != "desktop" or "setup_choose" not in tools or not isinstance(message, str)
+            or not message.startswith(HEADER) or any(_asks_setup_choose(m) for m in history)):
+        return None
+    return _opening(_host_facts_module(_skill_dir()).suggested_name())
+
+
+def _picked(result: str | None):
+    try:
+        reply = json.loads(result or "")
+    except ValueError:
+        return None
+    return reply.get("picked") if isinstance(reply, dict) else None
+
+
+def _opening(suggested: str | None):
+    card = {"kind": "question", "question": "What should I call you?", "multi_select": False}
+    if suggested:
+        card["options"] = [{"id": "suggested", "label": suggested}]
+    picked = _picked((yield INTRO, "setup_choose", card))
+    name = suggested if picked == "suggested" else picked.strip() if isinstance(picked, str) else ""
+    yield (f"Good to meet you, {name}." if name else "Good to meet you."), "setup_choose", {
+        "kind": "accent", "question": "Which colour?", "multi_select": False}

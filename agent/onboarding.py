@@ -161,8 +161,12 @@ def first_contact_turn_note(
     contact (non-empty session history or prior sessions exist on the install).
     """
     from agent.initiate_setup_prompt import HEADER
+    from hermes_cli.profiles import SETUP_PROFILE_MARKER
 
     if not session_history_empty or install_has_prior_sessions or message.startswith(HEADER):
+        return None
+    # The setup chat opens with its own welcome, whatever its first message says.
+    if (config_path.parent / SETUP_PROFILE_MARKER).is_file():
         return None
     try:
         if (

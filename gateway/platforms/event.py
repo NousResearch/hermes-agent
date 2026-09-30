@@ -88,6 +88,15 @@ class _ProcessingCompletion:
 
 @dataclass
 class _ProcessingState:
+    """Processing lifecycle of one input, shared by every copy of its event.
+
+    Invariant: once an input's start has been reported (``start_notified``), it completes exactly
+    once, with the outcome of the turn that consumed it, or CANCELLED when it is discarded before a
+    turn runs it. Every hand-off below preserves this: an input absorbed by the running turn
+    completes with that turn; an input parked for a later turn (deferred or handed to a copy) is
+    ``awaiting_start`` and completes when that turn runs, or through ``discard()`` when it is dropped.
+    """
+
     phase: _ProcessingPhase = _ProcessingPhase.PENDING
     outcome: Optional[ProcessingOutcome] = None
     receipt_message_id: Optional[str] = None
@@ -96,11 +105,15 @@ class _ProcessingState:
     pending_completion: Optional[_ProcessingCompletion] = None
     absorbed: List[_ProcessingCompletion] = field(default_factory=list)
     start_notified: bool = False
+    awaiting_start: bool = False
     # The event copy that runs this input's lifecycle; completions through other copies are ignored.
     owner: Optional["MessageEvent"] = field(default=None, repr=False)
 
     def defer(self) -> None:
+        """Park the input for a later turn."""
         self.phase = _ProcessingPhase.DEFERRED
+        if self.start_notified:
+            self.awaiting_start = True
 
     def defer_unstarted(self) -> None:
         """Defer an input that has not started. The adapter completes a started input when its
@@ -117,6 +130,11 @@ class _ProcessingState:
         self.absorbed.append(_ProcessingCompletion(adapter, event))
         return True
 
+    def attach(self, completion: _ProcessingCompletion) -> None:
+        """Complete *completion*'s started input with this input's turn."""
+        completion.event._processing_state.phase = _ProcessingPhase.ABSORBED
+        self.absorbed.append(completion)
+
     def release(self, event: "MessageEvent") -> Optional[_ProcessingCompletion]:
         """Detach an absorbed input so another turn completes it. Returns its completion."""
         released = None
@@ -129,12 +147,29 @@ class _ProcessingState:
         self.absorbed = kept
         return released
 
-    def resume_absorbed(self) -> bool:
-        """Let an absorbed input complete. Returns False when it is not absorbed."""
-        if self.phase is not _ProcessingPhase.ABSORBED:
+    def hand_over(self, copy: "MessageEvent") -> None:
+        """Let the turn that runs *copy* own this started input. Its original handler may still be
+        running, for example while it sends a /steer acknowledgement, and must not complete it."""
+        self.owner = copy
+        self.awaiting_start = True
+
+    def discard(self) -> bool:
+        """Prepare a started input that was parked for a turn that will not run it to complete.
+        Returns False when there is nothing to complete: the input never started, its turn has
+        started, or it has completed."""
+        if not (self.start_notified and self.awaiting_start):
             return False
         self.phase = _ProcessingPhase.RUNNING
+        self.awaiting_start = False
         return True
+
+    @property
+    def has_unrun_attached(self) -> bool:
+        return bool(self.absorbed) and self.phase in {_ProcessingPhase.PENDING, _ProcessingPhase.DEFERRED}
+
+    def take_attached_if_unrun(self) -> List[_ProcessingCompletion]:
+        """The inputs attached to an event that never ran; they complete when the event is dropped."""
+        return self.take_absorbed() if self.has_unrun_attached else []
 
     def take_absorbed(self) -> List[_ProcessingCompletion]:
         absorbed, self.absorbed = self.absorbed, []
@@ -163,26 +198,23 @@ class _ProcessingState:
         self.receipt_message_id = self.consumed_receipt_message_id
         return pending_inputs
 
-    def start(self, event: "MessageEvent") -> bool:
-        """Begin processing the input through *event*. Returns False when its start was already
-        reported, so a re-run keeps a single lifecycle. The event that re-runs a started input owns
-        it: a completion through another copy, such as the original handler that is still sending
-        a /steer acknowledgement, must not end it."""
+    def start(self) -> bool:
+        """Begin processing the input. Returns False when its start was already reported, so the
+        turn that runs a parked or handed-over input does not report a second start."""
         first = not self.start_notified
-        if not first:
-            self.owner = event
         self.phase = _ProcessingPhase.RUNNING
         self.outcome = None
         self.consumed_receipt_message_id = self.receipt_message_id
         self.receipt_inputs.clear()
         self.start_notified = True
+        self.awaiting_start = False
         return first
 
     def complete(self) -> bool:
         if self.phase in {_ProcessingPhase.DEFERRED, _ProcessingPhase.ABSORBED, _ProcessingPhase.COMPLETED}:
             return False
         self.phase = _ProcessingPhase.COMPLETED
-        self.start_notified = False
+        self.start_notified = self.awaiting_start = False
         self.owner = None
         return True
 

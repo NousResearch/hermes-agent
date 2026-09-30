@@ -7,8 +7,10 @@ describes what happened to that message.
 """
 
 import asyncio
+import threading
 import time
-from dataclasses import replace
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -133,269 +135,363 @@ def _priority_runner(monkeypatch, mode):
 
 
 _AGENT_VERBS = {"steer", "redirect", "interrupt"}
-_START_RUNNING = ("start", "running-1")
-_START_CORR = ("start", "corr-1")
-_DONE_RUNNING = ("complete", "running-1", ProcessingOutcome.SUCCESS)
-_DONE_CORR = ("complete", "corr-1", ProcessingOutcome.SUCCESS)
+_OK, _FAILED, _CANCELLED = ProcessingOutcome.SUCCESS, ProcessingOutcome.FAILURE, ProcessingOutcome.CANCELLED
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "redirects", "tracked", "leftover", "expected"),
-    [
-        ("steer", False, True, False, ("steer", None, [_START_RUNNING, _START_CORR, _DONE_CORR, _DONE_RUNNING])),
-        ("interrupt", True, True, False,
-         ("redirect", None, [_START_RUNNING, _START_CORR, _DONE_CORR, _DONE_RUNNING])),
-        ("interrupt", False, True, False,
-         ("interrupt", None, [_START_RUNNING, _START_CORR, _DONE_CORR, _DONE_RUNNING])),
-        ("steer", False, True, True, ("steer", "corr-1", [_START_RUNNING, _START_CORR, _DONE_RUNNING, _DONE_CORR])),
-        ("steer", False, False, False, ("steer", None, [_START_CORR, _DONE_CORR, _DONE_RUNNING])),
-        ("steer", False, False, True, ("steer", None, [_START_CORR, _DONE_CORR, _DONE_RUNNING])),
-    ],
-    ids=["steer", "redirect", "interrupt", "leftover-steer", "untracked-turn", "untracked-turn-leftover"],
-)
-async def test_priority_path_input_has_one_lifecycle(monkeypatch, mode, redirects, tracked, leftover, expected):
-    """The adapter can be idle while the runner still owns a turn for the session. The adapter then
-    starts the message itself before the runner folds it into the running turn. The message completes
-    once: with the turn that consumed it, or with its own turn when the model returns it as a leftover
-    steer. When the hooks do not track the running turn, the message completes when its handler
-    returns, and a leftover steer then runs as plain text."""
-    from gateway.run_turn_followup_ack import _run_followup_processing_hook
-
-    runner, adapter = _priority_runner(monkeypatch, mode)
-    source, key, receiver, running = _running_slack_turn(runner, finished=False)
-    receiver._supports_active_turn_redirect = redirects
-    if tracked:
-        await adapter._run_processing_hook("on_processing_start", running)
-
-    await adapter.handle_message(MessageEvent(text="correction", source=source, message_id="corr-1"))
-    await asyncio.gather(*adapter._background_tasks)
-    after_handler = list(adapter.log)
-    result = {"final_response": "reply"}
-    if leftover:
-        result["pending_steer"] = receiver.steer.call_args.args[0]
-    pending_event, _pending = await runner._run_agent_drain_pending(
-        result, adapter, source, key, processing_event=running)
-    # The queued lane completes the running turn after its reply, then runs the follow-up.
-    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
-
-    verbs = [name for name, *_ in receiver.mock_calls if name in _AGENT_VERBS]
-    handler_log = [_START_RUNNING, _START_CORR] if tracked else [_START_CORR, _DONE_CORR]
-    assert (verbs, getattr(pending_event, "message_id", None), after_handler, adapter.log) == (
-        [expected[0]], expected[1], handler_log, expected[2])
+def _started(message_id):
+    return ("start", message_id)
 
 
-@pytest.mark.asyncio
-async def test_two_leftover_steers_complete_with_the_turn_that_reads_them(monkeypatch):
-    """Both steers arrived after the agent's last tool batch, so the agent returns their texts as one
-    ``pending_steer`` and a single follow-up turn reads them. Neither message completes with the
-    running turn; both complete with the follow-up's outcome."""
-    from gateway.run_turn_followup_ack import _run_followup_processing_hook
-
-    runner, adapter = _priority_runner(monkeypatch, "steer")
-    source, key, receiver, running = _running_slack_turn(runner, finished=False)
-    await adapter._run_processing_hook("on_processing_start", running)
-    for message_id, text in (("corr-1", "first correction"), ("corr-2", "second correction")):
-        await adapter.handle_message(MessageEvent(text=text, source=source, message_id=message_id))
-        await asyncio.gather(*adapter._background_tasks)
-    pending_steer = "\n".join(invocation.args[0] for invocation in receiver.steer.call_args_list)
-
-    pending_event, _pending = await runner._run_agent_drain_pending(
-        {"final_response": "reply", "pending_steer": pending_steer}, adapter, source, key,
-        processing_event=running)
-    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
-
-    assert (pending_event.message_id, adapter.log) == ("corr-2", [
-        _START_RUNNING, _START_CORR, ("start", "corr-2"), _DONE_RUNNING,
-        ("complete", "corr-1", ProcessingOutcome.FAILURE), ("complete", "corr-2", ProcessingOutcome.FAILURE),
-    ])
+def _completed(message_id, outcome):
+    return ("complete", message_id, outcome)
 
 
-class _HeldSendAdapter(LifecycleLogAdapter):
-    """Holds every send until the test releases it."""
+class _WalkModel:
+    """Fake AIAgent behind the real runner. Each model call waits until the test releases it. The
+    first ``consumed`` steers or redirects of a call count as read by the model; the rest come back
+    as ``pending_steer``, as they do when they arrive after the last tool batch. After an
+    ``interrupt`` the call returns an interrupted result whose ``interrupt_message`` is the text."""
 
-    def __init__(self):
+    walk: "_WalkRun"
+    _supports_active_turn_redirect = True
+
+    def __init__(self, **_kwargs):
+        self.tools, self._active_children, self._steers, self._interrupt = [], [], [], None
+
+    def steer(self, text):
+        self._steers.append(text)
+        return True
+
+    redirect = steer
+
+    def interrupt(self, message=None):
+        """An interrupt ends the model call in progress, as it does in the agent."""
+        self._interrupt = message
+        walk = type(self).walk
+        for release in walk.model_release[:len(walk.model_calls)]:
+            walk.loop.call_soon_threadsafe(release.set)
+
+    def get_activity_summary(self):
+        return {"seconds_since_activity": 0}
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        walk = type(self).walk
+        index = len(walk.model_calls)
+        walk.model_calls.append(message)
+        walk.loop.call_soon_threadsafe(walk.model_started[index].set)
+        assert walk.model_release[index].wait(30), "The test did not release the model call"
+        if index == walk.failing_call:
+            raise RuntimeError("model call failed")
+        steers, self._steers = self._steers, []
+        interrupt, self._interrupt = self._interrupt, None
+        result = {"final_response": f"done-{index + 1}", "messages": [], "api_calls": 1}
+        if steers[walk.consumed:]:
+            result["pending_steer"] = "\n".join(steers[walk.consumed:])
+        if interrupt:
+            result.update(interrupted=True, completed=False, interrupt_message=interrupt)
+        return result
+
+
+class _WalkAdapter(LifecycleLogAdapter):
+    """With ``hold_ack``, a /steer acknowledgement is not sent until the test releases it."""
+
+    def __init__(self, hold_ack):
         super().__init__()
-        self.sending, self.release = asyncio.Event(), asyncio.Event()
+        self.hold_ack, self.ack_sending, self.ack_release = hold_ack, asyncio.Event(), asyncio.Event()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        self.sending.set()
-        await self.release.wait()
+        if self.hold_ack and content.startswith("⏩"):
+            self.ack_sending.set()
+            await self.ack_release.wait()
         return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tracked", [True, False])
-async def test_leftover_steer_completes_with_its_turn_while_its_handler_still_sends(monkeypatch, tracked):
-    """The model can return a /steer as a leftover while the adapter is still sending the command's
-    acknowledgement. The steer's own turn then starts before the command's handler returns. The
-    message must complete once, when that turn completes, with that turn's outcome."""
-    from gateway.run_turn_followup_ack import _run_followup_processing_hook
-
-    runner, _adapter = _priority_runner(monkeypatch, "steer")
-    adapter = _HeldSendAdapter()
-    adapter.platform = Platform.SLACK
-    runner.adapters[Platform.SLACK] = adapter
-    adapter.set_message_handler(runner._handle_message)
-    source, key, receiver, running = _running_slack_turn(runner, finished=False)
-    if tracked:
-        await adapter._run_processing_hook("on_processing_start", running)
-
-    await adapter.handle_message(MessageEvent(text="/steer late", source=source, message_id="corr-1"))
-    await asyncio.wait_for(adapter.sending.wait(), 30)
-    (admitted,) = receiver.steer.call_args.args
-    pending_event, _pending = await runner._run_agent_drain_pending(
-        {"final_response": "reply", "pending_steer": admitted}, adapter, source, key, processing_event=running)
-    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
-    adapter.release.set()
-    await asyncio.gather(*adapter._background_tasks)
-    handler_returned = [entry for entry in adapter.log if entry[0] != "send"]
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
-
-    started = [_START_RUNNING, _START_CORR] if tracked else [_START_CORR]
-    assert (handler_returned, [entry for entry in adapter.log if entry[0] != "send"]) == (
-        [*started, _DONE_RUNNING],
-        [*started, _DONE_RUNNING, ("complete", "corr-1", ProcessingOutcome.FAILURE)],
-    )
-
-
-async def _run_queued_lane(runner, adapter, monkeypatch, running, source, key, result, drained, *, stop):
-    """Run the real queued lane for the drained follow-up. With ``stop``, cancel it as /stop, /new
-    and /reset do while the running turn's reply is being delivered, before the follow-up starts."""
-    from contextlib import suppress
-    from unittest.mock import AsyncMock
-
-    delivering = asyncio.Event()
-
-    async def deliver(*_args, **_kwargs):
-        delivering.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(runner, "_run_agent_deliver_first_response", deliver if stop else AsyncMock(return_value=True))
-    turn_ctx = TurnContext(source=source, processing_event=running, session_key=key, session_id="s", history=[])
-    pending_event, pending = drained
-
-    async def chain():
-        try:
-            await runner._run_agent_queued_followup(turn_ctx, adapter, pending, pending_event, "reply", result, None)
-        except asyncio.CancelledError:
-            # What _process_message_background does for the event that opened the chain.
-            await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.CANCELLED)
-            raise
-
-    task = asyncio.create_task(chain())
-    if not stop:
-        await task
-        return
-    adapter._expected_cancelled_tasks.add(task)
-    await asyncio.wait_for(delivering.wait(), 30)
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
-
-
-_CANCELLED_RUNNING = ("complete", "running-1", ProcessingOutcome.CANCELLED)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("steers", "exit", "expected"),
-    [
-        (1, "stop", [_START_RUNNING, _START_CORR, ("complete", "corr-1", ProcessingOutcome.CANCELLED),
-                     _CANCELLED_RUNNING]),
-        (2, "stop", [_START_RUNNING, _START_CORR, ("start", "corr-2"),
-                     ("complete", "corr-1", ProcessingOutcome.CANCELLED),
-                     ("complete", "corr-2", ProcessingOutcome.CANCELLED), _CANCELLED_RUNNING]),
-        (1, "refused-text", [_START_RUNNING, _START_CORR, _DONE_RUNNING,
-                             ("complete", "corr-1", ProcessingOutcome.FAILURE)]),
-    ],
-)
-async def test_handed_over_leftover_completes_when_its_turn_never_starts(monkeypatch, steers, exit, expected):
-    """The drain hands the leftover steers to the follow-up's turn. When the chain is cancelled
-    before that turn starts, or the follow-up's text is refused, every started message still
-    completes once."""
-    from unittest.mock import AsyncMock
-
-    runner, adapter = _priority_runner(monkeypatch, "steer")
-    source, key, receiver, running = _running_slack_turn(runner, finished=False)
-    await adapter._run_processing_hook("on_processing_start", running)
-    for index in range(1, steers + 1):
-        await adapter.handle_message(MessageEvent(text=f"correction {index}", source=source, message_id=f"corr-{index}"))
-        await asyncio.gather(*adapter._background_tasks)
-    result = {"final_response": "reply", "messages": [],
-              "pending_steer": "\n".join(invocation.args[0] for invocation in receiver.steer.call_args_list)}
-    drained = await runner._run_agent_drain_pending(result, adapter, source, key, processing_event=running)
-    if exit == "refused-text":
-        runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value=None)
-
-    await _run_queued_lane(runner, adapter, monkeypatch, running, source, key, result, drained, stop=exit == "stop")
-
-    assert adapter.log == expected
-
-
-@pytest.mark.asyncio
-async def test_untracked_leftover_completes_through_its_handler_when_its_turn_never_starts(monkeypatch):
-    """The hooks do not track the running turn, so the /steer is not attached. The model returns it
-    as a leftover while its acknowledgement is still being sent, and /stop cancels the chain before
-    the follow-up starts. The command's handler then completes the message."""
-    runner, _adapter = _priority_runner(monkeypatch, "steer")
-    adapter = _HeldSendAdapter()
-    adapter.platform = Platform.SLACK
-    runner.adapters[Platform.SLACK] = adapter
-    adapter.set_message_handler(runner._handle_message)
-    source, key, receiver, running = _running_slack_turn(runner, finished=False)
-
-    await adapter.handle_message(MessageEvent(text="/steer late", source=source, message_id="corr-1"))
-    await asyncio.wait_for(adapter.sending.wait(), 30)
-    (admitted,) = receiver.steer.call_args.args
-    result = {"final_response": "reply", "messages": [], "pending_steer": admitted}
-    drained = await runner._run_agent_drain_pending(result, adapter, source, key, processing_event=running)
-    await _run_queued_lane(runner, adapter, monkeypatch, running, source, key, result, drained, stop=True)
-    adapter.release.set()
-    await asyncio.gather(*adapter._background_tasks)
-
-    assert [entry for entry in adapter.log if entry[0] != "send"] == [
-        _START_CORR, _CANCELLED_RUNNING, _DONE_CORR]
-
-
-class _CompleteOnlyAdapter(LifecycleLogAdapter):
+class _WalkCompleteOnlyAdapter(_WalkAdapter):
     """Overrides only on_processing_complete, as A2A, Google Chat and the webhook adapter do."""
 
     on_processing_start = BasePlatformAdapter.on_processing_start
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("leftover", [False, True])
-async def test_priority_path_input_completes_once_without_a_start_hook(monkeypatch, leftover):
-    """The queued lane runs no hooks for an adapter without its own start hook. A steered message
-    therefore completes when its handler returns, and a leftover steer for it runs as plain text."""
-    from gateway.run_turn_followup_ack import _run_followup_processing_hook
+@dataclass(frozen=True)
+class _Walk:
+    """One route through the priority path. The adapter is idle while the runner owns the opening
+    turn, so the adapter starts every correction itself before the runner handles it."""
 
-    runner, _adapter = _priority_runner(monkeypatch, "steer")
-    adapter = _CompleteOnlyAdapter()
+    expected: tuple
+    verb: str = "steer"            # steer | redirect | interrupt | queue
+    leftovers: int = 0             # corrections that the model does not read in the opening turn
+    turn: str = "tracked"          # tracked | untracked (no platform message) | hooks-done (completed early)
+    ack: str = "returned"          # returned | in-flight (/steer, acknowledgement held until after the drain)
+    placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits
+    exit: str = "success"          # success | stop | new | reset (before the copy starts) | stop-turn |
+    #                                stop-queued | new-queued | reset-queued (during a turn) | refused | exception
+    adapter: str = "bracketing"    # bracketing | complete-only
+
+
+@dataclass
+class _WalkRun:
+    loop: asyncio.AbstractEventLoop
+    consumed: int
+    failing_call: int = -1
+    model_calls: list = field(default_factory=list)
+    model_started: list = field(default_factory=lambda: [asyncio.Event() for _ in range(5)])
+    model_release: list = field(default_factory=lambda: [threading.Event() for _ in range(5)])
+
+
+_OPENING = "opening-1"
+_C1, _C2, _Q1, _Q2 = "corr-1", "corr-2", "queued-1", "queued-2"
+_S_OPEN = _started(_OPENING)
+
+
+def _leftover_rows():
+    """Leftover steers on a tracked turn, for every placement of the copy and every exit."""
+    rows = {}
+    for count in (1, 2):
+        ids = [_C1, _C2][:count]
+        starts = (_S_OPEN, *[_started(i) for i in ids])
+        done = lambda outcome: tuple(_completed(i, outcome) for i in ids)  # noqa: E731
+        opened = (*starts, _completed(_OPENING, _OK))
+        rows[f"direct-{count}-success"] = _Walk((*opened, *done(_OK)), leftovers=count)
+        for exit in ("stop", "new", "reset"):
+            rows[f"direct-{count}-{exit}"] = _Walk((*opened, *done(_CANCELLED)), leftovers=count, exit=exit)
+        rows[f"direct-{count}-refused"] = _Walk((*opened, *done(_FAILED)), leftovers=count, exit="refused")
+        rows[f"direct-{count}-exception"] = _Walk((*opened, *done(_FAILED)), leftovers=count, exit="exception")
+        queued = (*opened, _started(_Q1))
+        rows[f"fifo-{count}-success"] = _Walk(
+            (*queued, _completed(_Q1, _OK), *done(_OK)), leftovers=count, placement="fifo")
+        rows[f"fifo-{count}-stop"] = _Walk(
+            (*queued, _completed(_Q1, _OK), *done(_CANCELLED)), leftovers=count, placement="fifo", exit="stop")
+        rows[f"fifo-{count}-stop-queued"] = _Walk(
+            (*queued, *done(_CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=count, placement="fifo",
+            exit="stop-queued")
+        rows[f"cap-{count}-success"] = _Walk((*opened, *done(_OK)), leftovers=count, placement="cap")
+        rows[f"cap-{count}-stop"] = _Walk((*opened, *done(_CANCELLED)), leftovers=count, placement="cap", exit="stop")
+    one = (_S_OPEN, _started(_C1), _completed(_OPENING, _OK))
+    queued = (*one, _started(_Q1))
+    rows.update({
+        "fifo-1-reset": _Walk((*queued, _completed(_Q1, _OK), _completed(_C1, _CANCELLED)), leftovers=1, placement="fifo",
+                              exit="reset"),
+        "fifo-1-new-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
+                                   placement="fifo", exit="new-queued"),
+        "fifo-1-refused": _Walk((*queued, _completed(_Q1, _OK), _completed(_C1, _FAILED)), leftovers=1, placement="fifo",
+                                exit="refused"),
+        "fifo-1-exception": _Walk((*queued, _completed(_Q1, _OK), _completed(_C1, _FAILED)), leftovers=1, placement="fifo",
+                                  exit="exception"),
+        "overflow-1-success": _Walk(
+            (*queued, _completed(_Q1, _OK), _started(_Q2), _completed(_Q2, _OK), _completed(_C1, _OK)), leftovers=1,
+            placement="overflow"),
+        "overflow-1-new-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
+                                       placement="overflow", exit="new-queued"),
+        "overflow-1-reset-queued": _Walk((*queued, _completed(_C1, _CANCELLED), _completed(_Q1, _CANCELLED)), leftovers=1,
+                                         placement="overflow", exit="reset-queued"),
+        "cap-1-new": _Walk((*one, _completed(_C1, _CANCELLED)), leftovers=1, placement="cap", exit="new"),
+        "cap-1-reset": _Walk((*one, _completed(_C1, _CANCELLED)), leftovers=1, placement="cap", exit="reset"),
+        "cap-1-exception": _Walk((*one, _completed(_C1, _FAILED)), leftovers=1, placement="cap", exit="exception"),
+    })
+    return rows
+
+
+_CONSUMED = (_S_OPEN, _started(_C1))
+_WALKS = {
+    # The running turn reads the correction, which completes with that turn's outcome.
+    **{f"{verb}-consumed": _Walk((*_CONSUMED, _completed(_C1, _OK), _completed(_OPENING, _OK)), verb=verb)
+       for verb in ("steer", "redirect", "interrupt")},
+    **{f"{verb}-consumed-stop-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)),
+                                           verb=verb, exit="stop-turn")
+       for verb in ("steer", "redirect")},
+    "steer-consumed-exception": _Walk((*_CONSUMED, _completed(_C1, _FAILED), _completed(_OPENING, _FAILED)),
+                                      exit="exception"),
+    # An interrupt's text runs as the next turn, which answers the interrupted turn too.
+    "interrupt-stop-queued": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)),
+                                   verb="interrupt", exit="stop-queued"),
+    "interrupt-exception": _Walk((*_CONSUMED, _completed(_C1, _FAILED), _completed(_OPENING, _FAILED)),
+                                 verb="interrupt", exit="exception"),
+    # A started message that waits in the queue completes with its own turn, or when it is dropped.
+    "queue": _Walk((*_CONSUMED, _completed(_OPENING, _OK), _completed(_C1, _OK)), verb="queue"),
+    "queue-stop-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="queue",
+                             exit="stop-turn"),
+    **_leftover_rows(),
+    # The /steer acknowledgement is still being sent when the model returns the steer as leftover.
+    "in-flight-success": _Walk((*_CONSUMED, _completed(_OPENING, _OK), _completed(_C1, _OK)), leftovers=1, ack="in-flight"),
+    "in-flight-stop": _Walk((*_CONSUMED, _completed(_OPENING, _OK), _completed(_C1, _CANCELLED)), leftovers=1,
+                            ack="in-flight", exit="stop"),
+    # The hooks do not track the running turn (it has no platform message).
+    **{f"untracked-{verb}-consumed": _Walk((_started(_C1), _completed(_C1, _OK)), verb=verb, turn="untracked")
+       for verb in ("steer", "redirect", "interrupt")},
+    "untracked-leftover": _Walk((_started(_C1), _completed(_C1, _OK)), leftovers=1, turn="untracked"),
+    "untracked-in-flight-success": _Walk((_started(_C1), _completed(_C1, _OK)), leftovers=1, turn="untracked",
+                                         ack="in-flight"),
+    **{f"untracked-in-flight-{exit}": _Walk((_started(_C1), _completed(_C1, outcome)), leftovers=1, turn="untracked",
+                                            ack="in-flight", exit=exit)
+       for exit, outcome in (("stop", _CANCELLED), ("refused", _FAILED), ("exception", _FAILED))},
+    # The running turn's hooks had already completed, so the correction completes with its handler.
+    "hooks-done-leftover": _Walk((_S_OPEN, _completed(_OPENING, _OK), _started(_C1), _completed(_C1, _OK)), leftovers=1,
+                                 turn="hooks-done"),
+    # The queued lane runs no hooks for an adapter without its own start hook, so its handler
+    # completes the correction.
+    "complete-only-consumed": _Walk((_completed(_C1, _OK), _completed(_OPENING, _OK)), adapter="complete-only"),
+    "complete-only-leftover": _Walk((_completed(_C1, _OK), _completed(_OPENING, _OK)), leftovers=1, adapter="complete-only"),
+    "complete-only-queue": _Walk((_completed(_C1, _OK), _completed(_OPENING, _OK)), verb="queue", adapter="complete-only"),
+}
+
+
+async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
+    from gateway.run import _INTERRUPT_REASON_RESET
+    from gateway.run_turn_followup_ack import _turn_result_outcome
+
+    run = _WalkRun(asyncio.get_running_loop(), consumed=0 if walk.leftovers else 99)
+    _WalkModel.walk = run
+    _WalkModel._supports_active_turn_redirect = walk.verb == "redirect"
+    _install_fake_agent(monkeypatch, tmp_path, _WalkModel)
+    runner, _adapter = _priority_runner(
+        monkeypatch, {"redirect": "interrupt", "interrupt": "interrupt", "queue": "queue"}.get(walk.verb, "steer"))
+    adapter = (_WalkCompleteOnlyAdapter if walk.adapter == "complete-only" else _WalkAdapter)(
+        hold_ack=walk.ack == "in-flight")
     adapter.platform = Platform.SLACK
     runner.adapters[Platform.SLACK] = adapter
     adapter.set_message_handler(runner._handle_message)
-    source, key, receiver, running = _running_slack_turn(runner, finished=False)
-    await adapter._run_processing_hook("on_processing_start", running)
+    monkeypatch.setattr(adapter, "_requeue_backoff_delay", lambda *_args: 3600)
+    source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1")
+    key = runner._session_key_for_source(source)
+    if walk.placement == "cap":
+        runner._MAX_INTERRUPT_DEPTH = 0
+    queued_ids = {"fifo": [_Q1], "overflow": [_Q1, _Q2]}.get(walk.placement, [])
+    copy_call = len(queued_ids) + 1
+    if walk.exit == "exception":
+        run.failing_call = 0 if not walk.leftovers and walk.verb != "interrupt" else copy_call
+    copy_prepared, copy_release = asyncio.Event(), asyncio.Event()
+    prepare = runner._prepare_profile_scoped_inbound_message_text
 
-    await adapter.handle_message(MessageEvent(text="correction", source=source, message_id="corr-1"))
-    await asyncio.gather(*adapter._background_tasks)
-    result = {"final_response": "reply"}
-    if leftover:
-        result["pending_steer"] = receiver.steer.call_args.args[0]
-    pending_event, _pending = await runner._run_agent_drain_pending(
-        result, adapter, source, key, processing_event=running)
-    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
-    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+    async def gated_prepare(**kwargs):
+        if str(kwargs["event"].message_id).startswith("corr"):
+            copy_prepared.set()
+            await copy_release.wait()
+            if walk.exit == "refused":
+                return None
+        return await prepare(**kwargs)
 
-    assert (pending_event, adapter.log) == (None, [_DONE_CORR, _DONE_RUNNING])
+    monkeypatch.setattr(runner, "_prepare_profile_scoped_inbound_message_text", gated_prepare)
+    opening = MessageEvent(text="opening", source=source, message_id=None if walk.turn == "untracked" else _OPENING)
+    tracked = walk.turn != "untracked"
+
+    async def opening_turn():
+        """What _process_message_background does around the handler for the opening message."""
+        if tracked:
+            await adapter._run_processing_hook("on_processing_start", opening)
+        try:
+            result = await runner._run_agent(message="opening", context_prompt="", history=[], source=source,
+                                             session_id="walk", session_key=key, processing_event=opening)
+        except asyncio.CancelledError:
+            if tracked:
+                expected = asyncio.current_task() in adapter._expected_cancelled_tasks
+                await adapter._run_processing_hook("on_processing_complete", opening, _CANCELLED if expected else _FAILED)
+            raise
+        except Exception:
+            if tracked:
+                await adapter._run_processing_hook("on_processing_complete", opening, _FAILED)
+            return
+        if tracked:
+            await adapter._run_processing_hook("on_processing_complete", opening, _turn_result_outcome(result))
+
+    async def command(kind, chain):
+        """The runner and adapter work that /stop, /new and /reset do to the parked input and to the
+        turn that is running (/new and /reset also clear the conversation scope)."""
+        adapter._session_tasks[key] = chain
+        before = set(adapter._background_tasks)
+        event = MessageEvent(text=f"/{kind}", source=source, message_id=f"{kind}-1")
+        if kind == "stop":
+            await runner._busy_stop_command(event, key, source)
+        else:
+            await runner._interrupt_and_clear_session(
+                key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command")
+            runner._clear_conversation_scope(key, reason="session_reset")
+        if not chain.done():
+            await adapter.cancel_session_processing(key, discard_pending=False)
+        await asyncio.gather(*(set(adapter._background_tasks) - before - {chain}), return_exceptions=True)
+
+    chain = asyncio.create_task(opening_turn())
+    try:
+        await asyncio.wait_for(run.model_started[0].wait(), 30)
+
+        async def registered():
+            while not isinstance(runner._session_state(key).turn.agent, _WalkModel):
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(registered(), 30)
+        runner._session_state(key).turn.started_ts = time.time()
+        if walk.turn == "hooks-done":
+            await adapter._run_processing_hook("on_processing_complete", opening, _OK)
+        for index in range(1, max(walk.leftovers, 1) + 1):
+            text = f"/steer correction {index}" if walk.ack == "in-flight" else f"correction {index}"
+            await adapter.handle_message(MessageEvent(text=text, source=source, message_id=f"corr-{index}"))
+            correction_task = adapter._session_tasks[key]
+            if walk.ack == "in-flight":
+                await asyncio.wait_for(adapter.ack_sending.wait(), 30)
+            else:
+                await asyncio.wait_for(correction_task, 30)
+        for queued_id in queued_ids:
+            runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
+        if walk.exit == "stop-turn":
+            await command("stop", chain)
+        run.model_release[0].set()
+        if walk.ack == "in-flight":
+            await asyncio.wait_for(copy_prepared.wait(), 30)
+            adapter.ack_release.set()
+            await asyncio.wait_for(correction_task, 30)
+        if walk.exit.endswith("-queued"):
+            await asyncio.wait_for(run.model_started[1].wait(), 30)
+            await command(walk.exit.split("-")[0], chain)
+        elif walk.exit in {"stop", "new", "reset"} and walk.placement != "cap":
+            for release in run.model_release[1:copy_call]:
+                release.set()
+            await asyncio.wait_for(copy_prepared.wait(), 30)
+            await command(walk.exit, chain)
+        for release in run.model_release[1:]:
+            release.set()
+        copy_release.set()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(chain, 30)
+        if walk.placement == "cap":
+            if walk.exit in {"stop", "new", "reset"}:
+                await command(walk.exit, chain)
+            else:
+                async def slot_turn(_event):
+                    if walk.exit == "exception":
+                        raise RuntimeError("slot turn failed")
+                    return "done"
+
+                adapter.set_message_handler(slot_turn)
+                await adapter._process_message_background(adapter._pending_messages.pop(key), key)
+        return [entry for entry in adapter.log if entry[0] != "send"]
+    finally:
+        for release in run.model_release:
+            release.set()
+        copy_release.set()
+        adapter.ack_release.set()
+        chain.cancel()
+        with suppress(BaseException):
+            await chain
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("walk", list(_WALKS.values()), ids=list(_WALKS))
+async def test_every_started_message_completes_once_with_the_turn_that_consumed_it(monkeypatch, tmp_path, walk):
+    """Invariant: once the adapter has reported a message's start (👀), the message completes exactly
+    once (✅, ❌ or cancelled), with the outcome of the turn that read it, FAILURE when that turn
+    fails or its text is refused, or CANCELLED when /stop, /new or /reset discards it first. The
+    walk covers steer, redirect, interrupt and queue on the priority path; one or two leftover
+    steers; tracked and untracked running turns; an acknowledgement still in flight; the leftover
+    copy run directly, queued behind other input or parked at the recursion cap; and an adapter
+    without its own start hook."""
+    log = await _walk_lifecycle(monkeypatch, tmp_path, walk)
+
+    one_lifecycle = ["complete"] if walk.adapter == "complete-only" else ["start", "complete"]
+    per_message = {}
+    for entry in log:
+        per_message.setdefault(entry[1], []).append(entry[0])
+    assert (log, {m: kinds for m, kinds in per_message.items() if kinds != one_lifecycle}) == (
+        list(walk.expected), {})
 
 
 class _BlockingSendAdapter(LifecycleLogAdapter):

@@ -204,6 +204,13 @@ def guarded_prompt_enabled(
     config: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Return whether the explicitly opted-in local prompt profile is allowed."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            return False
     agent_cfg = (config or {}).get("agent", {}) or {}
     if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
         return False

@@ -423,3 +423,13 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+def test_guarded_prompt_uses_configured_opt_in_on_real_call_path(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='synthetic'\n", encoding="utf-8")
+    config = {"agent": {"coding_context": "focus", "guarded_prompt_mode": {"enabled": True, "routes": [{"provider": "ollama-launch", "model": "synthetic-local"}]}}}
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
+    assert cc.guarded_prompt_enabled(platform="cli", cwd=tmp_path, provider="ollama-launch", model="synthetic-local")
+    assert not cc.guarded_prompt_enabled(platform="cli", cwd=tmp_path, provider="ollama-launch", model="synthetic-local", config={"agent": {"coding_context": "off"}})
+    config["agent"]["guarded_prompt_mode"]["enabled"] = False
+    assert not cc.guarded_prompt_enabled(platform="cli", cwd=tmp_path, provider="ollama-launch", model="synthetic-local")

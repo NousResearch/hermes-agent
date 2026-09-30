@@ -591,6 +591,13 @@ the SDK receives the complete state response before Hermes applies this
 processing limit. Declared image sizes must fit the adapter's media limit;
 sending an existing MXC URL does not download or re-upload the image.
 
+The `matrix_image_packs` toolset is enabled for Matrix sessions. Turn it off in
+the Matrix checklist of `hermes tools`, or run
+`hermes tools disable matrix_image_packs --platform matrix`. A saved Matrix
+toolset list that names individual toolsets and was saved before this toolset
+existed does not include it; run
+`hermes tools enable matrix_image_packs --platform matrix` to add it.
+
 [image-packs-msc]: https://github.com/matrix-org/matrix-spec-proposals/blob/0923024fe35068874e59b5536b793dfcfcfc96c0/proposals/2545-emotes.md
 
 ### Media Limits

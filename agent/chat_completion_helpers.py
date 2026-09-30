@@ -72,6 +72,9 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
 # double traffic every attempt, while later turns re-arm automatically.
 _STREAM_5XX_PROBE_WINDOW_S = 60.0
+# Keep silent reasoning streams below the turn watchdog without restoring
+# the unbounded stale-budget read that caused half-open sockets to hang.
+_STREAM_REASONING_READ_CAP = 300.0
 
 
 def _context_thread_target(callback):
@@ -3037,9 +3040,10 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Local provider detected (%s) — stream read timeout raised to %.0fs", self.agent.base_url, read)
         # Keep the transport idle timeout independent from the liveness budget.
         # A stale budget may intentionally be several minutes for reasoning models,
-        # but copying it into httpx's body read timeout leaves a dead TCP stream
-        # parked until the turn watchdog fires. The liveness monitor still handles
-        # legitimate long pauses; a silent socket must get a bounded reconnect path.
+        # but a silent socket must be bounded below the turn watchdog.
+        if read == 120.0 and stale is not None and stale != float("inf") and stale > read:
+            read = min(stale, _STREAM_REASONING_READ_CAP)
+            logger.debug("Cloud reasoning stream — read timeout capped at %.0fs", read)
         return base, read, 30.0
 
     @staticmethod

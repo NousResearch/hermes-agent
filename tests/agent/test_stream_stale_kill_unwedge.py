@@ -165,7 +165,7 @@ def test_cloud_stream_read_timeout_does_not_inherit_long_stale_budget(monkeypatc
 
     _write, read, _connect = call._stream_timeouts()
 
-    assert read == 120.0
+    assert read == 300.0
 
 
 def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wire, monkeypatch):

@@ -58,6 +58,23 @@ def test_control_files_and_lookalikes_outside_home_stay_writable(hermes_layout, 
     assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "vault/vault.key"))) is False
 
 
+def test_vault_directory_without_credential_markers_is_writable(hermes_layout):
+    root, profile = hermes_layout
+    for base in (profile, root):
+        note = _touch(base, "vault/01_Staging/note.md")
+        assert fs.get_read_block_error(str(note)) is None
+        assert fs.is_write_denied(str(note)) is False
+
+
+def test_vault_with_credential_markers_remains_write_denied(hermes_layout):
+    root, profile = hermes_layout
+    for base in (profile, root):
+        vault = base / "vault"
+        vault.mkdir(parents=True, exist_ok=True)
+        (vault / "vault.key").write_text("key", encoding="utf-8")
+        assert fs.is_write_denied(str(vault / "note.md"))
+
+
 class TestProfileHomeProcessHome:
     """With the process HOME pinned to ``{HERMES_HOME}/home`` (TERMINAL_HOME_MODE=profile,
     containers, spawned workers) the write guards must still cover every home a write can

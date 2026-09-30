@@ -125,7 +125,7 @@ class TestStartupPlatformIsolation:
             return MagicMock()
 
         with patch("gateway.status.publish_runtime_status"):
-            with patch("hermes_cli.plugins.discover_plugins"):
+            with patch("plugin_runtime.lifecycle.discover_plugins"):
                 with patch("hermes_cli.config.load_config", return_value={}):
                     with patch("agent.shell_hooks.register_from_config"):
                         with patch(
@@ -724,7 +724,7 @@ class TestVoiceInputCallbackWiring:
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
             with patch("gateway.status.publish_runtime_status"):
-                with patch("hermes_cli.plugins.discover_plugins"):
+                with patch("plugin_runtime.lifecycle.discover_plugins"):
                     with patch("hermes_cli.config.load_config", return_value={}):
                         with patch("agent.shell_hooks.register_from_config"):
                             with patch(

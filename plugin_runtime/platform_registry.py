@@ -1,4 +1,4 @@
-"""Platform adapter registry.
+"""Canonical platform adapter registry shared by gateway and plugin runtime.
 
 Adapters (built-in and plugin) self-register here so the gateway can discover and
 instantiate them without hardcoded if/elif chains. Plugins register via
@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from hermes_constants import hermes_home_key
+from plugin_runtime.attribution import plugin_scope_for_callable
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,15 @@ _LoadKey = tuple[Optional[str], str]
 _Loader = Callable[[], None]
 
 
+def _scope_key(scope: Optional[str]) -> Optional[str]:
+    """Canonicalize explicit profile keys to match ``current_scope_key()``."""
+    return hermes_home_key(scope) if scope is not None else None
+
+
 def _plugin_scope_from_callable(callback: Callable) -> Optional[str]:
     """Infer a plugin profile from code registered outside PluginContext."""
     try:
-        from tools.registry import registry as tool_registry
-        return tool_registry.plugin_scope_for_callable(callback)
+        return plugin_scope_for_callable(callback)
     except (ImportError, AttributeError):
         return None
 
@@ -139,6 +144,7 @@ class PlatformRegistry:
     def _scope_maps(
         self, scope: Optional[str], *, create: bool = False
     ) -> tuple[dict[str, PlatformEntry], dict[str, _Loader]]:
+        scope = _scope_key(scope)
         if scope is None:
             return self._entries, self._deferred
         if create:
@@ -149,6 +155,7 @@ class PlatformRegistry:
         self, scope: Optional[str], name: str, *, create: bool = False
     ) -> tuple[Optional[PlatformEntry], Optional[_Loader]]:
         """(entry, loader) for *name*; the loader falls back to in-flight, then consumed."""
+        scope = _scope_key(scope)
         entries, deferred = self._scope_maps(scope, create=create)
         entry = entries.get(name)
         loader = deferred.get(name)
@@ -157,6 +164,7 @@ class PlatformRegistry:
         return entry, loader
 
     def _prune_scope(self, scope: Optional[str]) -> None:
+        scope = _scope_key(scope)
         for maps in (self._scoped_entries, self._scoped_deferred) if scope is not None else ():
             if not maps.get(scope):
                 maps.pop(scope, None)
@@ -166,6 +174,7 @@ class PlatformRegistry:
     def register_deferred(self, name: str, loader: _Loader, *, scope: Optional[str] = None) -> None:
         """Register a lazy loader (imports the plugin module, which must call :meth:`register`);
         runs at most once, on first lookup; a concrete registration drops it."""
+        scope = _scope_key(scope)
         with self._lock:
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, name), None)
@@ -186,6 +195,7 @@ class PlatformRegistry:
     ) -> bool:
         """Restore a registration if its full state is still *current* (CAS): a later
         registration is never removed, and deferred loaders are part of the state."""
+        scope = _scope_key(scope)
         with self._lock:
             entry, loader = self._registration_state(scope, name, create=True)
             if entry is not current[0] or loader is not current[1]:
@@ -207,7 +217,7 @@ class PlatformRegistry:
         loader: Optional[_Loader] = None
         is_loader = False
         with self._lock:
-            active_scope = scope or self.current_scope_key()
+            active_scope = _scope_key(scope) or self.current_scope_key()
             entries, deferred = self._scope_maps(active_scope)
             scoped_key = (active_scope, name)
             global_key = (None, name)
@@ -257,6 +267,7 @@ class PlatformRegistry:
 
     def is_deferred_load_cancelled(self, name: str, *, scope: Optional[str] = None) -> bool:
         """Whether ownership teardown cancelled an in-flight loader."""
+        scope = _scope_key(scope)
         with self._lock:
             return (scope, name) in self._cancelled_inflight
 
@@ -287,6 +298,7 @@ class PlatformRegistry:
                     or _plugin_scope_from_callable(entry.adapter_factory)
                     or _plugin_scope_from_callable(entry.check_fn)
                 )
+            scope = _scope_key(scope)
             # A concrete registration supersedes any pending deferred loader.
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, entry.name), None)
@@ -300,7 +312,7 @@ class PlatformRegistry:
     def unregister(self, name: str, *, scope: Optional[str] = None) -> bool:
         """Remove a platform entry. Returns True if it existed."""
         with self._lock:
-            inferred_scope = scope if scope is not None else _caller_plugin_scope()
+            inferred_scope = _scope_key(scope) if scope is not None else _caller_plugin_scope()
             active_scope = inferred_scope or self.current_scope_key()
             entries, deferred = self._scope_maps(active_scope)
             if inferred_scope is not None or name in entries or name in deferred:
@@ -313,6 +325,7 @@ class PlatformRegistry:
 
     def _load_pending(self, scope: str, name: str) -> bool:
         """True when a lookup of *name* must run/await a deferred loader (lock held)."""
+        scope = _scope_key(scope) or self.current_scope_key()
         _entries, deferred = self._scope_maps(scope)
         return (
             name in deferred or (name not in self._entries and name in self._deferred)

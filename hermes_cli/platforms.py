@@ -47,7 +47,7 @@ def platform_label(key: str, default: str = "") -> str:
     if info is not None:
         return info.label
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(key)
         if entry:
             return _plugin_label(entry)
@@ -60,7 +60,7 @@ def get_all_platforms() -> "OrderedDict[str, PlatformInfo]":
     """PLATFORMS plus plugin-registered platforms (appended after builtins) — use for menus."""
     merged = OrderedDict(PLATFORMS)
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             if entry.name not in merged:
                 merged[entry.name] = PlatformInfo(_plugin_label(entry), f"hermes-{entry.name}")

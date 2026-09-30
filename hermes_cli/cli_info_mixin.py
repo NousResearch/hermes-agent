@@ -78,7 +78,7 @@ class CLIInfoMixin:
         """One yellow block under the banner when an enabled external plugin imports paths scheduled for
         removal (red once the date has passed and the plugin was skipped). Never raises."""
         try:
-            from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
+            from plugin_runtime.compat import compat_report, removal_in_effect, summary_lines
             lines = summary_lines(compat_report())
         except Exception:
             return

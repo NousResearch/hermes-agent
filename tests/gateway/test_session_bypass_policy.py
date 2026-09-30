@@ -38,7 +38,7 @@ def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, 
     from gateway.session_local import _bypass_policy
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     import gateway.session_policy, hermes_cli.tools_config, toolsets, tools.terminal_scope  # noqa: F401,E401
-    from hermes_cli.plugins import discover_plugins
+    from plugin_runtime.lifecycle import discover_plugins
 
     home = tmp_path / 'home'
     home.mkdir()
@@ -70,7 +70,7 @@ def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, 
     config = policy.config()
     assert config['model']['provider'] == 'custom' and config['model']['base_url'] == params['base_url']
     assert config.get('plugins', {}).get('enabled', DEFAULT_CONFIG.get('plugins', {}).get('enabled')) in (None, [])
-    from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+    from plugin_runtime.lifecycle import get_plugin_toolset_keys_nowait
     assert 'terminal' in policy.toolsets and not set(policy.toolsets) & get_plugin_toolset_keys_nowait()
     terminal = json.loads(policy.terminal_json)
     assert terminal['TERMINAL_ENV'] == 'local' and terminal['TERMINAL_CWD'] == str(cwd)

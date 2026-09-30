@@ -65,17 +65,17 @@ class _RaisingProvider(VideoGenProvider):
 class TestUnifiedDispatch:
     def _run(self, args: Dict[str, Any], *, configured: Optional[str] = None) -> Dict[str, Any]:
         from tools import video_generation_tool
-        import hermes_cli.plugins as plugins_module
+        import plugin_runtime.lifecycle as plugins_module
 
         saved = video_generation_tool._read_configured_video_provider
         video_generation_tool._read_configured_video_provider = lambda: configured  # type: ignore
-        saved_discover = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *_a, **_k: None  # type: ignore
+        saved_discover = plugins_module.ensure_plugins_discovered
+        plugins_module.ensure_plugins_discovered = lambda *_a, **_k: None  # type: ignore
         try:
             raw = video_generation_tool._handle_video_generate(args)
         finally:
             video_generation_tool._read_configured_video_provider = saved  # type: ignore
-            plugins_module._ensure_plugins_discovered = saved_discover  # type: ignore
+            plugins_module.ensure_plugins_discovered = saved_discover  # type: ignore
         return json.loads(raw)
 
     def test_no_provider_returns_clear_error(self):

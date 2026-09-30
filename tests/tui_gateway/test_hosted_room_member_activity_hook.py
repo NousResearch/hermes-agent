@@ -34,7 +34,7 @@ def observer(monkeypatch):
             seen.append(kwargs)
 
     monkeypatch.setattr(
-        "hermes_cli.plugins.iter_hook_callbacks", lambda name: (on_activity,) if name == HOOK_NAME else ())
+        "plugin_runtime.api.iter_hook_callbacks", lambda name: (on_activity,) if name == HOOK_NAME else ())
     monkeypatch.setattr(server, "_stdio_transport", type("Sink", (), {"write": staticmethod(lambda _o: True)})())
     yield seen
     shutdown_plugin_stream_hook_dispatcher()

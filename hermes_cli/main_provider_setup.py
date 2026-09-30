@@ -65,7 +65,11 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass")]
 
-# Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
+from plugin_runtime.host_bindings import bind_plugin_host
+
+bind_plugin_host(builtin_auxiliary_task_keys=lambda: {key for key, _name, _desc in _AUX_TASKS})
+
+# Special non-auxiliary task surfaced in the same picker: subagent delegation.
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full
 # child agents via tools/delegate_tool.py::_resolve_delegation_credentials(), which reads that
 # section directly. "auto" means "inherit the parent agent" and is stored as empty strings —
@@ -77,11 +81,11 @@ _DELEGATION_TASK_DESC = "subagent model (delegate_task)"
 
 def _all_aux_tasks() -> list[tuple[str, str, str]]:
     """Built-in aux tasks (in order) followed by plugin-registered ones
-    (:meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`)."""
+    (:meth:`plugin_runtime.context.PluginContext.register_auxiliary_task`)."""
     tasks = list(_AUX_TASKS)
     # Plugin discovery failure must not break the aux config UI.
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from plugin_runtime.api import get_plugin_auxiliary_tasks
         for entry in get_plugin_auxiliary_tasks():
             tasks.append((entry["key"], entry["display_name"], entry["description"]))
     return tasks

@@ -137,7 +137,7 @@ class IRCAdapter(BasePlatformAdapter):
         max_msg = extra.get("max_message_length")
         if max_msg is None:
             with contextlib.suppress(Exception):
-                from gateway.platform_registry import platform_registry
+                from plugin_runtime.platform_registry import platform_registry
                 max_msg = platform_registry.get("irc").max_message_length
         self.max_message_length = int(max_msg or 450)
         self._reader: Optional[asyncio.StreamReader] = None

@@ -69,7 +69,7 @@ class TestCliPathFiresHooks:
         def cb(command, description, *, allow_permanent=True):
             return "once"
 
-        with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
+        with patch("hermes_cli.lifecycle.invoke_hook", side_effect=fake_invoke_hook):
             result = check_all_command_guards(
                 "rm -rf /tmp/test-hook", "local", approval_callback=cb,
             )
@@ -108,7 +108,7 @@ class TestCliPathFiresHooks:
         def cb(command, description, *, allow_permanent=True):
             return "deny"
 
-        with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
+        with patch("hermes_cli.lifecycle.invoke_hook", side_effect=fake_invoke_hook):
             result = check_all_command_guards(
                 "rm -rf /tmp/test-deny", "local", approval_callback=cb,
             )
@@ -134,7 +134,7 @@ class TestCliPathFiresHooks:
         def cb(command, description, *, allow_permanent=True):
             return "once"
 
-        with patch("hermes_cli.plugins.invoke_hook", side_effect=boom):
+        with patch("hermes_cli.lifecycle.invoke_hook", side_effect=boom):
             result = check_all_command_guards(
                 "rm -rf /tmp/test-crash", "local", approval_callback=cb,
             )
@@ -175,7 +175,7 @@ class TestSmartModeFiresHooks:
         captured = []
 
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
         ):
             result = guard(value, "local")
@@ -215,7 +215,7 @@ class TestSmartModeFiresHooks:
 
         monkeypatch.setattr(approval_smart, "_smart_approve", decide)
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             side_effect=lambda name, **kwargs: events.append(name),
         ):
             result = guard(value, "local")
@@ -243,7 +243,7 @@ class TestSmartModeFiresHooks:
 
         with (
             patch("agent.redact.redact_sensitive_text", side_effect=redact),
-            patch("hermes_cli.plugins.invoke_hook"),
+            patch("hermes_cli.lifecycle.invoke_hook"),
         ):
             result = guard(value, "local")
 
@@ -260,7 +260,7 @@ class TestSmartModeFiresHooks:
     ):
         self._configure(monkeypatch, verdict)
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             side_effect=RuntimeError("observer failed"),
         ):
             result = guard(value, "local")
@@ -285,7 +285,7 @@ class TestSmartModeFiresHooks:
         with (
             patch("agent.redact.redact_sensitive_text", side_effect=fail_observer_redaction),
             patch(
-                "hermes_cli.plugins.invoke_hook",
+                "hermes_cli.lifecycle.invoke_hook",
                 side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
             ),
         ):
@@ -321,7 +321,7 @@ class TestSmartModeFiresHooks:
         )
         captured = []
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
         ):
             first = guard(first_value, "local")

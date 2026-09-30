@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+import hermes_cli.plugin_policy as plugin_policy
+
 
 @pytest.mark.parametrize("blocked_by", ["hook", "execution"])
 def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blocked_by):
@@ -47,7 +49,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
 
     monkeypatch.setattr(plugins.get_plugin_manager(), "_middleware", {
         "tool_request": [request], "tool_execution": [execution]})
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks", hook)
+    monkeypatch.setattr(plugin_policy, "_dispatch_pre_tool_call_hooks", hook)
 
     class Client:
         def execute(self, planned):

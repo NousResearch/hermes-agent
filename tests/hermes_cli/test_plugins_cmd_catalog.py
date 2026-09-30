@@ -305,8 +305,8 @@ def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled
     and is refused at load; an install made with --allow-removed keeps working."""
-    from hermes_cli.plugins_discovery import gate_manifest
-    from hermes_cli.plugins_manifest import PluginManifest
+    from plugin_runtime.discovery import gate_manifest
+    from plugin_runtime.manifest import PluginManifest
     target = _install_url(tmp_path / "later-killed", "killed", {})
     world["state"]["removed"].append(pc_cat.RemovedEntry(name="killed", reason="backdoor"))
     monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
@@ -315,10 +315,14 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
         pc.cmd_enable("killed")
     assert "killed" not in pc._get_enabled_set()
     manifest = PluginManifest(name="killed", source="user", path=str(target), key="killed")
-    assert gate_manifest(manifest, set(), {"killed"}).action != "load"
+    assert gate_manifest(
+        manifest, set(), {"killed"}, installed_plugin_removal=cat.installed_plugin_removal,
+    ).action != "load"
     # Explicit bypass at install time is remembered.
     pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
-    assert gate_manifest(manifest, set(), {"killed"}).action == "load"
+    assert gate_manifest(
+        manifest, set(), {"killed"}, installed_plugin_removal=cat.installed_plugin_removal,
+    ).action == "load"
 
 
 def test_annotated_tag_pin_keeps_reviewed_trust_and_reads_as_at_pin(world, monkeypatch):

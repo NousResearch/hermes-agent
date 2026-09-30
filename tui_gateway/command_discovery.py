@@ -156,7 +156,7 @@ def _catalog_quick_commands(cat: _Catalog, load_cfg) -> None:
 
 
 def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
-    plugin_cmds = module_loader("hermes_cli.plugins").get_plugin_commands() or {}
+    plugin_cmds = module_loader("plugin_runtime.api").get_plugin_commands() or {}
     if plugin_cmds:
         cat.cat_map.setdefault("Plugin commands", [])
     for pname, info in sorted(plugin_cmds.items()):

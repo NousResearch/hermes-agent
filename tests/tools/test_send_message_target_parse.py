@@ -352,7 +352,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
 
 
 def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-resolved-test"
     entry = PlatformEntry(
@@ -406,7 +406,7 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
 
 
 def test_unresolved_plugin_target_requires_explicit_parser() -> None:
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-verbatim-test"
     entry = PlatformEntry(
@@ -532,7 +532,7 @@ def test_photon_group_guid_passes_through_when_requested() -> None:
 def test_parserless_plugin_target_passes_through_when_requested() -> None:
     """A plugin platform that declares no parser has no explicit syntax at
     all, so passing the raw id through is the only way cron can target it."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from tools.send_message_tool import resolve_send_target
 
     platform_name = "opaque-cron-fallback-test"
@@ -560,7 +560,7 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
     """A plugin that DOES declare a parser stays strict for every caller:
     its parser is the authority on native syntax, so an unrecognized
     target errors even with pass_unresolved_references."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from tools.send_message_tool import resolve_send_target
 
     platform_name = "opaque-parser-strict-test"

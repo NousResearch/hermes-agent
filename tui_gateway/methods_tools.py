@@ -251,7 +251,7 @@ _SIMPLE_RPCS = {
     "reload.env": (5015, lambda params: {"updated": int(_tools_mod("hermes_cli.config").reload_env())}),
     "plugins.list": (5032, lambda params: {"plugins": [
         {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
-        for n, i in _tools_mod("hermes_cli.plugins").get_plugin_manager()._plugins.items()]}),
+        for n, i in _tools_mod("plugin_runtime.lifecycle").get_plugin_manager()._plugins.items()]}),
     "tools.list": (5031, lambda params: {"toolsets": _toolset_rows(params, with_tools=True)}),
     "toolsets.list": (5032, lambda params: {"toolsets": _toolset_rows(params, with_tools=False)}),
     "agents.list": (5033, lambda params: {"processes": [
@@ -325,7 +325,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
 def refresh_plugin_sessions(home, note: str) -> None:
     """A plugin just went live in ``home``: append its MCP tools to that profile's open chats (deferred
     behind tool_search, so the model-facing tool array is unchanged) and queue ``note`` for their next
-    turn. Called by ``hermes_cli.plugins_activation_live``."""
+    turn. Called through ``plugin_runtime.lifecycle.refresh_tui_plugin_sessions``."""
     _refresh_live_sessions(home, preserve_prefix=True, note=note)
 
 
@@ -470,7 +470,7 @@ def _dispatch_quick(rid, params, session, name, arg):
 
 def _plugin_command_handler(name: str):
     try:
-        return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
+        return _tools_mod("plugin_runtime.api").get_plugin_command_handler(name)
     except Exception:
         return None
 
@@ -482,10 +482,10 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     the socket/worker thread where nothing upstream binds it (only the turn path does), so a handler
     saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
     #108698; ``_set_session_context`` is the turn path's own seam."""
-    plugins = _tools_mod("hermes_cli.plugins")
+    resolve_plugin_command_result = _tools_mod("plugin_runtime.dispatch").resolve_plugin_command_result
     tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
     try:
-        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+        return str(resolve_plugin_command_result(handler(arg)) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -1477,7 +1477,7 @@ def _plugin_server_rows(
     declared = namespace.get("servers", {})
     if not isinstance(declared, dict):
         return []
-    server_name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
+    server_name_for = _tools_mod("plugin_runtime.manifest").portable_mcp_server_name
     liveness = _tools_mod("tools.mcp_liveness")
     core = _tools_mod("tools.mcp_tool_common")._core
     resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
@@ -1553,7 +1553,7 @@ _plugin_activation_subscribed: set = set()
 
 
 def _ensure_plugin_activation_listener() -> None:
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
     manager = get_plugin_manager()
     if manager.scope_key in _plugin_activation_subscribed:
         return
@@ -1645,6 +1645,7 @@ def _plugins_update(rid, params):
                "warnings": list(result.warnings)}
     if result.changed:
         _ensure_plugin_activation_listener()
+        # plugins.manage is a process-boundary surface: use the edge orchestrator, not runtime-only go-live.
         activate = _tools_mod("hermes_cli.plugins_activation").activate_plugin_now
         payload = _with_activation({**payload, **activate(result.installed_name)}, result.installed_name)
     return _ok(rid, payload)

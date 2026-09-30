@@ -178,7 +178,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
 
     if unresolved:
         try:
-            from hermes_cli.plugins import discover_plugins
+            from plugin_runtime.lifecycle import discover_plugins
 
             discover_plugins()
             plugin_valid = [name for name in unresolved if validate_toolset(name)]

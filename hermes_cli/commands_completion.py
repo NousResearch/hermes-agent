@@ -455,7 +455,7 @@ class SlashCommandCompleter(Completer):
             if cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
         try:
-            from hermes_cli.plugins import get_plugin_commands
+            from plugin_runtime.api import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
                 if cmd_name.startswith(word):
                     yield _cmd_completion(

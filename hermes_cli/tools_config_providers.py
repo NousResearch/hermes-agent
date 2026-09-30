@@ -27,9 +27,9 @@ def _plugin_registry(module: str):
     """Import a plugin registry module after plugin discovery; ``None`` on any failure."""
     try:
         registry = importlib.import_module(module)
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
 
-        _ensure_plugins_discovered()
+        ensure_plugins_discovered()
         return registry
     except Exception:
         return None

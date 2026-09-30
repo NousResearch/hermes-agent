@@ -143,7 +143,7 @@ def cmd_compat(args: Any | None = None) -> None:
     """``hermes plugins compat`` — which installed plugins import paths scheduled for removal, and where."""
     import sys
     from pathlib import Path
-    from hermes_cli.plugin_compat import (
+    from plugin_runtime.compat import (
         ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect, scan_plugin, summary_lines)
     console = _pc()._console()
     path = getattr(args, "path", None)

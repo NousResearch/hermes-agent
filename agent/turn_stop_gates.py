@@ -56,7 +56,7 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     try:
         from agent.verify_hooks import max_verify_nudges
         from hermes_cli.lifecycle import has_hook
-        from hermes_cli.plugins import get_pre_verify_continue_message
+        from hermes_cli.plugin_policy import get_pre_verify_continue_message
 
         if _edited and has_hook("pre_verify") and attempt < max_verify_nudges():
             # Posture is fixed for the session — resolve once + cache.

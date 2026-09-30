@@ -791,7 +791,7 @@ class GatewayInboundMixin:
         raw_args = event.get_command_args().strip()
         platform = source.platform.value if source.platform else ""
         try:
-            from hermes_cli.plugins import fire_pre_command_hook
+            from hermes_cli.plugin_policy import fire_pre_command_hook
             fire_pre_command_hook(
                 surface="gateway", command=str(canonical), alias_used=str(command),
                 args_raw=raw_args, session_key=_quick_key, platform=platform,
@@ -1095,7 +1095,7 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from plugin_runtime.api import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
@@ -1853,7 +1853,7 @@ class GatewayInboundMixin:
 
     def _install_plugin_message_injector(self) -> None:
         """Publish this live gateway's plugin message scheduler."""
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().set_gateway_message_injector(
             self, self._schedule_plugin_message_injection
@@ -1861,7 +1861,7 @@ class GatewayInboundMixin:
 
     def _clear_plugin_message_injector(self) -> None:
         """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().clear_gateway_message_injector(self)
 

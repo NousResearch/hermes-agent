@@ -663,7 +663,7 @@ async def list_hooks(profile: Optional[str] = None):
 
         valid_events = []
         with contextlib.suppress(Exception):
-            from hermes_cli.plugins import VALID_HOOKS
+            from plugin_runtime.dispatch import VALID_HOOKS
             valid_events = sorted(VALID_HOOKS)
 
         specs = []
@@ -720,7 +720,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
     event, command = _hook_body_fields(body)
     valid_hooks = None
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import VALID_HOOKS as valid_hooks
+        from plugin_runtime.dispatch import VALID_HOOKS as valid_hooks
     if valid_hooks is not None and event not in valid_hooks:
         raise HTTPException(status_code=400, detail=f"Unknown event '{event}'. Valid: {', '.join(sorted(valid_hooks))}")
 

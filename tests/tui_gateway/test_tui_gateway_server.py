@@ -2414,7 +2414,7 @@ def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "plugin_runtime.lifecycle",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
@@ -2436,7 +2436,7 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "plugin_runtime.lifecycle",
         types.SimpleNamespace(
             discover_plugins=lambda: discovered.update({"ready": True})
         ),
@@ -2516,7 +2516,7 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "plugin_runtime.lifecycle",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
@@ -2551,7 +2551,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "plugin_runtime.lifecycle",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
@@ -2575,7 +2575,7 @@ def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, cap
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "plugin_runtime.lifecycle",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
@@ -2640,7 +2640,7 @@ def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, caps
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,mcp-off,nope")
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "plugin_runtime.lifecycle",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
@@ -11841,7 +11841,7 @@ def test_commands_catalog_includes_desktop_meta_without_skills():
 
 def test_commands_catalog_includes_plugin_commands(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_commands",
+        "plugin_runtime.api.get_plugin_commands",
         lambda: {
             "lcm": {
                 "description": "Latent consistency",
@@ -11879,7 +11879,7 @@ def test_plugin_slash_command_runs_under_the_session_env(monkeypatch):
         seen["key"] = get_session_env("HERMES_SESSION_KEY")
         return f"ok:{arg}"
 
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler",
+    monkeypatch.setattr("plugin_runtime.api.get_plugin_command_handler",
                         lambda name: handler if name == "whoami" else None)
     monkeypatch.setattr(server, "_sessions", {"sid-p": {"session_key": "agent:tui:key-p", "cwd": ""}})
 

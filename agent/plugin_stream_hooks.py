@@ -76,7 +76,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             except Exception as exc:
                 # Fires once per streaming delta: a mis-declared callback fails identically every
                 # time, so it goes through the manager's warn-once reporter (#111922).
-                from hermes_cli.plugins import get_plugin_manager
+                from plugin_runtime.lifecycle import get_plugin_manager
 
                 get_plugin_manager()._report_hook_failure(dispatcher.hook_name, dispatcher.callback, payload, exc)
         finally:
@@ -85,7 +85,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
 
 def _registered_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
     try:
-        from hermes_cli import plugins
+        import plugin_runtime.api as plugins
         return plugins.iter_hook_callbacks(hook_name)
     except Exception:
         logger.debug("plugin stream hook callback lookup failed: %s", hook_name, exc_info=True)

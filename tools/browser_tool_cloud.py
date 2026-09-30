@@ -34,8 +34,8 @@ def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object
 def _ensure_browser_plugins_loaded() -> None:
     """Idempotently trigger plugin discovery (standalone scripts/tests may never import ``model_tools``)."""
     try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
-        _ensure_plugins_discovered()
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
+        ensure_plugins_discovered()
     except Exception as exc:
         _origin().logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
 

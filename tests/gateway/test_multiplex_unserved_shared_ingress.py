@@ -38,7 +38,7 @@ def _install_secondary(monkeypatch, runner, stamps):
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("plugin_runtime.lifecycle.discover_plugins", lambda: None)
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
         lambda: GatewayConfig(

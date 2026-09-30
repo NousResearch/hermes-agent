@@ -11,19 +11,18 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
+from plugin_runtime.dispatch import (
+    LLM_EXECUTION_MIDDLEWARE,
+    LLM_REQUEST_MIDDLEWARE,
+    OBSERVER_SCHEMA_VERSION,
+    TOOL_EXECUTION_MIDDLEWARE,
+    TOOL_REQUEST_MIDDLEWARE,
+    VALID_MIDDLEWARE,
+)
+
 logger = logging.getLogger(__name__)
 
-OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
 MIDDLEWARE_SCHEMA_VERSION = "hermes.middleware.v1"
-
-TOOL_REQUEST_MIDDLEWARE = "tool_request"
-TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
-LLM_REQUEST_MIDDLEWARE = "llm_request"
-LLM_EXECUTION_MIDDLEWARE = "llm_execution"
-
-VALID_MIDDLEWARE: set[str] = {
-    TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
-}
 
 
 @dataclass
@@ -64,7 +63,7 @@ def _apply_request_chain(
     kind: str, payload_key: str, trace: List[Dict[str, Any]], original: Any, **kwargs: Any
 ) -> RequestMiddlewareResult:
     """Feed ``kwargs[payload_key]`` through every ``kind`` middleware; each may return ``{payload_key: {...}}``."""
-    from hermes_cli.plugins import invoke_middleware
+    from plugin_runtime.api import invoke_middleware
 
     current = kwargs[payload_key]
     for result in invoke_middleware(kind, **middleware_payload(**kwargs)):
@@ -87,7 +86,7 @@ def _apply_request_chain(
 
 def apply_llm_request_middleware(request: Dict[str, Any], **context: Any) -> RequestMiddlewareResult:
     """Apply registered LLM request middleware; ``{"request": {...}}`` replaces the provider kwargs."""
-    from hermes_cli.plugins import has_middleware
+    from plugin_runtime.api import has_middleware
 
     if not has_middleware(LLM_REQUEST_MIDDLEWARE):
         return RequestMiddlewareResult(payload=request, original_payload=request)
@@ -119,7 +118,7 @@ def apply_tool_request_middleware(
             current_args = _safe_copy(relay_args)
             trace.append({"source": "nemo_relay"})
 
-    from hermes_cli.plugins import has_middleware
+    from plugin_runtime.api import has_middleware
 
     if not has_middleware(TOOL_REQUEST_MIDDLEWARE):
         return RequestMiddlewareResult(
@@ -159,10 +158,10 @@ class _DownstreamExecutionError(Exception):
 
 
 def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
-    from hermes_cli.plugins import _delivery_manager
+    from plugin_runtime.lifecycle import delivery_manager
 
     payload_key = "request" if "request" in kwargs else "args"
-    manager = _delivery_manager()
+    manager = delivery_manager()
     callbacks = list(manager._middleware.get(kind, []))
     if not callbacks:
         return terminal_call(kwargs[payload_key])

@@ -159,7 +159,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         await _discover(plat.value)
     # Plugin platforms are dynamic enum members missing from Platform.__members__.
     with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             await _discover(entry.name)
     _apply_channel_aliases(platforms)

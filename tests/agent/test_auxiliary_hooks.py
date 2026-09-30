@@ -4,6 +4,7 @@ Two invariants: (1) an auxiliary ``call_llm`` emits the pair with ``aux_task`` s
 fire the turn-scoped ``pre/post_api_request`` events; (2) a raising subscriber never breaks the
 auxiliary call.
 """
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,14 +13,16 @@ import pytest
 
 from agent.auxiliary_client import call_llm
 from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 
 
 @pytest.fixture
 def manager(monkeypatch):
     mgr = PluginManager()
-    monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
-    monkeypatch.setattr(plugins_mod, "_plugin_managers_by_home", {})
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", mgr)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_managers_by_home", {})
     return PluginContext(PluginManifest(name="aux-observer", source="user"), mgr)
 
 

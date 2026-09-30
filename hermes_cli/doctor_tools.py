@@ -286,7 +286,7 @@ def _check_vercel_backend(issues: list[str]) -> None:
 
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()
         from agent.terminal_env_registry import get_provider
         provider = get_provider(terminal_env)

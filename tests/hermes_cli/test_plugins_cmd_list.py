@@ -76,7 +76,7 @@ def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path)
 
     monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
     monkeypatch.setattr(
-        "hermes_cli.plugins.get_bundled_plugins_dir",
+        "plugin_runtime.discovery.get_bundled_plugins_dir",
         lambda: bundled_dir,
     )
     monkeypatch.setattr(
@@ -119,7 +119,7 @@ def test_declared_capabilities_for_entrypoint_uses_distribution_metadata(
     )
     monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
     monkeypatch.setattr(
-        "hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir
+        "plugin_runtime.discovery.get_bundled_plugins_dir", lambda: bundled_dir
     )
     monkeypatch.setattr(
         importlib.metadata,
@@ -138,7 +138,7 @@ def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tm
     """One plugin directory the process cannot stat() into (Windows WinError 5, POSIX mode 000)
     must be warned about and skipped — not abort discovery for every other plugin (#111804).
     Covers the loader scan (``scan_directory``) and the list/hub scan (``_scan_level``)."""
-    from hermes_cli.plugins_discovery import scan_directory
+    from plugin_runtime.discovery import scan_directory
 
     user_dir = tmp_path / "plugins"
     bundled_dir = tmp_path / "bundled"
@@ -148,7 +148,7 @@ def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tm
         (user_dir / name / "plugin.yaml").write_text(f"name: {name}\nversion: 1.0.0\n", encoding="utf-8")
     (user_dir / "denied").chmod(0)
     monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
-    monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir)
+    monkeypatch.setattr("plugin_runtime.discovery.get_bundled_plugins_dir", lambda: bundled_dir)
     monkeypatch.setattr(importlib.metadata, "entry_points", lambda: [])
 
     try:

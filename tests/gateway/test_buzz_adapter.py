@@ -2956,7 +2956,7 @@ class TestEnvEnablement:
 class TestBuzzPluginRegistration:
 
     def test_register_platform_contract(self):
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         platform_registry.unregister("buzz")
         ctx = MagicMock()

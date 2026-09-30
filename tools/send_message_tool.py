@@ -26,7 +26,7 @@ from tools.registry import tool_error
 
 def prepare_send_message_platforms() -> None:
     """Load enabled standalone plugins before tool schemas/cache keys are built."""
-    from hermes_cli.plugins import discover_plugins
+    from plugin_runtime.lifecycle import discover_plugins
     discover_plugins()
 
 
@@ -307,7 +307,7 @@ def _resolve_platform_config(platform_name, config):
     """``(platform, pconfig, registry_entry, error)``. Plugin platforms must be registered;
     disabled/missing platforms error, except Weixin, which may be configured purely via .env."""
     from gateway.config import Platform
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
     if entry is None and platform_name not in {member.value for member in Platform}:
         return None, None, None, f"Unknown or unregistered plugin platform: {platform_name}"
@@ -564,7 +564,7 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         sender = platform_registry.get(platform_name).standalone_sender_fn
     except Exception:
         sender = None
@@ -611,7 +611,7 @@ def _platform_max_length(platform):
         except ImportError:
             return 8000
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
         return entry.max_message_length if entry and entry.max_message_length > 0 else None
     except Exception:
@@ -725,7 +725,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if text_sender is not None:
         send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
     else:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
         if entry is not None and entry.send_message_handler is not None:
             # Custom handler receives the full typed request once (not per chunk).
@@ -802,7 +802,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
+    from plugin_runtime.compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

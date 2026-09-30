@@ -57,7 +57,7 @@ def _enable(hermes_home: Path, name: str) -> None:
 
 class TestRegisterTranscriptionProvider:
     def test_accepts_valid_provider(self):
-        from hermes_cli.plugins import PluginManager
+        from plugin_runtime.manager import PluginManager
 
         from agent import transcription_registry
         transcription_registry._reset_for_tests()
@@ -89,7 +89,7 @@ class TestRegisterTranscriptionProvider:
         transcription_registry._reset_for_tests()
 
     def test_rejects_non_provider(self, caplog):
-        from hermes_cli.plugins import PluginManager
+        from plugin_runtime.manager import PluginManager
 
         from agent import transcription_registry
         transcription_registry._reset_for_tests()
@@ -113,7 +113,7 @@ class TestRegisterTranscriptionProvider:
         transcription_registry._reset_for_tests()
 
     def test_rejects_builtin_shadow(self, caplog):
-        from hermes_cli.plugins import PluginManager
+        from plugin_runtime.manager import PluginManager
 
         from agent import transcription_registry
         transcription_registry._reset_for_tests()

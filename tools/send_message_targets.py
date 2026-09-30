@@ -147,7 +147,7 @@ def resolve_send_target(
     built-in platform, or a plugin platform without a parser, to the adapter as written; a plugin
     WITH a parser stays strict. The optional validator has the final say over every returned id."""
     from gateway.config import Platform
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
 
     def _validated(chat_id, thread_id):

@@ -456,7 +456,7 @@ def telemetry_provenance(skill_name: str, record: Optional[Dict[str, Any]] = Non
         return "installed"
     if ":" in skill_name:
         with suppress(Exception):
-            from hermes_cli.plugins import get_plugin_manager
+            from plugin_runtime.lifecycle import get_plugin_manager
             if get_plugin_manager().find_plugin_skill(skill_name) is not None:
                 return "installed"
     if label := {"installed": "installed", "agent": "agent_created"}.get(

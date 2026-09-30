@@ -221,7 +221,7 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
     members = []
     for path in selected:
         # Per plugin: with none selected, PM must not import the application's manifest module.
-        from hermes_cli.plugins_manifest import requires_hermes_error
+        from plugin_runtime.manifest import requires_hermes_error
 
         declaration = read_python_declaration(path)
         if requires_hermes_error(declaration.manifest):

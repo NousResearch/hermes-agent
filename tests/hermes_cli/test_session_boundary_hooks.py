@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
-from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager
 from cli import HermesCLI
 
 

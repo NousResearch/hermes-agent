@@ -82,9 +82,9 @@ def platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
 
 def _registry_entries() -> list:
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()  # idempotent per profile scope
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         return list(platform_registry.all_entries())
     return []
 

@@ -656,7 +656,7 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
         # resources. Observer-only; dispatch failures never break the interrupt.
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from plugin_runtime.api import invoke_hook as _invoke_hook
             _invoke_hook(
                 "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
                 reason="user_stop", invalidation_reason="session_interrupt",

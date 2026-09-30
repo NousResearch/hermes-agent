@@ -136,7 +136,7 @@ def test_simplex_allowlist_matches_contact_id_not_display_name(monkeypatch, allo
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", allowlist)
 
-    from gateway.platform_registry import platform_registry, PlatformEntry
+    from plugin_runtime.platform_registry import platform_registry, PlatformEntry
     platform_registry.register(PlatformEntry(
         name="simplex",
         label="SimpleX Chat",

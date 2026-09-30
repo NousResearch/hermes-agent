@@ -75,7 +75,7 @@ opened = []
 sys.addaudithook(lambda event, args: opened.append(str(args[0])) if event == 'open' and home in str(args[0]) else None)
 bind_bypass_policy(frame)
 from hermes_cli.config import load_config, read_raw_config
-from hermes_cli.plugins import discover_plugins, get_plugin_manager
+from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
 discover_plugins()
 cfg = load_config()
 raw = read_raw_config()

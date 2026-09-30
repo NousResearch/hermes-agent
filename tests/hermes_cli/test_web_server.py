@@ -1478,7 +1478,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         as nameless "Irc"/"Ntfy" cards with empty descriptions.
         """
         from gateway.config import Platform
-        from gateway.platform_registry import PlatformEntry, platform_registry
+        from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 
         entry = PlatformEntry(
             name="pseudofake",

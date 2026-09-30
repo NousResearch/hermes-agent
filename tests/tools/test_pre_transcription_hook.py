@@ -23,6 +23,8 @@ Mirrors the ``transform_tool_result`` hook test conventions from
 """
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
+from plugin_runtime.manager import PluginManager
 
 import logging
 import sys
@@ -31,7 +33,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import hermes_cli.plugins as plugins_mod
 from tools import transcription_tools
 
 
@@ -58,8 +59,8 @@ def _fake_hooks(monkeypatch, results):
         captured["kwargs"] = kw
         return list(results)
 
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke)
+    monkeypatch.setattr("plugin_runtime.api.has_hook", lambda name: True)
+    monkeypatch.setattr("plugin_runtime.api.invoke_hook", _invoke)
     return captured
 
 
@@ -70,8 +71,8 @@ def _no_hooks(monkeypatch):
             "invoke_hook must not be called when has_hook() is False"
         )
 
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _boom)
+    monkeypatch.setattr("plugin_runtime.api.has_hook", lambda name: False)
+    monkeypatch.setattr("plugin_runtime.api.invoke_hook", _boom)
 
 
 def _dispatch_ctx(stt_config, provider):
@@ -547,10 +548,10 @@ def test_real_fixture_plugins_thread_prompt_in_registration_order(
         encoding="utf-8",
     )
 
-    old_manager = plugins_mod._plugin_manager
-    plugins_mod._plugin_manager = plugins_mod.PluginManager()
+    old_manager = plugin_lifecycle._plugin_manager
+    plugin_lifecycle._plugin_manager = PluginManager()
     try:
-        plugins_mod.discover_plugins()
+        plugin_lifecycle.discover_plugins()
 
         audio = _make_audio(tmp_path)
         mock_segment = MagicMock()
@@ -569,7 +570,7 @@ def test_real_fixture_plugins_thread_prompt_in_registration_order(
              patch("tools.transcription_tools._local_model", None):
             result = transcription_tools.transcribe_audio(audio)
     finally:
-        plugins_mod._plugin_manager = old_manager
+        plugin_lifecycle._plugin_manager = old_manager
 
     assert result["success"] is True
     _, kwargs = mock_model.transcribe.call_args

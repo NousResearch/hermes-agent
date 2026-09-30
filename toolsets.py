@@ -354,7 +354,7 @@ def _plugin_platform_bundle(name: str) -> List[str]:
         return []
     platform_name = name[len("hermes-"):]
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         if not platform_registry.is_registered(platform_name):
             return []
     except Exception:

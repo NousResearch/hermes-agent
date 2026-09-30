@@ -1568,20 +1568,20 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `CAPABILITY_REGISTRY` | moved-lazy | `hermes_cli.plugin_capabilities` |
-| `ENTRY_POINT_CAPABILITIES_GROUP` | moved-lazy | `hermes_cli.plugins_discovery` |
+| `CAPABILITY_REGISTRY` | moved-lazy | `plugin_runtime.capabilities` |
+| `ENTRY_POINT_CAPABILITIES_GROUP` | moved-lazy | `plugin_runtime.discovery` |
 | `Iterable` | import | `typing` |
 | `LEGACY_RELAY_PLUGIN_KEYS` | moved-lazy | `hermes_cli.relay_plugin_cutover` |
-| `MAX_SYSTEM_PROMPT_SECTIONS` | moved-lazy | `hermes_cli.plugins_dispatch` |
-| `OBSERVER_SCHEMA_VERSION` | moved-lazy | `hermes_cli.middleware` |
+| `MAX_SYSTEM_PROMPT_SECTIONS` | moved-lazy | `plugin_runtime.dispatch` |
+| `OBSERVER_SCHEMA_VERSION` | moved-lazy | `plugin_runtime.dispatch` |
 | `Type` | import | `typing` |
-| `VALID_CAPABILITY_IDS` | moved-lazy | `hermes_cli.plugin_capabilities` |
+| `VALID_CAPABILITY_IDS` | moved-lazy | `plugin_runtime.capabilities` |
 | `cfg_get` | moved-lazy | `hermes_cli.config` |
 | `contextmanager` | import | `contextlib` |
 | `contextvars` | import | `contextvars` |
 | `copy` | import | `copy` |
 | `fast_safe_load` | moved-lazy | `utils` |
-| `format_system_prompt_section` | moved-lazy | `hermes_cli.plugins_dispatch` |
+| `format_system_prompt_section` | moved-lazy | `plugin_runtime.dispatch` |
 | `get_plugin_subscriptions` | restored-def | `(deleted; BASE body restored)` |
 | `hashlib` | import | `hashlib` |
 | `reset_hermes_home_override` | moved-lazy | `hermes_constants` |

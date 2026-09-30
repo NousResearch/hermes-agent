@@ -12,7 +12,7 @@ import hermes_yaml as yaml
 
 import gateway.relay as relay
 from gateway.config import Platform, load_gateway_config
-from gateway.platform_registry import platform_registry
+from plugin_runtime.platform_registry import platform_registry
 from gateway.run_startup import GatewayStartupMixin
 
 URL = "wss://connector.example/relay"
@@ -41,7 +41,7 @@ def profile(tmp_path, monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
     monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://identity.example/token")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "native-test-token")
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("plugin_runtime.lifecycle.discover_plugins", lambda: None)
     monkeypatch.setattr(GatewayStartupMixin, "_register_config_hooks", lambda *a, **k: None)
     platform_registry.unregister("relay")
     yield tmp_path

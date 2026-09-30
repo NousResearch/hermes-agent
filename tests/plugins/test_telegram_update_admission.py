@@ -454,7 +454,7 @@ async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure
             native.add_error_handler(native_error, block=block)
 
     manager = SimpleNamespace(get_platform_handler_factories=lambda platform: [(factory, "offline-error")])
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    monkeypatch.setattr("plugin_runtime.lifecycle.get_plugin_manager", lambda: manager)
     adapter._wire_plugin_handlers(app)
     assert native_error in app.error_handlers
     monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
@@ -615,7 +615,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
                 native.add_handler(conversation, group=-1)
 
             manager = SimpleNamespace(get_platform_handler_factories=lambda platform: [(factory, "offline-conversation")])
-            monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+            monkeypatch.setattr("plugin_runtime.lifecycle.get_plugin_manager", lambda: manager)
             adapter._wire_plugin_handlers(app)
             assert -1 in app.handlers  # Factory errors are logged/swallowed, not connection failures.
             assert app.handlers[-1][0] is conversation

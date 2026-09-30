@@ -103,7 +103,7 @@ def _is_known_platform(name: str) -> bool:
     if name in _BUILTIN_DELIVER_PLATFORMS:
         return True
     with suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         return platform_registry.is_registered(name)
     return False
 

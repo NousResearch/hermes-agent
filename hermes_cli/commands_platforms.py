@@ -257,7 +257,7 @@ def _collect_gateway_skill_entries(
         return _clamp_command_names(out, reserved_names)
 
     def _plugin_rows():
-        from hermes_cli.plugins import get_plugin_commands
+        from plugin_runtime.api import get_plugin_commands
         plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
             meta = plugin_cmds[cmd_name]

@@ -926,7 +926,7 @@ def _print_checkpoint_footprint_notice() -> None:
 
 def _print_plugin_compat_notice() -> None:
     """Installed plugins importing paths that the Sep 2026 decomposition scheduled for removal."""
-    from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
+    from plugin_runtime.compat import compat_report, removal_in_effect, summary_lines
     lines = summary_lines(compat_report(force=True))
     if not lines:
         return

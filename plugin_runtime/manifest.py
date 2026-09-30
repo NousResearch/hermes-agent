@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from utils import fast_safe_load
-from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
+from plugin_runtime.config_bridge import read_running_hermes_version
+from plugin_runtime.capabilities import parse_declared_capabilities as _parse_declared_capabilities
+from plugin_runtime.debug import plugin_debug_enabled
 
 try:
     import hermes_yaml as yaml
@@ -32,9 +34,9 @@ _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform
 _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "name", "version", "description", "author", "requires_env", "provides_tools", "provides_hooks",
     "kind", "hooks", "label", "optional_env", "platforms", "external_dependencies",
-    "pip_dependencies", "provides_browser_providers", "provides_web_providers",
+    "pip_dependencies", "extra", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
-    "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
+    "license", "homepage", "update_url", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime",
 }
 
@@ -52,8 +54,7 @@ _CONFIG_SCHEMA_TYPES: Dict[str, tuple] = {
 
 
 def _plugins_debug() -> bool:
-    from hermes_cli import plugins as _origin
-    return _origin._PLUGINS_DEBUG
+    return plugin_debug_enabled()
 
 
 def _portable_skill_namespace(key: str) -> str:
@@ -147,9 +148,17 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
         "Plugin %s: requires_plugins entry %r must be a plugin id "
         "string or a {id, version_range} mapping; skipping",
     )
-    # python_dependencies — validated and surfaced ONLY; never auto-installed.
+    # python_dependencies — installed through the pm workspace union. pip_dependencies is
+    # the legacy key for the same declaration and remains accepted with a warning.
+    legacy_pydeps = data.get("pip_dependencies")
+    if legacy_pydeps:
+        logger.warning(
+            "Plugin %s: 'pip_dependencies' is deprecated — declare a pyproject.toml "
+            "(or 'python_dependencies') instead; the pm bridge materializes it either way", key,
+        )
+    pydep_field = "python_dependencies" if data.get("python_dependencies") else "pip_dependencies"
     pydeps = _manifest_list(
-        data, key, "python_dependencies", "a list of requirement strings",
+        data, key, pydep_field, "a list of requirement strings",
         lambda item: item.strip() if isinstance(item, str) and item.strip() else None,
         "Plugin %s: python_dependencies entry %r must be a non-empty requirement string; skipping",
     )
@@ -180,7 +189,8 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
     return {
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
-        "homepage": str(data.get("homepage") or ""), "tags": tags,
+        "homepage": str(data.get("homepage") or ""), "update_url": str(data.get("update_url") or ""),
+        "tags": tags,
     }
 
 
@@ -382,6 +392,7 @@ class PluginManifest:
     config_schema: Dict[str, Any] = field(default_factory=dict)
     license: str = ""
     homepage: str = ""
+    update_url: str = ""
     tags: List[str] = field(default_factory=list)
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
@@ -395,9 +406,7 @@ _VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 def running_hermes_version() -> str:
     """Base release version of the Hermes code that is running."""
-    from hermes_cli.version_info import get_version_info
-
-    return get_version_info().base_version
+    return read_running_hermes_version()
 
 
 _VERSION_SEGMENT_RE = re.compile(r"^\d+")
@@ -447,7 +456,7 @@ def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
     """Build the manifest for a portable Agent Plugin directory (``plugin.json``); diagnostics warn."""
-    from hermes_cli.agent_plugins import read_agent_plugin_manifest
+    from plugin_runtime.portable import read_agent_plugin_manifest
     data, diagnostics = read_agent_plugin_manifest(child)
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)

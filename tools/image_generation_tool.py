@@ -522,11 +522,11 @@ def _build_no_backend_setup_message() -> str:
 def _get_plugin_provider(name: str, *, force: bool = False):
     """Discover plugins (local import: importing this module must not trigger discovery) and return the named provider."""
     from agent.image_gen_registry import get_provider
-    from hermes_cli.plugins import _ensure_plugins_discovered
+    from plugin_runtime.lifecycle import ensure_plugins_discovered
     if force:
-        _ensure_plugins_discovered(force=True)
+        ensure_plugins_discovered(force=True)
     else:
-        _ensure_plugins_discovered()
+        ensure_plugins_discovered()
     return get_provider(name)
 
 

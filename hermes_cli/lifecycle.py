@@ -22,9 +22,9 @@ def _observe(hook_name: str, **kwargs: Any) -> None:
 
 
 def _plugin_hooks(hook_name: str, **kwargs: Any) -> List[Any]:
-    from hermes_cli import plugins
+    from plugin_runtime.api import invoke_hook as invoke_plugin_hook
 
-    return plugins.invoke_hook(hook_name, **kwargs)
+    return invoke_plugin_hook(hook_name, **kwargs)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
@@ -41,9 +41,9 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
     composition, with ``async def`` plugin callbacks awaited on that loop."""
     _observe(hook_name, **kwargs)
-    from hermes_cli import plugins
+    from plugin_runtime.api import ainvoke_hook as ainvoke_plugin_hook
 
-    return await plugins.ainvoke_hook(hook_name, **kwargs)
+    return await ainvoke_plugin_hook(hook_name, **kwargs)
 
 
 def has_hook(hook_name: str) -> bool:
@@ -60,9 +60,9 @@ def has_hook(hook_name: str) -> bool:
     except Exception:
         logger.warning("Unable to inspect built-in observability hooks", exc_info=True)
 
-    from hermes_cli import plugins
+    from plugin_runtime.api import has_hook as has_plugin_hook
 
-    return plugins.has_hook(hook_name)
+    return has_plugin_hook(hook_name)
 
 
 def finalize_session(**kwargs: Any) -> List[Any]:

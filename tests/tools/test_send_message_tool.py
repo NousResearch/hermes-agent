@@ -118,8 +118,8 @@ class _StreamingAiohttpSession:
 def _discord_entry():
     """Return the live Discord PlatformEntry, importing lazily so plugin
     discovery is forced exactly once and patches survive across tests."""
-    from hermes_cli.plugins import discover_plugins
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.lifecycle import discover_plugins
+    from plugin_runtime.platform_registry import platform_registry
     discover_plugins()
     return platform_registry.get("discord")
 
@@ -168,8 +168,8 @@ class _patch_discord_sender:
 def _slack_entry():
     """Return the live Slack PlatformEntry, importing lazily so plugin
     discovery is forced exactly once and patches survive across tests."""
-    from hermes_cli.plugins import discover_plugins
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.lifecycle import discover_plugins
+    from plugin_runtime.platform_registry import platform_registry
     discover_plugins()
     return platform_registry.get("slack")
 
@@ -1503,7 +1503,7 @@ class TestSendViaAdapterStandaloneFallback:
 
     @staticmethod
     def _make_entry(send_fn):
-        from gateway.platform_registry import PlatformEntry
+        from plugin_runtime.platform_registry import PlatformEntry
 
         return PlatformEntry(
             name="fakeplatform",
@@ -1549,7 +1549,7 @@ class TestSendViaAdapterStandaloneFallback:
     async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
         """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
         from tools.send_message_tool import _send_via_adapter
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         async def boom(pconfig, chat_id, message, **kwargs):
             raise ValueError("boom!")

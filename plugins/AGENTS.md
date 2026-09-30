@@ -107,8 +107,8 @@ native `api:` match, or version literals on unrelated payloads. Documented surfa
 
 PR #102117 moved internals into `<stem>_<topic>` siblings. Old import paths resolve through
 `PLUGIN-COMPAT` `__getattr__` blocks (listed in `COMPAT_MANIFEST.md` / `compat_manifest.json`)
-until `hermes_cli.plugin_compat.COMPAT_REMOVAL_DATE`, when the commit that added them is reverted.
-`hermes_cli/plugin_compat.py` is the single source: `scan_plugin` (AST scan), `compat_report`
+until `plugin_runtime.compat.COMPAT_REMOVAL_DATE`, when the commit that added them is reverted.
+`plugin_runtime/compat.py` is the single source: `scan_plugin` (AST scan), `compat_report`
 (hits across enabled external plugins, cached to `HERMES_HOME/.plugin-compat-report.json`,
 refreshed by discovery), `removal_in_effect`, `warn_once`. Surfaces: CLI banner notice,
 `hermes plugins compat` (shows affected user plugins), `hermes doctor`, post-update notices, the

@@ -487,7 +487,7 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
 def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
     # 37 → 38: the bundled observability/nemo_relay plugin was removed (Relay lifecycle moved
     # into the agent core); drop it from plugins.enabled.
-    from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
+    from plugin_runtime.relay_policy import legacy_relay_plugin_keys
 
     config = read_raw_config()
     plugins = config.get("plugins")

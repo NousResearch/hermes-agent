@@ -181,7 +181,7 @@ sys.__stdout__.write(json.dumps(results) + '\\n')
 @pytest.mark.asyncio
 async def test_discovery_authorizes_before_scanning(tmp_path, monkeypatch):
     from agent import skill_commands
-    from hermes_cli import plugins
+    import plugin_runtime.api as plugins
     from gateway.session_controls import AuthorityConnection
 
     def forbidden(*args, **kwargs):

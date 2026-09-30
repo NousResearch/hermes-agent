@@ -56,8 +56,8 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
 
 def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict | None) -> list[tuple[str, str]]:
     """Return actionable findings for the removed Hermes Relay plugin."""
-    from hermes_cli.relay_plugin_cutover import (LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV,
-                                                 configured_legacy_relay_env_vars, legacy_relay_plugin_keys)
+    from plugin_runtime.relay_policy import (LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV,
+                                             configured_legacy_relay_env_vars, legacy_relay_plugin_keys)
     findings: list[tuple[str, str]] = []
     plugins = raw_config.get("plugins") if isinstance(raw_config, dict) else None
     if isinstance(plugins, dict):
@@ -518,7 +518,7 @@ def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("Plugin compat check skipped", "({e})")
 def _check_plugin_compat(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.plugin_compat import ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect
+    from plugin_runtime.compat import ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect
     report = compat_report()
     if not report:
         check_ok(f"No enabled plugin imports paths removed on {COMPAT_REMOVAL}")

@@ -183,7 +183,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
 
 def get_plugin_manager():
     """Lazy plugin-manager seam used by tests and early tool-only imports."""
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager as _get_manager
+    from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager as _get_manager
     # Approval can be imported before model_tools (which triggers discovery); make an explicitly selected transport
     # available on the first approval instead of treating the undiscovered registry as unavailable.
     discover_plugins()

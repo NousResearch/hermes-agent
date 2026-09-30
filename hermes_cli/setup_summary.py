@@ -69,8 +69,8 @@ def _first_available_plugin_provider(registry: str, skip: str = None):
     available (fail-soft: any error means none), skipping ``skip``."""
     try:
         import importlib
-        from hermes_cli.plugins import _ensure_plugins_discovered
-        _ensure_plugins_discovered()
+        from plugin_runtime.lifecycle import ensure_plugins_discovered
+        ensure_plugins_discovered()
         for provider in importlib.import_module(f"agent.{registry}").list_providers():
             if provider.name == skip:
                 continue

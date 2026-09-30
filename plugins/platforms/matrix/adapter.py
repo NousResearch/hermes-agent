@@ -383,7 +383,7 @@ def _resolve_max_message_length(config) -> int:
     raw = _extra_or_secret(getattr(config, "extra", None), "max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", None)
     if raw is None or not str(raw).strip():
         with suppress(Exception):
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             entry = platform_registry.get("matrix")
             if entry and entry.max_message_length:
                 raw = entry.max_message_length

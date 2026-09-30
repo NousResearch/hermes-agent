@@ -237,7 +237,7 @@ class Platform(Enum):
                 # registry and every value-based consumer key on.
                 return cls._value2member_map_.get(alias) or cls._add_pseudo_member(alias)
             with contextlib.suppress(Exception):
-                from gateway.platform_registry import platform_registry
+                from plugin_runtime.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
         return cls._add_pseudo_member(value) if registered else None
 
@@ -673,7 +673,7 @@ class GatewayConfig:
 
         # Plugin platforms; force (idempotent) discovery for directly-constructed configs.
         try:
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             with contextlib.suppress(Exception):
                 # Iterate built-in platforms plus any registered plugin platforms so plugin authors get the
                 # same shared-key bridging (#24836).
@@ -690,7 +690,7 @@ class GatewayConfig:
                 # into, and the gateway then tries to connect to Discord / Teams / Google Chat with no token
                 # and emits noisy retry-forever errors. ``_platform_status`` was already fixed for the same
                 # bug class in commit 7849a3d73; this is the runtime counterpart.
-                from hermes_cli.plugins import discover_plugins
+                from plugin_runtime.lifecycle import discover_plugins
                 discover_plugins()
             entry = platform_registry.get(platform.value)
             if entry:

@@ -13,11 +13,13 @@ Mirrors the ``transform_tool_result`` hook tests: patch the symbol the
 call site actually imports (``hermes_cli.plugins.*``) rather than the
 consuming module, because the import happens at call time.
 """
+import plugin_runtime.lifecycle as plugin_lifecycle
 
+from plugin_runtime.manager import PluginManager
 import importlib.util
 import logging
 
-import hermes_cli.plugins as plugins_mod
+import hermes_cli.plugin_policy as plugins_mod
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -50,7 +52,7 @@ def _classify_unclaimed_error(**kwargs):
 
 def test_no_hook_falls_through_to_builtin(monkeypatch):
     # Fresh manager so no stale plugin hooks pollute state.
-    monkeypatch.setattr(plugins_mod, "_plugin_manager", plugins_mod.PluginManager())
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", PluginManager())
 
     result = _classify_unclaimed_error()
     # The synthetic error matches no built-in rule: unknown/retryable is
@@ -192,8 +194,8 @@ def _load_synthetic_plugin(tmp_path):
 def test_synthetic_plugin_end_to_end(tmp_path, monkeypatch):
     """register() + real invoke_hook + classify_api_error, no mocks."""
     demo = _load_synthetic_plugin(tmp_path)
-    manager = plugins_mod.PluginManager()
-    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    manager = PluginManager()
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", manager)
 
     class _Ctx:
         def register_hook(self, name, cb):

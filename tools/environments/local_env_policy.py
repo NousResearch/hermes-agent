@@ -238,7 +238,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     union under the registry lock)."""
     names = set(_static_gate_env_prefixes())
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
     except Exception:  # noqa: BLE001
         pass

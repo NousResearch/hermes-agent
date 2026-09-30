@@ -1034,6 +1034,13 @@ async def test_list_reads_each_account_source_once_until_the_catalog_is_full(
             id="v10-content-only",
         ),
         pytest.param(
+            {"content": {"room_version": "11"}},
+            True,
+            None,
+            SENT,
+            id="v11-content-only-no-power-levels",
+        ),
+        pytest.param(
             {"content": {"room_version": "12"}},
             True,
             None,

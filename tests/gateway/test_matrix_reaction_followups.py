@@ -544,42 +544,45 @@ def test_followup_reaction_keeps_a_server_keyed_profile_route(tmp_path, monkeypa
         adapter = MatrixAdapter(PlatformConfig(enabled=True))
         runner.adapters = {Platform.MATRIX: adapter}
         runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
-        adapter.gateway_runner = runner
-        adapter.set_session_store(runner.session_store)
-        adapter.set_authorization_check(lambda *_args, **_kwargs: True)
-        adapter._store_dir = tmp_path / "store"
-        adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
-        adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
-            display_name="Project room", room_topic=None, server_name="test",
-        ))
-        adapter._get_display_name = AsyncMock(return_value="Alice")
-        adapter._message_handler = AsyncMock()
-        adapter.handle_message = AsyncMock()
-        adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
-            "end": "after-final", "chunk": [{"event_id": "$reaction"}],
-        })))
-        source = adapter.build_source(
-            chat_id="!room:test", chat_type="group", user_id="@alice:test",
-            guild_id="test",
-        )
-        assert source.profile == "work"
-        entry = runner.session_store.get_or_create_session(source)
-        adapter._followup_store().arm(
-            "turn", ("$reply",), profile="work", room_id="!room:test",
-            thread_id="", session_key=entry.session_key, session_id=entry.session_id,
-            requester="@alice:test", source=source.to_dict(), emoji_filter=(),
-            delivery_event_id="$reply",
-        )
+        try:
+            adapter.gateway_runner = runner
+            adapter.set_session_store(runner.session_store)
+            adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+            adapter._store_dir = tmp_path / "store"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
+                display_name="Project room", room_topic=None, server_name="test",
+            ))
+            adapter._get_display_name = AsyncMock(return_value="Alice")
+            adapter._message_handler = AsyncMock()
+            adapter.handle_message = AsyncMock()
+            adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value={
+                "end": "after-final", "chunk": [{"event_id": "$reaction"}],
+            })))
+            source = adapter.build_source(
+                chat_id="!room:test", chat_type="group", user_id="@alice:test",
+                guild_id="test",
+            )
+            assert source.profile == "work"
+            entry = runner.session_store.get_or_create_session(source)
+            adapter._followup_store().arm(
+                "turn", ("$reply",), profile="work", room_id="!room:test",
+                thread_id="", session_key=entry.session_key, session_id=entry.session_id,
+                requester="@alice:test", source=source.to_dict(), emoji_filter=(),
+                delivery_event_id="$reply",
+            )
 
-        admitted = await adapter._handle_followup_reaction(
-            "!room:test", "$reply", "👍", "@alice:test", "$reaction",
-        )
+            admitted = await adapter._handle_followup_reaction(
+                "!room:test", "$reply", "👍", "@alice:test", "$reaction",
+            )
 
-        routed = [
-            (call.args[0].source.guild_id, call.args[0].source.profile)
-            for call in adapter.handle_message.await_args_list
-        ]
-        assert (admitted, routed) == (True, [("test", "work")])
+            routed = [
+                (call.args[0].source.guild_id, call.args[0].source.profile)
+                for call in adapter.handle_message.await_args_list
+            ]
+            assert (admitted, routed) == (True, [("test", "work")])
+        finally:
+            runner.session_store.close_all_db_handles()
 
     asyncio.run(exercise())
 

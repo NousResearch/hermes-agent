@@ -475,9 +475,11 @@ def _gateway_platform_value(platform: Any) -> str:
 
 def _non_conversational_metadata(
     metadata: Optional[dict[str, Any]] = None, *, platform: Any = None) -> Optional[dict[str, Any]]:
-    """Mark lifecycle/status sends for the platforms whose adapters read the mark, and leave
-    other platforms' metadata unchanged."""
-    if _gateway_platform_value(platform) not in {"discord", "matrix"}:
+    """Mark lifecycle/status sends for the platforms whose registry entry sets
+    ``reads_non_conversational_mark``, and leave other platforms' metadata unchanged."""
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(_gateway_platform_value(platform))
+    if not (entry and entry.reads_non_conversational_mark):
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True

@@ -655,9 +655,13 @@ class TestMatrixMarkdownToHtml:
                 "Use `!help <text>`, !help <text> or /<file path>.",
                 "Use <code>!help &lt;text&gt;</code>, !help &lt;text&gt; or /&lt;file path&gt;.",
             ),
-            ("<u>under</u>, <x> a <x> b </x> and <y/> c", "under, &lt;x&gt; a  b  and  c"),
+            ("<kbd>under</kbd>, <x> a <x> b </x> and <y/> c", "under, &lt;x&gt; a  b  and  c"),
+            (
+                '<plaintext><a href="javascript:alert(1)">x</a> <b onclick="x">still</b>',
+                "&lt;plaintext&gt;<a>x</a> <b>still</b>",
+            ),
         ],
-        ids=["unclosed-placeholders", "closed-unknown-elements"],
+        ids=["unclosed-placeholders", "closed-unknown-elements", "markup-after-raw-text-name"],
     )
     def test_unknown_tags_stay_visible_unless_closed(self, text, html):
         assert self.adapter._markdown_to_html(text) == html

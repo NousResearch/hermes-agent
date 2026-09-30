@@ -270,10 +270,10 @@ class _MatrixHtmlSanitizer(HTMLParser):
         self._parts: list[str] = []
         self._unknown_open: dict[str, list[int]] = {}
 
-    def set_cdata_mode(self, elem: str, *, escapable: bool = False) -> None:
+    def set_cdata_mode(self, *_args, **_kwargs) -> None:
         # HTMLParser reads the content after <title>, <script>, <plaintext> and similar start tags as raw
         # text. A lone placeholder with one of those names would turn the rest of the message into escaped
-        # markup, so the sanitiser parses the content of every element as HTML.
+        # markup, so the sanitizer parses the content of every element as HTML.
         return
 
     @staticmethod

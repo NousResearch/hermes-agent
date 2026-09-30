@@ -336,7 +336,11 @@ def get_compatible_custom_providers(
             "'providers:' entries are still used. Move provider configs to the 'providers:' section.",
             type(custom_providers).__name__)
         custom_providers = []
-    candidates = [_normalize_custom_provider_entry(e) for e in (custom_providers or [])]
+    candidates = [
+        _normalize_custom_provider_entry(e)
+        for e in (custom_providers or [])
+        if is_provider_enabled(e)
+    ]
     candidates += providers_dict_to_custom_providers(config.get("providers"))
 
     def _norm(entry: Dict[str, Any], field: str) -> str:

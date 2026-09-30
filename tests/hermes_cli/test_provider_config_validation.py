@@ -11,6 +11,8 @@ import pytest
 from hermes_cli.config import (
     _PROVIDER_NORMALIZE_WARNED,
     _normalize_custom_provider_entry,
+    get_compatible_custom_providers,
+    providers_dict_to_custom_providers,
 )
 
 
@@ -85,6 +87,55 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert "enabled" not in result
         assert not [r for r in caplog.records if "unknown config keys" in r.message.lower()]
+
+    def test_providers_dict_enabled_gate_filters_disabled_entries(self, caplog):
+        """``providers.<name>.enabled: false`` is filtered before normalization."""
+        with caplog.at_level(logging.WARNING):
+            result = providers_dict_to_custom_providers({
+                "enabled-provider": {"base_url": "https://enabled.example.com/v1", "enabled": True},
+                "disabled-provider": {"base_url": "https://disabled.example.com/v1", "enabled": False},
+            })
+        assert [entry["name"] for entry in result] == ["enabled-provider"]
+        assert not [r for r in caplog.records if "unknown config keys" in r.message.lower()]
+
+    def test_legacy_custom_providers_enabled_false_is_filtered(self, caplog):
+        """The legacy ``custom_providers`` list honors the same enabled gate as ``providers``."""
+        config = {
+            "custom_providers": [
+                {"name": "legacy-on", "base_url": "https://legacy-on.example.com/v1"},
+                {"name": "legacy-off", "base_url": "https://legacy-off.example.com/v1", "enabled": False},
+            ],
+            "providers": {},
+        }
+        with caplog.at_level(logging.WARNING):
+            result = get_compatible_custom_providers(config)
+        assert [entry["name"] for entry in result] == ["legacy-on"]
+        assert not [r for r in caplog.records if "unknown config keys" in r.message.lower()]
+
+    def test_legacy_custom_providers_enabled_true_and_flagless_entries_survive(self):
+        """Only explicit false disables legacy custom providers."""
+        config = {
+            "custom_providers": [
+                {"name": "legacy-default", "base_url": "https://legacy-default.example.com/v1"},
+                {"name": "legacy-on", "base_url": "https://legacy-on.example.com/v1", "enabled": True},
+            ],
+            "providers": {},
+        }
+        result = get_compatible_custom_providers(config)
+        assert [entry["name"] for entry in result] == ["legacy-default", "legacy-on"]
+
+    def test_enabled_key_does_not_hide_unknown_key_warnings(self, caplog):
+        """Allowing ``enabled`` must not mute warnings for genuinely unknown keys beside it."""
+        with caplog.at_level(logging.WARNING):
+            result = providers_dict_to_custom_providers({
+                "gateway": {
+                    "base_url": "https://gateway.example.com/v1",
+                    "enabled": True,
+                    "unknown_knob": "surprise",
+                }
+            })
+        assert [entry["name"] for entry in result] == ["gateway"]
+        assert [r for r in caplog.records if "unknown config keys ignored: unknown_knob" in r.message]
 
 
     def test_numeric_yaml_name_and_key_become_strings(self):

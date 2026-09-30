@@ -51,9 +51,8 @@ export function sourceHash(source, product) {
     // Build scripts are inputs; workspace build directories are outputs.
     const parts = name.split('/')
     return (!name.startsWith('scripts/') && parts.some(part => generated.has(part)))
+      || isJunk(name)
       || (product === 'tui' && (parts.includes('__tests__') || /\.(test|spec)(-d)?\.[cm]?[jt]sx?$/.test(name)))
-      || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
-      || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
   })
 }
 
@@ -62,6 +61,17 @@ function outputHash(out) {
   // owned by native preparation; renderer/main/preload bytes must stay intact.
   return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product',
     name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
+}
+
+// macOS Finder writes .DS_Store when a human browses a directory; it is
+// user metadata, not a build input, exactly like __pycache__.
+const finderJunk = new Set(['.DS_Store'])
+
+function isJunk(name) {
+  const parts = name.split('/')
+  return finderJunk.has(parts[parts.length - 1])
+    || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
+    || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
 }
 
 export function buildInputs(source, product, prepared = {}) {

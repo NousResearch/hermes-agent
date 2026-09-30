@@ -272,9 +272,10 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
 
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
-    (bin/, cmd/, lib/...). Refuses on name collisions."""
+    (bin/, cmd/, lib/...). Refuses on name collisions. Finder's .DS_Store
+    is ignored: it is browse metadata, not archive content."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
-    entries = list(dest.iterdir())
+    entries = [e for e in dest.iterdir() if e.name != ".DS_Store"]
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
@@ -311,7 +312,9 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+    Finder metadata (.DS_Store) is skipped for the same reason: macOS
+    writes it when a human browses the store, not pm."""
     import hashlib
 
     files: list[tuple[str, Path]] = []
@@ -325,6 +328,8 @@ def tree_digest(root: Path) -> str:
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:
+            if fname == ".DS_Store":
+                continue
             path = Path(dirpath) / fname
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])

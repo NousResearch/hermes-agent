@@ -177,7 +177,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
                 ) : calls > 0 ? (
                   `×${compactNumber(calls)}`
                 ) : (
-                  `${toolNames(toolset).length} tools`
+                  t.agents.toolsCount(toolNames(toolset).length)
                 )
               }
               onSelect={() => setSelectedToolset(toolset.name)}

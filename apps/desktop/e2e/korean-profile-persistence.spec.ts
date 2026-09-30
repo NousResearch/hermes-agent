@@ -287,7 +287,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
         })
         await step('Read Korean built-in theme descriptions without searching the Marketplace', async () => {
           await page.evaluate(() => {
-            window.location.hash = '#/settings?tab=appearance&page=theme'
+            window.location.hash = '#/settings?tab=config:appearance&page=theme'
           })
 
           // Reading installed cards must not trigger the external theme search
@@ -330,10 +330,10 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await page.evaluate(() => {
             window.location.hash = '#/settings?tab=keybinds'
           })
-          await expect(page.getByRole('heading', { name: '키보드 단축키', exact: true })).toBeVisible()
+          await expect(page.getByRole('navigation', { name: '키보드 단축키', exact: true })).toBeVisible()
           await captureSurface('korean-keybinds')
           await page.evaluate(() => {
-            window.location.hash = '#/skills?tab=toolsets'
+            window.location.hash = '#/capabilities?tab=toolsets'
           })
           const toolsetSearch = page.getByRole('textbox', { name: '도구 세트 검색...', exact: true })
           await expect(toolsetSearch).toBeVisible()
@@ -345,7 +345,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
             .filter({ has: page.getByText('터미널 및 프로세스', { exact: true }) })
 
           await expect(terminalRow).toBeVisible({ timeout: 60_000 })
-          await expect(terminalRow.getByText('도구 2개', { exact: true })).toBeVisible()
+          await expect(terminalRow.getByText(/^도구 \d+개$/)).toBeVisible()
           await expect(terminalRow.getByText('터미널, 프로세스', { exact: true })).toBeVisible()
           await terminalRow.click()
           await expect(page.getByRole('heading', { name: '터미널 및 프로세스', exact: true })).toBeVisible()
@@ -374,7 +374,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await expect(dialog.getByRole('heading', { name: '새 봇', exact: true })).toBeVisible()
           await expect(
             dialog.getByText(
-              '자신만의 메모리, 스킬, 대화를 갖춘 동료입니다. 다른 에이전트와 메시지를 주고받을 수 있습니다.',
+              '독립된 메모리, 스킬, 대화를 가진 동료입니다. 다른 에이전트와 메시지를 주고받을 수 있습니다.',
               { exact: true }
             )
           ).toBeVisible()

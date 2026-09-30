@@ -755,8 +755,8 @@ export async function runGroupChatRounds(
 /** Bounded background harvest for members whose replies outlived the turn
  *  loop. Watches for a further hard-cap duration plus a minute of grace
  *  after foreground polling ends; stops early when nothing is
- *  stranded, a new loop takes the room over (it harvests on its own), or the
- *  room record disappears (disband). */
+ *  stranded, a new loop takes the room over or is queued to (it harvests on
+ *  its own and reports its failures), or the room record disappears (disband). */
 async function harvestStrandedUntilSettled(group: string, members: GroupMember[], thread: string) {
   const binding = followGroupChat(group, name => {
     group = name
@@ -770,7 +770,7 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
       await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
       const room = $groupChats.get()[group]
 
-      if (!binding.isLive() || !room || room.running) {
+      if (!binding.isLive() || !room || room.running || groupChatDrives.get(groupChatRoomKey(group, room))?.pending.size) {
         return
       }
 

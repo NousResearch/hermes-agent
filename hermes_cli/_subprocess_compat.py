@@ -261,7 +261,8 @@ NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
-# repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
+# repo-configured fsmonitor/hooks/pager/editor/external-diff programs. Transport settings are
+# replayed below so config isolation does not silently bypass a user's proxy or custom TLS backend.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 _GIT_CONFIG_OVERRIDES = {
     "credential.helper": "",
@@ -279,6 +280,8 @@ _GIT_CONFIG_OVERRIDES = {
     # at the config layer so an explicit user GIT_SSH_COMMAND (env) still takes precedence.
     "core.sshCommand": "ssh -o BatchMode=yes",
 }
+
+_GIT_TRANSPORT_KEYS = ("http.proxy", "https.proxy", "http.sslBackend", "http.sslCAInfo")
 
 
 def _safe_directory_cache_key(env: "Mapping[str, str]") -> tuple:
@@ -356,6 +359,33 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
             records.pop()
         values.extend(records)
     _safe_directory_cache[cache_key] = list(values)
+    return values
+
+
+def _user_transport_config(base_env: "Mapping[str, str]") -> list[tuple[str, str]]:
+    """Replay only user proxy/TLS settings after global/system config isolation."""
+    env = dict(base_env)
+    for key in list(env):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    values: list[tuple[str, str]] = []
+    for scope in ("--system", "--global"):
+        for key in _GIT_TRANSPORT_KEYS:
+            try:
+                proc = subprocess.run(
+                    ["git", "config", scope, "--null", "--get-all", key],
+                    capture_output=True, text=False, timeout=5, stdin=subprocess.DEVNULL,
+                    env=env, check=False, creationflags=windows_hide_flags(),
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if proc.returncode != 0:
+                continue
+            for value in proc.stdout.split(b"\0"):
+                if value:
+                    values.append((key, value.decode("utf-8", "replace")))
     return values
 
 
@@ -448,6 +478,7 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
     overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    overrides.extend(_user_transport_config(base if base is not None else os.environ))
     # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
     # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
     # re-injection every internal git call fails "detected dubious ownership" on any repo whose

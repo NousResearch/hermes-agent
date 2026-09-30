@@ -561,8 +561,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None, 
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast).
 
     ``turn_generation`` is the claim from ``_lock_in_submit_turn``. Once a later submit has claimed the
-    session, its turn owns the staged user row, ``running`` and the lease, so this submit's row is written
-    but not staged, and a storage failure does not release the session."""
+    session, its turn owns the staged user row, ``running`` and the lease. This submit then neither writes
+    nor stages its row once it sees the later claim, and a storage failure does not release the session."""
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:

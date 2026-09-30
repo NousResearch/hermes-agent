@@ -13,8 +13,9 @@ import pytest
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.effective_event import MatrixEffectiveEvent, effective_event
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
-from plugins.platforms.matrix.room_context import fetch_room_entries
+from plugins.platforms.matrix.room_context import MatrixHistoryContext, fetch_room_entries
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
+from tests.gateway.test_matrix import _rendered
 
 
 ROOM = "!room:example.org"
@@ -724,9 +725,9 @@ async def test_formatting_rechecks_redaction_after_last_display_name_lookup(scop
             chat_type="group",
         )
     elif scope == "room":
-        context = adapter.fetch_room_context(ROOM, "$current")
+        context = _rendered(adapter.fetch_room_history(ROOM, "$current"))
     else:
-        context = adapter.fetch_thread_context(ROOM, "$root", before_event_id="$current")
+        context = _rendered(adapter.fetch_thread_history(ROOM, "$root", before_event_id="$current"))
     pending = asyncio.create_task(context)
     try:
         await asyncio.wait_for(started.wait(), timeout=2.0)
@@ -996,7 +997,6 @@ async def test_inline_reply_after_replacement_redaction_validates_and_retries(qu
 @pytest.mark.parametrize("scope", ["event", "room", "thread"])
 @pytest.mark.parametrize("boundary", ["read", "format"])
 async def test_reaction_redaction_filters_its_own_event_id(scope: str, boundary: str):
-    from plugins.platforms.matrix.room_context import format_history_context
 
     started, release = asyncio.Event(), asyncio.Event()
     target = "$root" if scope == "thread" else "$target"
@@ -1037,7 +1037,7 @@ async def test_reaction_redaction_filters_its_own_event_id(scope: str, boundary:
         entries = (await fetch_room_entries(client, cache, ROOM, "$current", limit=1) if scope == "room"
                    else await fetch_thread_entries(client, cache, ROOM, target, limit=1, before_event_id="$current"))
         if boundary == "format":
-            return await format_history_context(adapter, ROOM, entries, "History")
+            return await _rendered(MatrixHistoryContext.prepare(adapter, ROOM, entries, "History"))
         return entries
 
     if scope == "event" and boundary == "format":
@@ -1202,9 +1202,9 @@ async def test_context_refreshes_edit_at_last_asynchronous_boundary(scope: str, 
             chat_type="group",
         )
     elif scope in {"room", "room-decrypt", "room-fetch"}:
-        context = adapter.fetch_room_context(ROOM, "$current")
+        context = _rendered(adapter.fetch_room_history(ROOM, "$current"))
     elif scope in {"thread", "thread-decrypt", "thread-fetch"}:
-        context = adapter.fetch_thread_context(ROOM, target, before_event_id="$current")
+        context = _rendered(adapter.fetch_thread_history(ROOM, target, before_event_id="$current"))
     else:
         kind = {"event": "event", "event-fetch": "event", "room-read": "room", "thread-read": "thread"}[scope]
         context = adapter.read_matrix_context(kind, ROOM, target, 1, requester=SENDER)
@@ -1348,7 +1348,7 @@ async def test_validated_bounded_read_updates_reply_and_existing_formatting_snap
         ROOM, f"> <{SENDER}> before\n\nquestion", {"body": f"> <{SENDER}> before\n\nquestion"},
         {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
     )
-    formatted = await adapter._format_history_context(ROOM, [before], "History")
+    formatted = await _rendered(MatrixHistoryContext.prepare(adapter, ROOM, [before], "History"))
 
     assert (result, reply, formatted) == (
         {"events": [{
@@ -1553,9 +1553,9 @@ async def test_active_context_keeps_effective_state_after_eviction(scope: str, c
                                                 {"m.in_reply_to": {"event_id": "$target"}},
                                                 sender=SENDER, chat_type="group")
     elif scope == "room":
-        context = adapter.fetch_room_context(ROOM, "$current")
+        context = _rendered(adapter.fetch_room_history(ROOM, "$current"))
     elif scope == "thread":
-        context = adapter.fetch_thread_context(ROOM, "$target", before_event_id="$current")
+        context = _rendered(adapter.fetch_thread_history(ROOM, "$target", before_event_id="$current"))
     else:
         context = adapter.read_matrix_context({"event": "event", "room-read": "room", "thread-read": "thread"}[scope],
                                              ROOM, "$target", 1, requester=SENDER)
@@ -1637,7 +1637,6 @@ async def test_active_consumers_retain_dependencies_from_intake(
     from gateway.config import GatewayConfig, Platform
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource, SessionStore
-    from plugins.platforms.matrix.room_context import format_history_context
     from tests.gateway.test_matrix import _make_adapter
 
     adapter = _make_adapter()
@@ -1849,7 +1848,7 @@ async def test_active_consumers_retain_dependencies_from_intake(
                 SimpleNamespace(room_id=ROOM, redacts="$reaction")
             )
         evict()
-        result = await format_history_context(adapter, ROOM, entries, "History")
+        result = await _rendered(MatrixHistoryContext.prepare(adapter, ROOM, entries, "History"))
         assert result == "[History]\n[Alice] withdrawn quote" + (
             ""
             if withdrawn

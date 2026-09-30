@@ -17,7 +17,8 @@ import agent.background_review as bg  # noqa: E402
 
 def _review_agent(memory_enabled=True, user_profile_enabled=False) -> SimpleNamespace:
     """The whitelist only reads the profile's memory flags off the fork."""
-    return SimpleNamespace(_memory_enabled=memory_enabled, _user_profile_enabled=user_profile_enabled)
+    return SimpleNamespace(_memory_enabled=memory_enabled, _user_profile_enabled=user_profile_enabled,
+                           valid_tool_names={"memory", "read_file", "search_files", "write_file", "patch"})
 
 
 class TestReviewToolWhitelistScope:
@@ -28,6 +29,25 @@ class TestReviewToolWhitelistScope:
         assert {"memory", "read_file", "search_files", "write_file", "patch"} == whitelist
         assert not extra
 
+
+
+def test_review_never_admits_disabled_parent_tools():
+    agent = _review_agent(False, False)
+    agent.valid_tool_names = {"memory", "read_file", "send_message", "terminal"}
+    whitelist, extra = bg._review_tool_whitelist(agent, {"extra_tools": ["terminal"]})
+    assert whitelist == {"read_file"}
+    assert extra == set()
+
+
+def test_memory_review_stays_due_until_started():
+    from agent.turn_context import _tick_memory_nudge
+    agent = SimpleNamespace(_memory_nudge_interval=10, _turns_since_memory=8,
+                            valid_tool_names={"memory"}, _memory_store=object())
+    assert not _tick_memory_nudge(agent)
+    assert _tick_memory_nudge(agent)
+    # An interrupted turn or refused spawn must not lose the pending review.
+    assert _tick_memory_nudge(agent)
+    assert agent._turns_since_memory == 10
 
 
 class TestSpawnForwardsScope:
@@ -78,6 +98,7 @@ class TestExplicitRefineOrigin:
         def fake_build(agent, task_cfg=None, *, max_iterations, write_origin="background_review"):
             fork = SimpleNamespace(
                 _memory_enabled=True, _user_profile_enabled=False, _memory_write_origin=write_origin,
+                valid_tool_names={"memory", "read_file", "write_file", "patch", "search_files"},
                 run_conversation=lambda **kw: None, _session_messages=[])
             forks.append(fork)
             return fork, {}, False

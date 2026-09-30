@@ -30,5 +30,4 @@ On the native background-review cadence, you automatically review the conversati
 
 - The guides under `../../` ship with the product: never edit one, and never copy or re-create its content elsewhere. Report a problem to the user and work around it.
 - Each service's folder — `$HERMES_HOME/connections/<service>/` — is yours, managed with ordinary file tools. After first verifying access, create `manual.md` if absent; product updates never overwrite it. There is no generated credentials file.
-- **The listing is per-conversation:** `Service manuals` is frozen when the conversation starts. A newly created manual is immediately readable, but won't appear in that listing until a new conversation. The listing records knowledge, not whether access is currently working.
 - **Housekeeping:** deleting a manual never revokes access; credentials remain in their native storage. Deleting that manual permanently loses your operating knowledge unless backed up.

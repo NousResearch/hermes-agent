@@ -95,3 +95,29 @@ def test_participants_survive_compression_and_fresh_child_resume(tmp_path, monke
         assert 'Owns sales.' in agent._personal_context
     finally:
         db.close()
+
+
+def test_memory_tool_routes_person_and_organization_writes(tmp_path, monkeypatch):
+    import json
+    from agent.inline_tool_executors import _memory, InlineToolContext
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    agent = SimpleNamespace(platform='telegram', session_id='group',
+                            _memory_store=MemoryStore(), _memory_manager=None)
+    agent._memory_store.load_from_disk()
+    bind_turn(agent, {'id': '123', 'name': 'Alex'})
+    label = agent._current_person_label
+    bind_turn(agent, {'id': '456', 'name': 'Blair'})
+    ctx = InlineToolContext(effective_task_id='memory-routing')
+    personal = _memory(agent, {'action': 'add', 'target': 'user', 'user': label,
+                              'content': 'Prefers concise replies.'}, ctx)
+    shared = _memory(agent, {'action': 'add', 'target': 'memory',
+                            'content': 'Organization uses EUR for billing.'}, ctx)
+    assert json.loads(personal)['success']
+    assert json.loads(shared)['success']
+    bind_turn(agent, {'id': '123', 'name': 'Alex'})
+    assert 'Prefers concise replies.' in agent._personal_context
+    assert 'Organization uses EUR' not in agent._personal_context
+    bind_turn(agent, {'id': '456', 'name': 'Blair'})
+    assert 'Prefers concise replies.' not in agent._personal_context
+    assert agent._memory_store._entries_for('memory') == ['Organization uses EUR for billing.']

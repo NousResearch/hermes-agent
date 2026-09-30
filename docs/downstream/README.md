@@ -57,3 +57,5 @@ is removed or upstream satisfies it. Use this shape:
 - [Codex review](divergences/codex-review.md) — run read-only implementation review before landing.
 
 - [Employee surface exclusions](divergences/employee-surface.md) — preserve the model tool filter, disabled skills and client visibility only.
+
+- [Unified knowledge review](divergences/knowledge-review.md) — preserve source review scope and personal/shared memory tools.

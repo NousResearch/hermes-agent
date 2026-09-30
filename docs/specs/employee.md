@@ -10,13 +10,10 @@ knowledge review and send/list messaging. Use native prompting, configuration,
 CLI, browser implementation, conversation framing, persistence and replay.
 Hide selected client controls without changing native administration endpoints.
 
-Two decisions remain open with the user:
-
-- Final main-prompt exceptions, especially responsibility offering. Native
-  identity/SOUL and working guidance are restored; current knowledge pointers
-  and responsibility roster are provisional.
-- Where responsibilities and connections belong. Existing profile-local paths
-  remain until agreed; no file migration or special working-folder convention.
+The prompt scope is settled in [system prompt](system-prompt.md). The remaining
+open decision is where responsibilities and connections belong. Existing
+profile-local paths remain until agreed; no file migration or special
+working-folder convention.
 
 See [implementation](implementation.md), [responsibilities](responsibility-execution.md),
 [tools](tool-surface.md), [guides](guides.md), [defaults](runtime-defaults.md),

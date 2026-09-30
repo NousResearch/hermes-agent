@@ -338,8 +338,10 @@ The architecture is intentionally optimized to:
 ## Fork additions
 
 The native identity and guidance assembly remains. `agent/employee_prompt.py`
-adds responsibility discovery and service-manual pointers; the Hermes help
-pointer loads the shipped guide. Final responsibility offering wording is open.
+supplies service-manual guidance and the unchanged full responsibility section
+in the native skills-index slot; the Hermes help pointer loads the shipped guide.
+Native memory guidance remains. No separate Hindsight guidance is added; its
+tool description explains recall.
 Shared memory stays in the prefix. `agent/people.py` loads person memory after
 current user content, before recalled memory, through native turn composition.
 String sidecars, multimodal history, persistence and provider replay stay native.

@@ -265,28 +265,18 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to persistent memory that survive across sessions. Memory is "
-        "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
-        "checked only on the FINAL result — so a single call can remove/replace stale entries "
-        "to free room AND add new ones, even when an add alone would overflow. The response "
-        "reports current/limit chars and confirms completion; one batch call finishes the "
-        "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
-        "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
-        "is, stable environment facts, standing conventions with no task home. Anything "
-        "learned while doing a task (procedures, pitfalls, and the user's preferences and "
-        "corrections for that kind of work) belongs in the task's skill via skill_manage, "
-        "where it loads only when relevant; memory is injected into every turn and must "
-        "stay small.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        'Save durable facts to persistent memory that survive across sessions.\n\n'
+        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: {action, content?, "
+        'old_text?}). The batch applies atomically and the char limit is checked only on the FINAL result — '
+        'so a single call can remove/replace stale entries to free room AND add new ones, even when an add '
+        'alone would overflow. The response reports current/limit chars and confirms completion; one batch '
+        "call finishes the update, so don't repeat it. Use the bare action/content/old_text fields only for a "
+        'single lone change.\n\n'
+        'IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that removes or '
+        'shortens enough stale entries and adds the new one together.\n\n'
+        "TARGETS: 'user' (default) = the named person's individual profile (identity, role, preferences, "
+        "working style). 'memory' = shared workspace knowledge that applies regardless of who is speaking "
+        '(organization facts and environment details).'
     ),
     "parameters": {
         "type": "object",
@@ -343,9 +333,8 @@ MEMORY_SCHEMA = {
 
 # Schema text when only one built-in store is enabled: (target description, TARGETS replacement).
 _SINGLE_TARGET_TEXT = {
-    ("memory",): ("The enabled built-in store: 'memory' for personal notes.",
-                  "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
-                  "tool quirks, lessons)."),
+    ("memory",): ("The enabled built-in store: 'memory' for shared organization knowledge.",
+                  "TARGET: only 'memory' is enabled for shared organization facts and environment details."),
     ("user",): ("The enabled built-in store: 'user' for user profile.",
                 "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).")}
 
@@ -358,11 +347,12 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
     parameters = copy.deepcopy(MEMORY_SCHEMA["parameters"])
     target_schema, description = parameters["properties"]["target"], MEMORY_SCHEMA["description"]
     target_schema["enum"] = targets
+    if len(targets) == 1:
+        target_schema["default"] = targets[0]
     if narrowed := _SINGLE_TARGET_TEXT.get(tuple(targets)):
         target_schema["description"], replacement = narrowed
         description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).", replacement)
+            "TARGETS: 'user' (default) = the named person's individual profile (identity, role, preferences, working style). 'memory' = shared workspace knowledge that applies regardless of who is speaking (organization facts and environment details).", replacement)
     return {"description": description, "parameters": parameters}
 
 

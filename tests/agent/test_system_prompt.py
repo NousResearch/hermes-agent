@@ -471,7 +471,8 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         _parallel_tool_call_guidance=False,
     )
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
-    monkeypatch.setattr("agent.employee_prompt.prompt_parts", lambda agent: [])
+    monkeypatch.setattr("agent.employee_prompt.connection_guidance", lambda: "")
+    monkeypatch.setattr("agent.employee_prompt.responsibility_prompt", lambda: "")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
@@ -630,43 +631,43 @@ class TestTelegramRichMessagesHint:
         assert "lean into it" not in stable
 
 
-_SKILLS = "SKILLS_INDEX_SENTINEL"
+_RESPONSIBILITIES = "RESPONSIBILITIES_INDEX_SENTINEL"
 _CONTEXT = "CONTEXT_FILES_SENTINEL"
 
 
 def _build(builder, **overrides):
-    """Run a build_* function with skills + context files present."""
-    agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
+    """Run a build_* function with responsibilities + context files present."""
+    agent = _make_agent(valid_tool_names=["read_file"], **overrides)
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),
         patch("agent.prompt_builder.build_environment_hints", return_value=""),
         patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
         patch("model_tools.get_toolset_for_tool", return_value=None),
-        patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
+        patch("agent.employee_prompt.responsibility_prompt", return_value=_RESPONSIBILITIES),
     ):
         return builder(agent)
 
 
-class TestSkillsInVolatileBand:
-    """The skills index is runtime-mutable, so it lives in the volatile band,
+class TestResponsibilitiesInVolatileBand:
+    """The responsibilities index is runtime-mutable, so it lives in the volatile band,
     not the stable band, to keep the cached stable prefix reusable when a
-    rebuild picks up a skill change."""
+    rebuild picks up a responsibility change."""
 
-    def test_skills_not_in_stable_band(self):
+    def test_responsibilities_not_in_stable_band(self):
         parts = _build(build_system_prompt_parts)
-        assert _SKILLS not in parts["stable"]
+        assert _RESPONSIBILITIES not in parts["stable"]
 
-    def test_skills_lead_the_volatile_band(self):
+    def test_responsibilities_lead_the_volatile_band(self):
         parts = _build(build_system_prompt_parts)
-        assert parts["volatile"].startswith(_SKILLS)
+        assert parts["volatile"].startswith(_RESPONSIBILITIES)
 
-    def test_full_order_is_stable_context_then_skills(self):
-        # build_system_prompt joins stable + context + volatile, so the skills
+    def test_full_order_is_stable_context_then_responsibilities(self):
+        # build_system_prompt joins stable + context + volatile, so the responsibilities
         # index renders after the context files and before the per-turn
         # memory/timestamp tail.
         full = _build(build_system_prompt)
-        assert full.index(_CONTEXT) < full.index(_SKILLS)
-        assert full.index(_SKILLS) < full.index("Conversation started:")
+        assert full.index(_CONTEXT) < full.index(_RESPONSIBILITIES)
+        assert full.index(_RESPONSIBILITIES) < full.index("Conversation started:")
 
 
 class TestMemoryProviderSystemPromptGating:
@@ -838,7 +839,8 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
         session_id="20260101_120000_abc123",
     )
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
-    monkeypatch.setattr("agent.employee_prompt.prompt_parts", lambda agent: [])
+    monkeypatch.setattr("agent.employee_prompt.connection_guidance", lambda: "")
+    monkeypatch.setattr("agent.employee_prompt.responsibility_prompt", lambda: "")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")

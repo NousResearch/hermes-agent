@@ -1,7 +1,6 @@
 import json
-from types import SimpleNamespace
 
-from agent.employee_prompt import prompt_parts
+from agent.employee_prompt import connection_guidance, responsibility_prompt
 from agent.file_safety import get_write_denied_error
 from agent.knowledge import guides_root
 from tools.file_tools import read_file_tool
@@ -23,9 +22,9 @@ def test_guides_use_native_reads_and_only_review_writes_are_restricted(tmp_path,
         assert get_write_denied_error(str(tmp_path/'connections'/'mail'/'manual.md')) is None
     finally:
         reset_current_write_origin(token)
-    parts = '\n'.join(prompt_parts(SimpleNamespace(valid_tool_names={'memory','delegate_task'})))
+    parts = '\n'.join([connection_guidance(), responsibility_prompt()])
     assert str(tmp_path) in parts
-    assert 'Service manuals:' in parts
+    assert 'service-connections.md' in parts
     assert 'skill_manage' not in parts
 
 
@@ -57,14 +56,13 @@ def test_prompt_remains_available_when_responsibility_root_needs_repair(tmp_path
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     root = tmp_path / 'responsibilities'
     root.write_text('accidentally a file')
-    agent = SimpleNamespace(valid_tool_names={'memory', 'read_file'})
-    prompt = '\n'.join(prompt_parts(agent))
+    prompt = '\n'.join([connection_guidance(), responsibility_prompt()])
     assert 'Responsibility index unavailable' in prompt
     assert 'No responsibilities yet' not in prompt
-    assert 'Service manuals:' in prompt
+    assert 'service-connections.md' in prompt
     root.unlink()
     root.mkdir()
-    repaired = '\n'.join(prompt_parts(agent))
+    repaired = '\n'.join([connection_guidance(), responsibility_prompt()])
     assert 'Responsibility index unavailable' not in repaired
     assert 'No responsibilities yet' in repaired
 

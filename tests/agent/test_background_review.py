@@ -403,12 +403,17 @@ def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch
     monkeypatch.setattr(run_agent_module.threading, "Thread", CapturingThread)
 
     agent = _bare_agent()
+    agent._turns_since_memory = 10
 
     AIAgent._spawn_background_review(
         agent,
         messages_snapshot=[{"role": "user", "content": "hello"}],
         review_memory=True,
     )
+
+    assert agent._turns_since_memory == 0
+    AIAgent._spawn_background_review(agent, messages_snapshot=[], review_memory=True)
+    assert len(CapturingThread.targets) == 1
 
     run = agent._background_review_run
     assert run is not None

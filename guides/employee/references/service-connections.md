@@ -7,10 +7,8 @@ server, browser dashboard, or several of these for the same service.
 ## Read before operating
 
 Check `$HERMES_HOME/connections/<service>/manual.md` before operating the
-service. The prompt's `Service manuals` listing is a frozen discovery aid, not
-proof of access or a complete live directory listing. Check the folder even
-when the service is missing from that listing. An existing login may work even
-when no manual exists; verify it and document it.
+service. A manual records operating knowledge, not proof of current access.
+An existing login may work even when no manual exists; verify it and document it.
 
 For setup, use the service's official instructions and native authentication.
 MCP setup is covered in `native-mcp.md`.

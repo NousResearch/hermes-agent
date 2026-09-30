@@ -717,7 +717,8 @@ def _tick_memory_nudge(agent: Any) -> bool:
             and agent._memory_store):
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
-            agent._turns_since_memory = 0
+            # Stay due until a review starts; interrupted/failed turns must not lose it.
+            agent._turns_since_memory = agent._memory_nudge_interval
             return True
     return False
 

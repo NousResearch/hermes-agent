@@ -1099,7 +1099,11 @@ def _review_tool_whitelist(
 ) -> Tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
-    return {"memory", "read_file", "search_files", "write_file", "patch"}, set()
+    whitelist = {"read_file", "search_files", "write_file", "patch"}
+    if review_agent._memory_enabled or review_agent._user_profile_enabled:
+        whitelist.add("memory")
+    whitelist.intersection_update(review_agent.valid_tool_names)
+    return whitelist, set()
 
 
 

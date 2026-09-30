@@ -1059,6 +1059,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # claims the sink supersedes this token; that only silences OUR live callbacks — consumption continues,
     # because stopping here handed the gateway a "completed" response missing its tail (#69486).
     writer_token = {"value": None, "raw_stream": None, "superseded_logged": False}
+    # Events parsed on the CURRENT physical attempt. ``intercepted_events`` only fills on a Relay-managed
+    # stream (``on_chunk`` is never called unmanaged), so it alone cannot tell a zero-event attempt apart.
+    attempt_events = {"count": 0}
 
     def _request_is_current() -> bool:
         return request_token is None or getattr(agent, "_active_codex_stream_request_token", None) is request_token
@@ -1089,6 +1092,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
+        attempt_events["count"] += 1
         # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
         # equivalent of Chat Completions' first chunk. Preserve the per-attempt reset; the ``_fenced``
         # wrapper around this callback already keeps a retired worker from overwriting a newer request.
@@ -1222,6 +1226,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 logger.info("Codex physical stream retry at %.3f (attempt=%s/%s, model=%s)",
                     watchdog_state.retry_started_ts, attempt + 1, max_stream_retries + 1, model)
         intercepted_events: list = []
+        attempt_events["count"] = 0
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False
         try:
@@ -1253,7 +1258,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
                     attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
                 )
-                if not intercepted_events:  # zero-event attempt: never resend a pathological payload silently
+                # Zero-event attempt: never resend a pathological payload silently. A stopped request (user
+                # interrupt or watchdog retirement) is not resent at all, so there is nothing to prune or log.
+                if (not intercepted_events and not attempt_events["count"]
+                        and _request_is_current() and not agent._interrupt_requested):
                     api_kwargs = _prune_zero_event_retry_payload(api_kwargs, attempt + 1, max_stream_retries + 1)
                 continue
             except RuntimeError:

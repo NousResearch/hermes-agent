@@ -829,7 +829,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-guides = ["**/*.md", "**/templates/*.js", "**/templates/*.mjs", "**/templates/*.yaml"]
+guides = ["**/*.md", "**/scripts/*.py", "**/templates/*.js", "**/templates/*.mjs", "**/templates/*.yaml"]
 deploy = ["railway/*.yaml", "railway/*.toml"]
 hermes_cli = [
   "observability/schemas/*.json",

@@ -24,7 +24,7 @@ def test_guides_use_native_reads_and_only_review_writes_are_restricted(tmp_path,
         reset_current_write_origin(token)
     parts = '\n'.join([connection_guidance(), responsibility_prompt()])
     assert str(tmp_path) in parts
-    assert 'service-connections.md' in parts
+    assert 'connections/guide.md' in parts
     assert 'skill_manage' not in parts
 
 
@@ -59,7 +59,7 @@ def test_prompt_remains_available_when_responsibility_root_needs_repair(tmp_path
     prompt = '\n'.join([connection_guidance(), responsibility_prompt()])
     assert 'Responsibility index unavailable' in prompt
     assert 'No responsibilities yet' not in prompt
-    assert 'service-connections.md' in prompt
+    assert 'connections/guide.md' in prompt
     root.unlink()
     root.mkdir()
     repaired = '\n'.join([connection_guidance(), responsibility_prompt()])
@@ -86,16 +86,18 @@ def test_native_guide_references_and_templates_resolve_through_file_tools(tmp_pa
         assert "{guides_root}" not in content
         if path.suffix != ".md":
             continue
-        # References use the hub directory, including links between references.
-        for match in re.finditer(r"`((?:references|templates)/[\w.-]+\.(?:md|js|mjs|yaml))`", content):
-            pending.append((hub if path.is_relative_to(hub) else root / "responsibility-authoring") / match[1])
-        for match in re.finditer(r"`((?:\.\./)+[\w./-]+\.md)`", content):
-            candidate = (path.parent / match[1]).resolve()
-            if not candidate.exists():
-                candidate = (hub / match[1]).resolve()
-            pending.append(candidate)
+        # Resolve guide links as the model does after reading the parent guide.
+        for match in re.finditer(r"`((?:(?:references|templates)/|(?:\.\./)+|(?:google-workspace|email|github)/)[\w./-]+\.(?:md|js|mjs|yaml))`", content):
+            candidates = [(base / match[1]).resolve() for base in
+                          (path.parent, path.parent.parent, hub)]
+            target = next((candidate for candidate in candidates if candidate.is_file()), None)
+            assert target is not None, (path, match[1])
+            pending.append(target)
     assert hub / "references/native-mcp.md" in seen
-    assert hub / "references/service-connections.md" in seen
+    assert root / "connections/guide.md" in seen
+    for service in ("google-workspace", "email", "github"):
+        assert root / "connections" / service / "guide.md" in seen
+
     assert (root / "responsibility-authoring/guide.md").resolve() in seen
     assert (root / "file-keeping/guide.md").resolve() in seen
 

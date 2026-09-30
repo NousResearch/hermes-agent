@@ -20,7 +20,7 @@
 +There is no `manage_connections`, `cronjob`, Kanban, or skill tool.
 +Responsibility filesystem operations require Linux/WSL2 or macOS.
 +
-+For service connection work, read `references/service-connections.md` and the
++For service connection work, read `../connections/guide.md` and the
 +service's existing manual before operating. Document every connection, including
 +its account, access method and verification, with useful scripts/references.
 +For personal memory and Hindsight, read `references/memory-and-learning.md`.
@@ -43,7 +43,7 @@
 @@ -85 +99,2 @@
 -| Delegation, cron, curator, kanban | `references/background-systems.md` |
 +| Delegation and background work | `references/background-systems.md` |
-+| Connecting or operating any service | `references/service-connections.md` |
++| Connecting or operating any service | `../connections/guide.md` |
 @@ -87 +102,2 @@
 -| Webhook routes and event-driven runs | `references/webhooks.md` |
 +| Keeping documents, cloud-document references and Git checkouts | `../file-keeping/guide.md` |
@@ -308,8 +308,8 @@
 +++ guides/employee/references/native-mcp.md
 @@ -3,0 +4,4 @@
 +
-+Before any connection work, read `service-connections.md`.
-+Document setup and verification in that service's manual, including its native
++Before any connection work, read `../../connections/guide.md`.
++Document working access patterns and verification in that service's manual, including its native
 +MCP server name and credential location, never credential values.
 @@ -14 +18 @@
 -For ad-hoc, one-off MCP tool calls from the terminal without configuring anything, see the `mcporter` skill instead.

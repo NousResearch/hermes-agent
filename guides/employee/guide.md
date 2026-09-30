@@ -26,7 +26,7 @@ availability from upstream documentation: the current tool schemas are authorita
 There is no `manage_connections`, `cronjob`, Kanban, or skill tool.
 Responsibility filesystem operations require Linux/WSL2 or macOS.
 
-For service connection work, read `references/service-connections.md` and the
+For service connection work, read `../connections/guide.md` and the
 service's existing manual before operating. Document every connection, including
 its account, access method and verification, with useful scripts/references.
 For personal memory and Hindsight, read `references/memory-and-learning.md`.
@@ -97,7 +97,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | AGENTS.md / .hermes.md / CLAUDE.md project rules | `references/project-context-files.md` |
 | Secret redaction, PII, approval modes, "reset permissions" | `references/security-privacy.md` |
 | Delegation and background work | `references/background-systems.md` |
-| Connecting or operating any service | `references/service-connections.md` |
+| Connecting or operating any service | `../connections/guide.md` |
 | MCP servers (add, catalog, `hermes mcp`) | `references/native-mcp.md` |
 | Keeping documents, cloud-document references and Git checkouts | `../file-keeping/guide.md` |
 | Responsibility packages, schedules and webhook runs | `../responsibility-authoring/guide.md` |

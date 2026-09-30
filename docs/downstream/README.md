@@ -61,3 +61,5 @@ is removed or upstream satisfies it. Use this shape:
 - [Unified knowledge review](divergences/knowledge-review.md) — preserve source review scope and personal/shared memory tools.
 
 - [File keeping](divergences/file-keeping.md) — profile-local documents/repos and a source-derived filing guide.
+
+- [Connection guides](divergences/connection-guides.md) — native setup guidance and per-service operating manuals without skills.

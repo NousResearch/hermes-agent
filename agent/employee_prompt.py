@@ -3,7 +3,7 @@
 
 def connection_guidance():
     from agent.knowledge import render
-    return render("For service connection work, read {guides_root}/employee/references/service-connections.md and the existing {profile_home}/connections/<service>/manual.md, if present. Document every connection in that manual; keep reusable references and scripts alongside it.")
+    return render("For service connection work, read {guides_root}/connections/guide.md and the existing {profile_home}/connections/<service>/manual.md, if present. Document every connection in that manual; keep reusable references and scripts alongside it.")
 
 
 def file_keeping_guidance():

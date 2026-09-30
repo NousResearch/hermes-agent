@@ -1,24 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -u
-HOST="${HERMES_TENSOR_HOST:-127.0.0.1}"
-PORT="${HERMES_TENSOR_PORT:-9379}"
-STATE_DIR="${HERMES_TENSOR_STATE_DIR:-$HOME/.hermes/tensor}"
-PID_FILE="$STATE_DIR/litert-lm.pid"
-LOG_FILE="$STATE_DIR/litert-lm.log"
-MODEL_NAME="${HERMES_TENSOR_MODEL:-tensor-local}"
-mkdir -p "$STATE_DIR"
+HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+MODEL_FILE="${1:-$(cat "$HOME_DIR/tensor/state/current-model" 2>/dev/null || true)}"
+BIN="${TENSOR_LITERT_BIN:-$(command -v litert_lm_main 2>/dev/null || true)}"
 die(){ echo "ERROR: $*" >&2; exit 1; }
-running(){ [ -f "$PID_FILE" ] || return 1; p=$(cat "$PID_FILE" 2>/dev/null || true); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
-ready(){ for i in $(seq 1 30); do curl -fsS --max-time 2 "http://$HOST:$PORT/v1/models" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
-configure(){ command -v hermes >/dev/null 2>&1 || die "Hermes not found"; n="${1:-$MODEL_NAME}"; hermes config set model.provider custom; hermes config set model.base_url "http://$HOST:$PORT/v1"; hermes config set model.api_key none; hermes config set model.default "$n"; echo "Hermes -> LiteRT-LM model $n"; }
-case "${1:-status}" in
- import) command -v litert-lm >/dev/null 2>&1 || die "litert-lm not found"; src="${2:-}"; n="${3:-$MODEL_NAME}"; [ -f "$src" ] || die "Model not found: $src"; litert-lm import "$src" "$n" ;;
- start) command -v litert-lm >/dev/null 2>&1 || die "litert-lm not found"; n="${2:-$MODEL_NAME}"; if ! running; then nohup litert-lm serve --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 & echo $! >"$PID_FILE"; fi; ready || { tail -n 80 "$LOG_FILE" 2>/dev/null || true; exit 1; }; configure "$n" ;;
- stop) if running; then p=$(cat "$PID_FILE"); kill "$p" 2>/dev/null || true; sleep 1; kill -9 "$p" 2>/dev/null || true; echo "Stopped PID $p"; else echo "LiteRT-LM is not running"; fi; rm -f "$PID_FILE" ;;
- restart) "$0" stop; "$0" start "${2:-$MODEL_NAME}" ;;
- status) echo "Endpoint: http://$HOST:$PORT/v1"; if running; then echo "Process: running PID $(cat "$PID_FILE")"; else echo "Process: stopped"; fi; command -v litert-lm >/dev/null 2>&1 && litert-lm --version 2>&1 | head -n 2 || echo "Runtime: not found" ;;
- models) command -v litert-lm >/dev/null 2>&1 || die "litert-lm not found"; litert-lm list ;;
- test) curl -fsS --max-time 5 "http://$HOST:$PORT/v1/models" || exit 1; echo ;;
- configure) configure "${2:-$MODEL_NAME}" ;;
- *) echo "Usage: tensor-lm import <file> [name] | start [name] | stop | restart [name] | status | models | test | configure [name]"; exit 2 ;;
+[ -n "$BIN" ] || die "LiteRT-LM native binary not found. Set TENSOR_LITERT_BIN."
+case "${1:-run}" in
+ run) MODEL_FILE="${2:-$MODEL_FILE}"; [ -f "$MODEL_FILE" ] || die "No .litertlm model selected"; shift 2 2>/dev/null || true; exec "$BIN" --backend=cpu --model_path="$MODEL_FILE" ${TENSOR_LITERT_ARGS:-} ;;
+ benchmark) MODEL_FILE="${2:-$MODEL_FILE}"; [ -f "$MODEL_FILE" ] || die "No model selected"; exec "$BIN" --backend=cpu --model_path="$MODEL_FILE" --benchmark --enable_profiling --benchmark_prefill_tokens=1024 --benchmark_decode_tokens=256 --async=false ;;
+ status) echo "LiteRT binary: $BIN"; echo "Model: ${MODEL_FILE:-none}"; "$BIN" --help >/dev/null 2>&1 && echo 'CLI: available' || echo 'CLI: failed' ;;
+ *) echo 'Usage: tensor lm run [model]|benchmark [model]|status'; exit 2 ;;
 esac

@@ -168,21 +168,16 @@ function mediaLink(value: string): string | null {
     ? { path: unquoteMediaPath(raw), punctuation: '' }
     : splitTrailingPunctuation(unquoteMediaPath(raw))
 
-  return isPlausibleMediaPath(path)
-    ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}`
-    : null
+  return isPlausibleMediaPath(path) ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}` : null
 }
 
 export function renderMediaTags(text: string): string {
   return text
-    .replace(
-      MEDIA_LINE_RE,
-      (match, lead: string, value: string, trailer: string) => {
-        const link = mediaLink(value)
+    .replace(MEDIA_LINE_RE, (match, lead: string, value: string, trailer: string) => {
+      const link = mediaLink(value)
 
-        return link ? `${lead}${link}${trailer}` : match
-      }
-    )
+      return link ? `${lead}${link}${trailer}` : match
+    })
     .replace(MEDIA_TAG_RE, (match, value: string) => mediaLink(value) ?? match)
 }
 

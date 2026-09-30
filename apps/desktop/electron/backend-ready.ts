@@ -115,10 +115,17 @@ function waitForDashboardPort(
     function rearmTimer() {
       clearTimeout(timer)
       const deadline = completionDeadline()
-      timer = setTimeout(() => {
-        cleanup()
-        reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)${deadline ? ' while an update completion was in progress' : ''}`))
-      }, Math.max(0, (deadline ?? startedAt + timeoutMs) - realNow()))
+      timer = setTimeout(
+        () => {
+          cleanup()
+          reject(
+            new Error(
+              `Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)${deadline ? ' while an update completion was in progress' : ''}`
+            )
+          )
+        },
+        Math.max(0, (deadline ?? startedAt + timeoutMs) - realNow())
+      )
     }
 
     function cleanup() {

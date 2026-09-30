@@ -800,13 +800,23 @@ class GatewayBusySessionMixin:
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent or self._running_turn_finished(session_key):
             return None
-        event._processing_state.defer_unstarted()
+        self._absorb_started_input(turn, event)
         processing_event = turn.processing_event
         if processing_event is not None and processing_event is not event:
             processing_event.absorb_turn_input(event, input_text=input_text)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = processing_event.reply_expected
         return turn
+
+    def _absorb_started_input(self: "GatewayRunner", turn, event: MessageEvent) -> None:
+        """The running turn consumes *event*, so *event* completes with that turn. An input that the
+        adapter has started completes when its handler returns unless the hooks track the running
+        turn; an input that has not started waits for the turn."""
+        event._processing_state.defer_unstarted()
+        processing_event = turn.processing_event
+        adapter = self._intake_adapter_for(event.source)
+        if processing_event is not None and adapter is not None:
+            processing_event._processing_state.absorb(adapter, event)
 
     async def _interrupt_running_agent_for_busy_event(self: "GatewayRunner", event: MessageEvent, adapter, running_agent, session_key: str) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""

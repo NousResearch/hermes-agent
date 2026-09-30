@@ -70,6 +70,7 @@ class _ProcessingPhase(Enum):
     PENDING = "pending"
     DEFERRED = "deferred"
     RUNNING = "running"
+    ABSORBED = "absorbed"
     COMPLETED = "completed"
 
 
@@ -93,6 +94,8 @@ class _ProcessingState:
     consumed_receipt_message_id: Optional[str] = None
     receipt_inputs: List[_ProcessingInput] = field(default_factory=list)
     pending_completion: Optional[_ProcessingCompletion] = None
+    absorbed: List[_ProcessingCompletion] = field(default_factory=list)
+    start_notified: bool = False
 
     def defer(self) -> None:
         self.phase = _ProcessingPhase.DEFERRED
@@ -102,6 +105,28 @@ class _ProcessingState:
         handler returns."""
         if self.phase is _ProcessingPhase.PENDING:
             self.phase = _ProcessingPhase.DEFERRED
+
+    def absorb(self, adapter: "BasePlatformAdapter", event: "MessageEvent") -> bool:
+        """Complete a started input with this turn instead of when its own handler returns."""
+        state = event._processing_state
+        if state is self or self.phase is not _ProcessingPhase.RUNNING or state.phase is not _ProcessingPhase.RUNNING:
+            return False
+        state.phase = _ProcessingPhase.ABSORBED
+        self.absorbed.append(_ProcessingCompletion(adapter, event))
+        return True
+
+    def release(self, event: "MessageEvent") -> None:
+        """Hand an absorbed input back to its own turn."""
+        self.absorbed = [
+            completion for completion in self.absorbed
+            if completion.event._processing_state is not event._processing_state
+        ]
+
+    def take_absorbed(self) -> List[_ProcessingCompletion]:
+        absorbed, self.absorbed = self.absorbed, []
+        for completion in absorbed:
+            completion.event._processing_state.phase = _ProcessingPhase.RUNNING
+        return absorbed
 
     def take_pending_input(self, pending_text: str) -> Optional["MessageEvent"]:
         pending_indices: set[int] = set()
@@ -122,16 +147,22 @@ class _ProcessingState:
         self.receipt_message_id = self.consumed_receipt_message_id
         return pending_input
 
-    def start(self) -> None:
+    def start(self) -> bool:
+        """Begin processing the input. Returns False when its start was already reported, so a
+        re-run of the same input keeps a single lifecycle."""
+        first = not self.start_notified
         self.phase = _ProcessingPhase.RUNNING
         self.outcome = None
         self.consumed_receipt_message_id = self.receipt_message_id
         self.receipt_inputs.clear()
+        self.start_notified = True
+        return first
 
     def complete(self) -> bool:
-        if self.phase in {_ProcessingPhase.DEFERRED, _ProcessingPhase.COMPLETED}:
+        if self.phase in {_ProcessingPhase.DEFERRED, _ProcessingPhase.ABSORBED, _ProcessingPhase.COMPLETED}:
             return False
         self.phase = _ProcessingPhase.COMPLETED
+        self.start_notified = False
         return True
 
     def complete_inline(self) -> bool:

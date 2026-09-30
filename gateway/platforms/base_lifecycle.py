@@ -55,8 +55,12 @@ class BaseLifecycleMixin:
                     event._processing_state.pending_completion = None
                     await completion.adapter._run_processing_hook(
                         hook_name, completion.event, *args[1:], **kwargs)
+                for absorbed in event._processing_state.take_absorbed():
+                    await absorbed.adapter._run_processing_hook(
+                        hook_name, absorbed.event, *args[1:], **kwargs)
             if hook_name == "on_processing_start":
-                event._processing_state.start()
+                if not event._processing_state.start():
+                    return
             elif hook_name == "on_processing_complete":
                 if not event._processing_state.complete():
                     return

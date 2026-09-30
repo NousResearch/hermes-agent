@@ -300,26 +300,28 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
 
 def test_long_lived_process_env_marker_is_consumed_not_persistent(monkeypatch):
     """Regression #87650: the HERMES_DELEGATED_CHILD_CONTEXT env marker is
-    write-only lineage for subprocess forks — it must NOT permanently
-    misclassify a long-lived process (gateway/cron daemon) that inherited it.
+    write-only lineage for subprocess forks.
 
-    Before the fix, is_delegated_child_process_context() read os.environ
-    unconditionally, so any long-lived process that ever inherited the marker
-    (e.g. respawned from a delegated child) stayed delegated forever, causing
-    kanban_db/kanban to treat it as a child on every call. After the fix, the
-    ContextVar is authoritative; the env marker is consumed once (first
-    observation) and removed so it cannot wedge a long-running process.
+    When observed, it is removed from os.environ so downstream subprocesses
+    do not inherit it, while remaining sticky-True for the lifetime of the
+    current process (so multi-check forks do not flip mid-run).
     """
     from agent import delegation_context as dc
+
+    monkeypatch.setattr(dc, "_LINEAGE_WAS_CHILD", False)
 
     # Simulate a process launched WITH the marker (subprocess fork).
     monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
 
-    # First observation: still reports True (fork lineage), but consumes it.
+    # First observation: reports True (fork lineage) and consumes it from os.environ.
     assert dc.is_delegated_child_process_context() is True
-    # Marker removed from os.environ — the process is no longer classified.
+    # Marker removed from os.environ — future subprocesses will not inherit it.
     assert os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
-    # Subsequent calls report False (ContextVar unset, env marker gone).
+    # Subsequent calls remain sticky True for this process's lifetime.
+    assert dc.is_delegated_child_process_context() is True
+
+    # Reset for ContextVar test
+    monkeypatch.setattr(dc, "_LINEAGE_WAS_CHILD", False)
     assert dc.is_delegated_child_process_context() is False
 
     # The ContextVar path is unaffected (in-process delegated child).

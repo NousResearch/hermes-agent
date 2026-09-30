@@ -342,8 +342,14 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             return await asyncio.to_thread(keyless_extract, "Firecrawl", "firecrawl", urls, logger)
         format = kwargs.get("format")
         # "summary" asks Firecrawl for its AI page summary — a far smaller payload than
-        # the full page — and _scrape_one returns it as the content.
-        formats = [format] if format in ("markdown", "html", "summary") else ["markdown", "html"]
+        # the full page — and _scrape_one returns it as the content. Markdown is requested
+        # alongside it, because Firecrawl returns only the formats asked for and declines to
+        # summarise some pages (image-only, paywalled, JS shells); without it the fallback
+        # would be an empty success.
+        if format == "summary":
+            formats = ["summary", "markdown"]
+        else:
+            formats = [format] if format in ("markdown", "html") else ["markdown", "html"]
         return [
             {"url": url, "error": "Interrupted", "title": ""} if _is_interrupted() else await _scrape_one(url, formats, format)
             for url in urls

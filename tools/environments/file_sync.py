@@ -141,6 +141,16 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
     return files
 
 
+def iter_sync_roots(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
+    """Writable roots from the same enumeration as uploads, never credential parents."""
+    from tools.credential_files import _cache_dir_roots, _skill_dir_roots
+
+    return [(str(host), remote) for host, remote in (
+        *_skill_dir_roots(container_base),
+        *_cache_dir_roots(container_base, create_missing=False),
+    )]
+
+
 def _resolve_host_path_str(host_path: str) -> str:
     """Canonical string form of a host path (``resolve()`` falling back to ``expanduser()``)."""
     try:
@@ -197,8 +207,11 @@ class FileSyncManager:
         delete_fn: DeleteFn,
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
-        bulk_download_fn: BulkDownloadFn | None = None):
+        bulk_download_fn: BulkDownloadFn | None = None,
+        get_sync_roots_fn: GetFilesFn | None = None):
         self._get_files_fn = get_files_fn
+        self._get_sync_roots_fn = get_sync_roots_fn
+        self._sync_roots: list[tuple[str, str]] | None = [] if get_sync_roots_fn else None
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
@@ -227,10 +240,12 @@ class FileSyncManager:
             return
 
         current_files = self._get_files_fn()
+        sync_roots = self._get_sync_roots_fn() if self._get_sync_roots_fn else None
         self._upload_only_host_paths.update(_credential_host_paths())
         to_upload, new_files, to_delete = self._plan_sync(current_files)
 
         if not to_upload and not to_delete:
+            self._sync_roots = sync_roots
             self._last_sync_time = _monotonic()
             return
 
@@ -254,6 +269,8 @@ class FileSyncManager:
                 new_files.pop(p, None)
                 self._pushed_hashes.pop(p, None)
             self._synced_files = new_files
+            # Keep namespace destinations from the successful push, not teardown discovery.
+            self._sync_roots = sync_roots
             self._last_sync_time = _monotonic()
         except Exception as exc:
             self._synced_files = prev_files
@@ -442,7 +459,8 @@ class FileSyncManager:
         if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
             return 0  # unchanged from push
 
-        host_path = self._resolve_host_path(remote_path, file_mapping)
+        host_path = (self._resolve_host_path(remote_path, file_mapping)
+                     if self._sync_roots is None else None)
         if host_path is None:
             host_path = self._infer_host_path(remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
             if host_path is None:
@@ -469,9 +487,19 @@ class FileSyncManager:
 
     def _infer_host_path(self, remote_path: str, file_mapping: list[tuple[str, str]] | None = None, *,
                          upload_only_host_paths: set[str] | None = None) -> str | None:
-        """Infer a host path for a new remote file by matching path prefixes: an existing
-        remote->host pair whose parent directory prefixes *remote_path* gets the same
-        substitution (``/root/.hermes/skills/b.md`` -> ``~/.hermes/skills/b.md``)."""
+        """Map within explicitly permitted roots, or use file parents for legacy callers."""
+        if self._sync_roots is not None:
+            from tools.path_security import validate_within_dir
+
+            for host_root, remote_root in self._sync_roots:
+                prefix = remote_root.rstrip("/") + "/"
+                if remote_path.startswith(prefix):
+                    candidate = Path(host_root) / remote_path[len(prefix):]
+                    if validate_within_dir(candidate, Path(host_root)):
+                        return None
+                    return str(candidate)
+            return None
+
         upload_only_host_paths = upload_only_host_paths or set()
         for host, remote in file_mapping or []:
             if self._is_upload_only_host_path(host, upload_only_host_paths):

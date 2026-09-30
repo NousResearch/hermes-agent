@@ -17,6 +17,8 @@ from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
 
+from plugins.platforms.telegram import model_picker as _mp
+
 from agent.deadline import run_bounded_async
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
@@ -4471,20 +4473,11 @@ class TelegramAdapter(BasePlatformAdapter):
             label = f"✓ {label}"
         return InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
 
-    @staticmethod
-    def _picker_nav_row(page: int, total_pages: int, prefix: str) -> list:
-        """``◀ Prev | n/N | Next ▶`` row (``prefix`` = ``mpv``/``mg`` page callback)."""
-        nav: list = []
-        if page > 0:
-            nav.append(InlineKeyboardButton(t("platform.telegram.picker.prev"), callback_data=f"{prefix}:{page - 1}"))
-        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
-        if page < total_pages - 1:
-            nav.append(InlineKeyboardButton(t("platform.telegram.picker.next"), callback_data=f"{prefix}:{page + 1}"))
-        return nav
-
-    @staticmethod
-    def _picker_back_cancel_row() -> list:
-        return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
+    # NOTE(local-refactor): `_picker_nav_row` / `_picker_back_cancel_row` are
+    # defined once, further down, as staticmethod delegations to
+    # `model_picker.picker_nav_row` / `picker_back_cancel_row`. Do not
+    # re-add inline definitions here — the later class-body assignments win
+    # and would shadow the extracted module (the split's whole point).
 
     def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
         rows = self._rows_of_two(buttons)
@@ -4520,16 +4513,27 @@ class TelegramAdapter(BasePlatformAdapter):
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
-        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+    def _build_model_keyboard(self, models: list, page: int, provider_slug: str = "", pricing: Optional[dict] = None) -> tuple:
+        """Build paginated model buttons with price/promo badges. Returns (keyboard, page_info_text)."""
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons: list = []
         for i, model_id in enumerate(page_models):
+            p_info = self._get_model_pricing_detail(provider_slug, model_id, pricing)
+            badge = ""
+            if p_info.get("is_free"):
+                badge = "🆓 "
+            elif p_info.get("discount_percent"):
+                badge = f"🔥-{p_info['discount_percent']}% "
+            elif p_info.get("has_pricing"):
+                badge = "💰 "
+
             short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
-                short = short[:35] + "..."
-            buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
+            max_len = 38 - len(badge)
+            if len(short) > max_len:
+                short = short[:max_len - 3] + "..."
+            label = f"{badge}{short}"
+            buttons.append(InlineKeyboardButton(label, callback_data=f"mm:{start + i}"))
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
@@ -4541,19 +4545,33 @@ class TelegramAdapter(BasePlatformAdapter):
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
-        pname = state.get("selected_provider_name", "")
         provider_slug = state.get("selected_provider", "")
-        provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
+        pricing = state.get("pricing")
+        keyboard, page_info = self._build_model_keyboard(models, page, provider_slug, pricing)
+        pname = state.get("selected_provider_name", "")
+        provider = next((p for p in state.get("providers", []) if p.get("slug") == provider_slug), None)
         total = provider.get("total_models", len(models)) if provider else len(models)
         shown = len(models)
+        # Upstream's i18n keys carry the header/footer text; the local split
+        # adds a per-model pricing block. Both are kept: the i18n template owns
+        # the surrounding chrome so translations still apply, and the pricing
+        # lines come from the extracted `model_picker` module.
+        page_models, _page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         extra = f"\n_{t('platform.telegram.picker.more_available', count=str(total - shown))}_" if total > shown else ""
-        await self._picker_edit(
-            query,
+        lines = [
             f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
-            f"{t('platform.telegram.picker.provider_label', provider=f'*{pname}*')}{page_info}\n"
-            f"{t('platform.telegram.picker.select_model')}{extra}",
-            keyboard)
+            f"{t('platform.telegram.picker.provider_label', provider=f'*{pname}*')}{page_info}",
+        ]
+        if page_models:
+            lines.append("")
+            lines.append(f"*{t('platform.telegram.picker.models_pricing')}*")
+            for mid in page_models:
+                p_info = self._get_model_pricing_detail(provider_slug, mid, pricing)
+                lines.append(self._format_model_pricing_line(mid, p_info))
+        lines.append("")
+        lines.append(t("platform.telegram.picker.select_model_below") + extra)
+
+        await self._picker_edit(query, "\n".join(lines), keyboard)
 
     @staticmethod
     def _provider_list_text(current_model: str, provider_label: str, page_info: str) -> str:
@@ -4571,22 +4589,10 @@ class TelegramAdapter(BasePlatformAdapter):
             provider_label = state["current_provider"]
         await self._picker_edit(query, self._provider_list_text(state["current_model"], provider_label, provider_page_info), keyboard)
 
-    async def _picker_selection(self, query, state: dict, raw_idx: str) -> Optional[tuple]:
-        """Resolve ``mm:``/``mc:`` index → ``(idx, model_id, provider_slug, callback)``; answers + None on error."""
-        try:
-            idx = int(raw_idx)
-        except ValueError:
-            await query.answer(text=_toast("platform.telegram.picker.invalid_selection"))
-            return None
-        model_list = state.get("model_list", [])
-        if idx < 0 or idx >= len(model_list):
-            await query.answer(text=_toast("platform.telegram.picker.invalid_model_index"))
-            return None
-        callback = state.get("on_model_selected")
-        if not callback:
-            await query.answer(text=_toast("platform.telegram.picker.expired"))
-            return None
-        return idx, model_list[idx], state.get("selected_provider", ""), callback
+    # NOTE(local-refactor): `_picker_selection` is defined once, further down, as
+    # a staticmethod delegation to `model_picker.picker_selection`. The inline
+    # body that lived here was moved into that module by the god-file split;
+    # re-adding it would shadow the extracted implementation.
 
     async def _picker_switch(self, query, chat_id: str, model_id: str, provider_slug: str, callback) -> None:
         """Perform the model switch, render the result, and drop the picker state."""
@@ -4600,6 +4606,19 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._edit_result_text(query, result_text)
         await query.answer(text=_toast("platform.telegram.picker.switch_failed" if switch_failed else "platform.telegram.picker.switched"))
         self._model_picker_state.pop(chat_id, None)
+
+    # --- model-picker presentation: moved to plugins/platforms/telegram/model_picker.py ---
+    # Thin delegations so every existing call site keeps working unchanged.
+    # `_sort_models_for_picker` was a @classmethod whose body only used `cls` to reach
+    # `_get_model_pricing_detail`; it is now a module function, so re-wrapping it in
+    # classmethod() would make `models` bind as `cls` and silently drop an argument.
+    # staticmethod (not classmethod) keeps the call arity identical to the original.
+    _picker_nav_row = staticmethod(_mp.picker_nav_row)
+    _picker_back_cancel_row = staticmethod(_mp.picker_back_cancel_row)
+    _get_model_pricing_detail = staticmethod(_mp.get_model_pricing_detail)
+    _format_model_pricing_line = staticmethod(_mp.format_model_pricing_line)
+    _sort_models_for_picker = staticmethod(_mp.sort_models_for_picker)
+    _picker_selection = staticmethod(_mp.picker_selection)
 
     @staticmethod
     async def _parse_page(query, raw: str) -> Optional[int]:
@@ -4624,7 +4643,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
-            state["model_list"] = provider.get("models", [])
+
+            try:
+                from hermes_cli.models_pricing import get_pricing_for_provider
+                pricing = get_pricing_for_provider(provider_slug, cached_only=True) or get_pricing_for_provider(provider_slug, cached_only=False) or {}
+            except Exception:
+                pricing = {}
+            state["pricing"] = pricing
+
+            raw_models = list(provider.get("models", []))
+            state["model_list"] = self._sort_models_for_picker(raw_models, provider_slug, pricing)
             await self._picker_show_models(query, state, 0)
         elif data.startswith("mg:"):  # model page navigation
             page = await self._parse_page(query, data[3:])

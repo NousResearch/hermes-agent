@@ -353,11 +353,11 @@ def settle_unrecovered_error(
             base_url=_base, model=_model, delivered=_delivered,
         ))
 
-    # A cooldown the live surface will not sit through ends the attempt cycle now (fallback,
-    # else the reset time and the ways forward); the copy counts the attempts actually made.
+    # A free-tier cooldown the live surface will not sit through ends the attempt cycle now
+    # (fallback, else the reset time and the ways forward); the copy counts the attempts made.
     attempts_made = retry_count
-    if is_rate_limited and retry_count < max_retries and cooldown_outlasts_live_wait(agent, api_error):
-        logger.info("%sProvider cooldown outlasts the live wait cap — ending retries after attempt %s",
+    if is_rate_limited and retry_count < max_retries and cooldown_outlasts_live_wait(agent, api_error, _base):
+        logger.info("%sFree-tier cooldown outlasts the live wait cap — ending retries after attempt %s",
                     agent.log_prefix, retry_count)
         retry_count = max_retries
     if retry_count >= max_retries:

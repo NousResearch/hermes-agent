@@ -1472,13 +1472,15 @@ def _is_welcome_guest(agent: Any, base_url: Any) -> bool:
         return False
 
 
-def cooldown_outlasts_live_wait(agent: Any, api_error: Exception) -> bool:
-    """True on a live surface when the provider's declared cooldown is longer than the surface
-    sits through. A retry before that reset only meets the same refusal (the free tier's
-    service-wide pause answered a 600 s retry with a second 429 while its 1069 s window ran),
-    so the caller ends the attempt cycle now: fallback, or the reset time and the ways forward."""
+def cooldown_outlasts_live_wait(agent: Any, api_error: Exception, base_url: Any) -> bool:
+    """True when a live surface on the Nous free tier's host meets a cooldown longer than it sits
+    through. The free tier's pause is service-wide: a 600 s retry met a second 429 while its
+    1069 s window ran, so the caller ends the attempt cycle now (fallback, or the reset time and
+    the sign-in / model doors). Every other provider waits out its ``Retry-After`` as before: a
+    paid bucket reopens on time, and ``fallback.min_switch_reset_seconds`` relies on that wait."""
     from agent.retry_utils import LIVE_RETRY_WAIT_CAP_S, is_live_surface, provider_retry_after_seconds
-    if not is_live_surface(getattr(agent, "platform", "")):
+    from hermes_cli.anon_auth import route_is_welcome_host
+    if not (is_live_surface(getattr(agent, "platform", "")) and route_is_welcome_host(base_url)):
         return False
     cooldown = provider_retry_after_seconds(api_error)
     return cooldown is not None and cooldown > LIVE_RETRY_WAIT_CAP_S

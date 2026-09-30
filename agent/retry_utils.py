@@ -174,11 +174,12 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
 
 
-# Surfaces where a person watches the turn as it runs (desktop chat, TUI). A provider cooldown
-# longer than ``LIVE_RETRY_WAIT_CAP_S`` is not slept through there: a retry before the provider's
-# reset only meets the same refusal, and the person sits in front of a spinner for minutes. The
-# turn ends at once with the reset time and the ways forward instead. Background surfaces (cron,
-# batch, messaging gateways, ``hermes chat -q``) keep the long wait, capped at ``RETRY_AFTER_CAP_S``.
+# Surfaces where a person watches the turn as it runs (desktop chat, TUI). On the Nous free tier
+# a cooldown longer than ``LIVE_RETRY_WAIT_CAP_S`` is not slept through there: the free tier's
+# pause is service-wide, a retry before its reset only meets the same refusal, and the person
+# sits in front of a spinner for minutes. The turn ends at once with the reset time and the ways
+# forward instead. Every other provider, and every background surface (cron, batch, messaging
+# gateways, ``hermes chat -q``), waits out the cooldown, capped at ``RETRY_AFTER_CAP_S``.
 LIVE_SURFACES = frozenset({"desktop", "tui"})
 LIVE_RETRY_WAIT_CAP_S = 60.0
 # Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap re-tripped the limit; 600s
@@ -188,11 +189,6 @@ RETRY_AFTER_CAP_S = 600.0
 
 def is_live_surface(platform: Any) -> bool:
     return str(platform or "").strip().lower() in LIVE_SURFACES
-
-
-def retry_wait_cap(platform: Any) -> float:
-    """The longest single retry wait this surface sits through."""
-    return LIVE_RETRY_WAIT_CAP_S if is_live_surface(platform) else RETRY_AFTER_CAP_S
 
 
 def provider_retry_after_seconds(error: Any) -> Optional[float]:

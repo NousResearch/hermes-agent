@@ -4592,9 +4592,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if warning is not None:
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
-                await query.edit_message_text(
-                    text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
-                    parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
+                await self._picker_edit(
+                    query, f"⚠ *{warning.title}*\n\n{warning.message}", keyboard)
                 await query.answer(text="Confirm model selection")
                 return
             await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
@@ -4618,9 +4617,10 @@ class TelegramAdapter(BasePlatformAdapter):
         elif data == "mb":  # back to provider list (folds groups)
             await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
-            self._model_picker_state.pop(chat_id, None)
-            await query.edit_message_text(text="Model selection cancelled.", reply_markup=None)
             await query.answer()
+            self._model_picker_state.pop(chat_id, None)
+            with contextlib.suppress(Exception):
+                await query.edit_message_text(text="Model selection cancelled.", reply_markup=None)
         else:
             await query.answer()  # e.g. page-counter button "mx:noop"
 

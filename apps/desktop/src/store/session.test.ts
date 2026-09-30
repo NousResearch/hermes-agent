@@ -21,30 +21,52 @@ import { makeSessionInfo } from '../test/session-info'
 import {
   $activeSessionId,
   $connection,
+  $cronSessions,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
+  $freshDraftKey,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
+  applySessionTitle,
+  carryForwardFailedProfileSessions,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
+  forgetSessionOwnerHintsForSession,
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedWorkspaceCwd,
   getSessionOwnerHint,
+  getSessionOwnerHints,
   hydrateSessionOwnerHints,
+  keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
+  lineageAliases,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
+  sessionOwnerRouteFromRow,
   sessionPinId,
+  setComposerSelectionOwner,
+  setConnection,
+  setCronSessions,
   setCurrentCwd,
   setCurrentCwdTransient,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider,
+  setMessagingSessions,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -54,6 +76,7 @@ import {
   touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
+import { tombstoneSessions, untombstoneSessions } from './session-removal'
 import {
   $attentionSessionIds,
   clearAllSessionStates,
@@ -62,6 +85,83 @@ import {
 } from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
+
+describe('composer model persistence scope', () => {
+  const local = { baseUrl: '', connectionId: 'local', mode: 'local' } as never
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    setConnection(local)
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentModelSource('')
+  })
+
+  afterEach(() => {
+    setConnection(local)
+    window.localStorage.clear()
+  })
+
+  it('keeps manual model selections isolated by remote connection and profile', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('fred'))
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+
+    setConnection(remote('fred-work'))
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+
+    setCurrentModel('local/model')
+    setCurrentProvider('custom:local')
+    setConnection(remote('fred'))
+
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+  })
+
+  it('keeps inferred local-primary connections on the historical bare keys', () => {
+    setComposerSelectionOwner('remote', 'default')
+    window.localStorage.setItem('hermes.desktop.composer.model', 'legacy-model')
+    window.localStorage.setItem('hermes.desktop.composer.provider', 'legacy-provider')
+
+    setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
+
+    expect($currentModel.get()).toBe('legacy-model')
+    expect($currentProvider.get()).toBe('legacy-provider')
+    setCurrentModel('next-model')
+    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('next-model')
+    expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.local.default')).toBeNull()
+  })
+
+  it('uses the live registry owner when the connection descriptor is stale', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('fred'))
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+
+    // ensureGatewayAgent publishes this coordinate even if getConnectionFor
+    // fails and $connection therefore still describes fred.
+    setComposerSelectionOwner('aibox', 'fred-work')
+    setCurrentModel('local/model')
+    setCurrentProvider('custom:local')
+    setCurrentModelSource('default')
+
+    setComposerSelectionOwner('aibox', 'fred')
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+
+    setComposerSelectionOwner('aibox', 'fred-work')
+    expect($currentModel.get()).toBe('local/model')
+    expect($currentProvider.get()).toBe('custom:local')
+  })
+})
 
 describe('session owner hints', () => {
   afterEach(() => {
@@ -176,6 +276,32 @@ describe('session owner hints', () => {
     expect(getSessionOwnerHint('stored-a')).toBeUndefined()
     expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
   })
+
+  it('forgets every route for one session without disturbing other sessions', () => {
+    setSessionOwnerHint('poisoned', { connectionId: 'local', mode: 'local', profile: 'default' })
+    setSessionOwnerHint('poisoned', { connectionId: 'remote-a', mode: 'remote', profile: 'default' })
+    setSessionOwnerHint('healthy', { connectionId: 'remote-a', mode: 'remote', profile: 'default' })
+
+    forgetSessionOwnerHintsForSession('poisoned')
+
+    expect(getSessionOwnerHints('poisoned')).toEqual([])
+    expect(getSessionOwnerHint('healthy')).toMatchObject({ connectionId: 'remote-a' })
+
+    _resetSessionOwnerHintsForTests()
+    hydrateSessionOwnerHints()
+    expect(getSessionOwnerHints('poisoned')).toEqual([])
+    expect(getSessionOwnerHint('healthy')).toMatchObject({ connectionId: 'remote-a' })
+  })
+
+  it('pins only connection-tagged rows and leaves primary SSH rows ambient', () => {
+    expect(sessionOwnerRouteFromRow(session({ connection_id: 'source-a', profile: 'worker' }))).toEqual({
+      connectionId: 'source-a',
+      profile: 'worker',
+      targetProfile: 'worker'
+    })
+    expect(sessionOwnerRouteFromRow(session({ profile: 'default' }))).toBeUndefined()
+    expect(sessionOwnerRouteFromRow(session({ connection_id: '  ', profile: 'default' }))).toBeUndefined()
+  })
 })
 
 describe('knownSessionOwner', () => {
@@ -202,6 +328,19 @@ describe('knownSessionOwner', () => {
     setSessionOwnerHint('hidden', route)
 
     expect(knownSessionOwner([], 'hidden')).toEqual(route)
+  })
+})
+
+describe('fresh draft identity', () => {
+  it('rotates for each new-chat lifecycle and persists the current key', () => {
+    const previous = $freshDraftKey.get()
+    const first = rotateFreshDraftKey()
+    const second = rotateFreshDraftKey()
+
+    expect(first).not.toBe(previous)
+    expect(second).not.toBe(first)
+    expect($freshDraftKey.get()).toBe(second)
+    expect(window.localStorage.getItem('hermes.desktop.freshDraftKey')).toBe(second)
   })
 })
 
@@ -247,6 +386,18 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('lineageAliases across a deep compression chain', () => {
+  it('aliases every segment, intermediates included', () => {
+    // The projected row carries the full chain: a tile or route can hold a
+    // MIDDLE segment's id from when IT was the tip.
+    const rows = [session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })]
+
+    expect(lineageAliases('mid', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(sessionMatchesStoredId(rows[0], 'mid')).toBe(true)
   })
 })
 
@@ -328,6 +479,40 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, [])[0]).toBe(incoming[0])
   })
 
+  it('never stitches one profile twin onto another: same id in two profiles stays two sessions (#92454)', () => {
+    // Two profiles can hold sessions with the SAME stored id (restored
+    // backups, copied state.dbs). Keyed by bare id these collapsed into one
+    // row whose title/activity carry crossed profiles — the visible seed of
+    // the cross-profile transcript/route mixups.
+    const previous = [session({ id: 'twin', last_active: 50, profile: 'testbot', title: 'Testbot work' })]
+
+    const incoming = [
+      session({ id: 'twin', last_active: 10, profile: 'quietbot' }),
+      session({ id: 'twin', last_active: 50, profile: 'testbot', title: 'Testbot work' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    // Both twins survive as distinct rows…
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:twin', 'testbot:twin'])
+    // …and testbot's title/activity is NOT stitched onto quietbot's row.
+    const quiet = merged.find(s => s.profile === 'quietbot')
+    expect(quiet?.title ?? null).toBeNull()
+    expect(quiet?.last_active).toBe(10)
+  })
+
+  it('a kept twin in another profile survives the incoming page dedupe (#92454)', () => {
+    // The incoming page carries only ONE profile's copy; the other profile's
+    // twin was in the previous list and pinned via keep. Bare-id dedupe
+    // treated the ids as equal and dropped the kept twin.
+    const previous = [session({ id: 'twin', profile: 'quietbot' })]
+    const incoming = [session({ id: 'twin', message_count: 2, profile: 'testbot' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['twin'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:twin', 'testbot:twin'])
+  })
+
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
@@ -369,6 +554,78 @@ describe('mergeSessionPage', () => {
     const incoming = [session({ id: 'b' })]
 
     expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
+  })
+
+  it('never resurrects a HIDDEN session even when the keep set names it (#113273)', () => {
+    // Bot Mode canonical chats are born hidden and are live almost constantly
+    // (routines, bot-to-bot turns), so $workingSessionIds nearly always holds
+    // them — and an open Bot Chat tab pins the id via the tile keep too. The
+    // server page never lists hidden rows; the merge must not let the
+    // keep-list re-insert what the backend excludes by design, or "Bot Chat"
+    // rows become permanent residents of the Sessions sidebar.
+    const previous = [session({ hidden: true, id: 'bot-chat', title: 'Bot Chat' }), session({ id: 'mine' })]
+    const incoming = [session({ id: 'mine', message_count: 3 })]
+
+    expect(mergeSessionPage(previous, incoming, ['bot-chat']).map(s => s.id)).toEqual(['mine'])
+  })
+
+  it('never resurrects a tombstoned row through the keep set (#118156)', () => {
+    // Archive flow: the row is tombstoned and dropped optimistically, but it
+    // is still recently-settled (its turn just ended), so sessionsToKeep()
+    // names it. A refresh whose `previous` still holds the row (a slice
+    // captured before the drop, or a resurrection injected by a stale page)
+    // must not let the survivor path keep it alive: while the tombstone
+    // stands, the row is on its way out — full stop.
+    tombstoneSessions(['doomed'])
+
+    try {
+      const previous = [session({ id: 'doomed' }), session({ id: 'mine' })]
+      const incoming = [session({ id: 'mine', message_count: 3 })]
+
+      expect(mergeSessionPage(previous, incoming, ['doomed']).map(s => s.id)).toEqual(['mine'])
+    } finally {
+      untombstoneSessions(['doomed'])
+    }
+  })
+
+  it('matches a tombstone by lineage root, not just the live tip (#118156)', () => {
+    // archiveSession() tombstones the stored id AND the lineage root; the
+    // survivor filter must honor both, the same way dropTombstoned does for
+    // incoming rows.
+    tombstoneSessions(['root'])
+
+    try {
+      const previous = [session({ id: 'tip', _lineage_root_id: 'root' }), session({ id: 'mine' })]
+      const incoming = [session({ id: 'mine' })]
+
+      expect(mergeSessionPage(previous, incoming, ['root']).map(s => s.id)).toEqual(['mine'])
+    } finally {
+      untombstoneSessions(['root'])
+    }
+  })
+
+  it('matches a tombstone by any intermediate lineage segment (#123685)', () => {
+    // archiveSession arms the tombstone on the ids the row carried when it was
+    // clicked — which, mid-compression, can be a MIDDLE segment id rather than
+    // the root. The survivor filter matched only tip + root, so a doomed row
+    // whose tombstone names a segment came back through the keep set.
+    tombstoneSessions(['segment'])
+
+    try {
+      // The doomed conversation sits in `previous`; its tombstone names the
+      // middle segment, not its root. The incoming page omits it, but the keep
+      // set names the live tip — the survivor path must not carry it back.
+      const previous = [
+        session({ id: 'mine' }),
+        session({ id: 'tip', _lineage_ids: ['root', 'segment', 'tip'], _lineage_root_id: 'root' })
+      ]
+
+      const incoming = [session({ id: 'mine' })]
+
+      expect(mergeSessionPage(previous, incoming, ['tip']).map(s => s.id)).toEqual(['mine'])
+    } finally {
+      untombstoneSessions(['segment'])
+    }
   })
 
   it('keeps a pinned session that has aged off the recent page', () => {
@@ -427,6 +684,91 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+
+  it('drops an old segment kept in the keep set after the chain reorg minted a fresh root (#85331)', () => {
+    // The reporter's unit repro: a manual compression-chain reorganization
+    // relinked old segments under a NEW root id. The backend now returns the
+    // tip (carrying _lineage_ids with every chain segment); the previous
+    // list still holds an old SEGMENT row that is in the keep set (it was
+    // the working/selected session at refresh time). Its id is absent from
+    // the incoming page and unmatched by the root-only lineage key, so it
+    // used to survive as a title-less ghost row the backend never sent.
+    const previous = [
+      session({ id: 'seg2' }), // old segment: no lineage of its own
+      session({ id: 'tip', _lineage_root_id: 'fresh-root' }),
+      session({ id: 'other' })
+    ] as SessionInfo[]
+
+    const incoming = [
+      // The reorganized chain served as its tip, with every chain id.
+      session({ id: 'tip', _lineage_ids: ['seg1', 'seg2', 'fresh-root', 'tip'], _lineage_root_id: 'fresh-root' }),
+      session({ id: 'other' })
+    ] as SessionInfo[]
+
+    // seg2 was the working session at refresh time — in the keep set.
+    const merged = mergeSessionPage(previous, incoming, ['seg2'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+
+  it('keeps a pinned session aged off the page even when another row carries a deep lineage', () => {
+    // The absorption filter must NOT evict legitimately-kept rows: a pinned
+    // row's own id never appears inside ANOTHER session's lineage. Guard for
+    // the #85331 fix — this is the pre-existing pinned-aging-off behavior
+    // ('keeps a pinned session that has aged off the recent page') plus a
+    // deep _lineage_ids on the incoming page.
+    const previous = [session({ id: 'recent' }), session({ id: 'pinned' })]
+
+    const incoming = [
+      session({ id: 'recent', _lineage_ids: ['recent', 'recent-root'], _lineage_root_id: 'recent-root' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, ['pinned'])
+
+    expect(merged.map(s => s.id)).toEqual(['pinned', 'recent'])
+  })
+
+  it('keeps a pinned twin in another profile when an incoming lineage carries the same stored id (#92454)', () => {
+    // Bare-id lineage matching evicted a kept row whose id merely coincided
+    // with another profile's `_lineage_ids`: in that other profile the id
+    // really was absorbed into the projected tip, but the pinned row is a
+    // different session. Lineage members must be profile-qualified like
+    // every other key in the survivor predicate.
+    const previous = [session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })] as SessionInfo[]
+
+    const incoming = [
+      session({
+        id: 'tip',
+        profile: 'testbot',
+        _lineage_ids: ['sess-42', 'fresh-root', 'tip'],
+        _lineage_root_id: 'fresh-root'
+      })
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['sess-42'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:sess-42', 'testbot:tip'])
+  })
+
+  it('drops a same-profile segment in the keep set when the incoming lineage absorbed it', () => {
+    // Counterpart to the twin guard: qualification must not weaken the actual
+    // absorption. seg2 was absorbed into testbot's projected tip and must be
+    // evicted even though it sits in the keep set.
+    const previous = [session({ id: 'seg2', profile: 'testbot' })] as SessionInfo[]
+
+    const incoming = [
+      session({
+        id: 'tip',
+        profile: 'testbot',
+        _lineage_ids: ['seg1', 'seg2', 'fresh-root', 'tip'],
+        _lineage_root_id: 'fresh-root'
+      })
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['seg2'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`)).toEqual(['testbot:tip'])
   })
 
   it('never regresses last_active behind an optimistic user-send bump', () => {
@@ -525,6 +867,149 @@ describe('mergeSessionPage', () => {
   })
 })
 
+describe('applySessionTitle', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('patches the title across every sidebar slice, matching by lineage (#123337)', () => {
+    // The rename flow used to patch only $sessions by bare id. A compressed
+    // row matched by its root, a cron row, and a messaging row all kept the
+    // stale title until a profile switch forced a refetch.
+    setSessions([session({ id: 'tip', _lineage_ids: ['root', 'tip'], _lineage_root_id: 'root', title: 'Old' })])
+    setCronSessions([session({ id: 'cron-1', source: 'cron', title: 'Old' })])
+    setMessagingSessions([session({ id: 'tg-1', source: 'telegram', title: 'Old' })])
+
+    applySessionTitle('root', 'Fresh')
+    applySessionTitle('cron-1', 'Fresh')
+    applySessionTitle('tg-1', 'Fresh')
+
+    expect($sessions.get()[0].title).toBe('Fresh')
+    expect($cronSessions.get()[0].title).toBe('Fresh')
+    expect($messagingSessions.get()[0].title).toBe('Fresh')
+  })
+
+  it('keeps the slice reference when no row matches or the title is current', () => {
+    const before = [session({ id: 'mine', title: 'Same' })]
+    setSessions(before)
+
+    applySessionTitle('absent', 'Whatever')
+    expect($sessions.get()).toBe(before)
+
+    applySessionTitle('mine', 'Same')
+    expect($sessions.get()).toBe(before)
+  })
+})
+
+describe('carryForwardFailedProfileSessions', () => {
+  it('is a no-op when the backend reported no profile errors', () => {
+    const previous = [session({ id: 'yesterday', profile: 'default' })]
+    const incoming = [session({ id: 'today', profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, incoming, undefined)).toBe(incoming)
+    expect(carryForwardFailedProfileSessions(previous, incoming, [])).toBe(incoming)
+  })
+
+  it('re-attaches idle rows for a profile whose slice failed (empty 200 + errors)', () => {
+    // Repro: current session is running, sidebar scan hits disk I/O, backend
+    // returns recents=[] with errors=[{profile:default}]. mergeSessionPage then
+    // keeps only working/pinned/selected and Yesterday/This-week vanish.
+    const previous = [
+      session({ id: 'running', last_active: 300, profile: 'default', title: 'Now' }),
+      session({ id: 'yesterday', last_active: 200, profile: 'default', title: 'Yesterday' }),
+      session({ id: 'week', last_active: 100, profile: 'default', title: 'This week' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'default', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['running', 'yesterday', 'week'])
+    expect(carried[1]).toBe(previous[1])
+  })
+
+  it('does not resurrect a successful profile’s omitted rows, and does not duplicate', () => {
+    const previous = [
+      session({ id: 'work-old', profile: 'work' }),
+      session({ id: 'home-idle', profile: 'default' }),
+      session({ id: 'home-fresh', profile: 'default' })
+    ]
+
+    const incoming = [session({ id: 'home-fresh', message_count: 4, profile: 'default' })]
+
+    const carried = carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }])
+
+    expect(carried.map(s => `${s.profile}:${s.id}`)).toEqual(['default:home-fresh', 'work:work-old'])
+  })
+
+  it('re-ranks carried rows by recency instead of parking them at the tail', () => {
+    const previous = [
+      session({ id: 'idle-newer', last_active: 500, profile: 'work' }),
+      session({ id: 'idle-older', last_active: 50, profile: 'work' })
+    ]
+
+    const incoming = [session({ id: 'home', last_active: 100, profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)).toEqual([
+      'idle-newer',
+      'home',
+      'idle-older'
+    ])
+  })
+
+  it('treats a missing profile tag on the error as default', () => {
+    const previous = [session({ id: 'idle', profile: 'default' })]
+
+    expect(carryForwardFailedProfileSessions(previous, [], [{ error: 'disk I/O error' }]).map(s => s.id)).toEqual([
+      'idle'
+    ])
+  })
+
+  it('does not carry a hidden row forward through a failed profile scan (#113273)', () => {
+    // The failed-slice carry is the back door: a canonical Bot Chat parked in
+    // the list by an owner-resolution upsert would ride the "keep what the
+    // failed scan couldn't confirm" rule right back into the sidebar.
+    const previous = [
+      session({ hidden: true, id: 'bot-chat', profile: 'work', title: 'Bot Chat' }),
+      session({ id: 'idle', profile: 'work' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'work', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['idle'])
+  })
+
+  it('keeps every profile when the unified (all) read failed', () => {
+    const previous = [session({ id: 'home', profile: 'default' }), session({ id: 'job', profile: 'work' })]
+
+    expect(
+      carryForwardFailedProfileSessions(previous, [], [{ profile: 'all', error: 'timed out' }]).map(s => s.id)
+    ).toEqual(['home', 'job'])
+  })
+})
+
+describe('keepFailedProfileMeta', () => {
+  it('is a no-op when the backend reported no profile errors', () => {
+    const incoming = { default: { cost_usd: 1, tokens: 2 } }
+
+    expect(keepFailedProfileMeta({ default: { cost_usd: 9, tokens: 9 } }, incoming, [])).toBe(incoming)
+  })
+
+  it('restores previous usage/truncated flags for profiles whose slice failed', () => {
+    const previous = { default: { cost_usd: 4, tokens: 40 }, work: { cost_usd: 1, tokens: 10 } }
+    const incoming = { work: { cost_usd: 2, tokens: 20 } }
+
+    expect(keepFailedProfileMeta(previous, incoming, [{ profile: 'default' }])).toEqual({
+      default: { cost_usd: 4, tokens: 40 },
+      work: { cost_usd: 2, tokens: 20 }
+    })
+  })
+
+  it('keeps all previous meta when the unified (all) read failed', () => {
+    const previous = { default: true, work: false }
+
+    expect(keepFailedProfileMeta(previous, {}, [{ profile: 'all' }])).toBe(previous)
+  })
+})
+
 describe('touchSessionActivity', () => {
   afterEach(() => {
     setSessions([])
@@ -572,6 +1057,8 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.profile.profile-a')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.profile.profile-b')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -667,16 +1154,22 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('/live/session/path')
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
 
+    // Bare new sessions are intentionally DETACHED across every mode
+    // (#57911): neither sticky local nor sticky remote cwd is an accept-
+    // able bare-default — only an explicit configured default pre-attaches.
+    // The per-backend memory itself stays isolated (asserted directly).
     expect(workspaceCwdForNewSession()).toBe('')
 
     setCurrentCwd('/backend/project-a')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
-
-    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/project-a')
     expect(workspaceCwdForNewSession()).toBe('')
 
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
     setCurrentCwd('/backend/project-b')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('')
 
     // Back on local with no configured default: a bare new chat is detached and
     // never reads the remote keys (nor inherits the sticky local workspace).
@@ -684,21 +1177,88 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('')
   })
 
+  it('reseeding a remote gateway with no remembered workspace clears a folder left by another backend (#114306)', async () => {
+    // The door the switch wipe does not cover: `$currentCwd` is initialised from
+    // whatever key is current at module load (the LOCAL memory when the app
+    // boots straight into a remote gateway), and boot reseeds through
+    // ensureDefaultWorkspaceCwd alone — no beginGatewaySwitch runs. An empty
+    // remembered value for the incoming gateway must therefore publish as a
+    // clear, not skip via the truthy-only seed, so seedDefaultCwd can apply
+    // that gateway's own default.
+    const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd,
+      settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
+    }
+
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/opt/data/profiles/project-a')
+    expect(getRememberedWorkspaceCwd()).toBe('/opt/data/profiles/project-a')
+
+    // Simulate the gateway switch: connection flips to B before the reseed
+    // runs, exactly as beginGatewaySwitch/softSwitch do today.
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
+    await ensureDefaultWorkspaceCwd(() => true)
+
+    expect($currentCwd.get()).toBe('')
+  })
+
+  it('scopes the local workspace memory per profile, keeping the bare key for default (#96834)', () => {
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+    setCurrentCwd('/home/user/default-project')
+    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd')).toBe('/home/user/default-project')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+    setCurrentCwd('/home/user/project-a')
+    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd.profile.profile-a')).toBe('/home/user/project-a')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-b' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('/home/user/default-project')
+  })
+
+  it('switching to a local profile with no memory clears the outgoing profile folder (#96834)', async () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd: vi.fn(async (cwd: string) => ({ cwd })),
+      settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
+    }
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
+    setCurrentCwd('/home/user/project-a')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-b' } as never)
+    await ensureDefaultWorkspaceCwd(() => true)
+    expect($currentCwd.get()).toBe('')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
+    await ensureDefaultWorkspaceCwd(() => true)
+    expect($currentCwd.get()).toBe('/home/user/project-a')
+  })
+
   it('remembers only the workspace the user picked, not the one they looked at', () => {
-    // The reported bug (#77496 / #80213): on a remote backend a new chat starts
-    // in the remembered workspace, and every session resume used to write that
-    // key — so opening a project chat silently made it the destination for the
-    // next "New session". Following a conversation must leave the memory alone.
+    // The reported bug (#77496 / #80213): every session resume used to write
+    // the remembered-workspace key — so opening a project chat silently moved
+    // the memory. Following a conversation must leave the memory alone.
+    // (Since #57911 a bare new session is detached in remote mode too, so the
+    // memory is asserted directly — its remaining consumer is resume seeding
+    // via ensureDefaultWorkspaceCwd.)
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
     setCurrentCwd('/backend/picked')
 
     setCurrentCwdTransient('/backend/some-other-project')
 
     expect($currentCwd.get()).toBe('/backend/some-other-project')
-    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/picked')
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 
-  it('settling a resumed session does not move where the next new chat starts', () => {
+  it('settling a resumed session does not move the remembered workspace', () => {
     // The reporter's exact sequence: work in a project, open a chat from it,
     // then ask for a new session. Resume settling publishes the conversation's
     // cwd through commitWorkspaceCwdForSelectedSession — which must not claim
@@ -709,7 +1269,33 @@ describe('workspaceCwdForNewSession', () => {
     setSelectedStoredSessionId('sess-in-project')
     commitWorkspaceCwdForSelectedSession('/backend/last-project')
 
-    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+    expect(getRememberedWorkspaceCwd()).toBe('/backend/picked')
+    expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('does not stick a previous remote workspace onto a bare new session (#57911)', () => {
+    // Repro: in remote mode the user attaches to project-A so the renderer
+    // persists /tradingview as the remembered cwd under the remote key. The
+    // user then presses Cmd+N *without* being scoped into any project. A bare
+    // new session must NOT inherit /tradingview — pre-fix this returned the
+    // sticky remembered cwd and the gateway mapped it back to the wrong
+    // project via project_tree.py.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/tradingview')
+    applyConfiguredDefaultProjectDir(null)
+
+    expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('respects an explicit configured default in remote mode (#57911)', () => {
+    // Symmetric guard: removing the remote branch must NOT regress users who
+    // *did* set a configured default — the explicit default pre-attaches
+    // identically across local and remote mode.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/tradingview')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 })
 
@@ -1026,7 +1612,7 @@ describe('remembered route (per profile)', () => {
   })
 
   it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
-    localStorage.setItem('hermes.desktop.lastRoute', '/skills')
+    localStorage.setItem('hermes.desktop.lastRoute', '/capabilities')
 
     // Reading from any profile discards the legacy key.
     expect(getRememberedRoute('default')).toBeNull()

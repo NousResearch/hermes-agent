@@ -1,10 +1,13 @@
+import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
-import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
+import { getUiState } from '../app/uiStore.js'
+import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps } from '../sdk/registry.js'
 
@@ -110,12 +113,19 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (ref.current !== input) {
         return
       }
 
-      gw.request<CompletionResponse>(request.method, request.params)
+      // Skill completions are per session: project-local skills follow the
+      // session's repo, so the gateway must know which session is asking.
+      const sid = getUiState().sid
+
+      const params =
+        request.method === 'complete.slash' && sid ? { ...request.params, session_id: sid } : request.params
+
+      gw.request<CompletionResponse>(request.method, params)
         .then(raw => {
           if (ref.current !== input) {
             return
@@ -153,8 +163,8 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           setCompletions([
             {
               text: '',
-              display: 'completion unavailable',
-              meta: e instanceof Error && e.message ? e.message : 'unavailable'
+              display: t('libText.completion.unavailable'),
+              meta: e instanceof Error && e.message ? e.message : t('libText.completion.unavailableMeta')
             }
           ])
           setCompIdx(0)
@@ -162,7 +172,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         })
     }, 60)
 
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [blocked, gw, input])
 
   return { completions, compIdx, setCompIdx, compReplace }

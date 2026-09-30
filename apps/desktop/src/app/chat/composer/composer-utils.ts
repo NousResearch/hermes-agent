@@ -1,9 +1,11 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
+import type { ConnectionState } from '@hermes/shared'
 
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
+import { composerPlainText } from './rich-editor'
 import type { TriggerState } from './text-utils'
 
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
@@ -52,6 +54,18 @@ export const COMPOSER_FADE_BACKGROUND =
 // unmount/pagehide flushes bypass it.
 export const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
+/**
+ * Keep a reconnecting draft editable so transient gateway dials cannot blur
+ * the editor and discard the user's caret. Submission still reads the
+ * independent `disabled` prop, so non-open states cannot send.
+ *
+ * An `open` state paired with `disabled=true` is a transient disagreement
+ * between the connection atoms; fail closed until they converge.
+ */
+export function shouldDisableComposerInput(disabled: boolean, gatewayState: ConnectionState): boolean {
+  return disabled && gatewayState === 'open'
+}
+
 export const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
 /** Completion items can carry an `action` (set in use-slash-completions) that
@@ -86,6 +100,54 @@ export const slashArgStage = (query: string) => query.includes(' ')
 
 /** The `/command` token of a slash query (`personality x` → `/personality`). */
 export const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
+
+/** Typed `/` query or completion text without the leading slash. */
+export const slashCompletionToken = (value: string) => value.replace(/^\//, '').trimEnd().toLowerCase()
+
+/**
+ * Which row Space/Enter should take. Tab always uses the highlight; this is
+ * the "still suggesting, don't steal what I typed" pick.
+ *
+ * `/com` + a highlighted `/compress` still completes. `/review` while
+ * `/compress` is the leftover highlight does not. An exact list match wins
+ * so a fully typed command isn't replaced by a longer/fuzzier neighbour.
+ */
+export function implicitSlashAcceptIndex(
+  query: string,
+  itemTexts: readonly string[],
+  activeIndex: number,
+  activeExplicit: boolean
+): number | null {
+  // A deliberately arrowed highlight ALWAYS wins — "Enter means I want this
+  // one", even on a bare `/` query where no command name has been typed yet.
+  // This must be checked before the `!typed` early-return so an explicit pick
+  // is never suppressed on a bare `/` (#98535).
+  if (activeExplicit && itemTexts[activeIndex] != null) {
+    return activeIndex
+  }
+
+  const typed = slashCompletionToken(query)
+
+  if (!typed) {
+    return null
+  }
+
+  const exact = itemTexts.findIndex(text => slashCompletionToken(text) === typed)
+
+  if (exact >= 0) {
+    return exact
+  }
+
+  const active = itemTexts[activeIndex]
+
+  if (active != null && slashCompletionToken(active).startsWith(typed)) {
+    return activeIndex
+  }
+
+  const prefixHits = itemTexts.flatMap((text, index) => (slashCompletionToken(text).startsWith(typed) ? [index] : []))
+
+  return prefixHits.length === 1 ? prefixHits[0] : null
+}
 
 export interface TriggerAcceptInput {
   /** The user moved the highlight themselves (arrow keys) rather than
@@ -159,4 +221,16 @@ export function isPendingDraftPersistCurrent(
   expected: PendingDraftPersist | null
 ): boolean {
   return pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
+}
+
+/**
+ * The composer text a keystroke should decide from.
+ *
+ * `mirror` (the composer's draftRef) is refreshed by a coalesced per-frame
+ * flush, so within a frame of a keystroke or paste it still holds the previous
+ * text. A decision that can act on the draft — the sent-message recall guard
+ * replaces the composer — has to read the live editor instead.
+ */
+export function liveComposerDraft(editor: HTMLElement | null | undefined, mirror: string): string {
+  return editor ? composerPlainText(editor) : mirror
 }

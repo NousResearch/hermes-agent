@@ -6,6 +6,10 @@ description: "Use Hermes Agent inside ACP-compatible editors and collaboration p
 
 # ACP Host Integration
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent can run as an ACP server, letting ACP-compatible hosts talk to
 Hermes over stdio. Editors can render:
 
@@ -35,12 +39,32 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+The toolset resolves the same way as on the messaging gateway for the same
+platform config. That includes the extras the gateway adds on top of the
+list, such as enabled plugin toolsets, so ACP sessions get those too.
+`platform_toolsets.acp` replaces the `hermes-acp` default, and
+`agent.disabled_toolsets` removes toolsets from every ACP session. MCP
+servers from `mcp_servers` follow the same rules too. By default ACP gets
+every enabled server. If you list server names in `platform_toolsets.acp`,
+only those servers are included, and `no_mcp` drops them all. `hermes tools`
+has no ACP entry, so edit `config.yaml` directly:
+
+```yaml
+platform_toolsets:
+  acp: [file, web, skills, github]   # only the github MCP server
+agent:
+  disabled_toolsets: [code_execution]
+```
+
+MCP servers that the editor sends with `session/new` are separate. The
+client asks for them per session, and they are always added.
+
 ## Installation
 
 Install Hermes normally, then add the ACP extra from the install checkout:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 This installs the `agent-client-protocol` dependency and enables:
@@ -268,12 +292,13 @@ therefore runs shell commands on the host without prompting. I asked one to run
 Selecting `Anyone` hands that same shell access to every author who can reach
 the channel. Buzz does not warn when you pick it.
 
-Neither of the obvious mitigations works today:
-
-- `approvals.mode: manual` does make Hermes raise the permission request, but
-  Buzz auto-approves it and the command still runs.
-- `platform_toolsets.acp` does not narrow the ACP toolset, so it cannot be used
-  to drop `terminal`.
+`approvals.mode: manual` does not help: Hermes raises the permission request,
+but Buzz auto-approves it and the command still runs. To take the shell away,
+narrow the toolset instead: set `platform_toolsets.acp` to a list without
+`terminal` and `code_execution`, or add them to `agent.disabled_toolsets`.
+Even an empty `platform_toolsets.acp: []` still adds enabled plugin
+toolsets, so name any plugin toolset you want gone in
+`agent.disabled_toolsets`.
 
 `!shutdown` from the owner stops the agent in any mode, and Buzz ignores that
 command from everyone else.
@@ -323,7 +348,16 @@ Each session stores:
 - current conversation history
 - cancel event
 
-The underlying `AIAgent` still uses Hermes' normal persistence/logging paths, but ACP `list/load/resume/fork` are scoped to the currently running ACP server process.
+Conversations are persisted to Hermes' session database and can be listed, loaded,
+resumed, or forked after the ACP server restarts. Opening a new session without a
+prompt keeps it in memory only: model-discovery probes do not create empty history
+rows. A nonempty fork is persisted immediately, and existing session metadata can
+still be updated even when its current history is empty.
+
+Existing empty rows from older versions are not automatically deleted. An open ACP
+row does not prove its client has disconnected. After closing the relevant editor
+sessions, inspect unwanted rows with `hermes sessions show <id>` and remove only
+confirmed unwanted sessions with `hermes sessions delete <id>`.
 
 ## Working directory behavior
 
@@ -342,7 +376,9 @@ request programmatically instead of showing it to you, in which case these
 options exist on the wire but never reach a human. Buzz Desktop does this, so
 treat that path as unattended execution regardless of your `approvals` setting.
 
-On timeout or error, the approval bridge denies the request.
+On timeout or error, the approval bridge denies the request. The wait is
+`approvals.timeout` from `config.yaml` (default 300 s), the same knob the CLI and
+gateway prompts use — raise it if your editor keeps approval cards open longer.
 
 ### Session-scoped edit auto-approval
 
@@ -367,7 +403,7 @@ Check:
 
 - For manual/local development, verify the host command points to `hermes acp`.
 - Hermes is installed and on your PATH.
-- The ACP extra is installed (`cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'`).
+- The ACP extra is installed (`cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"`).
 
 ### ACP starts but immediately errors
 

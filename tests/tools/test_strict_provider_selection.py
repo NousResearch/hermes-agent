@@ -212,7 +212,7 @@ class TestSttStrictSelection:
 
         with patch.object(tt, "_load_stt_config", return_value={"openai": {"api_key": "sk-direct"}}), \
              patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
-             patch.object(tt, "resolve_managed_tool_gateway", return_value=MANAGED):
+             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
             api_key, base_url = tt._resolve_openai_audio_client_config()
         assert api_key == "managed-token"
         assert base_url.startswith("https://gateway.nousresearch.com")
@@ -222,8 +222,8 @@ class TestSttStrictSelection:
 
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value="openai"), \
-             patch.object(tt, "resolve_openai_audio_api_key", return_value=""), \
-             patch.object(tt, "resolve_managed_tool_gateway") as gw:
+             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value=""), \
+             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway") as gw:
             with pytest.raises(ValueError) as exc:
                 tt._resolve_openai_audio_client_config()
         gw.assert_not_called()
@@ -235,7 +235,7 @@ class TestSttStrictSelection:
 
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value=None), \
-             patch.object(tt, "resolve_openai_audio_api_key", return_value="sk-env"):
+             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value="sk-env"):
             api_key, base_url = tt._resolve_openai_audio_client_config()
         assert api_key == "sk-env"
 
@@ -334,9 +334,9 @@ class TestWriteProviderConfig:
         from hermes_cli.tools_config import _write_provider_config
 
         config = {"web": {"backend": "nous", "use_gateway": True}}
-        provider = {"name": "Tavily", "web_backend": "tavily"}
+        provider = {"name": "Keenable", "web_backend": "keenable"}
         _write_provider_config(provider, config, managed_feature=None)
-        assert config["web"]["backend"] == "tavily"
+        assert config["web"]["backend"] == "keenable"
         assert "use_gateway" not in config["web"]
 
     def test_managed_image_row_persists_nous_provider(self):

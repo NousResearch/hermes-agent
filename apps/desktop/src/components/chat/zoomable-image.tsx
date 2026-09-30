@@ -1,16 +1,23 @@
 'use client'
 
-import { type ComponentProps, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { type ComponentProps } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { Download } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $transcriptLightbox, closeTranscriptLightbox, openTranscriptLightbox } from '@/store/transcript-lightbox'
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
   slot?: string
+  /** Full-resolution source for the lightbox and download. When set, the inline
+   * `<img>` keeps its bounded `src` (avoiding heavy inline paints) while the
+   * zoom view and Save action use the original — so a click-to-zoom shows real
+   * detail instead of an upscaled thumbnail. Defaults to `src`. */
+  zoomSrc?: string
 }
 
 export interface ImageActionCopy {
@@ -18,11 +25,29 @@ export interface ImageActionCopy {
   savingImage: string
 }
 
-export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+export function ZoomableImage({
+  className,
+  containerClassName,
+  src,
+  zoomSrc,
+  alt,
+  slot,
+  ...props
+}: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
-  const { download, saving } = useImageDownload(src)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
+  // The lightbox and Save action prefer the full-resolution source; the inline
+  // thumbnail (`src`) stays the cheap paint.
+  const fullSrc = zoomSrc || src || ''
+  const { download, saving } = useImageDownload(fullSrc)
+  // The open flag lives in a store keyed by source identity, not local state:
+  // transcript rows (and the markdown leaves inside them) remount routinely
+  // while a turn streams — the render-budget slice can drop the row, and the
+  // streaming re-parse re-mounts AST leaves — which used to close a
+  // user-opened lightbox with no gesture (#123018). A remounted row reads the
+  // same store and re-presents its own open dialog.
+  const openSrc = useStore($transcriptLightbox)
+  const lightboxOpen = openSrc !== null && openSrc === fullSrc
   const canOpen = Boolean(src)
 
   return (
@@ -32,10 +57,10 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
         data-slot={slot ?? 'aui_zoomable-image'}
       >
         <button
+          aria-label={canOpen ? copy.openImage : undefined}
           className="contents"
           disabled={!canOpen}
-          onClick={() => canOpen && setLightboxOpen(true)}
-          title={canOpen ? copy.openImage : undefined}
+          onClick={() => canOpen && openTranscriptLightbox(fullSrc)}
           type="button"
         >
           <img alt={alt ?? ''} className={className} src={src} {...props} />
@@ -49,10 +74,10 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           alt={alt}
           copy={copy}
           onClick={download}
-          onOpenChange={setLightboxOpen}
+          onOpenChange={open => (open ? openTranscriptLightbox(fullSrc) : closeTranscriptLightbox(fullSrc))}
           open={lightboxOpen}
           saving={saving}
-          src={src}
+          src={fullSrc}
         />
       )}
     </>
@@ -81,6 +106,7 @@ export function ImageLightbox({
       <DialogContent
         bodyClassName="block overflow-visible p-0"
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        overlayClassName="bg-black/60"
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
@@ -125,7 +151,6 @@ export function ImageActionButton({
         event.stopPropagation()
         void onClick()
       }}
-      title={saving ? copy.savingImage : copy.downloadImage}
       type="button"
     >
       <Download className={cn('size-4', saving && 'animate-pulse')} />

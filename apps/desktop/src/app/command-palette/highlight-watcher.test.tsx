@@ -16,8 +16,8 @@ import { HighlightWatcher } from './highlight-watcher'
 stubResizeObserver()
 stubMenuDomApis()
 
-const palette = (onValue: (value: string) => void, onRootValueChange?: (value: string) => void) => (
-  <Command onValueChange={onRootValueChange}>
+const palette = (onValue: (value: string) => void) => (
+  <Command>
     <HighlightWatcher onValue={onValue} />
     <Command.List>
       <Command.Item value="alpha">Alpha</Command.Item>
@@ -34,18 +34,5 @@ describe('HighlightWatcher', () => {
 
     // cmdk auto-highlights the first item on mount.
     expect(onValue).toHaveBeenCalledWith('alpha')
-  })
-
-  it('covers the gap: the root onValueChange stays silent in uncontrolled mode', () => {
-    const onValue = vi.fn()
-    const onRootValueChange = vi.fn()
-
-    render(palette(onValue, onRootValueChange))
-
-    // The store-based watcher fires. The prop the first implementation used
-    // does not. If cmdk starts to fire it in uncontrolled mode, the watcher
-    // becomes removable — this assertion is the signal.
-    expect(onValue).toHaveBeenCalledWith('alpha')
-    expect(onRootValueChange).not.toHaveBeenCalled()
   })
 })

@@ -79,23 +79,21 @@ export function useEnterAnimation(enabled: boolean, animationKey?: string): (el:
       return
     }
 
-    el.animate(
-      [
-        { opacity: 0, transform: 'translateY(0.375rem)' },
-        // No `opacity` on the way out, deliberately. A filled animation holds
-        // its final value in the animation origin of the cascade, which
-        // outranks the stylesheet for as long as the element lives — naming 1
-        // here permanently pinned full opacity onto everything the sheet dims.
-        // Transcript scaffolding is dimmed that way, so a tool row or thinking
-        // header kept whichever opacity it happened to mount with: full if it
-        // animated in during the turn, faded if it was rehydrated or remounted
-        // past its one-shot key. Adjacent identical rows disagreed, and hover
-        // couldn't lift the pinned ones. Left neutral, opacity rises to
-        // whatever CSS says it should be and answers hover afterwards.
-        { transform: 'translateY(0)' }
-      ],
-      { duration: 180, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'both' }
-    )
+    // Transform only. Opacity on ANY keyframe outranks the stylesheet while the
+    // effect applies: `fill: 'both'` plus `opacity: 0` on the opening frame
+    // pinned rows invisible whenever Chromium paused the document timeline
+    // (alt-tab, a hidden window, an unfocused one) — the animation never runs,
+    // and the backwards fill holds the opening frame (#105579). Naming 1 on
+    // the way out has the inverse problem the comment below used to defend
+    // against. CSS already rests these surfaces at 0.67, so the slide is
+    // transform-only and fill is 'backwards': the offset applies on the first
+    // frame and then the effect releases instead of holding a filled
+    // transform (and its compositor layer) for the life of the node.
+    el.animate([{ transform: 'translateY(0.375rem)' }, { transform: 'translateY(0)' }], {
+      duration: 180,
+      easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      fill: 'backwards'
+    })
 
     if (key) {
       // In React StrictMode the first mount can be immediately torn down.

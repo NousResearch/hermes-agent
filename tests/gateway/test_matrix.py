@@ -2093,7 +2093,7 @@ async def test_first_room_turn_after_new_catches_up_only_since_the_reset():
     )
 
     state = (await adapter._resolve_room_identity(_CATCH_UP_ROOM)).room_state.to_dict()
-    assert update == TurnContextUpdate("[Recent room messages]\n[bob] Gated two", state)
+    assert (update.note, update.channel_state) == ("[Recent room messages]\n[bob] Gated two", state)
 
 
 @pytest.mark.parametrize("scope", ["free_room", "require_mention_off", "bot_thread"])

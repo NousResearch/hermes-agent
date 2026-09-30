@@ -33,6 +33,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
+    merge_pending_message_event,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -338,3 +339,73 @@ async def test_queue_debounce_splits_incompatible_reply_contexts():
         queued.reply_to_author_name,
     ) == ("reply-2", "second quote", "author-2", "Author Two")
     adapter._discard_text_debounce(session_key)
+
+
+_QUOTED_IMAGE_CASES = pytest.mark.parametrize("media_urls,media_types", [
+    ([], []),
+    (["/tmp/q.png"], ["image/png"]),
+])
+
+
+def _reply_to_earlier(event: MessageEvent, media_urls: list[str], media_types: list[str]) -> MessageEvent:
+    event.media_urls, event.media_types = list(media_urls), list(media_types)
+    event.reply_to_message_id, event.reply_to_text = "$earlier", "earlier answer"
+    event.reply_to_author_id, event.reply_to_author_name = "u2", "Alice"
+    return event
+
+
+def _merged_view(event: MessageEvent) -> tuple:
+    return (
+        event.text, event.media_urls, event.reply_to_message_id, event.reply_to_text,
+        event.reply_to_author_id, event.reply_to_author_name, event.reply_to_is_own_message,
+    )
+
+
+@pytest.mark.parametrize("media_urls,media_types,merged_text", [
+    ([], [], "one\ntwo"),
+    (["/tmp/q.png"], ["image/png"], "one\n\ntwo"),
+])
+def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types, merged_text):
+    pending = {"session": _make_event("one")}
+
+    merge_pending_message_event(
+        pending, "session", _reply_to_earlier(_make_event("two"), media_urls, media_types), merge_text=True,
+    )
+
+    assert _merged_view(pending["session"]) == (
+        merged_text, media_urls, "$earlier", "earlier answer", "u2", "Alice", False,
+    )
+
+
+@_QUOTED_IMAGE_CASES
+@pytest.mark.asyncio
+async def test_busy_text_debounce_keeps_incoming_reply_context(media_urls, media_types):
+    adapter = _make_adapter()
+    first = _make_event("one")
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(first)
+    await adapter.handle_message(_reply_to_earlier(_make_event("two"), media_urls, media_types))
+    await adapter._flush_text_debounce_now(session_key)
+
+    pending = adapter._pending_messages[session_key]
+    assert (pending.message_id, *_merged_view(pending)) == (
+        "msg-two", "one\ntwo", media_urls, "$earlier", "earlier answer", "u2", "Alice", False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_queue_debounce_does_not_drop_a_reply_to_a_third_message():
+    adapter = _make_adapter()
+    events = [_make_event(text, reply_to_message_id=f"reply-{text}") for text in ("one", "two", "three")]
+    session_key = build_session_key(events[0].source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    for event in events:
+        await adapter.handle_message(event)
+        await adapter._flush_text_debounce_now(session_key)
+
+    queued = (adapter._pending_messages[session_key].text, _debounced_event(adapter, session_key).text)
+    adapter._discard_text_debounce(session_key)
+    assert queued == ("one", "two\nthree")

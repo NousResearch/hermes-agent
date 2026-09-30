@@ -320,7 +320,7 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
         adapter.fetch_room_history = AsyncMock(return_value=SimpleNamespace(
             render=lambda: "[Recent room messages]\n[alice] Earlier", refresh=AsyncMock(),
         ))
-        assert await adapter.fetch_mention_context(claimed_event) == (
+        assert (await adapter.fetch_mention_history(claimed_event)).render() == (
             "[Recent room messages]\n[alice] Earlier"
         )
 

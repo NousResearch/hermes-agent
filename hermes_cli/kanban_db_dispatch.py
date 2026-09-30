@@ -60,13 +60,23 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # also matched ordinary English words like "author"/"authored"/"authoring"/
 # "authoritative" in worker progress prose, parking a healthy card forever
 # (#117009).
+#
+# The bare noun "authorization"/"authorisation" is deliberately NOT matched:
+# worker prose such as "No product acceptance or E04 authorization." is an
+# engineering/business sign-off, not a provider credential failure, and
+# matching it parked a healthy card under ``blocker_auth`` indefinitely even
+# though the real failure in the log was unrelated. Genuine provider
+# failures still match via status codes (401/403/429) and the closed
+# phrase vocabulary below.
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|"
-    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
-    r"authoris(?:e|es|ed|ing|ation)|authz|"
+    r"\b(quota|rate[\s_\-]?limit|429|401|403|"
+    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing)|"
+    r"authoris(?:e|es|ed|ing)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
+    r"invalid[\s_]api[\s_]key|invalid[\s_]credentials|invalid[\s_]token|"
+    r"authentication[\s_]failed|not[\s_]authenticated|unauthenticated|"
+    r"token[\s_](expired|revoked))\b",
     re.IGNORECASE,
 )
 

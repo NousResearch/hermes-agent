@@ -409,6 +409,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
     if (
         is_local_endpoint(agent.base_url)
+        and not str(agent.base_url or "").startswith("process://")
         and not re.search(r"\d{4,}", error_msg)
         and isinstance(window, int) and window > 0
         and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION

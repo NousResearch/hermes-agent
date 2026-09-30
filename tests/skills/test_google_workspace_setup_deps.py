@@ -63,3 +63,44 @@ def test_standalone_without_hermes_reports_setup_not_ambient_installs(command, t
     assert "hermes setup" in result.stdout
     assert "pip" not in result.stdout + result.stderr
     assert "Traceback" not in result.stderr
+
+
+def _load_setup_module(monkeypatch):
+    monkeypatch.syspath_prepend(str(SETUP_PATH.parent))
+    spec = importlib.util.spec_from_file_location("google_workspace_setup", SETUP_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_absent_pm_still_runs_when_the_google_extra_is_importable(monkeypatch):
+    # `sys.path[0]` is the script's own directory and the editable install does
+    # not export `pm`, so a correctly installed Hermes reaches this path. The
+    # Google libraries are what the command actually needs.
+    module = _load_setup_module(monkeypatch)
+    monkeypatch.setattr(module, "pm", None)
+    monkeypatch.setattr(module, "_google_deps_importable", lambda: True)
+
+    module._ensure_deps()
+
+
+def test_absent_pm_with_missing_google_extra_still_refuses(monkeypatch, capsys):
+    module = _load_setup_module(monkeypatch)
+    monkeypatch.setattr(module, "pm", None)
+    monkeypatch.setattr(module, "_google_deps_importable", lambda: False)
+
+    with pytest.raises(SystemExit) as failure:
+        module._ensure_deps()
+
+    assert failure.value.code == 1
+    output = capsys.readouterr().out
+    assert "Hermes environment" in output
+    assert "hermes setup" in output
+
+
+def test_google_anchor_probe_reports_a_missing_module(monkeypatch):
+    module = _load_setup_module(monkeypatch)
+    monkeypatch.setattr(module, "_GOOGLE_ANCHORS", ("googleapiclient", "hermes_absent_anchor"))
+
+    assert module._google_deps_importable() is False

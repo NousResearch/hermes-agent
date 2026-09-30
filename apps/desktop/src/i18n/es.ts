@@ -4,6 +4,43 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  sharedMetrics: {
+    consentTitle: '¿Nos ayudas a mejorar Hermes?',
+    consentBody:
+      'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
+    whatIsCollected: 'Qué se recopila',
+    collectedIntro: 'Solo contadores acotados:',
+    collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error',
+    collectedModels: 'Rutas de modelo y totales de tokens',
+    collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
+    collectedMilestones: 'Recuentos de configuración agrupados',
+    collectedReliability:
+      'Resultados y duración de actualizaciones, fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
+    collectedUsage:
+      'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
+    collectedMachine:
+      'Datos generales del equipo: rango de RAM, tipo de GPU, antigüedad y canal de la versión de Hermes, actualizaciones pendientes, si se usa un servidor de modelos local',
+    installId:
+      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
+    consentWindow:
+      'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
+    readDocs: 'Leer todos los detalles',
+    share: 'Recopilar y enviar a Nous',
+    local: 'Recopilar solo en local',
+    off: 'No, gracias',
+    changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
+    saveFailed: 'No se pudo guardar tu elección',
+    collectLabel: 'Recopilar estadísticas de uso',
+    collectDesc:
+      'Contadores acotados guardados en este dispositivo. Nunca prompts, archivos, rutas ni textos de error.',
+    sendLabel: 'Enviar estadísticas de uso a Nous',
+    sendDesc:
+      'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
+    unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
+    stripBody: 'Solo contadores acotados, nunca prompts ni archivos.',
+    stripChoices: { share: 'Enviar a Nous', local: 'Solo local', off: 'No, gracias' },
+    stripDetails: 'Detalles'
+  },
   intro: introEs,
   connectors: {
     title: 'Conecta tus apps',
@@ -696,7 +733,7 @@ export const esOverrides = {
       'view.toggleProfileRail': 'Mostrar u ocultar la barra de perfiles',
       'view.toggleSimpleMode': 'Activar o desactivar el modo simple',
       'view.showFiles': 'Mostrar explorador de archivos',
-      'view.showBrowser': 'Abrir el navegador',
+      'view.showBrowser': 'Alternar navegador',
       'view.toggleHud': 'Alternar modo HUD',
       'hud.snapToPointer': 'Mover HUD al puntero (global, mientras el HUD esté abierto)',
       'view.showTerminal': 'Mostrar terminal',
@@ -1172,6 +1209,9 @@ export const esOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De derecha a izquierda', ltr: 'De izquierda a derecha' },
       introSplashTitle: 'Pantalla de bienvenida',
       introSplashDesc: 'El logotipo y la indicación que se muestran en un chat vacío.',
+      modelPricingTitle: 'Precios de modelos',
+      modelPricingDesc:
+        'Muestra los precios de entrada, salida y lectura de caché por millón de tokens en el selector de modelos.',
       reactionsTitle: 'Reacciones a mensajes',
       reactionsDesc:
         'Reacciones emoji estilo iMessage — reacciona a los mensajes, y Hermes puede reaccionar a los tuyos.',
@@ -2061,6 +2101,7 @@ export const esOverrides = {
       restartFailed: 'No se pudo reiniciar el backend',
       auxiliaryTitle: 'Modelos auxiliares',
       resetAllToMain: 'Restablecer todos al principal',
+      staleAuxDismiss: 'No volver a mostrar',
       auxiliaryDesc:
         'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
       setToMain: 'Usar principal',
@@ -3077,12 +3118,6 @@ export const esOverrides = {
       system: 'Sistema',
       usage: 'Uso'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnóstico, copias de seguridad, curador y datos de memoria',
-      sessions: 'Buscar y gestionar sesiones',
-      system: 'Estado, registros y acciones del sistema',
-      usage: 'Actividad de tokens, coste y skills a lo largo del tiempo'
-    },
     nav: {
       newChat: {
         title: 'Nueva sesión',
@@ -3133,7 +3168,8 @@ export const esOverrides = {
     gatewayStopped: 'Gateway de mensajería detenido',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sesiones activas ${count}`,
     restartGateway: 'Reiniciar gateway',
-    openBrowser: 'Abrir navegador',
+    openBrowser: 'Alternar navegador',
+    toggleBrowser: 'Alternar navegador',
     gatewayRestartFailed: 'No se pudo reiniciar el gateway.',
     sharedGatewayRestartTitle: '¿Reiniciar el gateway compartido?',
     sharedGatewayRestartDescription: (bots: string) => `Todos los bots de este dispositivo se reconectan: ${bots}`,
@@ -3169,7 +3205,7 @@ export const esOverrides = {
     actions: count => `${count} acciones`,
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
-    logSearchPlaceholder: 'Filtrar líneas de registro…',
+    logSearchPlaceholder: 'Buscar en los registros…',
     maintenance: {
       runOps: 'Diagnóstico',
       doctor: 'Ejecutar diagnóstico',
@@ -3218,6 +3254,13 @@ export const esOverrides = {
   },
   messaging: {
     search: 'Buscar mensajería...',
+    statusFilter: {
+      all: 'Todos',
+      bad: 'Errores',
+      good: 'Conectados',
+      muted: 'Inactivos',
+      warn: 'Requiere atención'
+    },
     loading: 'Cargando plataformas de mensajería...',
     loadFailed: 'No se pudieron cargar las plataformas de mensajería',
     states: {
@@ -4275,6 +4318,8 @@ export const esOverrides = {
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
     queueEdit: 'Editar',
+    queueExpand: 'Expandir',
+    queueCollapse: 'Contraer',
     queueSendNext: 'Próximo',
     queueSteer: 'Redirigir — encauzar el turno en vivo ahora',
     queueSend: 'Enviar',
@@ -4624,6 +4669,7 @@ export const esOverrides = {
     updateNow: 'Actualizar ahora',
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
+    copyFullLog: 'Copiar el registro de cambios completo',
     manualTitle: 'Actualizar desde la terminal',
     manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:
@@ -4973,7 +5019,8 @@ export const esOverrides = {
     removeCustomModel: 'Quitar modelo personalizado',
     resetToDefaults: 'Restablecer valores predeterminados',
     resetConfirm: '¿Restablecer la visibilidad de los modelos?',
-    resetDescription: 'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
+    resetDescription:
+      'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
     resetAction: 'Restablecer'
   },
   shell: {
@@ -4986,7 +5033,11 @@ export const esOverrides = {
       editModels: 'Editar modelos…',
       followDefault: 'Usar el predeterminado de Ajustes',
       refreshModels: 'Actualizar modelos',
-      fast: 'Rápido'
+      fast: 'Rápido',
+      free: 'gratis',
+      cacheRead: 'lectura en caché',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',
@@ -5309,6 +5360,7 @@ export const esOverrides = {
     hideTabStrip: 'Ocultar pestañas',
     showStripTab: title => `Mostrar ${title}`,
     hideStripTab: title => `Ocultar ${title}`,
+    zoneMenuLabel: title => `Opciones de zona para ${title}`,
     lastTabKeptTitle: 'La última pestaña permanece',
     lastTabKeptBody:
       'Esta zona necesita al menos una pestaña visible. Muestra otra pestaña primero, o colapsa toda la barra lateral.',
@@ -5467,6 +5519,10 @@ export const esOverrides = {
           title: 'No se pudo conectar con el servicio de IA',
           body: (provider: string) =>
             `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
+        },
+        no_reply: {
+          title: 'La respuesta no terminó',
+          body: 'Hermes terminó este turno sin respuesta. Reinténtalo para enviarla de nuevo.'
         },
         stream_drop: {
           title: 'La respuesta se cortó',
@@ -5650,14 +5706,9 @@ export const esOverrides = {
       placeholder: 'Escribe tu respuesta…',
       skip: 'Omitir',
       skipped: 'Omitido',
-      continueLabel: 'Continuar',
+      noAnswer: 'Sin respuesta',
       confirmAndContinueLabel: 'Confirmar y continuar',
-      answeredBadge: 'Respondido',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
-      lateAnswer: (question, choice) => `Con respecto a “${question}”: mi respuesta es ${choice}`,
-      lateAnswerTip: 'Redactar esta respuesta como mensaje de seguimiento',
-      lateAnswerHint:
-        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.',
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },
@@ -6095,6 +6146,11 @@ export const esOverrides = {
   ui: {
     search: {
       clear: 'Limpiar búsqueda'
+    },
+    logs: {
+      bottom: 'Ir al final',
+      search: 'Buscar en los registros…',
+      top: 'Ir al inicio'
     },
     pagination: {
       label: 'paginación',

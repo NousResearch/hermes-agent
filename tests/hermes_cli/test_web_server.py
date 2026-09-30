@@ -1098,6 +1098,98 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         )
         assert resp.status_code == 401
 
+    # ── GET /api/media/proxy (client-blocked CDN fallback, #74564) ──────
+
+
+    def test_media_proxy_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get(
+            "/api/media/proxy",
+            params={"url": "https://v3.fal.media/x.png"},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    def test_media_proxy_rejects_disallowed_hosts_and_schemes(self):
+        for bad in (
+            "https://evil.example.com/img.png",
+            "https://sub.fal.media.evil.com/img.png",
+            "file:///etc/passwd",
+            "not a url",
+            "",
+        ):
+            resp = self.client.get("/api/media/proxy", params={"url": bad})
+            assert resp.status_code in (400, 403), (bad, resp.status_code)
+
+    def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+            content = png_bytes
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                assert url == "https://v3.fal.media/media/abc123"
+                return _Resp()
+
+        import hermes_cli.web_routers.files as files_router
+
+        monkeypatch.setattr(files_router, "_require_token", lambda request: None, raising=False)
+        # The route imports httpx locally; patch the module it resolves from.
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://v3.fal.media/media/abc123"}
+        )
+        assert resp.status_code == 200
+        import base64
+
+        assert resp.json()["data_url"] == (
+            "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+        )
+
+    def test_media_proxy_rejects_non_image_content_type(self, monkeypatch):
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "text/html"}
+            content = b"<html>nope</html>"
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                return _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://fal.media/media/abc123"}
+        )
+        assert resp.status_code == 415
+
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 
 
@@ -1414,7 +1506,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         broadcasts = []
         monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
         with fb._lock:
-            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier_account=False,
                                         has_identity=False, other_providers=False)
             fb._started = True
             fb._done.set()
@@ -1551,7 +1643,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
 
         def fail_spawn_action(subcommand, name):
-            assert subcommand == ["gateway", "restart"]
+            # The default home is named explicitly: a bare child would re-read the sticky active_profile.
+            assert subcommand == ["-p", "default", "gateway", "restart"]
             assert name == "gateway-restart"
             raise RuntimeError("supervisor unavailable")
 

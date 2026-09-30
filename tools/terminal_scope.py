@@ -211,27 +211,3 @@ def install_and_reset_profile_terminal_scope(hermes_home: "Any") -> Iterator[Non
         yield
     finally:
         reset_terminal_scope(token)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def install_refusal_scope(reason: str) -> Token:
-    """Install a refusal scope after :class:`TerminalPolicyUnavailable`.
-
-    Terminal execution under this scope is rejected (fail closed) instead of
-    running under the launch process's ambient policy.
-    """
-    return _terminal_scope_var.set(TerminalPolicyRefusal(reason))
-
-@contextmanager
-def terminal_scope(mapping: Optional[Dict[str, str]]) -> Iterator[None]:
-    """Context manager form of set/reset_terminal_scope."""
-    token = set_terminal_scope(mapping)
-    try:
-        yield
-    finally:
-        reset_terminal_scope(token)
-# ---- END PLUGIN-COMPAT ----

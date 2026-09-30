@@ -603,8 +603,9 @@ def _scan_gateway_pids(
 
         # Root home: reject argv that advertises another profile in any spelling the CLI pre-parser
         # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
-        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home.
-        if profile_flag_value(command_lc) is not None:
+        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home. An explicit
+        # ``--profile default`` names this home (#100817).
+        if profile_flag_value(command_lc) not in (None, "default"):
             return False
         if hermes_home_assignments(command_lc):
             return command_line_names_hermes_home(command_lc, current_home_lc)
@@ -2117,9 +2118,13 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
+        # pythonw/console-less backend startup reaches this probe; powershell.exe is a
+        # console-subsystem binary and would flash a window per spawn (#117781).
+        from hermes_cli._subprocess_compat import windows_hide_flags
         result = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None
@@ -4130,7 +4135,16 @@ def host_multiplexer_serving(profile_name: str | None = None):
     try:
         from gateway.host_attach import host_gateway_serving
         name = profile_name if profile_name is not None else _current_profile_name()
-        return host_gateway_serving(name or "default")
+        gateway = host_gateway_serving(name or "default")
+        if gateway is None:
+            return None
+        # Same predicate as decide() / _claim_host_gateway_role: another tenant's multiplexer
+        # "serving default" is a name collision, and the CLI guards refused on it with exit 78 (#121352).
+        from gateway.host_attach import launched_by_other_tenant
+        if launched_by_other_tenant(gateway.home, get_hermes_home()):
+            logger.debug("Host gateway %s belongs to another Hermes home; not ours", gateway.describe())
+            return None
+        return gateway
     except Exception:
         logger.debug("Host multiplexer probe failed", exc_info=True)
         return None
@@ -4169,9 +4183,15 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     # The host record answers first: it names the live host process whatever home launched it, so a
-    # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
-        return True
+    # multiplexer started by a named profile is visible here too. A record launched by THIS profile's
+    # own home is its own gateway (a standalone fleet member, or a multiplexer it hosts), never a
+    # multiplexer serving a satellite: counting it refused the owner's own restart with exit 78 and
+    # pointed it at `-p default`, whose gateway was not running (#120871).
+    gateway = host_multiplexer_serving(suffix)
+    if gateway is not None:
+        from hermes_cli.profiles import normalize_profile_name
+        if normalize_profile_name(gateway.profile_label) != normalize_profile_name(suffix):
+            return True
 
     try:
         from hermes_constants import get_default_hermes_root
@@ -4591,6 +4611,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
+    from hermes_cli.observability.shared_metrics_process import begin_process
+    begin_process("gateway")
 
     # Detached Windows runs (HERMES_GATEWAY_DETACHED=1, or non-TTY for older wrappers) ignore
     # console-control broadcasts from sibling CLIs; foreground runs keep Ctrl+C-to-stop.
@@ -5593,12 +5615,14 @@ def _status_host_kind() -> str:
 
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
-    if print_parked_status():
-        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    # The marker records intent, not runtime: a `--force` gateway bypasses parking and stays live
+    # beside it, so only a parked profile with nothing running stops here.
+    if print_parked_status() and not snapshot.running:
+        return
     from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
     active_standalone = ((get_active_profile_name() or "default") != "default"
@@ -5634,6 +5658,13 @@ def _cmd_status(args):
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
+        elif snapshot.service_running:
+            # s6 container: the service is up but the scan finds no PID (the `python -c` launcher
+            # argv is deliberately unmatched, #123881, and there is no gateway.pid) — #125390.
+            print(f"✓ Gateway is running (supervised by {snapshot.manager})")
+            _print_runtime_health()
+            _print_multiplex_standalone_reason()
+            _print_served_ingress_urls()
         else:
             print("✗ Gateway is not running")
             _print_runtime_health()
@@ -5690,41 +5721,6 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def print_systemd_linger_guidance() -> None:
-    """Print the current linger status and the fix when it is disabled."""
-    linger_enabled, linger_detail = get_systemd_linger_status()
-    if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
-    elif linger_enabled is False:
-        print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
-        print("  Run: sudo loginctl enable-linger $USER")
-    else:
-        print(f"⚠ Could not verify systemd linger ({linger_detail})")
-        print("  If you want the gateway user service to survive logout, run:")
-        print("  sudo loginctl enable-linger $USER")
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT': ('gateway.restart', 'DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
 
 
 def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:

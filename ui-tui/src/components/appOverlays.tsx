@@ -11,7 +11,7 @@ import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
-import { MaskedPrompt } from './maskedPrompt.js'
+import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -59,7 +59,7 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
-  onClarifyAnswer,
+  onClarifyCancel,
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
@@ -68,7 +68,7 @@ export function PromptZone({
   AppOverlaysProps,
   | 'cols'
   | 'onApprovalChoice'
-  | 'onClarifyAnswer'
+  | 'onClarifyCancel'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
@@ -147,8 +147,7 @@ export function PromptZone({
       <PromptCell cols={cols} id="clarify">
         <ClarifyPrompt
           cols={cols}
-          onAnswer={onClarifyAnswer}
-          onCancel={() => onClarifyAnswer('')}
+          onCancel={onClarifyCancel}
           onQuestionAnswer={onClarifyQuestionAnswer}
           req={overlay.clarify}
           t={theme}
@@ -160,7 +159,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        <SudoPrompt cols={cols} onSubmit={onSudoSubmit} t={theme} />
       </PromptCell>
     )
   }
@@ -168,12 +167,11 @@ export function PromptZone({
   if (overlay.secret) {
     return (
       <PromptCell cols={cols} id="secret">
-        <MaskedPrompt
+        <SecretPrompt
           cols={cols}
-          icon="🔑"
-          label={overlay.secret.prompt}
+          envVar={overlay.secret.envVar}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          prompt={overlay.secret.prompt}
           t={theme}
         />
       </PromptCell>
@@ -183,12 +181,10 @@ export function PromptZone({
   if (overlay.vaultUnlock) {
     return (
       <PromptCell cols={cols} id="vault-unlock">
-        <MaskedPrompt
+        <VaultUnlockPrompt
           cols={cols}
-          icon="🔐"
-          label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
+          displayName={overlay.vaultUnlock.displayName}
           onSubmit={onVaultUnlockSubmit}
-          sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
           t={theme}
         />
       </PromptCell>

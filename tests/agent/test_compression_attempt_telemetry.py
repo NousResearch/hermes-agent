@@ -198,3 +198,25 @@ def test_aux_call_telemetry_records_content_free_phase_timings():
         "commit_ms": 11,
     }
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in json.dumps(payload)
+
+
+def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
+    from hermes_cli.observability import shared_metrics_events
+    from hermes_cli.observability.shared_metrics_fields import compression_fields
+
+    calls = []
+    monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: calls.append(kw))
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor.tail_token_budget = 10
+    agent = _Agent(compressor)
+
+    with patch.object(compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+        compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
+
+    assert [compression_fields(**kw) for kw in calls] == [
+        {"trigger": "auto", "outcome": "success", "context_fill_bucket": "75_to_90"}
+    ]

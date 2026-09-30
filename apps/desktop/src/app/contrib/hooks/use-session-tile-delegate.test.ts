@@ -237,6 +237,91 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(texts.some(text => text.includes('cron delivery'))).toBe(true)
   })
 
+  it('keeps a completed tool card when a Bot Chat tile refreshes its final reply', async () => {
+    const state = {
+      busy: false,
+      storedSessionId: 'stored-bot',
+      streamId: null,
+      messages: [
+        { id: 'prompt', rowId: 10, role: 'user', parts: [{ type: 'text', text: 'Find the answer' }] },
+        {
+          id: 'tool-stream',
+          role: 'assistant',
+          interim: true,
+          pending: false,
+          parts: [
+            {
+              type: 'tool-call',
+              toolCallId: 'search-1',
+              toolName: 'web_search',
+              args: { query: 'answer' },
+              result: 'Found it',
+              completedAt: 2
+            }
+          ]
+        },
+        {
+          id: 'reply',
+          rowId: 13,
+          role: 'assistant',
+          pending: false,
+          parts: [{ type: 'text', text: 'The answer is here.' }]
+        }
+      ]
+    } as ClientSessionState
+
+    const states = { current: new Map([['runtime-bot', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    setSessions([row({ id: 'stored-bot', profile: 'bot', title: 'Bot Chat' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-bot',
+      messages: [
+        { role: 'user', row_id: 10, content: 'Find the answer', timestamp: 1 },
+        { role: 'assistant', row_id: 13, content: 'The answer is here.', timestamp: 3 }
+      ]
+    } as never)
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-bot', 'runtime-bot']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    await sessionTileDelegate()!.resumeTile('stored-bot', { refreshTranscript: true })
+
+    expect(
+      states.current
+        .get('runtime-bot')!
+        .messages.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call')
+    ).toMatchObject([{ toolCallId: 'search-1', result: 'Found it' }])
+
+    // The same reply text on another durable row must not inherit this tool.
+    states.current.set('runtime-bot', state)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-bot',
+      messages: [
+        { role: 'user', row_id: 10, content: 'Find the answer', timestamp: 1 },
+        { role: 'assistant', row_id: 14, content: 'The answer is here.', timestamp: 4 }
+      ]
+    } as never)
+
+    await sessionTileDelegate()!.resumeTile('stored-bot', { refreshTranscript: true })
+
+    expect(
+      states.current
+        .get('runtime-bot')!
+        .messages.flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call')
+    ).toEqual([])
+  })
+
   it('refreshes a retained live tile even when the reverse lookup is absent', async () => {
     const state = {
       busy: true,
@@ -494,7 +579,15 @@ describe('useSessionTileDelegate resumeTile', () => {
 
 describe('useSessionTileDelegate retireBusyClaim', () => {
   it('retires a stale busy claim through the session-state write path (#93059)', () => {
-    const busyState = { awaitingResponse: true, busy: true, messages: [{ id: 'm1' }], storedSessionId: 'stored-d' }
+    const busyState = {
+      awaitingResponse: true,
+      busy: true,
+      messages: [{ id: 'm1', pending: true }],
+      storedSessionId: 'stored-d',
+      turnLive: true,
+      turnStartedAt: 1_000
+    }
+
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', busyState]]) }
     const updateSessionState = vi.fn()
 
@@ -506,10 +599,17 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
     expect(sessionTileDelegate()!.retireBusyClaim!('runtime-dead')).toBe(true)
     expect(updateSessionState).toHaveBeenCalledWith('runtime-dead', expect.any(Function))
 
-    // The updater is the downgrade: busy/awaiting off, everything else intact.
+    // Retire the running claim and its clock; a pending bubble can remain
+    // until the transcript is rehydrated from the recovered backend.
     const updater = updateSessionState.mock.calls[0][1] as (state: typeof busyState) => typeof busyState
 
-    expect(updater(busyState)).toEqual({ ...busyState, awaitingResponse: false, busy: false })
+    expect(updater(busyState)).toEqual({
+      ...busyState,
+      awaitingResponse: false,
+      busy: false,
+      turnLive: false,
+      turnStartedAt: null
+    })
   })
 
   it('reports a miss instead of minting a cache entry for a runtime it never held', () => {

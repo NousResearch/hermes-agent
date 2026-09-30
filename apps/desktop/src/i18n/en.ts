@@ -13,6 +13,41 @@ export const en: Translations = {
       message: 'This file does not exist — it may have been deleted or moved, or it lives on another machine.'
     }
   },
+  sharedMetrics: {
+    consentTitle: 'Help improve Hermes?',
+    consentBody:
+      'Shared metrics contain only bounded counters. Never prompts, files, paths or error text. Collection is local. Sending them to Nous is a separate opt-in.',
+    whatIsCollected: 'What is collected',
+    collectedIntro: 'Only bounded counters:',
+    collectedActivity: 'Activity, session length, outcomes and error classes',
+    collectedModels: 'Model routes and token totals',
+    collectedNames: 'Built-in tool, command and catalog names',
+    collectedMilestones: 'Bucketed setup counts',
+    collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
+    collectedUsage:
+      'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
+    collectedMachine:
+      'Coarse machine facts: RAM range, GPU type, Hermes version age and release channel, updates behind, whether a local model server is used',
+    installId:
+      'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
+    consentWindow:
+      'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
+    readDocs: 'Read the full details',
+    share: 'Collect and send to Nous',
+    local: 'Collect locally only',
+    off: 'No thanks',
+    changeLater: 'You can change this any time in Settings → Safety.',
+    saveFailed: 'Couldn’t save your choice',
+    collectLabel: 'Collect usage stats',
+    collectDesc: 'Bounded counters kept on this device. Never prompts, files, paths or error text.',
+    sendLabel: 'Send usage stats to Nous',
+    sendDesc:
+      'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
+    unavailable: 'Update the Hermes backend to change this setting.',
+    stripBody: 'Bounded counters only, never prompts or files.',
+    stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
+    stripDetails: 'Details'
+  },
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   catalog: {
@@ -756,7 +791,7 @@ export const en: Translations = {
       'view.toggleProfileRail': 'Toggle profile rail',
       'view.toggleSimpleMode': 'Toggle Simple mode',
       'view.showFiles': 'Show file browser',
-      'view.showBrowser': 'Open browser',
+      'view.showBrowser': 'Toggle browser',
       'view.toggleHud': 'Toggle HUD mode',
       'hud.snapToPointer': 'Move HUD to pointer (global, while HUD is open)',
       'view.showTerminal': 'Toggle terminal',
@@ -1203,6 +1238,8 @@ export const en: Translations = {
       textDirection: { auto: 'Auto', rtl: 'Right-to-left', ltr: 'Left-to-right' },
       introSplashTitle: 'Intro Splash',
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
+      modelPricingTitle: 'Model Pricing',
+      modelPricingDesc: 'Show input, output, and cache-read prices per million tokens in the model picker.',
       reactionsTitle: 'Message Reactions',
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
@@ -1802,6 +1839,7 @@ export const en: Translations = {
       restartFailed: 'Could not restart the backend',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
+      staleAuxDismiss: "Don't show again",
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
       setToMain: 'Set to main',
       change: 'Change',
@@ -2780,12 +2818,6 @@ export const en: Translations = {
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
     sections: { maintenance: 'Maintenance', sessions: 'Sessions', system: 'System', usage: 'Usage' },
-    sectionDescriptions: {
-      maintenance: 'Diagnostics, backups, curator, and memory data',
-      sessions: 'Search and manage sessions',
-      system: 'Status, logs, and system actions',
-      usage: 'Token, cost, and skill activity over time'
-    },
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
@@ -2812,7 +2844,8 @@ export const en: Translations = {
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
     restartGateway: 'Restart gateway',
-    openBrowser: 'Open browser',
+    openBrowser: 'Toggle browser',
+    toggleBrowser: 'Toggle browser',
     gatewayRestartFailed: 'Gateway restart failed.',
     sharedGatewayRestartTitle: 'Restart the shared gateway?',
     sharedGatewayRestartDescription: bots => `All bots on this device reconnect: ${bots}`,
@@ -2847,7 +2880,7 @@ export const en: Translations = {
     actions: count => `${count} actions`,
     logFile: 'Log file',
     logLevel: 'Level',
-    logSearchPlaceholder: 'Filter log lines...',
+    logSearchPlaceholder: 'Search log lines...',
     maintenance: {
       runOps: 'Diagnostics',
       doctor: 'Run doctor',
@@ -2896,6 +2929,13 @@ export const en: Translations = {
 
   messaging: {
     search: 'Search messaging...',
+    statusFilter: {
+      all: 'All',
+      bad: 'Errors',
+      good: 'Connected',
+      muted: 'Inactive',
+      warn: 'Needs attention'
+    },
     loading: 'Loading messaging platforms...',
     loadFailed: 'Messaging platforms failed to load',
     states: {
@@ -3902,6 +3942,8 @@ export const en: Translations = {
     restoredDraftNotice: 'Restored your unsent message',
     restoredDraftUndo: 'Undo',
     queueEdit: 'Edit',
+    queueExpand: 'Expand',
+    queueCollapse: 'Collapse',
     queueSendNext: 'Next',
     queueSteer: 'Steer — redirect the live turn now',
     queueSend: 'Send',
@@ -4194,6 +4236,7 @@ export const en: Translations = {
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
+    copyFullLog: 'Copy full changelog',
     manualTitle: 'Update from your terminal',
     manualUnavailableTitle: "Can't update from here",
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
@@ -4586,7 +4629,8 @@ export const en: Translations = {
     removeCustomModel: 'Remove custom model',
     resetToDefaults: 'Reset to defaults',
     resetConfirm: 'Reset model visibility to defaults?',
-    resetDescription: 'Your shown and hidden model choices are cleared and every provider’s default list comes back. Custom models you added are kept and shown.',
+    resetDescription:
+      'Your shown and hidden model choices are cleared and every provider’s default list comes back. Custom models you added are kept and shown.',
     resetAction: 'Reset'
   },
 
@@ -4600,7 +4644,11 @@ export const en: Translations = {
       editModels: 'Edit models…',
       followDefault: 'Use Settings default',
       refreshModels: 'Refresh models',
-      fast: 'Fast'
+      fast: 'Fast',
+      free: 'free',
+      cacheRead: 'cached read',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'No options for this model',
@@ -4708,6 +4756,7 @@ export const en: Translations = {
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
       contextUsage: 'Context usage',
+      compressions: count => `Compressions: ${count}`,
       systemResources: {
         title: 'System Resources',
         loading: 'Resources…',
@@ -4749,6 +4798,10 @@ export const en: Translations = {
   },
 
   rightSidebar: {
+    terminalReadOnly: 'Read-only output',
+    terminalReadOnlyHelp:
+      'To answer prompts, stop the background command and run it in a new terminal. The new terminal opens a separate shell; it does not connect to this process.',
+    terminalOpenInteractive: 'Open new terminal',
     aria: 'Right sidebar',
     panelsAria: 'Right sidebar panels',
     files: 'File system',
@@ -4797,6 +4850,7 @@ export const en: Translations = {
     closePane: 'Close preview pane',
     loading: 'Loading preview',
     unavailable: 'Preview unavailable',
+    missingTarget: 'That path does not exist on this computer',
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',
@@ -4922,6 +4976,7 @@ export const en: Translations = {
     hideTabStrip: 'Hide tabs',
     showStripTab: title => `Show ${title}`,
     hideStripTab: title => `Hide ${title}`,
+    zoneMenuLabel: title => `Zone options for ${title}`,
     lastTabKeptTitle: 'Last tab stays',
     lastTabKeptBody: 'This zone needs at least one visible tab. Show another tab first, or collapse the whole sidebar.',
     toggleStripTab: title => `Toggle ${title} tab`,
@@ -5078,6 +5133,10 @@ export const en: Translations = {
         stream_drop: {
           title: 'The reply was cut off',
           body: 'The connection dropped before the reply finished. Retry to send it again.'
+        },
+        no_reply: {
+          title: "The reply didn't finish",
+          body: 'Hermes ended this turn without a reply. Retry to send it again.'
         },
         upstream_blocked: {
           title: 'A firewall blocked the request',
@@ -5259,13 +5318,9 @@ export const en: Translations = {
       placeholder: 'Type your answer…',
       skip: 'Skip',
       skipped: 'Skipped',
-      continueLabel: 'Continue',
+      noAnswer: 'No answer',
       confirmAndContinueLabel: 'Confirm and continue',
-      answeredBadge: 'Answered',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
-      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
-      lateAnswerTip: 'Draft this answer as a follow-up message',
-      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.',
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
     },
@@ -5617,6 +5672,11 @@ export const en: Translations = {
   ui: {
     search: {
       clear: 'Clear search'
+    },
+    logs: {
+      bottom: 'Bottom of log',
+      search: 'Search logs…',
+      top: 'Top of log'
     },
     pagination: {
       label: 'pagination',

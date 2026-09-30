@@ -242,6 +242,9 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
+    from agent.message_metadata import message_identity
+    from agent.transcript_repair import sync_flushed_message_markers
+
     # The child sends the parent's exact system prompt: a row without one makes the branch's first
     # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
     parent_prompt = None
@@ -260,13 +263,14 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         # path can retry cleanly on first submit.
         # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
         # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        db.append_messages_batch(
-            new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                       **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
+        rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
+                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
+        db.append_messages_batch(new_key, rows, chunk_rows=500)
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
             db.set_auto_title(new_key, title, source=title_source)
+        sync_flushed_message_markers(history, rows)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -732,6 +736,35 @@ def _resume_adopt_stranded(ctx: _Resume) -> None:
         logger.exception("stranded-session adoption failed for %s", ctx.target)
 
 
+def _resume_materialize_minted(ctx: _Resume) -> None:
+    """Row for a minted-but-never-persisted key (#96793): adopt the id, not 4007.
+
+    ``session.create`` mints the stored key but intentionally writes no state.db row
+    until the first prompt (no "Untitled" litter). If the backend dies in that window,
+    the key exists client-side (pinned tile, stored id) but has no row anywhere — and
+    after a restart the in-memory live-lazy lookup above can't find it either, so the
+    resume 4007ed forever. When the target is a well-formed server-minted key, mint
+    the row here and let the normal resume path continue with empty history. Abandoned
+    drafts still leave no row: nothing is written until a client explicitly resumes
+    the exact key. ``create_session`` is an upsert, so a concurrently persisted row is
+    not clobbered (only its NULL model/source columns would fill in).
+    """
+    try:
+        ctx.db.create_session(
+            ctx.target,
+            source=_resolve_session_source(_str_param(ctx.params, "source") or None),
+            model=_resolve_model(),
+            profile_name=profile_name_for_home(ctx.profile_home) or _response_profile_name(ctx.profile),
+        )
+        ctx.found = ctx.db.get_session(ctx.target)
+        logger.info(
+            "materialized session row for minted-but-unpersisted key %s (resume no longer 4007s)",
+            ctx.target,
+        )
+    except Exception:
+        logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
+
+
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
     ctx.found = ctx.db.get_session(ctx.target)
@@ -751,6 +784,9 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
         _resume_adopt_stranded(ctx)
+    if not ctx.found and not ctx.lazy and _is_server_minted_key(ctx.target) \
+            and not _any_live_session_claims_key(ctx.target):
+        _resume_materialize_minted(ctx)
     return None if ctx.found else _err(ctx.rid, 4007, "session not found")
 
 
@@ -1239,12 +1275,16 @@ def _(rid, params: dict, session: dict) -> dict:
     with _session_db(session) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
+        # The row lookup and the reaction are both session-qualified, and the newest live row lives in
+        # the session the agent writes to — which a compression rotation moves off session_key mid-session
+        # (#123545). Same stale-key hazard as the submit row.
+        row_session = _submit_row_target_key(session)
         try:
             if row_id is None:
-                row_id = db.latest_message_row_id(session["session_key"], role=newest_role)
+                row_id = db.latest_message_row_id(row_session, role=newest_role)
                 if row_id is None:
                     return _err(rid, 4040, "no message to react to yet")
-            reactions = db.set_message_reaction(session["session_key"], int(row_id), emoji, author=author)
+            reactions = db.set_message_reaction(row_session, int(row_id), emoji, author=author)
         except Exception as e:
             return _err(rid, 5007, str(e))
     if reactions is None:
@@ -1760,16 +1800,16 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
 @method("billing.state")
 def _(rid, params: dict) -> dict:
     """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
-    bill, so its state is answered locally (``free_tier`` set, ``logged_in`` false) without a portal
+    bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
     round-trip that could only fail."""
     try:
         from agent.billing_view import BillingState, build_billing_state
-        from hermes_cli.anon_auth import guest_carries_inference
-        if guest_carries_inference():
-            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier=True))
+        from hermes_cli.anon_auth import has_free_tier_account
+        if has_free_tier_account():
+            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier_account=True))
         return _ok(rid, _serialize_billing_state(build_billing_state()))
     except Exception:
-        return _ok(rid, {"ok": True, "logged_in": False, "free_tier": False, "error": "could not load billing state"})
+        return _ok(rid, {"ok": True, "logged_in": False, "free_tier_account": False, "error": "could not load billing state"})
 
 
 _billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
@@ -1907,7 +1947,12 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
     history = list(session.get("history", []))
-    if session.get("session_key"):
+    # Address the session the live agent writes to, not session_key: a compression rotation moves the
+    # tip mid-session, and include_ancestors walks parent pointers, so a stale parent materializes
+    # root..parent and NEVER the continuation — a reconnect in that window renders a transcript missing
+    # every turn since the rotation (#123545).
+    row_session = _submit_row_target_key(session)
+    if row_session:
         with _session_db(session) as db:
             if db is not None:
                 # include_row_ids: the durable row id is how clients address a persisted turn (reactions,
@@ -1917,7 +1962,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     # stamp, so an unstamped read here silently strips the one durable address clients can
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True, include_row_ids=True)
+                        row_session, include_ancestors=True, include_row_ids=True)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
@@ -1939,6 +1984,8 @@ def _(rid, params: dict, session: dict) -> dict:
                 removed = _rewind_active_session_history(session, user_turns - 1)[2]
             except Exception as exc:
                 return _err(rid, 5008, f"undo: {exc}")
+    if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
+        _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
     return _ok(rid, {"removed": removed})
 
 

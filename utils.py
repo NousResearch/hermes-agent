@@ -261,12 +261,65 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
             raise
 
 
+# Maximum distinct names bounded_mkstemp() tries before giving up.
+# Deliberately tiny: names carry 64 bits of randomness, so a genuine
+# collision is implausible, and the point is to fail fast on persistent
+# errors instead of inheriting tempfile's TMP_MAX retry budget (2**31-1 on Windows).
+_BOUNDED_MKSTEMP_ATTEMPTS = 8
+
+# Windows reports "a directory with this name already exists" as EACCES
+# (bpo-22107), so a PermissionError there is ambiguous and worth one more
+# try under a different name. On POSIX it is a real permission failure
+# and retrying cannot help.
+_MKSTEMP_RETRY_PERMISSION_ERROR = os.name == "nt"
+
+# Mirror tempfile's open flags so the created file behaves identically:
+# 0o600, exclusive create, no symlink following, binary mode on Windows.
+_MKSTEMP_FLAGS = os.O_RDWR | os.O_CREAT | os.O_EXCL
+if hasattr(os, "O_NOFOLLOW"):
+    _MKSTEMP_FLAGS |= os.O_NOFOLLOW
+if hasattr(os, "O_BINARY"):
+    _MKSTEMP_FLAGS |= os.O_BINARY
+
+
+def bounded_mkstemp(
+    dir: Union[str, Path], prefix: str = "tmp", suffix: str = ".tmp"
+) -> "tuple[int, str]":
+    """``tempfile.mkstemp`` with a small, bounded retry budget.
+
+    ``tempfile.mkstemp`` retries candidate names up to ``TMP_MAX`` times —
+    2**31-1 on Windows — and its bpo-22107 workaround treats every
+    ``PermissionError`` as a name collision whenever ``os.access(dir,
+    os.W_OK)`` claims the directory is writable. ``os.access`` cannot see
+    ACL denials on Windows, so calling ``mkstemp`` in a directory the
+    process may not write to busy-spins one CPU core for hours instead of raising.
+
+    This helper generates 64-bit random names itself and tries at most
+    ``_BOUNDED_MKSTEMP_ATTEMPTS`` of them: a real name collision moves on
+    to a fresh name, while an error that persists across every attempt is
+    a real filesystem problem and is re-raised within milliseconds.
+    """
+    last_error: "OSError | None" = None
+    for _ in range(_BOUNDED_MKSTEMP_ATTEMPTS):
+        path = os.path.join(str(dir), f"{prefix}{os.urandom(8).hex()}{suffix}")
+        try:
+            return os.open(path, _MKSTEMP_FLAGS, 0o600), path
+        except FileExistsError as exc:
+            last_error = exc
+        except PermissionError as exc:
+            if not _MKSTEMP_RETRY_PERMISSION_ERROR:
+                raise
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
                   preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
-    is created by ``mkstemp`` — ``O_CREAT|O_EXCL`` at 0600 regardless of umask — so a secret is
+    is created by ``bounded_mkstemp`` — ``O_CREAT|O_EXCL`` at 0600 regardless of umask — so a secret is
     never readable at process umask, not even between create and chmod. *mode* is fchmod'd onto
     the temp fd BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is
     Unix-only; the post-replace chmod is the sole path on Windows). With no *mode* a NEW target
@@ -286,7 +339,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    fd, tmp_path = bounded_mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):

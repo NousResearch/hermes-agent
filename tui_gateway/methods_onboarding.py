@@ -16,6 +16,45 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "created": setup.created})
 
 
+@method("onboarding.ensure_setup_session")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import SETUP_CHAT_TITLE, ensure_setup_profile
+    from hermes_state_registry import acquire, release_or_close
+    try:
+        setup = ensure_setup_profile()
+        if setup.created:
+            _mirror_launch_credentials(setup.path, {"share_auth": True})
+        db = acquire(setup.path / "state.db")
+        try:
+            row = db.get_session_by_title(SETUP_CHAT_TITLE)
+            if row is None:
+                row = {"id": db.create_session(new_session_id(), "desktop"), "message_count": 0}
+                db.set_session_title(row["id"], SETUP_CHAT_TITLE)
+        finally:
+            release_or_close(db)
+    except Exception as e:
+        return _err(rid, 5075, str(e))
+    return _ok(rid, {"profile": setup.name, "session_id": row["id"], "empty": not row["message_count"]})
+
+
+@method("onboarding.state")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import read_state
+    return _onboarding_state_result(rid, read_state)
+
+
+@method("onboarding.record_failed_start")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import record_failed_start
+    return _onboarding_state_result(rid, record_failed_start)
+
+
+@method("onboarding.mark_seen")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import mark_seen
+    return _onboarding_state_result(rid, mark_seen)
+
+
 @method("onboarding.reset_setup_profile")
 def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import find_setup_profile, reset_setup_profile
@@ -28,6 +67,15 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5074, str(e))
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "reset": True})
+
+
+def _onboarding_state_result(rid, change) -> dict:
+    from hermes_cli.setup_profile import onboarding_eligible
+    try:
+        state = change()
+    except Exception as e:
+        return _err(rid, 5076, str(e))
+    return _ok(rid, {"eligible": onboarding_eligible(), **state})
 
 
 def _clear_setup_sessions(profile_dir) -> None:

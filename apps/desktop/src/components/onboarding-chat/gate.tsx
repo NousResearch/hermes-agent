@@ -1,5 +1,6 @@
+import type { OnboardingStateResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useEffect, useLayoutEffect } from 'react'
+import { useEffect } from 'react'
 
 import { endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
@@ -8,16 +9,17 @@ import { $desktopOnboarding, clearFreeTierIntro } from '@/store/onboarding'
 import {
   $guideOpening,
   $onboardingGate,
+  abandonGuide,
   beginOnboardingFlow,
-  runGuideKickoff,
-  skipGuide
+  type GuideKickoffResult,
+  runGuideKickoff
 } from '@/store/onboarding-gate'
 
 import { GuideLoading } from './guide-loading'
 
 interface OnboardingChatGateProps {
   enabled: boolean
-  onKickoff: () => Promise<boolean>
+  onKickoff: () => Promise<GuideKickoffResult>
   requestGateway: FreeTierRequester
 }
 
@@ -25,13 +27,22 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
   const gate = useStore($onboardingGate)
   const opening = useStore($guideOpening)
 
-  useLayoutEffect(() => {
-    beginOnboardingFlow($desktopOnboarding.get().firstRunSkipped)
-
-    if ($onboardingGate.get().guideQueued) {
-      takeGuideShape()
+  useEffect(() => {
+    if (!enabled || !isOnboardingEnabled()) {
+      return
     }
-  }, [])
+
+    void requestGateway<OnboardingStateResult>('onboarding.state').then(
+      state => {
+        beginOnboardingFlow(state, $desktopOnboarding.get().firstRunSkipped)
+
+        if ($onboardingGate.get().guideQueued) {
+          takeGuideShape()
+        }
+      },
+      error => console.warn('[onboarding] state could not be read', error)
+    )
+  }, [enabled, requestGateway])
 
   useEffect(() => {
     if (!enabled || !isOnboardingEnabled()) {
@@ -56,16 +67,19 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
 
   useEffect(() => {
     if (enabled && gate.guideQueued) {
-      const recover = () => {
+      const recover = (result: Exclude<GuideKickoffResult, 'started'>) => {
         endChatOnboardingSolo()
-        skipGuide()
+        abandonGuide(result)
       }
 
-      void runGuideKickoff(onKickoff).then(started => {
-        if (!started) {
-          recover()
-        }
-      }, recover)
+      void runGuideKickoff(onKickoff).then(
+        result => {
+          if (result !== 'started') {
+            recover(result)
+          }
+        },
+        () => recover('failed')
+      )
     }
   }, [enabled, gate.guideQueued, onKickoff])
 

@@ -1,20 +1,16 @@
+import type { OnboardingStateResult } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
-import { readKey, writeKey } from '@/lib/storage'
 
 import { $gateway } from './gateway'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
-
-const PHASE_KEY = 'hermes-onboarding-phase-v1'
 
 export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'skipped', 'handoff', 'done'] as const
 
 export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
 
-function isOnboardingPhase(value: string | null): value is OnboardingPhase {
-  return ONBOARDING_PHASES.some(phase => phase === value)
-}
+export type GuideKickoffResult = 'started' | 'off' | 'failed'
 
 export interface OnboardingGateState {
   phase: OnboardingPhase
@@ -22,21 +18,10 @@ export interface OnboardingGateState {
   guideKickoff: 'idle' | 'starting' | 'started'
 }
 
-type GuideKickoff = { status: 'idle' } | { status: 'starting'; promise: Promise<boolean> } | { status: 'started' }
+type GuideKickoff =
+  { status: 'idle' } | { status: 'starting'; promise: Promise<GuideKickoffResult> } | { status: 'started' }
 
-function loadGate(): OnboardingGateState {
-  const saved = readKey(PHASE_KEY)
-
-  const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
-
-  return {
-    phase,
-    guideQueued: phase === 'pending' || phase === 'guided',
-    guideKickoff: 'idle'
-  }
-}
-
-export const $onboardingGate = atom<OnboardingGateState>(loadGate())
+export const $onboardingGate = atom<OnboardingGateState>({ phase: 'idle', guideQueued: false, guideKickoff: 'idle' })
 
 let guideKickoff: GuideKickoff = { status: 'idle' }
 export const $guideOpening = computed(
@@ -51,8 +36,14 @@ function setGuideKickoff(state: GuideKickoff): void {
 }
 
 function setPhase(phase: OnboardingPhase): void {
-  writeKey(PHASE_KEY, phase === 'idle' ? null : phase)
   $onboardingGate.set({ ...$onboardingGate.get(), phase, guideQueued: false })
+}
+
+function reportOnboarding(method: 'onboarding.mark_seen' | 'onboarding.record_failed_start'): void {
+  void $gateway
+    .get()
+    ?.request(method, {})
+    .catch(error => console.warn(`[onboarding] ${method} failed`, error))
 }
 
 export function guidedOnboardingActive(): boolean {
@@ -61,8 +52,14 @@ export function guidedOnboardingActive(): boolean {
   return isOnboardingEnabled() && (phase === 'pending' || phase === 'guided' || phase === 'handoff')
 }
 
-export function beginOnboardingFlow(firstRunSkipped: boolean): void {
-  if (!isOnboardingEnabled() || firstRunSkipped || $onboardingGate.get().phase !== 'idle') {
+export function beginOnboardingFlow(state: OnboardingStateResult, firstRunSkipped: boolean): void {
+  if (
+    !isOnboardingEnabled() ||
+    !state.eligible ||
+    state.intro !== 'unseen' ||
+    firstRunSkipped ||
+    $onboardingGate.get().phase !== 'idle'
+  ) {
     return
   }
 
@@ -70,9 +67,9 @@ export function beginOnboardingFlow(firstRunSkipped: boolean): void {
   $onboardingGate.set({ ...$onboardingGate.get(), guideQueued: true })
 }
 
-export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolean> {
+export function runGuideKickoff(kickoff: () => Promise<GuideKickoffResult>): Promise<GuideKickoffResult> {
   if (!isOnboardingEnabled()) {
-    return Promise.resolve(false)
+    return Promise.resolve('off')
   }
 
   if (guideKickoff.status === 'starting') {
@@ -80,24 +77,24 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
   }
 
   if (guideKickoff.status === 'started') {
-    return Promise.resolve(true)
+    return Promise.resolve('started')
   }
 
   if (!$onboardingGate.get().guideQueued) {
-    return Promise.resolve(false)
+    return Promise.resolve('off')
   }
 
   const promise = Promise.resolve()
     .then(kickoff)
     .then(
-      started => {
-        setGuideKickoff({ status: started ? 'started' : 'idle' })
+      result => {
+        setGuideKickoff({ status: result === 'started' ? 'started' : 'idle' })
 
-        if (started && $onboardingGate.get().phase === 'pending') {
+        if (result === 'started' && $onboardingGate.get().phase === 'pending') {
           setPhase('guided')
         }
 
-        return started
+        return result
       },
       error => {
         setGuideKickoff({ status: 'idle' })
@@ -116,6 +113,7 @@ export function beginOnboardingHandoff(): void {
 
   if (isOnboardingEnabled() && (phase === 'guided' || phase === 'skipped')) {
     setPhase('handoff')
+    reportOnboarding('onboarding.mark_seen')
   }
 }
 
@@ -130,6 +128,19 @@ export function skipGuide(): void {
 
   if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
     setPhase('skipped')
+    reportOnboarding('onboarding.mark_seen')
+  }
+}
+
+export function abandonGuide(result: Exclude<GuideKickoffResult, 'started'>): void {
+  const { phase } = $onboardingGate.get()
+
+  if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
+    setPhase('skipped')
+
+    if (result === 'failed') {
+      reportOnboarding('onboarding.record_failed_start')
+    }
   }
 }
 

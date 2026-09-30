@@ -17,7 +17,7 @@ import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gat
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
-import { skipGuide } from '@/store/onboarding-gate'
+import type { GuideKickoffResult } from '@/store/onboarding-gate'
 import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
@@ -104,9 +104,9 @@ export function useOnboardingKickoff({
   resumeSession,
   runCreatePinnedTo
 }: OnboardingKickoffOptions) {
-  return useCallback(async (): Promise<boolean> => {
+  return useCallback(async (): Promise<GuideKickoffResult> => {
     if (!isOnboardingEnabled()) {
-      return false
+      return 'off'
     }
 
     const previousNewChatProfile = $newChatProfile.get()
@@ -126,7 +126,7 @@ export function useOnboardingKickoff({
       const record = await requestGatewayForProfile<SetupStatus>(setupProfile, 'setup.status', {})
 
       if (record.ready !== true || record.provider_configured !== true) {
-        return false
+        return 'off'
       }
 
       swapped = true
@@ -150,7 +150,7 @@ export function useOnboardingKickoff({
       if (canonical?.id) {
         await adoptGuideSession(setupProfile, canonical, record.free_tier_route, resumeSession, guideRequest)
 
-        return true
+        return 'started'
       }
 
       const capabilities = await readOnboardingCapabilities({
@@ -198,14 +198,13 @@ export function useOnboardingKickoff({
         guideRequest
       )
 
-      return true
+      return 'started'
     } catch (error) {
       $newChatProfile.set(previousNewChatProfile)
       $newChatRoute.set(previousNewChatRoute)
       $setupSession.set(previousSetupSession)
       $chatOnboardingThreadIds.set(previousThreadIds)
       endChatOnboardingSolo()
-      skipGuide()
 
       if (swapped) {
         await (
@@ -224,7 +223,7 @@ export function useOnboardingKickoff({
         message: error instanceof Error ? error.message : 'The welcome chat could not start.'
       })
 
-      return false
+      return 'failed'
     }
   }, [createBackendSessionForSend, requestGateway, resumeSession, runCreatePinnedTo])
 }

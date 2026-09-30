@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import random
 import shutil
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 from hermes_cli import profiles as profiles_mod
 from hermes_constants import get_hermes_home
@@ -13,6 +15,15 @@ logger = logging.getLogger(__name__)
 
 SETUP_PROFILE_NAME = "hermes-setup"
 SETUP_PROFILE_DESCRIPTION = "Where Hermes met you — walks your first run, then checks in as you find your feet."
+SETUP_CHAT_TITLE = "Welcome to Hermes"
+MAX_FAILED_STARTS = 3
+_FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
+_SETUP_TOOLSETS = ["setup", "start_chat", "no_mcp"]
+_SETUP_DEFERRED_TOOLS = [
+    "computer_use", "session_search", "image_generate", "todo_list", "process_manage", "cronjob_manage",
+    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "show_tip", "desktop_project",
+    "close_terminal", "read_terminal", "read_window_below", "focus_pane", "react_to_message",
+]
 
 SETUP_SOUL = "\n".join([
     "# Hermes",
@@ -61,8 +72,9 @@ def ensure_setup_profile() -> SetupProfile:
     path = profiles_mod.create_profile(name, clone_config=True, no_alias=True, description=SETUP_PROFILE_DESCRIPTION)
     try:
         _write_soul(path)
-        _enable_setup_toolset(path)
-        (path / profiles_mod.SETUP_PROFILE_MARKER).write_text("{}\n", encoding="utf-8")
+        _replace_dir(path / "memories")
+        _write_setup_config(path)
+        _write_state(path, _FRESH_STATE)
     except BaseException:
         profiles_mod.delete_profile(name, yes=True)
         raise
@@ -77,13 +89,35 @@ def reset_setup_profile() -> SetupProfile:
     source = get_hermes_home()
     _write_soul(path)
     _replace_dir(path / "memories")
-    for relpath in profiles_mod._CLONE_SUBDIR_FILES:
-        profiles_mod._clone_file(source, path, relpath)
+    _write_setup_config(path)
     _replace_dir(path / "skills")
     if (source / "skills").is_dir():
         profiles_mod._copytree_keep_junctions(source / "skills", path / "skills",
                                               profiles_mod._non_exportable_entries, dirs_exist_ok=True)
+    _write_state(path, _FRESH_STATE)
     return SetupProfile(name, path, created=False)
+
+
+def onboarding_eligible() -> bool:
+    from hermes_cli.anon_auth import GUEST_ONBOARDING_ENV
+    return os.environ.get(GUEST_ONBOARDING_ENV, "").strip() == "1"
+
+
+def read_state() -> dict:
+    found = find_setup_profile()
+    return dict(_FRESH_STATE) if found is None else _read_state(found[1])
+
+
+def record_failed_start() -> dict:
+    def change(state: dict) -> dict:
+        failed = min(state["failed_starts"] + 1, MAX_FAILED_STARTS)
+        return {**state, "failed_starts": failed,
+                "intro": "seen" if failed == MAX_FAILED_STARTS else state["intro"]}
+    return _change_state(change)
+
+
+def mark_seen() -> dict:
+    return _change_state(lambda state: {**state, "intro": "seen"})
 
 
 def _free_setup_profile_name() -> str:
@@ -94,16 +128,32 @@ def _free_setup_profile_name() -> str:
     return name
 
 
-def _enable_setup_toolset(path: Path) -> None:
+def _change_state(change: Callable[[dict], dict]) -> dict:
+    found = find_setup_profile()
+    if found is None:
+        return dict(_FRESH_STATE)
+    state = change(_read_state(found[1]))
+    _write_state(found[1], state)
+    return state
+
+
+def _read_state(path: Path) -> dict:
+    return json.loads((path / profiles_mod.SETUP_PROFILE_MARKER).read_text(encoding="utf-8"))
+
+
+def _write_state(path: Path, state: dict) -> None:
+    from utils import atomic_json_write
+    atomic_json_write(path / profiles_mod.SETUP_PROFILE_MARKER, state)
+
+
+def _write_setup_config(path: Path) -> None:
     from hermes_cli.config import atomic_config_write, read_user_config_raw
-    from hermes_cli.tools_config import _coerce_platform_toolsets_value, _platform_default_toolset
     config_path = path / "config.yaml"
     config = read_user_config_raw(config_path)
-    platform_toolsets = config.get("platform_toolsets") or {}
-    cli = _coerce_platform_toolsets_value(platform_toolsets.get("cli"), "cli")
-    if not isinstance(cli, list):
-        cli = [_platform_default_toolset("cli")]
-    config["platform_toolsets"] = {**platform_toolsets, "cli": list(dict.fromkeys([*cli, "setup"]))}
+    tools = config.get("tools") or {}
+    config["platform_toolsets"] = {**(config.get("platform_toolsets") or {}), "cli": list(_SETUP_TOOLSETS)}
+    config["tools"] = {**tools, "tool_search": {**(tools.get("tool_search") or {}), "defer": list(_SETUP_DEFERRED_TOOLS)}}
+    config["display"] = {**(config.get("display") or {}), "show_reasoning": False}
     atomic_config_write(config_path, config)
 
 

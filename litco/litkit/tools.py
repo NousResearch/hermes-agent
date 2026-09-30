@@ -739,6 +739,165 @@ def litco_deliver_local(args: Dict[str, Any]) -> Any:
 # review, ingest, proposals, tags, work sets
 # ---------------------------------------------------------------------------
 
+REVIEW_ACTIONS = ("list", "status", "records", "resume", "cancel", "pause", "create", "criteria", "work_sets",
+                  "accept_tags")
+CRITERIA_ACTIONS = ("list", "get", "create", "update", "publish", "versions")
+CRITERION_KEYS = ("key", "title", "description", "seedQuery", "tagName", "tagId", "disposition")
+CRITERION_DISPOSITIONS = ("apply", "propose", "propose_with_ambiguous")
+SCOPE_KINDS = ("workSetId", "documentIds", "filter", "batesRange")
+REVIEW_MAX_CRITERIA = 100
+REVIEW_MAX_TAGS = 25
+_SET_ID = re.compile(r"^builtin:[a-z0-9_-]{1,40}$")
+
+
+def _set_id(args: Dict[str, Any]) -> str:
+    """A criteria set id: a LitKit uuid, or a built-in id such as ``builtin:privilege``."""
+    value = str(_require(args, "criteriaSetId"))
+    if not (_UUID.match(value) or _SET_ID.match(value)):
+        raise ValueError("'criteriaSetId' must be a criteria set id (uuid) or a built-in id such as builtin:privilege")
+    return value
+
+
+def _criteria(value: Any) -> List[Dict[str, Any]]:
+    """Criteria as LitKit stores them: one object per criterion, each with a title. A bare string is a title."""
+    if not isinstance(value, list) or not value:
+        raise ValueError("'criteria' must be a non-empty list of criteria ({title, description, tagName, ...})")
+    if len(value) > REVIEW_MAX_CRITERIA:
+        raise ValueError(f"a criteria set holds at most {REVIEW_MAX_CRITERIA} criteria")
+    out: List[Dict[str, Any]] = []
+    for n, item in enumerate(value, 1):
+        item = {"title": item} if isinstance(item, str) else item
+        if not isinstance(item, dict):
+            raise ValueError(f"criterion {n} must be an object with a title")
+        row = {k: item[k] for k in CRITERION_KEYS if item.get(k) not in (None, "")}
+        title = str(row.get("title") or "").strip()
+        if not title:
+            raise ValueError(f"criterion {n} needs a title")
+        row["title"] = title[:200]
+        if "description" in row:
+            row["description"] = str(row["description"])[:8000]
+        if row.get("disposition") and row["disposition"] not in CRITERION_DISPOSITIONS:
+            raise ValueError(f"criterion {n}: disposition must be one of {', '.join(CRITERION_DISPOSITIONS)}")
+        out.append(row)
+    return out
+
+
+def _review_scope(value: Any) -> Dict[str, Any]:
+    """Exactly one of workSetId, documentIds, filter, batesRange."""
+    if not isinstance(value, dict):
+        raise ValueError("'scope' must be an object with one of: " + ", ".join(SCOPE_KINDS))
+    given = [k for k in SCOPE_KINDS if value.get(k) not in (None, "", [], {})]
+    if len(given) != 1:
+        raise ValueError("'scope' takes exactly one of: " + ", ".join(SCOPE_KINDS))
+    kind = given[0]
+    if kind == "workSetId":
+        return {"workSetId": _uuid(value, "workSetId")}
+    if kind == "documentIds":
+        docs = value["documentIds"]
+        if not isinstance(docs, list):
+            raise ValueError("scope.documentIds must be a list of LitKit ids (uuid)")
+        docs = [str(d).strip() for d in docs]
+        bad = [d for d in docs if not _UUID.match(d)]
+        if bad:
+            raise ValueError(f"scope.documentIds must be LitKit ids (uuid); not ids: {bad[:3]}")
+        return {"documentIds": list(dict.fromkeys(docs))}
+    if kind == "filter":
+        if not isinstance(value["filter"], dict):
+            raise ValueError("scope.filter must be an object of review-grid filters (custodian, dateFrom, query, ...)")
+        return {"filter": value["filter"]}
+    rng = value["batesRange"]
+    if not isinstance(rng, dict) or not str(rng.get("start") or "").strip() or not str(rng.get("end") or "").strip():
+        raise ValueError("scope.batesRange must be {start, end}, e.g. {start: 'ABC0000001', end: 'ABC0004000'}")
+    return {"batesRange": {"start": str(rng["start"]).strip(), "end": str(rng["end"]).strip()}}
+
+
+def _review_tags(value: Any) -> List[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("'tags' must be a non-empty list of tag names: the only tags the run may write")
+    names = list(dict.fromkeys(str(t).strip() for t in value if str(t).strip()))
+    if not names:
+        raise ValueError("'tags' must name at least one tag")
+    if len(names) > REVIEW_MAX_TAGS:
+        raise ValueError(f"a run may write at most {REVIEW_MAX_TAGS} tags")
+    too_long = [t for t in names if len(t) > 120]
+    if too_long:
+        raise ValueError(f"tag names are limited to 120 characters: {too_long[0][:40]}...")
+    return names
+
+
+def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Propose a review run. LitKit queues a proposal card in the thread; a person launches it there."""
+    body: Dict[str, Any] = {"scope": _review_scope(args.get("scope"))}
+    has_set, has_criteria = bool(args.get("criteriaSetId")), args.get("criteria") is not None
+    if has_set == has_criteria:
+        raise ValueError("give exactly one of criteriaSetId (a registered set, preferred) or criteria")
+    if has_set:
+        body["criteriaSetId"] = _set_id(args)
+    else:
+        body["criteria"] = _criteria(args.get("criteria"))
+    body["tags"] = _review_tags(args.get("tags"))
+    for key in ("createMissingTags", "applyTags"):
+        if args.get(key) is not None:
+            body[key] = bool(args[key])
+    if args.get("name"):
+        body["name"] = str(args["name"]).strip()[:200]
+    quote_id = str(args.get("quoteId") or "").strip()
+    if args.get("userConfirmed") and not quote_id:
+        raise ValueError("userConfirmed goes with the quoteId from the price quote; send both after the person's "
+                         "explicit yes")
+    if quote_id:
+        body["quoteId"] = safe_segment(quote_id)
+    if args.get("userConfirmed"):
+        body["userConfirmed"] = True
+    result = client.post(f"/api/matters/{mid}/review-jobs/propose", body)
+    result = result if isinstance(result, dict) else {"result": result}
+    quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
+    if result.get("requiresApproval"):
+        if result.get("needsSecondApprover"):
+            result["next"] = (f"Nothing is proposed yet. The price is at or above the firm's approver threshold, so a "
+                              f"different matter admin must approve quote {quote.get('id')} in LitKit billing. Tell "
+                              "the person that; once it is approved, call create again with the same quoteId.")
+        else:
+            result["next"] = ("Nothing is proposed yet. Present this price to the person (amount and document count) "
+                              "and ask whether to proceed. Only after an explicit yes, call create again with the "
+                              f"same arguments plus quoteId={quote.get('id')} and userConfirmed=true.")
+        return result
+    result["next"] = ("Proposed, not launched. Tell the person what you proposed: the scope, the criteria set and "
+                      "version, the tags, the estimated document count and cost. Launch is on the card in this "
+                      "thread; that is their one decision. Do not send them to the Review screen to set it up. After "
+                      "they launch, follow the run with status and records and report when it finishes.")
+    return result
+
+
+def _review_criteria(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Any:
+    sub = str(args.get("criteriaAction") or "list")
+    base = f"/api/matters/{mid}/criteria-sets"
+    if sub == "list":
+        return client.get(base)
+    if sub not in CRITERIA_ACTIONS:
+        raise ValueError(f"criteriaAction must be one of {', '.join(CRITERIA_ACTIONS)}")
+    if sub == "create":
+        body: Dict[str, Any] = {"name": str(_require(args, "name"))[:120], "criteria": _criteria(args.get("criteria"))}
+        if args.get("description"):
+            body["description"] = str(args["description"])[:500]
+        if args.get("setScope"):
+            body["scope"] = str(args["setScope"])
+        return client.post(base, body)
+    set_id = _set_id(args)
+    if sub == "get":
+        return client.get(f"{base}/{set_id}")
+    if sub == "versions":
+        return client.get(f"{base}/{set_id}/versions")
+    extra: Dict[str, Any] = {}
+    if args.get("changeNote"):
+        extra["changeNote"] = str(args["changeNote"])[:500]
+    if args.get("baseVersion") is not None:
+        extra["baseVersion"] = int(args["baseVersion"])
+    if sub == "update":
+        return client.patch(f"{base}/{set_id}", {"criteria": _criteria(args.get("criteria")), **extra})
+    return client.post(f"{base}/{set_id}/publish", extra)
+
+
 @_tool("litkit_review")
 def litkit_review(args: Dict[str, Any]) -> Any:
     client = _client()
@@ -747,6 +906,14 @@ def litkit_review(args: Dict[str, Any]) -> Any:
     base = f"/api/matters/{mid}/review-jobs"
     if action == "list":
         return client.get(base, params={"status": args.get("status"), "limit": args.get("limit")})
+    if action == "create":
+        return _review_create(client, mid, args)
+    if action == "criteria":
+        return _review_criteria(client, mid, args)
+    if action == "work_sets":
+        return client.get(f"/api/matters/{mid}/work-sets")
+    if action not in REVIEW_ACTIONS:
+        raise ValueError(f"action must be one of {', '.join(REVIEW_ACTIONS)}")
     job = safe_segment(str(_require(args, "jobId")))
     if action == "status":
         return client.get(f"{base}/{job}")
@@ -754,7 +921,11 @@ def litkit_review(args: Dict[str, Any]) -> Any:
         return client.get(f"{base}/{job}/records")
     if action in ("resume", "cancel", "pause"):
         return {"action": action, "jobId": job, "result": client.post(f"{base}/{job}/{action}", {})}
-    raise ValueError("action must be list, status, records, resume, cancel or pause")
+    if action == "accept_tags":
+        body = {"includeRationaleNotes": bool(args["includeRationaleNotes"])} \
+            if args.get("includeRationaleNotes") is not None else {}
+        return {"action": action, "jobId": job, "result": client.post(f"{base}/{job}/accept-all-tags", body)}
+    raise ValueError(f"action must be one of {', '.join(REVIEW_ACTIONS)}")
 
 
 @_tool("litkit_ingest")
@@ -1028,6 +1199,11 @@ def _actions(client: LitKitClient, action: str, action_args: Dict[str, Any]) -> 
     return client.post("/api/agent/actions", {"action": action, "matterId": _mid(client), "args": action_args})
 
 
+# LitKit's remember lane accepts only these kinds (REMEMBER_KINDS in litkit-app remember.ts); any
+# other kind is a 400 "remember: invalid kind".
+REMEMBER_KINDS = ("fact", "strategy", "custodian_note", "doc_cluster", "timeline_hint")
+
+
 @_tool("litkit_remember")
 def litkit_remember(args: Dict[str, Any]) -> Any:
     client = _client()
@@ -1036,7 +1212,10 @@ def litkit_remember(args: Dict[str, Any]) -> Any:
         raise ValueError("scope must be matter, user or wall")
     if scope == "user" and not current_acting_user():
         raise ValueError("a private (user) note needs a lawyer on the turn; this turn has none")
-    action_args: Dict[str, Any] = {"kind": str(args.get("kind") or "note"), "content": str(_require(args, "content"))[:8000]}
+    kind = str(args.get("kind") or "fact").strip()
+    if kind not in REMEMBER_KINDS:
+        raise ValueError(f"kind must be one of {', '.join(REMEMBER_KINDS)} (not {kind!r})")
+    action_args: Dict[str, Any] = {"kind": kind, "content": str(_require(args, "content"))[:8000]}
     for key, target in (("key", "key"), ("expiresAt", "expires_at")):
         if args.get(key):
             action_args[target] = args[key]
@@ -1158,10 +1337,36 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         "documents. Writes nothing to LitKit; findings saved to qa/.",
         {"path": _S, "text": _S, "deliverableClass": _S}),
     "litkit_review": _schema(
-        "litkit_review", "Review jobs: list, status, records, and resume/cancel/pause. Control actions need the "
-        "acting lawyer's permission; a refusal is returned plainly.",
-        {"action": {"type": "string", "enum": ["list", "status", "records", "resume", "cancel", "pause"]},
-         "jobId": _S, "status": _S, "limit": _I}),
+        "litkit_review", "Review & Tag. To start a review, register it: tags (litkit_tags), criteria set "
+        "(action=criteria), scope, then create; the person launches it from the card in the thread. Never tell "
+        "them to set it up in the UI. requiresApproval: show the price; call again with quoteId and "
+        "userConfirmed=true only after a yes. Also list, status, records, resume/cancel/pause, work_sets, "
+        "accept_tags.",
+        {"action": {"type": "string", "enum": list(REVIEW_ACTIONS)},
+         "jobId": _S, "status": _S, "limit": _I,
+         "criteriaAction": {"type": "string", "enum": list(CRITERIA_ACTIONS),
+                            "description": "with action=criteria (default list)"},
+         "criteriaSetId": {"type": "string", "description": "a criteria set id (uuid) or builtin:<name>"},
+         "criteria": {"type": "array", "description": "criteria for criteriaAction create/update (or an unregistered "
+                      "run): [{title, description, tagName, seedQuery, disposition}]",
+                      "items": {"type": "object", "properties": {
+                          "title": _S, "description": _S, "tagName": _S, "tagId": _S, "seedQuery": _S, "key": _S,
+                          "disposition": {"type": "string", "enum": list(CRITERION_DISPOSITIONS)}},
+                          "required": ["title"]}},
+         "name": {"type": "string", "description": "criteria set name (create), or the run's name"},
+         "description": _S, "changeNote": _S, "baseVersion": _I,
+         "setScope": {"type": "string", "description": "criteria set scope for criteriaAction=create, if LitKit asks"},
+         "scope": {"type": "object", "description": "documents for create; exactly one of {workSetId}, "
+                   "{documentIds:[..]}, {filter:{custodian, dateFrom, dateTo, query, tagIds, ...}}, "
+                   "{batesRange:{start, end}}"},
+         "tags": {"type": "array", "items": {"type": "string"},
+                  "description": "create: every tag name the run may write (only these can be applied)"},
+         "createMissingTags": _B, "applyTags": {"type": "boolean", "description": "true applies tags directly; "
+                                                "default leaves them as proposals"},
+         "quoteId": {"type": "string", "description": "billing phase 2: the quote id from requiresApproval"},
+         "userConfirmed": {"type": "boolean", "description": "billing phase 2: true only after the person said yes "
+                           "to the quoted price"},
+         "includeRationaleNotes": _B}),
     "litkit_ingest": _schema(
         "litkit_ingest", "Production and ingest status (productions, production, progress, exceptions, ingests, "
         "jobs, job) and recovery (resume, cancel, reingest, retry), which need matter admin rights.",
@@ -1201,7 +1406,8 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         ["title"]),
     "litkit_remember": _schema(
         "litkit_remember", "Save a matter memory in LitKit. scope=user keeps it private to the lawyer on this turn.",
-        {"content": _S, "kind": _S, "key": _S, "scope": {"type": "string", "enum": ["matter", "user", "wall"]},
+        {"content": _S, "kind": {"type": "string", "enum": list(REMEMBER_KINDS), "description": "default fact"},
+         "key": _S, "scope": {"type": "string", "enum": ["matter", "user", "wall"]},
          "wallId": _S, "expiresAt": _S, "replacesIds": _IDS}, ["content"]),
     "litkit_recall": _schema(
         "litkit_recall", "Recall matter memories saved in LitKit (wall-filtered for the lawyer on this turn).",

@@ -142,3 +142,95 @@ class FakeLitKit:
 def ndjson(rows: List[Dict[str, Any]]) -> Tuple[int, bytes, Dict[str, str]]:
     return 200, ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8"), {
         "Content-Type": "application/x-ndjson"}
+
+
+class FakeReview:
+    """LitKit's review-structure routes for one matter, with state: criteria sets and their versions,
+    work sets, ``review-jobs/propose`` with the review_run billing protocol, and accept-all-tags.
+
+    Billing follows litkit-app's ``review_run``: with ``price_usd > 0``, a propose without a quoteId
+    returns ``requiresApproval`` and a draft quote and proposes nothing; a propose with that quoteId
+    and ``userConfirmed: true`` approves the quote and queues the proposal. A quoteId the person has
+    not approved answers 402."""
+
+    def __init__(self, fake: FakeLitKit, matter_id: str = MATTER_ID, *, price_usd: float = 0.0,
+                 doc_count: int = 1234) -> None:
+        self.price_usd = price_usd
+        self.doc_count = doc_count
+        self.sets: Dict[str, Dict[str, Any]] = {}
+        self.quotes: Dict[str, str] = {}  # quote id -> draft | approved | consumed
+        self.proposals: List[Dict[str, Any]] = []
+        self.work_sets = [{"id": "00000000-0000-4000-8000-00000000a001", "name": "Crowder emails", "docCount": 812}]
+        base = f"/api/matters/{matter_id}"
+        sid = r"(?:[0-9a-f-]{36}|builtin:[a-z0-9_-]+)"
+        fake.route("GET", rf"{base}/criteria-sets", lambda r: {"matter": None, "mine": list(self.sets.values()),
+                                                                 "firm": [], "builtIn": []})
+        fake.route("POST", rf"{base}/criteria-sets", self._create)
+        fake.route("GET", rf"{base}/criteria-sets/{sid}", lambda r: self._get(r.path.split("/")[-1]))
+        fake.route("PATCH", rf"{base}/criteria-sets/{sid}", self._update)
+        fake.route("POST", rf"{base}/criteria-sets/{sid}/publish", self._publish)
+        fake.route("GET", rf"{base}/criteria-sets/{sid}/versions",
+                   lambda r: self._with_set(r.path.split("/")[-2], lambda s: {"versions": s["versions"]}))
+        fake.route("GET", rf"{base}/work-sets", lambda r: {"workSets": self.work_sets})
+        fake.route("POST", rf"{base}/review-jobs/propose", self._propose)
+        fake.route("POST", rf"{base}/review-jobs/[^/]+/accept-all-tags",
+                   lambda r: {"ok": True, "accepted": 17, "jobId": r.path.split("/")[-2]})
+
+    def _with_set(self, set_id: str, fn: Callable[[Dict[str, Any]], Any]) -> Any:
+        found = self.sets.get(set_id)
+        return fn(found) if found else (404, {"error": "not_found"})
+
+    def _get(self, set_id: str) -> Any:
+        return self._with_set(set_id, lambda s: {"set": {k: s[k] for k in ("id", "name", "currentVersion",
+                                                                            "publishedVersion")},
+                                                 "criteria": s["versions"][-1]["criteria"]})
+
+    def _create(self, req: Recorded) -> Any:
+        body = req.json()
+        set_id = f"00000000-0000-4000-8000-{len(self.sets) + 1:012d}"
+        self.sets[set_id] = {"id": set_id, "name": body["name"], "currentVersion": 1, "publishedVersion": None,
+                             "versions": [{"version": 1, "criteria": body["criteria"], "changeNote": ""}]}
+        return 201, {"set": {"id": set_id, "name": body["name"], "currentVersion": 1}, "version": 1,
+                     "criteria": body["criteria"]}
+
+    def _update(self, req: Recorded) -> Any:
+        body = req.json()
+
+        def bump(s: Dict[str, Any]) -> Any:
+            s["currentVersion"] += 1
+            s["versions"].append({"version": s["currentVersion"], "criteria": body["criteria"],
+                                  "changeNote": body.get("changeNote", "")})
+            return {"set": {"id": s["id"], "currentVersion": s["currentVersion"]}, "version": s["currentVersion"]}
+        return self._with_set(req.path.split("/")[-1], bump)
+
+    def _publish(self, req: Recorded) -> Any:
+        def publish(s: Dict[str, Any]) -> Any:
+            s["publishedVersion"] = s["currentVersion"]
+            return {"ok": True, "set": {"id": s["id"]}, "version": s["currentVersion"]}
+        return self._with_set(req.path.split("/")[-2], publish)
+
+    def _propose(self, req: Recorded) -> Any:
+        body = req.json()
+        set_id = body.get("criteriaSetId")
+        if set_id and set_id not in self.sets:
+            return 404, {"error": "criteria_set_not_found"}
+        quote_id = body.get("quoteId")
+        if self.price_usd > 0:
+            if not quote_id:
+                quote_id = f"q{len(self.quotes) + 1}"
+                self.quotes[quote_id] = "draft"
+                return {"proposed": False, "requiresApproval": True,
+                        "quote": {"id": quote_id, "amountEstUsd": self.price_usd, "docCount": self.doc_count,
+                                  "sku": "review_fast", "expiresAt": "2026-10-01T00:00:00Z"}}
+            if self.quotes.get(quote_id) == "draft" and body.get("userConfirmed") is True:
+                self.quotes[quote_id] = "approved"
+            if self.quotes.get(quote_id) != "approved":
+                return 402, {"error": "quote_not_approved", "quoteId": quote_id}
+            self.quotes[quote_id] = "consumed"
+        proposal = {"proposalId": f"00000000-0000-4000-8000-{len(self.proposals) + 501:012d}",
+                    "estimatedCount": self.doc_count, "status": "pending",
+                    "estimate": {"amountEstUsd": self.price_usd, "docCount": self.doc_count},
+                    "criteriaSetVersion": self.sets[set_id]["currentVersion"] if set_id else None,
+                    "tags": body["tags"]}
+        self.proposals.append({**proposal, "request": body})
+        return proposal

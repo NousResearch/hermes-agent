@@ -7,7 +7,7 @@ from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
-from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
 
 # These fields describe Hermes' durable record and timeline display, not
@@ -46,7 +46,7 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
      MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
      # The alternation repair's row counts: an in-place compaction reads them off the live dict.
-     MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS}
+     MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 

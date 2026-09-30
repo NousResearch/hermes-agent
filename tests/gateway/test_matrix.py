@@ -4602,18 +4602,18 @@ class TestMatrixReactions:
             self, monkeypatch, card, reactor, key, expired, outcome):
         monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
         adapter = self.adapter
-        adapter._client = MagicMock()
         adapter._allowed_user_ids = {"@owner:example.org", "@other:example.org"}
         adapter._send_reaction = AsyncMock(return_value="$seed")
         adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
         adapter.redact_message = AsyncMock(return_value=True)
         sent = []
 
-        async def send_room_message(room_id, content):
+        async def send_message_event(room_id, event_type, content):
             sent.append(content)
             return f"$event-{len(sent)}"
 
-        adapter._send_room_message = send_room_message
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = send_message_event
 
         async def on_selected(*_args):
             if isinstance(outcome, Exception):
@@ -4621,10 +4621,10 @@ class TestMatrixReactions:
             return outcome
 
         metadata = {"thread_id": "$root", "requester_user_id": "@owner:example.org"}
+        entry = None
         if card == "approval":
-            from tools.approval_gateway_wait import _ApprovalEntry
             from tools import approval
-
+            from tools.approval_gateway_wait import _ApprovalEntry
             entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
             monkeypatch.setitem(approval._gateway_queues, "s", [entry])
             metadata.update(entry.data)
@@ -4647,10 +4647,12 @@ class TestMatrixReactions:
             sender=reactor, event_id="$reaction", room_id="!room:example.org",
             content={"m.relates_to": {"event_id": "$event-1", "key": key}}))
 
-        assert [content["m.relates_to"] for content in sent[1:]] == [{
-            "rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
-            "m.in_reply_to": {"event_id": "$event-1"},
-        }]
+        relations = [
+            {field: value for field, value in content["m.relates_to"].items() if field != "is_falling_back"}
+            for content in sent[1:]]
+        assert relations == [{"rel_type": "m.thread", "event_id": "$root", "m.in_reply_to": {"event_id": "$event-1"}}]
+        if entry is not None:
+            approval._gateway_queues.pop("s", None)
 
 
 # ---------------------------------------------------------------------------

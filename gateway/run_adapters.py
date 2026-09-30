@@ -149,6 +149,10 @@ class GatewayAdapterLifecycleMixin:
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
         try:
+            await self._await_adapter_cleanup_with_timeout(self._complete_parked_overflow(adapter), timeout)
+        except Exception as e:
+            logger.debug("✗ %s parked-message completion error%s: %s", platform.value, suffix, e)
+        try:
             if not await self._await_adapter_cleanup_with_timeout(adapter.cancel_background_tasks(), timeout):
                 logger.warning(
                     "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",

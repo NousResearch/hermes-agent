@@ -54,18 +54,24 @@ def stage_host_python(python: Path) -> Path:
                         symlinks=True)
     # A shared-libpython build also needs the library the binary loads via @rpath/libpython3.*
     # against @executable_path/../lib. Flat layouts (many Linux distros) keep it at ``lib``'s top
-    # level, and that is what this walk stages; on macOS / python.org builds it nests under
-    # ``python3.X/config-*`` instead, where the stdlib copytree above already stages it in place —
-    # the same-basename guard skips those. A statically linked build has no such file at all.
+    # level — the staging target this walk exists to fill; on macOS / python.org builds it nests
+    # under ``python3.X/config-*``, where the stdlib copytree above already stages it in place.
+    # Mirror each source's relative position and dedupe on the DESTINATION path: keyed on the
+    # basename instead, a host shipping the same basename flat AND nested (Debian's python3-dev
+    # does) would let the copytree'd nested copy suppress the top-level one. A statically linked
+    # build has no such file at all.
     staged_lib = python.parent.parent / "lib"
-    staged_names = {staged.name for staged in staged_lib.rglob("libpython3.*") if staged.is_file()} \
-        if staged_lib.is_dir() else set()
+    staged = {staged.relative_to(staged_lib) for staged in staged_lib.rglob("libpython3.*")
+              if staged.is_file()} if staged_lib.is_dir() else set()
     for shared in host_lib.rglob("libpython3.*"):
-        if not shared.is_file() or shared.name in staged_names:
+        if not shared.is_file():
             continue
-        staged_lib.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(shared, staged_lib / shared.name)
-        staged_names.add(shared.name)
+        rel = shared.relative_to(host_lib)
+        if rel in staged:
+            continue
+        (staged_lib / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(shared, staged_lib / rel)
+        staged.add(rel)
     return python
 
 

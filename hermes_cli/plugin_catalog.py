@@ -404,18 +404,15 @@ def in_tree_catalog_time() -> Optional[float]:
     resolved: Optional[float] = None
     if (root / ".git").exists():
         try:
-            import os
-            import subprocess
-            # The pathspec makes git open every commit's tree. On a treeless partial clone
-            # (tree:0, the layout ``hermes update`` produces) those trees are absent and each one
-            # triggers a lazy fetch against the remote; on a bad network that is minutes of
-            # fetch-fail-retry for a passive date probe (#125683). Scoping GIT_NO_LAZY_FETCH to
-            # this call — never the process env, ``hermes update`` needs lazy fetch — makes the
-            # missing objects fail fast into the fallback below.
-            out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL,
-                                 env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
-            resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+            from hermes_cli._subprocess_compat import bounded_git_probe
+
+            # Path history needs missing trees on tree:0 clones. The shared probe disables
+            # lazy fetch only for its child and bounds timeout cleanup on every platform.
+            out = bounded_git_probe(
+                ["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
+                timeout=10,
+            )
+            resolved = float(out) if out else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
         if resolved is None:

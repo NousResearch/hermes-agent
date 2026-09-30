@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 import logging
+import json
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
@@ -84,21 +85,43 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
-    # Post-call guardrails.
-    assistant_message.tool_calls = agent._deduplicate_tool_calls(
-        agent._cap_delegate_task_calls(assistant_message.tool_calls)
-    )
+    # Retain rejected calls in the transcript so the model sees a paired result,
+    # not a silently rewritten plan. Keep the existing cap-before-dedup policy.
+    emitted_calls = assistant_message.tool_calls
+    allowed_calls = agent._cap_delegate_task_calls(emitted_calls)
+    allowed_objects = {id(tc) for tc in allowed_calls}
+    capped_calls = [tc for tc in emitted_calls if id(tc) not in allowed_objects]
+    executable_calls = agent._deduplicate_tool_calls(allowed_calls)
+    retained_objects = {id(tc) for tc in executable_calls + capped_calls}
+    assistant_message.tool_calls = [tc for tc in emitted_calls if id(tc) in retained_objects]
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.
     _invalid_batch_calls = [
-        tc for tc in assistant_message.tool_calls if tc.function.name not in agent.valid_tool_names
+        tc for tc in executable_calls if tc.function.name not in agent.valid_tool_names
     ] if _tvv.mixed_invalid_batch else []
 
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
     append_message(messages, assistant_msg)
+
+    for tc in capped_calls:
+        append_message(messages, {
+            "role": "tool",
+            "name": tc.function.name,
+            "tool_call_id": coalesce_tool_call_id(tc),
+            "content": json.dumps({
+                "error": "delegate_concurrency_limit",
+                "message": (
+                    "This delegate_task call was not executed: too many separate "
+                    "delegate_task calls in one model response for "
+                    "delegation.max_concurrent_children. Use the completed results "
+                    "before requesting remaining work."
+                ),
+            }),
+        })
+    assistant_message.tool_calls = executable_calls
 
     # Mixed batch: error-result invalid calls and drop them from execution.
     if _invalid_batch_calls:

@@ -502,3 +502,32 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+@pytest.mark.parametrize("cap,count", [(1, 3), (3, 5), (3, 2)])
+def test_delegate_cap_preserves_call_result_pairs_and_only_dispatches_allowed(cap, count):
+    agent = _make_agent("delegate_task", "web_search")
+    calls = [_mock_tool_call("delegate_task", json.dumps({"goal": f"task {i}"}), f"d{i}")
+             for i in range(count)]
+    calls.insert(1, _mock_tool_call("web_search", '{"query":"local fixture"}', "search"))
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("planning", "tool_calls", calls), _mock_response("done"),
+    ]
+    with (
+        patch("tools.delegate_tool._get_max_concurrent_children", return_value=cap),
+        patch.object(agent, "_dispatch_delegate_task", return_value='{"results": []}') as dispatch,
+        patch("model_tools.handle_function_call", return_value='{"ok": true}'),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("run independent tasks")
+    assert result["final_response"] == "done"
+    emitted = next(m for m in result["messages"] if m.get("tool_calls"))
+    assert [tc["id"] for tc in emitted["tool_calls"]] == [tc.id for tc in calls]
+    results = {m["tool_call_id"]: m for m in result["messages"] if m["role"] == "tool"}
+    assert set(results) == {tc.id for tc in calls}
+    assert dispatch.call_count == min(cap, count)
+    for i in range(cap, count):
+        error = json.loads(results[f"d{i}"]["content"])
+        assert error["error"] == "delegate_concurrency_limit"
+        assert "not executed" in error["message"]
+    assert emitted["content"] == "planning"

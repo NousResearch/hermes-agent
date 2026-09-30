@@ -15,7 +15,7 @@ from typing import Any
 from gateway.config import Platform
 
 _RULE_FIELDS = frozenset({"platform", "chat_id", "after_seconds", "profile",
-                          "transport_profile", "scope_id", "thread_id"})
+                          "transport_profile", "scope_id", "thread_id", "min_tokens"})
 _OPTIONAL_IDS = ("profile", "transport_profile", "scope_id", "thread_id")
 _NON_CHAT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook", "relay"})
 
@@ -57,6 +57,9 @@ def validate_post_reply_idle_policy(config: Mapping[str, Any]) -> list[dict[str,
         duration = rule.get("after_seconds")
         if type(duration) is not int or duration < 0:
             raise ValueError(f"{path}.after_seconds must be a nonnegative integer")
+        minimum = rule.get("min_tokens", 0)
+        if type(minimum) is not int or minimum < 0:
+            raise ValueError(f"{path}.min_tokens must be a nonnegative integer")
         for field in _OPTIONAL_IDS:
             if field in rule and not _stable_id(rule[field]):
                 raise ValueError(f"{path}.{field} must be a nonempty stable string ID")
@@ -68,8 +71,8 @@ def validate_post_reply_idle_policy(config: Mapping[str, Any]) -> list[dict[str,
     return rules
 
 
-def resolve_post_reply_idle_policy(config: Mapping[str, Any], source: Any, identity: Any) -> int | None:
-    """Resolve seconds for a pinned gateway source, or None when disabled/unmatched.
+def resolve_post_reply_idle_rule(config: Mapping[str, Any], source: Any, identity: Any) -> dict[str, Any] | None:
+    """Resolve the complete rule for a pinned source, or None when disabled/unmatched.
 
     Validates the whole policy on every call, including rules for other chats,
     so malformed entries cannot silently depend on which message arrived first.
@@ -87,7 +90,7 @@ def resolve_post_reply_idle_policy(config: Mapping[str, Any], source: Any, ident
     if parent and not thread:
         thread = getattr(source, "chat_id", None)
     chat = parent or getattr(source, "chat_id", None)
-    best: tuple[tuple[bool, ...], int] | None = None
+    best: tuple[tuple[bool, ...], dict[str, Any]] | None = None
     for rule in rules:
         if rule["platform"] != platform or rule["chat_id"] != chat:
             continue
@@ -98,5 +101,11 @@ def resolve_post_reply_idle_policy(config: Mapping[str, Any], source: Any, ident
             continue
         rank = tuple(field in rule for field, _ in selectors)
         if best is None or rank > best[0]:
-            best = (rank, rule["after_seconds"])
-    return best[1] or None if best is not None else None
+            best = (rank, rule)
+    return best[1] if best is not None and best[1]["after_seconds"] else None
+
+
+def resolve_post_reply_idle_policy(config: Mapping[str, Any], source: Any, identity: Any) -> int | None:
+    """Resolve the scheduling delay using the same complete rule as the worker."""
+    rule = resolve_post_reply_idle_rule(config, source, identity)
+    return rule["after_seconds"] if rule is not None else None

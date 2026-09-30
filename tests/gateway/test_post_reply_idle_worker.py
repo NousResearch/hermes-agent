@@ -89,6 +89,35 @@ async def test_disabled_default_does_not_open_session_db(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tokens, builds", [(149999, 0), (150000, 1), (150001, 1)])
+async def test_minimum_tokens_gates_agent_build_without_cache_eviction(monkeypatch, tokens, builds):
+    from gateway import run
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": "long " * 300}
+               for i in range(10)]
+    db = DB(history)
+    runner = Runner(db)
+    runner._restored_source = lambda entry: _source()
+    runner._resolve_session_agent_runtime = lambda **kw: ("test-model", {})
+    built, evicted = [], []
+    async def build(*args):
+        built.append(True)
+        return SimpleNamespace(_cached_system_prompt="pinned prompt", context_compressor=SimpleNamespace(
+            _compress_window=lambda messages: (len(messages), len(messages)))), db
+    runner._hmwa_hygiene_build_agent = build
+    runner._evict_cached_agent = evicted.append
+    runner._cleanup_agent_resources_off_loop = lambda *args, **kw: asyncio.sleep(0)
+    config = {"compression": {"post_reply_idle": {"channels": [
+        {"platform": "signal", "chat_id": "chat", "after_seconds": 300, "min_tokens": 150000}
+    ]}}}
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: config)
+    monkeypatch.setattr("agent.model_metadata.estimate_messages_tokens_rough", lambda messages: tokens)
+    monkeypatch.setattr(run, "_resolve_handoff_watch_scopes", lambda runner: asyncio.sleep(0, result=[(None, None)]))
+    await runner._process_due_post_reply_idle()
+    assert len(built) == builds
+    assert evicted == []
+
+
+@pytest.mark.asyncio
 async def test_tiny_due_job_is_claimed_and_delayed_without_model(monkeypatch):
     from gateway import run
     db = DB([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}])

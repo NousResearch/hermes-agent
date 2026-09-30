@@ -7,7 +7,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_identity import RoutingIdentity
-from gateway.post_reply_idle_policy import resolve_post_reply_idle_policy
+from gateway.post_reply_idle_policy import resolve_post_reply_idle_policy, resolve_post_reply_idle_rule
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_cli.config_effective import load_user_config_effective
 
@@ -93,6 +93,7 @@ def test_disabled_compression_and_non_gateway_sources_do_not_schedule():
     {"platform": "signal", "chat_id": "group-a", "after_seconds": -1},
     {"platform": "signal", "chat_id": "group-a", "after_seconds": 1.5},
     {"platform": "signal", "chat_id": "group-a", "after_seconds": "300"},
+    *[rule(min_tokens=value) for value in (-1, True, 1.5, "150000", None)],
     {"platform": "signal", "chat_id": "group-a", "after_seconds": 300, "chat_name": "unsafe"},
     {"platform": "signal", "chat_id": "group-a", "after_seconds": 300, "thread_id": ""},
     {"platform": "signal", "chat_id": "group-a", "after_seconds": 300, "profile": " "},
@@ -103,6 +104,14 @@ def test_disabled_compression_and_non_gateway_sources_do_not_schedule():
 def test_invalid_rule_is_rejected_even_when_it_does_not_match(bad):
     with pytest.raises(ValueError, match=r"post_reply_idle.channels\[0\]"):
         resolve(policy(bad), source(chat_id="other"))
+
+
+def test_minimum_tokens_follows_the_selected_rule_without_cross_channel_inheritance():
+    config = policy(rule(min_tokens=150000), rule(thread_id="small", min_tokens=10000))
+    assert resolve_post_reply_idle_rule(config, source(), identity())["min_tokens"] == 150000
+    assert resolve_post_reply_idle_rule(config, source(thread_id="small"), identity())["min_tokens"] == 10000
+    assert resolve_post_reply_idle_rule(config, source(chat_id="other"), identity()) is None
+    assert resolve_post_reply_idle_rule(policy(rule()), source(), identity()).get("min_tokens", 0) == 0
 
 
 def test_duplicate_rule_rejected_including_zero_duration():

@@ -149,7 +149,7 @@ class GatewayPostReplyIdleWorkerMixin:
 
         from agent.conversation_compression import CompressionCommitFence
         from gateway.run import _load_gateway_config
-        from gateway.post_reply_idle_policy import resolve_post_reply_idle_policy, validate_post_reply_idle_policy
+        from gateway.post_reply_idle_policy import resolve_post_reply_idle_rule, validate_post_reply_idle_policy
         from gateway.session_identity import canonical_identity, identity_of
         source = self._restored_source(entry)
         if source is None:
@@ -165,10 +165,15 @@ class GatewayPostReplyIdleWorkerMixin:
         if identity is None and not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             identity = canonical_identity(source, runner=self)
         try:
-            if resolve_post_reply_idle_policy(config, source, identity) is None:
+            rule = resolve_post_reply_idle_rule(config, source, identity)
+            if rule is None:
                 return _SKIP_SECONDS
         except ValueError as exc:
             logger.warning("Invalid post-reply idle policy; disabling it: %s", exc)
+            return _SKIP_SECONDS
+        from agent.model_metadata import estimate_messages_tokens_rough
+        approx_tokens = estimate_messages_tokens_rough(history)
+        if approx_tokens < rule.get("min_tokens", 0):
             return _SKIP_SECONDS
         model, runtime = self._resolve_session_agent_runtime(source=source, session_key=key, user_config=config)
         if runtime.get("api_mode") == "codex_app_server":
@@ -200,8 +205,6 @@ class GatewayPostReplyIdleWorkerMixin:
         # must never reuse the old cached system prompt or transcript.
         self._evict_cached_agent(key)
         fence = CompressionCommitFence(total_ceiling_seconds=_SUMMARY_TIMEOUT)
-        from agent.model_metadata import estimate_messages_tokens_rough
-        approx_tokens = estimate_messages_tokens_rough(history)
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(
             None, copy_context().run,

@@ -1065,7 +1065,10 @@ compression:
       - platform: signal
         chat_id: "<Signal group ID>"
         after_seconds: 300
+        min_tokens: 150000
 ```
+
+`min_tokens` is an optional lower bound on the rough token estimate of active conversation history (including tool messages, excluding the system prompt and tool schemas). Both the idle delay and this inclusive minimum must be met: `150000` skips a history estimated below 150k tokens. Omitted or `0` adds no token floor beyond the small-history/no-op guards. Below the floor, the worker makes no summary call, constructs no temporary agent, and does not evict the prompt cache. The most specific matching rule supplies both settings; fields are not inherited from a broader chat rule.
 
 A chat rule covers its threads and any separate per-user sessions in that chat. Optional `thread_id`, `scope_id` (e.g. a Slack workspace), `profile` (runtime profile), and `transport_profile` (receiving bot) can narrow a rule; a more specific match overrides a broad chat rule. Set `after_seconds: 0` in a matching specific rule to disable that subset. Run `hermes config check` to validate rule names and IDs before restarting the gateway; invalid rules are reported as errors and disable this optional feature without blocking chat. The legacy `idle_compact_after_seconds` still runs at **resume** and is unaffected by this setting.
 

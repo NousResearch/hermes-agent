@@ -1415,7 +1415,14 @@ class TestEnvWriteDenylist:
             "git_config_parameters", "ld_preload",
         ],
     )
-    def test_non_exec_near_misses_still_writable(self, allowed_key):
+    def test_non_exec_near_misses_still_writable(self, allowed_key, monkeypatch):
+        """The POSIX-case near-misses (lowercase ld_preload / git_config_parameters) are
+        only inert under POSIX case-sensitivity; pin that policy so the assertion holds on
+        any host — on Windows the (correct) case-insensitive policy denies them, which
+        test_windows_policy_denies_mixed_case_exec_names covers."""
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_IS_WINDOWS", False)
         save_env_value(allowed_key, "test-value-123")
         env = load_env()
         assert env[allowed_key] == "test-value-123"

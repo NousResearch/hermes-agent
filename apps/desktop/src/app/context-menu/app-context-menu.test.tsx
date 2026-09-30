@@ -397,9 +397,11 @@ describe('AppContextMenu', () => {
   it('lets editable targets inside a radix surface use the edit menu', async () => {
     installBridge()
     mountMenu()
+
     const host = attach(
-      `<div data-slot="context-menu-trigger"><textarea>draft text</textarea></div>`
+      `<div data-zone-body="test" data-slot="context-menu-trigger"><textarea>draft text</textarea></div>`
     )
+
     const textarea = host.querySelector('textarea')!
 
     fireEvent.contextMenu(textarea)

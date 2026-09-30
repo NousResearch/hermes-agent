@@ -82,4 +82,35 @@ describe('bundled Radio plugin', () => {
     expect(player().status.get()).toBe('paused')
     expect(document.querySelector('audio')).toBeNull()
   })
+
+  it('survives external pause without destroying the stream or blocking resume', async () => {
+    $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
+    discoverBundledPlugins()
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    vi.stubGlobal('AudioContext', undefined)
+    await setPluginEnabled('radio', true)
+    const radio = player()
+    await radio.play()
+    const media = document.querySelector('audio')!
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+    const originalSrc = media.getAttribute('src')
+
+    // External controller (Fluid Voice, Whisper Flow, media keys) pauses the element.
+    Object.defineProperty(media, 'paused', { value: true, configurable: true })
+    Object.defineProperty(media, 'ended', { value: false, configurable: true })
+    media.dispatchEvent(new Event('pause'))
+
+    // Status should reflect pause, but the element and its src must survive.
+    expect(radio.status.get()).toBe('paused')
+    expect(document.querySelector('audio')).toBe(media)
+    expect(media.getAttribute('src')).toBe(originalSrc)
+
+    // Resume is then possible.
+    Object.defineProperty(media, 'paused', { value: false })
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+  })
 })

@@ -1742,6 +1742,14 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 script can serve every profile behind a multiplexed gateway; the subprocess also runs with that
 profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
 
+`extra.kanban_task_id` identifies the board task owned by the execution firing the
+hook. It is empty for ordinary sessions, delegated children and in-process cron
+runs, even if their process inherited a worker environment. `extra.task_id` keeps
+its existing turn/session meaning. Use the board identity in a policy hook instead
+of inferring it from workspace paths. The hook subprocess still has its worker
+identity environment stripped; payload metadata does not grant worker authority.
+The same field is included by the shared outbound-webhook payload builder.
+
 **stdout — optional response:**
 
 ```jsonc

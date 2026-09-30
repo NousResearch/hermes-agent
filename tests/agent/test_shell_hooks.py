@@ -724,22 +724,50 @@ def test_unroutable_script_hook_names_the_remediation(tmp_path):
     assert "interpreter" in result["error"] and "bash" in result["error"]
 
 
-class TestToolHookIdentity:
-    def test_kanban_identity_is_payload_only(self, monkeypatch):
-        from agent.inline_tool_executors import tool_hook_ids
+@pytest.mark.platforms("posix")
+def test_real_tool_hooks_receive_only_the_owning_workers_identity(tmp_path, monkeypatch):
+    import shlex
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+    from agent.agent_runtime_helpers import _pre_tool_block_message
+    from agent.inline_tool_executors import emit_terminal_post_tool_call
+    from hermes_cli import plugins
 
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
-        agent = type("Agent", (), {"session_id": "session-1"})()
-
-        ids = tool_hook_ids(agent, "turn-task", "call-1")
-
-        assert ids["task_id"] == "turn-task"
-        assert ids["kanban_task_id"] == "t_worker"
-
-    def test_kanban_identity_is_empty_outside_worker(self, monkeypatch):
-        from agent.inline_tool_executors import tool_hook_ids
-
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-        ids = tool_hook_ids(object(), "turn-task", None)
-
-        assert ids["kanban_task_id"] == ""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_owner")
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    monkeypatch.setattr(plugins, "_plugin_manager", plugins.PluginManager())
+    capture = tmp_path / "captured.json"
+    script = tmp_path / "gate.py"
+    script.write_text(
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "payload=json.load(sys.stdin)\n"
+        "payload['worker_env']=os.environ.get('HERMES_KANBAN_TASK')\n"
+        f"Path({str(capture)!r}).write_text(json.dumps(payload))\n"
+        "print(json.dumps({'action':'block', 'message':'verified gate fired'}))\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    shell_hooks.register_from_config({"hooks": {
+        event: [{"matcher": "kanban_complete", "command": command}]
+        for event in ("pre_tool_call", "post_tool_call")
+    }}, accept_hooks=True)
+    agent = SimpleNamespace(session_id="session-id")
+    for scope, expected in ((nullcontext, "t_owner"), (delegated_child_context, ""),
+                            (non_dispatcher_owned_context, ""), (nullcontext, "t_owner")):
+        with scope():
+            message, _ = _pre_tool_block_message(agent, "kanban_complete", {}, "turn-id", "call-id", [])
+            assert message == "verified gate fired"
+            payload = json.loads(capture.read_text())
+            assert payload["extra"]["kanban_task_id"] == expected
+            assert payload["extra"]["task_id"] == "turn-id"
+            assert payload["session_id"] == "session-id"
+            assert payload["worker_env"] is None
+            capture.unlink()
+            emit_terminal_post_tool_call(agent, function_name="kanban_complete", function_args={},
+                                         result="{}", effective_task_id="turn-id", tool_call_id="call-id")
+            payload = json.loads(capture.read_text())
+            assert payload["hook_event_name"] == "post_tool_call"
+            assert payload["extra"]["kanban_task_id"] == expected

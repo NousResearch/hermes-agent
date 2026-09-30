@@ -2915,27 +2915,32 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _is_bot_mentioned(
         self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None) -> bool:
-        """True if the bot is mentioned. A non-empty ``m.mentions.user_ids`` (MSC3952) decides
-        on its own. Otherwise the body must contain the bot's user ID or its localpart as a
-        complete token, or formatted_body must contain a ``matrix.to`` permalink to the bot."""
-        if mention_user_ids:
-            return bool(self._user_id and self._user_id in mention_user_ids)
-        if not body and not formatted_body:
-            return False
-        if self._user_id:
-            full_id = re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END
-            if re.search(full_id, body):
-                return True
-        localpart = self._user_localpart()
-        if localpart:
-            local_mention = (_MATRIX_MENTION_LOCALPART_START + r"@?" + re.escape(localpart)
-                             + _MATRIX_MENTION_LOCALPART_END)
-            if re.search(local_mention, body, re.IGNORECASE):
-                return True
-        if not formatted_body or not self._user_id:
+        """True if the bot's user ID is in ``m.mentions.user_ids`` (MSC3952), or the body
+        contains the bot's user ID or ``@localpart`` as a complete token. The bare localpart and
+        a ``matrix.to`` permalink in formatted_body count only when ``user_ids`` is empty or
+        absent, because a bare name next to another user's pill is usually addressed to that
+        user. The explicit body forms still count against a non-empty list because Element adds
+        the replied-to sender to ``user_ids`` on every reply."""
+        if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
+            return True
+        if self._body_mentions_bot(body, bare_localpart=not mention_user_ids):
+            return True
+        if mention_user_ids or not formatted_body or not self._user_id:
             return False
         pill = re.escape(f"matrix.to/#/{self._user_id}") + _MATRIX_MENTION_FULL_ID_END
         return bool(re.search(pill, formatted_body))
+
+    def _body_mentions_bot(self, body: str, *, bare_localpart: bool) -> bool:
+        if not body:
+            return False
+        if self._user_id and re.search(re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END, body):
+            return True
+        localpart = self._user_localpart()
+        if not localpart:
+            return False
+        local_mention = (_MATRIX_MENTION_LOCALPART_START + (r"@?" if bare_localpart else r"@")
+                         + re.escape(localpart) + _MATRIX_MENTION_LOCALPART_END)
+        return bool(re.search(local_mention, body, re.IGNORECASE))
 
     def _voice_may_park(self, room_id: str, body: str, content: dict, relates_to: dict,
                         mention_claimed: bool) -> bool:

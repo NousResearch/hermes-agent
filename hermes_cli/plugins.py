@@ -110,6 +110,8 @@ VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # render_cli_transcript_directive: return a Rich renderable to claim a parsed CLI directive.
+    "render_cli_transcript_directive",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -206,7 +208,10 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "render_cli_transcript_directive",
+    "transform_api_error_classification",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

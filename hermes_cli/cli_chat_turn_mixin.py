@@ -665,7 +665,7 @@ class CLIChatTurnMixin:
         """Response box (close TTS-drawn box / post-stream transform / Rich Panel), then billing CTA."""
         from cli import (
             ChatConsole, _ACCENT, _RST, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
-            _render_final_assistant_content,
+            _render_final_assistant_content, _resolve_cli_transcript_directives,
         )
         if response and not (turn.result and turn.result.get("response_previewed", False)):
             try:
@@ -698,14 +698,34 @@ class CLIChatTurnMixin:
                 # hook shows a suffix for append-only changes, else the full replacement.
                 _post_stream_text = _post_stream_transform_output(response, turn.result)
                 if _post_stream_text.strip():
-                    _cprint(_post_stream_text)
+                    _parts = _resolve_cli_transcript_directives(_post_stream_text)
+                    if any(is_renderable for is_renderable, _value in _parts):
+                        _console = ChatConsole()
+                        for is_renderable, value in _parts:
+                            if is_renderable:
+                                _console.print(value)
+                            elif value.strip():
+                                _cprint(value)
+                    else:
+                        _cprint(_post_stream_text)
             else:
-                ChatConsole().print(Panel(
-                    _render_final_assistant_content(response, mode=self.final_response_markdown),
-                    title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
-                    style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
-                    width=self._scrollback_box_width(),
-                ))
+                _parts = _resolve_cli_transcript_directives(response)
+                _has_renderable = any(is_renderable for is_renderable, _value in _parts)
+                _console = ChatConsole()
+                if not _has_renderable:
+                    _parts = [(False, response)]
+                for is_renderable, value in _parts:
+                    if is_renderable:
+                        _console.print(value)
+                    elif value.strip():
+                        _console.print(Panel(
+                            _render_final_assistant_content(
+                                value.strip("\r\n"), mode=self.final_response_markdown
+                            ),
+                            title=f"[{_resp_color} bold]{label}[/]", title_align="left",
+                            border_style=_resp_color, style=_resp_text, box=rich_box.HORIZONTALS,
+                            padding=(1, 0), width=self._scrollback_box_width(),
+                        ))
 
             # Billing CTA pins the single action (Nous → /topup, others → billing page) so it
             # stays visible instead of scrolling away inside the response prose.

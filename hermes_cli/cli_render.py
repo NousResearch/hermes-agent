@@ -431,6 +431,99 @@ def _terminal_width_for_streaming() -> int:
     return max(20, _terminal_columns() - len(_STREAM_PAD) - 2)
 
 
+_CLI_TRANSCRIPT_DIRECTIVE_RE = re.compile(
+    r"^::(?P<name>[a-z][a-z0-9-]{0,63})(?:\{(?P<attrs>[^{}\r\n]{0,1024})\})?$"
+)
+_CLI_TRANSCRIPT_DIRECTIVE_ATTR_RE = re.compile(
+    r"""(?P<key>[A-Za-z][A-Za-z0-9_-]{0,63})=(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)')"""
+)
+_CLI_TRANSCRIPT_PARAGRAPH_BREAK_RE = re.compile(r"((?:\r?\n[ \t]*){2,})")
+
+
+def _parse_cli_transcript_directive(text: str) -> tuple[str, dict[str, str], str] | None:
+    """Parse one bounded, whole-paragraph ``::name{key="value"}`` directive."""
+    source = str(text or "").strip()
+    if not source.startswith("::") or len(source) > 1200 or "\n" in source or "\r" in source:
+        return None
+
+    match = _CLI_TRANSCRIPT_DIRECTIVE_RE.fullmatch(source)
+    if match is None:
+        return None
+
+    attrs: dict[str, str] = {}
+    body = match.group("attrs")
+    if body:
+        cursor = 0
+        while cursor < len(body):
+            whitespace = re.match(r"[ \t]*", body[cursor:])
+            cursor += whitespace.end() if whitespace is not None else 0
+            if cursor == len(body):
+                break
+            pair = _CLI_TRANSCRIPT_DIRECTIVE_ATTR_RE.match(body, cursor)
+            if pair is None:
+                return None
+            value = pair.group("double")
+            if value is None:
+                value = pair.group("single") or ""
+            attrs[pair.group("key").lower()] = value
+            cursor = pair.end()
+            if cursor < len(body) and body[cursor] not in " \t":
+                return None
+
+    return match.group("name"), attrs, source
+
+
+def _resolve_cli_transcript_directives(text: str) -> list[tuple[bool, Any]]:
+    """Resolve claimed whole-paragraph directives into Rich renderables.
+
+    Returns ordered ``(is_renderable, value)`` parts. Invalid and unclaimed
+    directives remain in prose byte-for-byte.
+    """
+    from hermes_cli import lifecycle
+    from rich.protocol import is_renderable
+
+    parts: list[tuple[bool, Any]] = []
+
+    def append_prose(value: str) -> None:
+        if not value:
+            return
+        if parts and not parts[-1][0]:
+            parts[-1] = (False, parts[-1][1] + value)
+        else:
+            parts.append((False, value))
+
+    paragraphs = _CLI_TRANSCRIPT_PARAGRAPH_BREAK_RE.split(text or "")
+    for index, paragraph in enumerate(paragraphs):
+        if index % 2:
+            append_prose(paragraph)
+            continue
+
+        directive = _parse_cli_transcript_directive(paragraph)
+        if directive is None:
+            append_prose(paragraph)
+            continue
+
+        name, attrs, source = directive
+        try:
+            results = lifecycle.invoke_hook(
+                "render_cli_transcript_directive",
+                name=name,
+                attrs=attrs,
+                source=source,
+                platform="cli",
+            )
+        except Exception:
+            results = []
+
+        renderable = next((result for result in results if is_renderable(result)), None)
+        if renderable is None:
+            append_prose(paragraph)
+        else:
+            parts.append((True, renderable))
+
+    return parts or [(False, text or "")]
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns, realign_markdown_tables

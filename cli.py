@@ -127,6 +127,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _record_output_history,
     _record_output_history_entry,
     _release_paints,
+    _resolve_cli_transcript_directives,
     _render_final_assistant_content,
     _rich_text_from_ansi,
     _set_chrome_floor,

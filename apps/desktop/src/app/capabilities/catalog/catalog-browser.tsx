@@ -46,7 +46,11 @@ interface CatalogBrowserProps {
   isInstalled: (entry: CatalogEntry) => boolean
   onInstall: (entry: CatalogEntry) => void
   isInstalling?: (entry: CatalogEntry) => boolean
+  isInstallDisabled?: (entry: CatalogEntry) => boolean
   installedEntries?: CatalogEntry[]
+  additionalEntries?: CatalogEntry[]
+  sourceLabels?: Record<string, string>
+  sourceAction?: ReactNode
   matchInstalled?: (entry: CatalogEntry) => CatalogEntry | undefined
   actions?: ReactNode
   headerActions?: ReactNode
@@ -111,7 +115,11 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   isInstalled,
   onInstall,
   isInstalling,
+  isInstallDisabled,
   installedEntries,
+  additionalEntries,
+  sourceLabels,
+  sourceAction,
   matchInstalled,
   actions,
   headerActions,
@@ -163,7 +171,12 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
+  const entries = mergeInstalled(
+    [...(data ?? []), ...(additionalEntries ?? [])],
+    installedEntries ?? [],
+    matchInstalled
+  )
+
   const filtered = sortCatalog(filterCatalog(entries, facets, deferredQuery, isInstalled), sort, kind)
 
   const discover =
@@ -206,7 +219,12 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
     return (
       <CatalogInstallSwitch
-        disabled={Boolean(installedPending) || installed || (kind === 'skills' && !entry.installIdentifier)}
+        disabled={
+          Boolean(installedPending) ||
+          installed ||
+          Boolean(isInstallDisabled?.(entry)) ||
+          (kind === 'skills' && !entry.installIdentifier)
+        }
         installed={installed}
         installing={isInstalling?.(entry) ?? false}
         name={entry.name}
@@ -290,7 +308,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           resultCount={filtered.length}
           sidebarActions={actions && <div className="flex flex-wrap items-center gap-1.5">{actions}</div>}
           sortControl={sortControl}
-          sources={catalogSources(entries)}
+          sourceAction={sourceAction}
+          sourceLabels={sourceLabels}
+          sources={[...new Set([...catalogSources(entries), ...Object.keys(sourceLabels ?? {})])]}
           tags={catalogTags(entries, facets.tags, TAG_LIMIT)}
         />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-catalog-results>

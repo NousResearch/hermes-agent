@@ -57,7 +57,9 @@ export function CatalogListRow({
           <CatalogMetadata entry={entry} limit={2} onCategory={onCategory} onSearch={onSearch} onTag={onTag} />
         </span>
         <span className="mt-1.5 flex items-center gap-2 text-[0.65rem] text-(--ui-text-quaternary)">
-          <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {entry.author || entry.sourceLabel || catalogLabel(entry.source)}
+          </span>
           <CatalogHeaderMeta entry={entry} />
         </span>
       </span>

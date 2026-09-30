@@ -1668,6 +1668,7 @@ def _plugin_rows() -> list[dict]:
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
         portable = pc._is_portable_plugin_dir(_dir)
+        meta = (ref_pins.get(key) or {}).get("marketplace")
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
             "source": source, "status": status, "portable": portable,
@@ -1677,6 +1678,9 @@ def _plugin_rows() -> list[dict]:
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
             **cat.catalog_row_fields(_dir, pins, versions),
+            **({"marketplace_id": meta.get("id"), "marketplace_name": meta.get("name"),
+                "marketplace_plugin_name": meta.get("plugin_name"), "marketplace_tree_sha": meta.get("tree_sha")}
+               if isinstance(meta, dict) else {}),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 
@@ -1744,15 +1748,81 @@ def _plugins_install(rid, params):
     # enforced, no bypass) — same contract as the dashboard endpoint.
     ident = (params.get("identifier") or params.get("repo") or "").strip()
     catalog_name = str(params.get("catalog_name") or "").strip()
-    if not ident and not catalog_name:
-        return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
+    marketplace_id = str(params.get("marketplace_id") or "").strip()
+    marketplace_name = str(params.get("marketplace_plugin_name") or "").strip()
+    if not ident and not catalog_name and not marketplace_id:
+        return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', 'catalog_name', or 'marketplace_id'")
+    if marketplace_id and (not marketplace_name or ident or catalog_name or params.get("ref")):
+        return _err(rid, 4019, "marketplace install requires only 'marketplace_id' and 'marketplace_plugin_name'")
     _ensure_plugin_activation_listener()
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
-        ref=str(params.get("ref") or "").strip() or None)
+        ref=str(params.get("ref") or "").strip() or None,
+        marketplace_id=marketplace_id or None, marketplace_plugin_name=marketplace_name or None)
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "install failed")
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
+
+
+def _plugins_update_marketplace(rid, params, target, pc, cat):
+    """Explicit re-pin from a registered source; refuse widened surfaces until SHA-bound consent."""
+    import tempfile
+    market = _tools_mod("hermes_cli.plugin_marketplaces")
+    name = target.name
+    record = pc._read_install_metadata().get(name, {}) if target.is_dir() else {}
+    owned = record.get("marketplace") if isinstance(record, dict) else None
+    if not isinstance(owned, dict) or owned.get("plugin_name") != name:
+        return _err(rid, 4020, f"'{name}' is not a catalog or marketplace install")
+    entry = market.get_marketplace_entry(owned["id"], name, force=True)
+    if not entry or not entry["compatible"]:
+        return _err(rid, 4020, "Marketplace entry is unavailable or incompatible")
+    if record.get("source") != pc._canonical_source(entry["repo"], entry["subdir"]):
+        return _err(rid, 4020, "Installed source does not match this marketplace entry")
+    if record.get("revision") == entry["sha"] and owned.get("tree_sha") == entry["tree_sha"]:
+        return _ok(rid, {"ok": True, "unchanged": True, "sha": entry["sha"], "name": name})
+    try:
+        local, modified = cat._local_changes(target)
+        if modified:
+            raise pc.PluginOperationError("Tracked plugin files were edited locally; back them up before updating.")
+        with tempfile.TemporaryDirectory(prefix="marketplace-preview-") as temp:
+            root = Path(temp) / "repo"
+            git_url, subdir = pc._resolve_git_url(f"{entry['repo']}#{entry['subdir']}")
+            revision = pc._clone_plugin_repo(root, git_url, entry["sha"], subdir)
+            staged = pc._resolve_subdir_within(root, subdir)
+            if (revision != entry["sha"] or pc._read_manifest_for_install(staged).get("name") != name
+                    or market._git(root, "rev-parse", f"HEAD:{subdir}") != entry["tree_sha"]):
+                raise pc.PluginOperationError("Marketplace entry changed during update preview")
+            delta = cat.surface_delta(cat.plugin_surface(pc._read_manifest(target), target),
+                                      cat.plugin_surface(pc._read_manifest_for_install(staged), staged))
+        if delta and (not params.get("accept_capabilities") or params.get("ref") != entry["sha"]):
+            return _ok(rid, {"ok": False, "consent_required": True, "name": name, "sha": entry["sha"],
+                             "delta_lines": cat.surface_delta_lines(delta)})
+        def carry(manifest, staged):
+            if cat.surface_delta(cat.plugin_surface(pc._read_manifest(target), target),
+                                 cat.plugin_surface(manifest, staged)) != delta:
+                raise pc.PluginOperationError("Marketplace capabilities changed during update; refresh and review again.")
+            return cat._carry_user_files(target, staged, local)
+
+        # No .git in subdirectory installs: back up the old tree before replacement,
+        # since tracked edits cannot be classified from user-owned files.
+        backup = None
+        if local is None:
+            import shutil
+            backup_root = target.parent.parent / "plugins-backup"
+            backup_root.mkdir(parents=True, exist_ok=True)
+            backup = Path(tempfile.mkdtemp(prefix=f"{name}-{str(record.get('revision') or 'old')[:8]}-", dir=backup_root))
+            shutil.copytree(target, backup / "plugin", symlinks=True)
+        # ponytail: install the exact previewed entry, not a second moving source lookup.
+        from hermes_cli.plugins_cmd_catalog import raise_if_removed
+        raise_if_removed(f"{entry['repo']}#{entry['subdir']}", entry["repo"], name)
+        pc._install_plugin_core(f"{entry['repo']}#{entry['subdir']}", force=True,
+                                ref=entry["sha"], marketplace=entry, scan_force=False, before_swap=carry)
+        _ensure_plugin_activation_listener()
+        _tools_mod("hermes_cli.plugins_activation").activate_plugin_now(name)
+        return _ok(rid, {"ok": True, "unchanged": False, "sha": entry["sha"], "name": name,
+                         "warnings": [f"Previous plugin files backed up to {backup / 'plugin'}"] if backup else []})
+    except pc.PluginOperationError as exc:
+        return _err(rid, 4021, str(exc))
 
 
 def _plugins_update(rid, params):
@@ -1763,11 +1833,13 @@ def _plugins_update(rid, params):
     name = (params.get("name") or "").strip()
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
+    if name in (".", "..") or "/" in name or "\\" in name:
+        return _err(rid, 4019, "plugins.update requires a plugin name, not a path")
     pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
     target = pc._plugins_dir() / name
     sidecar = cat.catalog_install_record(target) if target.is_dir() else None
     if not sidecar:
-        return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
+        return _plugins_update_marketplace(rid, params, target, pc, cat)
     try:
         result = cat.repin_catalog_plugin(
             target, sidecar, consent_cb=(lambda _delta: True) if params.get("accept_capabilities") else None)
@@ -1821,8 +1893,26 @@ def _plugins_onboarding(rid, params):
     return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
 
 
+def _plugins_marketplaces(rid, params):
+    """Adding a source only registers it; installation is a separate action."""
+    market = _tools_mod("hermes_cli.plugin_marketplaces")
+    action = params.get("action")
+    if action == "marketplace_add":
+        source = market.add_marketplace(str(params.get("url") or "").strip())
+        return _ok(rid, {"ok": True, "marketplace": market.public_marketplace(source)})
+    if action == "marketplace_remove":
+        source_id = str(params.get("source_id") or "").strip()
+        if not source_id:
+            return _err(rid, 4019, "marketplace_remove requires 'source_id'")
+        return _ok(rid, {"ok": True, "removed": market.remove_marketplace(source_id)})
+    return _ok(rid, {"marketplaces": [market.public_marketplace(source)
+                                      for source in market.list_marketplaces(force=action == "marketplace_refresh")]})
+
+
 _PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
+                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings,
+                    "marketplaces": _plugins_marketplaces, "marketplace_add": _plugins_marketplaces,
+                    "marketplace_refresh": _plugins_marketplaces, "marketplace_remove": _plugins_marketplaces}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)

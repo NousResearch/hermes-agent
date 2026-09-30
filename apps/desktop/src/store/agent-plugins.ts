@@ -45,6 +45,10 @@ export interface AgentPluginRow {
   /** Curated-catalog provenance (from the install sidecar), when present. */
   catalog_name?: string
   catalog_tier?: string
+  marketplace_id?: string
+  marketplace_name?: string
+  marketplace_plugin_name?: string
+  marketplace_available?: boolean
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */
   catalog_sha?: string
@@ -279,6 +283,8 @@ export async function installAgentPlugin(
     /** Curated-catalog install: the backend resolves repo + pinned SHA from
      *  its own plugin-catalog and records provenance in the sidecar. */
     catalogName?: string
+    marketplaceId?: string
+    marketplacePluginName?: string
     /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
     ref?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
@@ -308,6 +314,9 @@ export async function installAgentPlugin(
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
           ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.marketplaceId && opts.marketplacePluginName
+            ? { marketplace_id: opts.marketplaceId, marketplace_plugin_name: opts.marketplacePluginName }
+            : {}),
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
@@ -348,7 +357,7 @@ export async function installAgentPlugin(
  *  when already at pin, `consent` when the new pin widens the plugin — the
  *  backend changed nothing and waits for `acceptCapabilities`. */
 export type AgentPluginUpdateOutcome =
-  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
+  { kind: 'applied'; warnings?: string[] } | { kind: 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
 
 /** Re-pin a catalog-installed plugin to the current catalog SHA (backend
  *  `plugins.manage update`; catalog installs only). Refreshes the list on
@@ -360,7 +369,8 @@ export async function updateAgentPlugin(
   name: string,
   failMessage: string,
   profile?: string | null,
-  acceptCapabilities = false
+  acceptCapabilities = false,
+  consentSha?: string
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
 
@@ -371,13 +381,15 @@ export async function updateAgentPlugin(
       consent_required?: boolean
       sha?: string
       delta_lines?: string[]
+      warnings?: string[]
     }>(
       'plugins.manage',
-      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
+      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}),
+        ...(consentSha ? { ref: consentSha } : {}) }, profile)
     )
 
     if (result?.consent_required) {
-      return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+      return { kind: 'consent', sha: result.sha ?? '', deltaLines: result.delta_lines ?? [] }
     }
 
     if (!result?.ok) {
@@ -386,7 +398,7 @@ export async function updateAgentPlugin(
 
     await loadAgentPlugins(request, profile)
 
-    return { kind: result.unchanged ? 'unchanged' : 'applied' }
+    return result.unchanged ? { kind: 'unchanged' } : { kind: 'applied', warnings: result.warnings }
   } catch (e) {
     notifyError(e, failMessage)
 

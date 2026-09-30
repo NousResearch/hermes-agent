@@ -4815,6 +4815,54 @@
             "default": null,
             "title": "Pinned Sha"
           },
+          "marketplace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace Id"
+          },
+          "marketplace_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace Name"
+          },
+          "marketplace_plugin_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace Plugin Name"
+          },
+          "marketplace_tree_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace Tree Sha"
+          },
           "settings_schema": {
             "anyOf": [
               {
@@ -22004,7 +22052,11 @@
           "update",
           "remove",
           "settings",
-          "onboarding"
+          "onboarding",
+          "marketplaces",
+          "marketplace_add",
+          "marketplace_refresh",
+          "marketplace_remove"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -22123,6 +22175,54 @@
             ],
             "default": null,
             "title": "Catalog Name"
+          },
+          "marketplace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace Id"
+          },
+          "marketplace_plugin_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace Plugin Name"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Id"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Url"
           },
           "force": {
             "anyOf": [
@@ -22508,6 +22608,47 @@
             ],
             "default": null,
             "title": "Onboarding"
+          },
+          "marketplace": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplace"
+          },
+          "marketplaces": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marketplaces"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Removed"
           }
         },
         "title": "PluginsManageResult",

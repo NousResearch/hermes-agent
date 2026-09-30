@@ -19,6 +19,8 @@ export interface FacetRow {
 
 interface CatalogFiltersProps {
   sources: string[]
+  sourceLabels?: Record<string, string>
+  sourceAction?: ReactNode
   categories: ReadonlyArray<readonly [string, { label: string; count: number }]>
   tags: FacetRow[]
   facets: CatalogFacets
@@ -56,6 +58,7 @@ function Facet({
   label,
   all,
   beforeRows,
+  action,
   rows,
   active,
   onSelect
@@ -63,6 +66,7 @@ function Facet({
   label: string
   all?: string
   beforeRows?: ReactNode
+  action?: ReactNode
   rows: FacetRow[]
   active: string[]
   onSelect: (value: string | null) => void
@@ -73,7 +77,7 @@ function Facet({
 
   return (
     <>
-      <SidebarDateDivider label={label} />
+      <SidebarDateDivider action={action} label={label} />
       {all && <FacetItem active={!active.length} onClick={() => onSelect(null)} row={{ value: 'all', label: all }} />}
       {beforeRows}
       {rows.map(row => (
@@ -85,6 +89,8 @@ function Facet({
 
 export function CatalogFilters({
   sources,
+  sourceLabels,
+  sourceAction,
   categories,
   tags,
   facets,
@@ -115,6 +121,7 @@ export function CatalogFilters({
 
       <div className="pb-2">{sortControl}</div>
       <Facet
+        action={sourceAction}
         active={facets.sources}
         all={c.allSources}
         beforeRows={
@@ -126,7 +133,7 @@ export function CatalogFilters({
         }
         label={c.source}
         onSelect={onSource}
-        rows={sources.map(value => ({ value, label: catalogLabel(value) }))}
+        rows={sources.map(value => ({ value, label: sourceLabels?.[value] ?? catalogLabel(value) }))}
       />
       <Facet
         active={facets.categories}

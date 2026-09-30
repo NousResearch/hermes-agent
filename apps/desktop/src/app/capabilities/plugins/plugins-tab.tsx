@@ -6,6 +6,15 @@ import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
@@ -14,7 +23,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { FolderOpen, Loader2, Monitor, Package, Plus, RefreshCw, Trash2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
@@ -26,6 +35,7 @@ import {
   type AgentPluginServerState,
   type AgentPluginUpdateOutcome,
   type GatewayRequest,
+  installAgentPlugin,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
@@ -37,6 +47,17 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import {
+  $pluginMarketplaceBusy,
+  $pluginMarketplaces,
+  $pluginMarketplaceScope,
+  $pluginMarketplacesError,
+  addPluginMarketplace,
+  loadPluginMarketplaces,
+  marketplaceScopeKey,
+  pluginMarketplaceGeneration,
+  removePluginMarketplace
+} from '@/store/plugin-marketplaces'
 import { $connection } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
@@ -145,6 +166,12 @@ function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   const { t } = useI18n()
   const p = t.skills.plugins
 
+  if (pkg.agent?.marketplace_id) {
+    return <Tip label={`Custom marketplace (${pkg.agent.marketplace_name ?? pkg.agent.marketplace_id}); not reviewed by Hermes`}>
+      <span><Pill>Unreviewed</Pill></span>
+    </Tip>
+  }
+
   if (pkg.agent?.catalog_name) {
     return (
       <Tip label={p.catalogProvenance(pkg.agent.installed_sha?.slice(0, 8) ?? '')}>
@@ -203,6 +230,7 @@ function PackageRow({
   scopeLabel,
   scopeSelector,
   busy,
+  marketplaceUpdatable,
   request,
   onAgentToggle,
   onAgentUpdate,
@@ -215,6 +243,7 @@ function PackageRow({
   scopeLabel: string
   scopeSelector?: ReactNode
   busy: boolean
+  marketplaceUpdatable?: boolean
   request: GatewayRequest
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
@@ -431,7 +460,7 @@ function PackageRow({
         <HalfCell label={p.halfAgentIn(scopeLabel)} labelContent={scopeSelector}>
           {agent ? (
             <>
-              {agent.update_available && (
+              {(agent.update_available || marketplaceUpdatable) && (
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
                   disabled={busy}
@@ -439,7 +468,7 @@ function PackageRow({
                   size="xs"
                   variant="outline"
                 >
-                  {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
+                  {marketplaceUpdatable ? 'Check for update' : p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
                 </Button>
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
@@ -565,13 +594,72 @@ export const PluginsTab = memo(function PluginsTab({
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
+  const savedMarketplaces = useStore($pluginMarketplaces)
+  const marketplaceScope = useStore($pluginMarketplaceScope)
+  const marketplaceBusy = useStore($pluginMarketplaceBusy)
+  const marketplaceError = useStore($pluginMarketplacesError)
+  const connectionId = useStore($connection)?.connectionId ?? null
 
   const scope = profileParam(profile)
+  const scopeKey = marketplaceScopeKey(connectionId, scope)
+
+  const marketplaces = useMemo(
+    () => (marketplaceScope === scopeKey ? savedMarketplaces : []),
+    [marketplaceScope, savedMarketplaces, scopeKey]
+  )
+
+  const [adding, setAdding] = useState(false)
+  const [managingSources, setManagingSources] = useState(false)
+  const [marketplaceUrl, setMarketplaceUrl] = useState('')
+  const [pendingPrivateInstall, setPendingPrivateInstall] = useState<CatalogEntry | null>(null)
+  const [installingPrivate, setInstallingPrivate] = useState(false)
+  const [privateInstallError, setPrivateInstallError] = useState<string | null>(null)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
     void loadAgentPlugins(requestGateway, scope)
-  }, [requestGateway, scope])
+    void loadPluginMarketplaces(requestGateway, scope, connectionId)
+  }, [requestGateway, scope, connectionId])
+
+  useEffect(() => {
+    setAdding(false)
+    setManagingSources(false)
+    setPendingPrivateInstall(null)
+    setInstallingPrivate(false)
+    setPrivateInstallError(null)
+    setMarketplaceUrl('')
+  }, [scopeKey])
+
+  const privateEntries = useMemo(
+    () =>
+      marketplaces.flatMap(marketplace =>
+        parseCatalog(
+          'plugins',
+          marketplace.entries.map(entry => ({
+            name: entry.display_name || entry.name,
+            identifier: entry.name,
+            description: entry.description,
+            version: entry.version,
+            maintainer: entry.maintainer,
+            category: 'general',
+            source: `marketplace:${marketplace.id}`
+          }))
+        ).map(entry => ({
+          ...entry,
+          sourceLabel: `${marketplace.name} (unreviewed)`,
+          marketplaceId: marketplace.id,
+          marketplacePluginName: entry.identifier,
+          marketplaceAvailable: marketplace.available && !marketplace.stale,
+          marketplaceCompatible: marketplace.entries.find(item => item.name === entry.identifier)?.compatible ?? false
+        }))
+      ),
+    [marketplaces]
+  )
+
+  const sourceLabels = useMemo(
+    () => Object.fromEntries(marketplaces.map(marketplace => [`marketplace:${marketplace.id}`, `${marketplace.name} · Unreviewed`])),
+    [marketplaces]
+  )
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -618,12 +706,15 @@ export const PluginsTab = memo(function PluginsTab({
           identifier: pkg.key,
           description: pkg.description,
           category: pkg.kind === 'desktop' ? 'desktop' : 'general',
+          source: pkg.agent?.marketplace_id ? `marketplace:${pkg.agent.marketplace_id}` : undefined,
           tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
           repo: pkg.desktop?.packageOrigin?.repo ?? '',
           sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
           version: pkg.agent?.version ?? ''
         }))
-      ).map(entry => ({ ...entry, id: `installed:${entry.identifier}` })),
+      ).map(entry => ({ ...entry, id: `installed:${entry.identifier}`,
+        marketplaceId: packages.find(pkg => pkg.key === entry.identifier)?.agent?.marketplace_id,
+        sourceLabel: packages.find(pkg => pkg.key === entry.identifier)?.agent?.marketplace_id ? 'Custom marketplace' : entry.sourceLabel })),
     [packages]
   )
 
@@ -645,8 +736,18 @@ export const PluginsTab = memo(function PluginsTab({
   }, [installedEntries, packageById])
 
   const matchInstalled = useCallback(
-    (entry: CatalogEntry) => installedByCatalogName.get(entry.name),
-    [installedByCatalogName]
+    (entry: CatalogEntry) =>
+      entry.marketplaceId
+        ? installedEntries.find(installed => {
+            const row = packageById.get(installed.id)?.agent
+
+            return (
+              row?.marketplace_id === entry.marketplaceId &&
+              row?.marketplace_plugin_name === entry.marketplacePluginName
+            )
+          })
+        : installedByCatalogName.get(entry.name),
+    [installedByCatalogName, installedEntries, packageById]
   )
 
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)
@@ -734,81 +835,282 @@ export const PluginsTab = memo(function PluginsTab({
       </CatalogAlert>
     ) : null
 
+  const addMarketplace = async () => {
+    if (!marketplaceUrl.trim()) {
+      return
+    }
+
+    const started = pluginMarketplaceGeneration()
+
+    if (
+      (await addPluginMarketplace(requestGateway, marketplaceUrl.trim(), scope, connectionId)) &&
+      $pluginMarketplaceScope.get() === scopeKey && pluginMarketplaceGeneration() <= started + 1
+    ) {
+      setAdding(false)
+      setMarketplaceUrl('')
+      notify({ kind: 'success', message: 'Marketplace added' })
+    }
+  }
+
+  const installPrivate = async () => {
+    const entry = pendingPrivateInstall
+
+    if (
+      !entry?.marketplaceId ||
+      !entry.marketplacePluginName ||
+      !entry.marketplaceAvailable ||
+      !entry.marketplaceCompatible
+    ) {
+      return
+    }
+
+    const started = pluginMarketplaceGeneration()
+    setInstallingPrivate(true)
+    setPrivateInstallError(null)
+
+    const result = await installAgentPlugin(requestGateway, {
+      identifier: '',
+      marketplaceId: entry.marketplaceId,
+      marketplacePluginName: entry.marketplacePluginName,
+      profile: scope
+    })
+
+    if ($pluginMarketplaceScope.get() !== scopeKey || pluginMarketplaceGeneration() !== started) {
+      return
+    }
+
+    setInstallingPrivate(false)
+
+    if (!result.ok) {
+      setPrivateInstallError(result.error || `Could not install ${entry.name}`)
+
+      return
+    }
+
+    await rescanAll(requestGateway, scope)
+
+    if ($pluginMarketplaceScope.get() === scopeKey && pluginMarketplaceGeneration() === started) {
+      setPendingPrivateInstall(null)
+      notify({ kind: 'success', message: `${entry.name} installed` })
+    }
+  }
+
   return (
-    <CatalogBrowser
-      headerActions={<PluginActions profile={profile} />}
-      installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
-      isInstalled={isInstalled}
-      kind="plugins"
-      matchInstalled={matchInstalled}
-      notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
-      onQueryChange={onQueryChange}
-      query={query}
-      renderInstalledAction={entry => {
-        const pkg = packageById.get(entry.id)
-
-        return pkg ? packageSwitch(pkg) : null
-      }}
-      renderInstalledDetail={entry => {
-        const pkg = packageById.get(entry.id)
-
-        if (!pkg) {
-          return null
+    <>
+      <CatalogBrowser
+        additionalEntries={privateEntries}
+        headerActions={<PluginActions profile={profile} />}
+        installedEntries={installedEntries}
+        installedPending={status !== 'ready'}
+        isInstallDisabled={entry =>
+          Boolean(entry.marketplaceId && (!entry.marketplaceAvailable || !entry.marketplaceCompatible))
         }
+        isInstalled={isInstalled}
+        kind="plugins"
+        matchInstalled={matchInstalled}
+        notice={notice}
+        onInstall={entry => {
+          if (entry.marketplaceId) {
+            setPrivateInstallError(null)
+            setPendingPrivateInstall(entry)
+          } else {
+            openCatalogPluginInstall(entry, scope)
+          }
+        }}
+        onQueryChange={onQueryChange}
+        query={query}
+        renderInstalledAction={entry => {
+          const pkg = packageById.get(entry.id)
 
-        return (
-          <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentRemove={handleAgentRemove}
-            onAgentToggle={(row, enable) => {
-              if (!row.key) {
-                return
-              }
+          return pkg ? packageSwitch(pkg) : null
+        }}
+        renderInstalledDetail={entry => {
+          const pkg = packageById.get(entry.id)
 
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-            }}
-            onAgentUpdate={row => {
-              const finish = (outcome: AgentPluginUpdateOutcome) => {
-                if (outcome.kind === 'applied') {
-                  notify({ kind: 'success', message: p.updated(row.name) })
-                  void rescanAll(requestGateway, scope)
-                }
-              }
+          if (!pkg) {
+            return null
+          }
 
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                if (outcome.kind !== 'consent') {
-                  finish(outcome)
-
+          return (
+            <PackageRow
+              busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={pkg.key}
+              marketplaceUpdatable={Boolean(pkg.agent?.marketplace_id && marketplaces.some(source =>
+                source.id === pkg.agent?.marketplace_id && source.available && !source.stale))}
+              onAgentRemove={handleAgentRemove}
+              onAgentToggle={(row, enable) => {
+                if (!row.key) {
                   return
                 }
 
-                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                // half); the backend changed nothing until the user confirms the delta.
-                const ok = await confirm({
-                  confirmLabel: p.updateConsentConfirm,
-                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                  title: p.updateConsentTitle(row.name)
-                })
+                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              }}
+              onAgentUpdate={row => {
+                const started = pluginMarketplaceGeneration()
 
-                if (ok) {
-                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                const finish = (outcome: AgentPluginUpdateOutcome) => {
+                  if (pluginMarketplaceGeneration() === started && outcome.kind === 'applied') {
+                    notify({ kind: 'success', message: [p.updated(row.name), ...(outcome.warnings ?? [])].join(' — ') })
+                    void rescanAll(requestGateway, scope)
+                  }
                 }
-              })
+
+                void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                  async outcome => {
+                    if (pluginMarketplaceGeneration() !== started) {
+                      return
+                    }
+
+                    if (outcome.kind !== 'consent') {
+                      finish(outcome)
+
+                      return
+                    }
+
+                    // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                    // half); the backend changed nothing until the user confirms the delta.
+                    const ok = await confirm({
+                      confirmLabel: p.updateConsentConfirm,
+                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                      title: p.updateConsentTitle(row.name)
+                    })
+
+                    if (ok && pluginMarketplaceGeneration() === started) {
+                      finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true,
+                        row.marketplace_id ? outcome.sha : undefined))
+                    }
+                  }
+                )
+              }}
+              onDesktopRemove={handleDesktopRemove}
+              pkg={pkg}
+              profile={profile}
+              request={requestGateway}
+              scope={scope}
+              scopeLabel={label}
+              scopeSelector={scopeSelector}
+            />
+          )
+        }}
+        selectedEntryId={selectedEntryId}
+        sourceAction={
+          <Tip label="Add marketplace">
+            <Button aria-label="Add marketplace" onClick={() => setAdding(true)} size="icon-xs" variant="ghost">
+              <Plus className="size-3" />
+            </Button>
+          </Tip>
+        }
+        sourceLabels={sourceLabels}
+      />
+      <Dialog onOpenChange={setManagingSources} open={managingSources}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Custom marketplaces</DialogTitle>
+            <DialogDescription>Unreviewed sources. Refresh to check for new versions.</DialogDescription>
+          </DialogHeader>
+          {marketplaces.map(source => (
+            <div className="flex items-center gap-2" key={source.id}>
+              <span className="min-w-0 flex-1 truncate text-sm">{source.name}{source.stale ? ' · Stale' : ''}</span>
+              <Button aria-label={`Remove ${source.name}`} disabled={Boolean(marketplaceBusy)} onClick={() => {
+                const started = pluginMarketplaceGeneration()
+                void confirm({ title: `Remove ${source.name}?`,
+                  description: 'Installed plugins stay installed, but this source will no longer offer updates.',
+                  confirmLabel: 'Remove source', destructive: true }).then(ok => {
+                  if (ok && $pluginMarketplaceScope.get() === scopeKey && pluginMarketplaceGeneration() === started) {
+                    void removePluginMarketplace(requestGateway, source.id, scope, connectionId)
+                  }
+                })
+              }} size="icon-xs" variant="ghost"><Trash2 className="size-3" /></Button>
+            </div>
+          ))}
+          {marketplaceScope === scopeKey && marketplaceError && <p className="text-xs text-destructive">{marketplaceError}</p>}
+          <DialogFooter>
+            <Button disabled={Boolean(marketplaceBusy)} onClick={() =>
+              void loadPluginMarketplaces(requestGateway, scope, connectionId, true)} variant="outline">
+              <RefreshCw className="size-3" /> Refresh sources
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog onOpenChange={setAdding} open={adding}>
+        <DialogContent className="max-w-lg">
+          <form
+            onSubmit={event => {
+              event.preventDefault()
+              void addMarketplace()
             }}
-            onDesktopRemove={handleDesktopRemove}
-            pkg={pkg}
-            profile={profile}
-            request={requestGateway}
-            scope={scope}
-            scopeLabel={label}
-            scopeSelector={scopeSelector}
-          />
-        )
-      }}
-      selectedEntryId={selectedEntryId}
-    />
+          >
+            <DialogHeader>
+              <DialogTitle>Add marketplace from URL</DialogTitle>
+              <DialogDescription>
+                Paste the HTTPS URL of a Git repository containing .claude-plugin/marketplace.json. Hermes lists
+                in-repository plugins only; entries hosted in other repositories are not supported yet. The selected
+                agent uses its existing Git credentials.
+              </DialogDescription>
+            </DialogHeader>
+            <Input
+              aria-label="Marketplace repository URL"
+              autoFocus
+              className="mt-4"
+              onChange={event => setMarketplaceUrl(event.target.value)}
+              placeholder="https://github.com/owner/plugin-marketplace"
+              value={marketplaceUrl}
+            />
+            {marketplaceScope === scopeKey && marketplaceError && (
+              <p className="mt-2 text-xs text-destructive">{marketplaceError}</p>
+            )}
+            <DialogFooter className="mt-4">
+              <Button
+                disabled={marketplaceBusy === 'add'}
+                onClick={() => { setAdding(false); setManagingSources(true) }}
+                type="button"
+                variant="ghost"
+              >
+                Manage marketplaces
+              </Button>
+              <Button
+                disabled={marketplaceBusy === 'add'}
+                onClick={() => setAdding(false)}
+                type="button"
+                variant="ghost"
+              >
+                Cancel
+              </Button>
+              <Button disabled={marketplaceBusy === 'add' || !marketplaceUrl.trim()} type="submit">
+                {marketplaceBusy === 'add' && <Loader2 className="size-3 animate-spin" />}
+                Add marketplace
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        onOpenChange={open => {
+          if (!open && !installingPrivate) {setPendingPrivateInstall(null)}
+        }}
+        open={Boolean(pendingPrivateInstall)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Install {pendingPrivateInstall?.name}?</DialogTitle>
+            <DialogDescription>
+              {pendingPrivateInstall?.sourceLabel} is a custom, unreviewed source, not vetted by Hermes. Its code may
+              access your agent's tools and data. Only install if you trust the source and its maintainer. The selected
+              agent resolves an exact commit before installing.
+            </DialogDescription>
+          </DialogHeader>
+          {privateInstallError && <p className="text-xs text-destructive">{privateInstallError}</p>}
+          <DialogFooter>
+            <Button disabled={installingPrivate} onClick={() => setPendingPrivateInstall(null)} variant="ghost">
+              Cancel
+            </Button>
+            <Button disabled={installingPrivate} onClick={() => void installPrivate()}>
+              {installingPrivate && <Loader2 className="size-3 animate-spin" />}
+              {installingPrivate ? 'Installing…' : 'Install'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 })

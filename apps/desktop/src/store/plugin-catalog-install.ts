@@ -13,7 +13,9 @@ import { openPluginInstallRequest } from './plugin-install-request'
  * pinned SHA and record provenance; `repo#subdir` is what the dialog inspects.
  */
 export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: null | string): void {
-  const existing = $agentPlugins.get().find(row => row.catalog_name === entry.name || row.name === entry.name)
+  const existing = $agentPlugins
+    .get()
+    .find(row => row.catalog_name === entry.name || (!row.marketplace_id && row.name === entry.name))
 
   if (existing && !existing.update_available) {
     notify({ kind: 'success', message: translateNow('skills.plugins.alreadyInstalled', entry.name) })

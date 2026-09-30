@@ -36,7 +36,7 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
     <span className="flex min-w-0 shrink-0 items-center gap-1">
       {entry.source && (
         <Badge className="max-w-full" size="xs" variant="muted">
-          <span className="truncate">{catalogLabel(entry.source)}</span>
+          <span className="truncate">{entry.marketplaceId ? 'Unreviewed' : entry.sourceLabel || catalogLabel(entry.source)}</span>
         </Badge>
       )}
       {entry.version && (

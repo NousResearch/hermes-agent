@@ -474,7 +474,7 @@ stage_repository() {
                 fi
             done
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch --no-recurse-submodules origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"

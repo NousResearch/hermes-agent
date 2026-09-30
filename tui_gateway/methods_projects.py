@@ -13,6 +13,12 @@ method = _registry.method
 _E_PROJECTS, _E_NO_PROJECT, _E_PROJECT_ARG = 5061, 5062, 5063
 
 
+def _projects_enabled() -> bool:
+    """``projects.enabled`` for the bound profile (the gate module owns the reading rules)."""
+    from hermes_cli.projects_gate import projects_enabled
+    return projects_enabled()
+
+
 class _NoProject(Exception):
     """Raised inside a projects handler when ``params['id']`` resolves to None."""
 
@@ -26,11 +32,14 @@ def _projects_payload(conn) -> dict:
 
 def _projects_method(name: str):
     """Register a projects RPC, injecting (pdb, conn) and unifying error mapping; profile-scoped
-    so app-global remote mode reads that profile's ``projects.db``."""
+    so app-global remote mode reads that profile's ``projects.db``. Refused with 5061 when the
+    profile's config turns the projects feature off (#58588) — before any DB connection."""
     def decorator(fn):
         @method(name)
         @_registry.profile_scoped
         def handler(rid, params: dict) -> dict:
+            if not _projects_enabled():
+                return _err(rid, _E_PROJECTS, "projects disabled by config (projects.enabled: false)")
             try:
                 from hermes_cli import projects_db as pdb
                 with pdb.connect_closing() as conn:

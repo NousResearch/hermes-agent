@@ -63,7 +63,7 @@ import {
 } from '@/store/profile'
 import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { runImportProfileFlow } from '@/store/profile-share'
-import { $projectTree } from '@/store/projects'
+import { $projectsBackendEnabled, $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
@@ -179,6 +179,10 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const listGroupIds = useStore($sidebarListGroupIds)
   const projects = useStore($projectTree)
+  // `projects.enabled: false` on the backend: the project grouping and the
+  // project filter have nothing to group or list — hide both rather than
+  // offering a dead grouping (#58588).
+  const projectsBackendDisabled = useStore($projectsBackendEnabled) === false
   const hasCost = useStore($sessionsHaveCost)
   const unreadIds = useStore($unreadFinishedSessionIds)
   // PR state comes from `gh` on whichever machine holds the checkout — Electron
@@ -203,7 +207,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
   const groupings = GROUPINGS.map(option =>
     option.id === 'profile' ? { ...option, label: t.sidebar.gatewayGroups.grouping } : option
-  )
+  ).filter(option => !(option.id === 'project' && projectsBackendDisabled))
 
   const groupingLabel = groupings.find(option => option.id === grouping)?.label
 
@@ -395,7 +399,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             </DropdownMenuSubContent>
           </DropdownMenuSub>
 
-          {projects.length > 1 && (
+          {projects.length > 1 && !projectsBackendDisabled && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>{f.project}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="max-h-80 overflow-y-auto">

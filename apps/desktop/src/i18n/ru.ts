@@ -2781,6 +2781,8 @@ export const ru = defineLocale({
       createFailed: 'Не удалось создать проект',
       staleBackend:
         'Обновите бэкенд Hermes, чтобы создавать проекты — ваш бэкенд старше этого desktop-приложения (Настройки → Обновления → Бэкенд).',
+      disabledByConfig:
+        'Проекты отключены на этом бэкенде (projects.enabled: false в его config.yaml).',
       deleteConfirm: 'Это удалит сохранённый проект из Hermes. Файлы, git-репозитории и worktrees не пострадают.',
       startWork: 'Новый worktree',
       newWorktreeTitle: 'Новый worktree',

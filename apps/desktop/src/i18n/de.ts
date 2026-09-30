@@ -4053,6 +4053,8 @@ export const deOverrides = {
       createFailed: 'Projekt konnte nicht erstellt werden',
       staleBackend:
         'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
+      disabledByConfig:
+        'Projekte sind auf diesem Backend deaktiviert (projects.enabled: false in seiner config.yaml).',
       deleteConfirm:
         'Das entfernt das gespeicherte Projekt aus Hermes. Dateien, Git-Repos und Worktrees bleiben unberührt.',
       startWork: 'Neuer Worktree',

@@ -2799,6 +2799,7 @@ export const zhHant = defineLocale({
       removeFromSidebar: '從側邊欄移除',
       createFailed: '無法建立專案',
       staleBackend: '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
+      disabledByConfig: '此後端已關閉專案功能（其 config.yaml 中 projects.enabled: false）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
       startWork: '新增工作樹',
       newWorktreeTitle: '新增工作樹',

@@ -70,7 +70,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
-| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
+| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. Refuses (exit 1) when `projects.enabled: false` in `config.yaml` (#58588). |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |

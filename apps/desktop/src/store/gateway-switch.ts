@@ -9,6 +9,7 @@ import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
 import { exitProjectScope } from '@/store/project-scope'
+import { resetProjectsBackendEnabled } from '@/store/projects'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -187,6 +188,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // The next backend is a different runtime — don't carry the old one's
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()
+  // Same for its `projects.enabled` verdict: the next backend's profile has
+  // its own config.yaml (#58588). The probe re-runs on the next gateway open.
+  resetProjectsBackendEnabled()
   // Strand any in-flight /api/profiles fetch from the PREVIOUS backend. The
   // rail's $profiles cache is deliberately NOT wiped (an empty list flickers
   // the rail away), but a late response from the old backend must not

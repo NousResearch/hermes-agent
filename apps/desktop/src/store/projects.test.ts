@@ -11,7 +11,9 @@ import type { ProjectInfo } from '@/types/hermes'
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
   $activeProjectId,
+  $projectDialog,
   $projects,
+  $projectsBackendEnabled,
   $projectsRpcAvailable,
   $projectTree,
   addProjectFolder,
@@ -22,10 +24,12 @@ import {
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
+  probeProjectsBackendEnabled,
   projectIdForCwd,
   projectNameForCwd,
   refreshProjects,
   refreshProjectTree,
+  resetProjectsBackendEnabled,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
@@ -1156,5 +1160,99 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(false)
+  })
+})
+
+describe('projects.enabled backend gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetProjectsBackendEnabled()
+    $activeGatewayProfile.set('default')
+    $projectsRpcAvailable.set(null)
+    $projectScope.set(ALL_PROJECTS)
+    $projects.set([])
+    $projectTree.set([])
+    $activeProjectId.set(null)
+  })
+
+  it('probes config.get and marks the backend disabled on "off"', async () => {
+    const request = vi.fn().mockResolvedValue({ value: 'off' })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await probeProjectsBackendEnabled()
+
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'projects_enabled' })
+    expect($projectsBackendEnabled.get()).toBe(false)
+  })
+
+  it('treats an older backend answering 4002 (unknown key) as enabled', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('unknown config key: projects_enabled'), { code: 4002 }))
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await probeProjectsBackendEnabled()
+
+    expect($projectsBackendEnabled.get()).toBe(true)
+  })
+
+  it('leaves the verdict alone on a transient probe failure (5061 refusal backstops it)', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('gateway connection closed'))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await probeProjectsBackendEnabled()
+
+    expect($projectsBackendEnabled.get()).toBeNull()
+  })
+
+  it('a 5061 disabled-by-config refusal clears project state and exits the scope', async () => {
+    $projectScope.set('p_entered')
+    $projects.set([{ id: 'p_entered', name: 'Entered' }] as never)
+    $activeProjectId.set('p_entered')
+
+    const request = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('projects disabled by config (projects.enabled: false)'), { code: 5061 })
+      )
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await refreshProjects()
+
+    expect($projectsBackendEnabled.get()).toBe(false)
+    expect($projects.get()).toEqual([])
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect($activeProjectId.get()).toBeNull()
+  })
+
+  it('a 5061 that is NOT the disabled message does not flip the gate', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('boom'), { code: 5061 }))
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await refreshProjects()
+
+    expect($projectsBackendEnabled.get()).toBeNull()
+  })
+
+  it('blocks the create dialog with the config-specific message', () => {
+    $projectsBackendEnabled.set(false)
+
+    openProjectCreate()
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.disabledByConfig' })
+    )
+    expect($projectDialog.get()).toBeNull()
+  })
+
+  it('reset clears the verdict for the next backend', () => {
+    $projectsBackendEnabled.set(false)
+    resetProjectsBackendEnabled()
+    expect($projectsBackendEnabled.get()).toBeNull()
   })
 })

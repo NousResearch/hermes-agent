@@ -95,6 +95,17 @@ desktop:
 
 Changing any of these values invalidates only that profile's disk-discovery cache and starts a policy-compliant refresh. **Hide from sidebar** remains a separate per-item curation action.
 
+#### Turning Projects off entirely
+
+The whole first-class Projects surface — the `hermes project` CLI verb, the `projects.*` RPCs behind the sidebar, and the `project` model toolset in GUI sessions — can be turned off per profile:
+
+```yaml
+projects:
+  enabled: false   # default: true
+```
+
+While off, the CLI verb answers a disabled message with exit 1, every `projects.*` RPC is refused with a "projects disabled by config" error, the `project` toolset is not folded into GUI sessions, and the Desktop sidebar falls back to the flat session list (the grouped view, project filters, and "New project" affordances hide). Existing `projects.db` data is untouched — flipping the key back on restores everything.
+
 With **Group by → Projects**, each project row previews its three most recent sessions. A project with more ends in a **Show all N sessions** row that expands the rest in place; the sidebar menu's **Show all sessions** toggle removes the preview cap for every project at once.
 
 #### Choosing a model

@@ -2671,6 +2671,13 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # First-class Projects (named, multi-folder workspaces; `hermes project`, the desktop
+    # sidebar, the projects.* RPCs and the `project` model toolset). Off hides every surface
+    # without touching the per-profile projects.db, and answers a "feature disabled" error
+    # instead (#58588). Default on.
+    "projects": {
+        "enabled": True,
+    },
     "nous": {
         # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
         # server-issued credential lifetime (raising above it has no effect). 0 disables the

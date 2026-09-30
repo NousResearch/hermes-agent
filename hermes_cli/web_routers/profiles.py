@@ -727,6 +727,10 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     for name, home in _profile_targets("GET /api/profiles/projects/tree"):
         def _read(db, name=name, home=home):
             with _hermes_home_scope(home):
+                from hermes_cli.projects_gate import projects_enabled
+
+                if not projects_enabled():
+                    return  # this profile turned the projects feature off (#58588)
                 tree, _active_id = gateway_server._build_project_tree(
                     db, preview_limit=preview_limit, hydrate=False,
                     session_limit=session_limit, include_discovered=False)

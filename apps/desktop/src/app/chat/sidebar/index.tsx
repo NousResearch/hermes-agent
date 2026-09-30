@@ -93,6 +93,7 @@ import {
   $newProjectDropPlacement,
   $projectOwnerBySessionId,
   $projects,
+  $projectsBackendEnabled,
   $projectTree,
   $projectTreeLoading,
   $reposScanning,
@@ -469,7 +470,11 @@ export function ChatSidebar({
   // The active sort key as an id order. The flat list applies it within its
   // dividers; groups apply it to their own lanes.
   const sortOrderIds = useStore($sidebarSessionRankIds)
-  const agentsGrouped = grouping === 'project'
+  const projectsBackendDisabled = useStore($projectsBackendEnabled) === false
+  // `projects.enabled: false` on the backend: the grouped view has no tree to
+  // render, so the sidebar falls back to the flat list whatever the persisted
+  // grouping says (#58588). The filter menu hides the grouping option too.
+  const agentsGrouped = grouping === 'project' && !projectsBackendDisabled
   const showAllSessions = useStore($sidebarShowAllSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const unconfirmedPinWrites = useStore($unconfirmedPinWrites)

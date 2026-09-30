@@ -4045,6 +4045,8 @@ export const esOverrides = {
       createFailed: 'No se pudo crear el proyecto',
       staleBackend:
         'Actualiza el backend de Hermes para crear proyectos: tu backend es más antiguo que esta aplicación de escritorio (Configuración → Actualizaciones → Backend).',
+      disabledByConfig:
+        'Los proyectos están desactivados en este backend (projects.enabled: false en su config.yaml).',
       deleteConfirm:
         'Esto elimina el proyecto guardado de Hermes. Los archivos, los repositorios de git y los árboles de trabajo permanecen intactos.',
       startWork: 'Nuevo worktree',

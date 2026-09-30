@@ -16,6 +16,16 @@ export function isMissingRpcMethod(error: unknown): boolean {
   return /method not found|-32601|unknown method|no such method/i.test(message)
 }
 
+/** True when a JSON-RPC call failed because the backend rejects one of its
+ *  params — e.g. `config.get` answering 4002 "unknown config key" for a key
+ *  that predates this build's feature set. Distinguishable from a missing
+ *  method (-32601): the method exists, the surface does not. */
+export function isMissingRpcParamsKey(error: unknown): boolean {
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+
+  return typeof code === 'number' && code === 4002
+}
+
 export function isOutOfSyncRpcParams(error: Error | string): boolean {
   return /out of sync \(different versions\)/i.test(error.toString())
 }
@@ -43,6 +53,18 @@ export function isMissingPendingPromptRequest(error: unknown, key: string): bool
   const message = error instanceof Error ? error.message : String(error)
 
   return message.toLowerCase().includes(`no pending ${key.toLowerCase()} request`)
+}
+
+/** True when a projects.* RPC was refused because the profile's config turns
+ *  the projects feature off (backend 5061 "projects disabled by config"). */
+export function isProjectsDisabledByConfig(error: unknown): boolean {
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+
+  if (typeof code === 'number') {
+    return code === 5061 && /disabled by config/i.test(error instanceof Error ? error.message : String(error))
+  }
+
+  return /projects disabled by config/i.test(error instanceof Error ? error.message : String(error ?? ''))
 }
 
 /** True when a pre-deferral backend refused a mid-turn model switch (4009).

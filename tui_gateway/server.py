@@ -1933,9 +1933,18 @@ def _load_tool_progress_mode() -> str:
 def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
-    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
+    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule). The ``project`` toolset folds
+    in only while the profile's ``projects.enabled`` is on (#58588)."""
     from toolsets import CLIENT_SURFACE_TOOLSETS
-    return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
+    if platform == "desktop":
+        surface = set(CLIENT_SURFACE_TOOLSETS)
+    else:
+        surface = {"project"}
+    if "project" in surface:
+        from hermes_cli.projects_gate import projects_enabled
+        if not projects_enabled():
+            surface.discard("project")
+    return surface
 
 
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:
@@ -2244,10 +2253,14 @@ def _session_usage_snapshot(session: dict | None) -> dict:
 
 def _project_info_for_cwd(cwd: str) -> dict | None:
     """The first-class Project owning ``cwd`` (per-profile projects.db) so TUI status, desktop status bar and
-    ``/status`` name the workspace identically. Only explicit named projects resolve."""
+    ``/status`` name the workspace identically. Only explicit named projects resolve. None without
+    touching projects.db while the profile's ``projects.enabled`` is off (#58588)."""
     if not str(cwd or "").strip():
         return None
+    from hermes_cli.projects_gate import projects_enabled
     try:
+        if not projects_enabled():
+            return None
         from hermes_cli import projects_db as pdb
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)

@@ -60,6 +60,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
 def projects_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes project …`` argparse dispatch."""
+    from hermes_cli.projects_gate import projects_disabled_message, projects_enabled
+
+    if not projects_enabled():
+        print(projects_disabled_message(), file=sys.stderr)
+        return 1
     action = getattr(args, "project_action", None)
     if not action:
         parser = getattr(args, "_project_parser", None)

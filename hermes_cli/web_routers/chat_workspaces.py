@@ -43,7 +43,11 @@ def _collect_workspaces(profile: Optional[str], scan: bool) -> dict:
     # at startup), so the sidebar's repo-discovery helpers are already bound there.
     import tui_gateway.server as gateway
     from hermes_cli import projects_db as pdb
+    from hermes_cli.projects_gate import projects_enabled
 
+    if not projects_enabled():
+        return {"projects": [], "repos": [], "default_cwd": None,
+                "home": str(Path.home()), "scan_enabled": False}
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         with pdb.connect_closing() as conn:

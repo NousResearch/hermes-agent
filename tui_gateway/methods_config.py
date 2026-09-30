@@ -65,10 +65,19 @@ _READINESS_STATUS_SHARE_WAIT_SECONDS = 12.0
 _READINESS_IN_PROGRESS_ERR = 5097
 
 
+def _projects_enabled_cfg() -> bool:
+    """``projects.enabled`` for the bound profile (the gate module owns the reading rules)."""
+    from hermes_cli.projects_gate import projects_enabled
+    return projects_enabled()
+
+
 def _projects_handler(name: str):
-    """``@method(name)`` (profile-scoped) whose body's uncaught exception becomes ``_err(rid, 5061)``."""
+    """``@method(name)`` (profile-scoped) whose body's uncaught exception becomes ``_err(rid, 5061)``.
+    Refused with 5061 when the profile's config turns the projects feature off (#58588)."""
     def deco(fn):
         def handler(rid, params: dict) -> dict:
+            if not _projects_enabled_cfg():
+                return _err(rid, 5061, "projects disabled by config (projects.enabled: false)")
             try:
                 return fn(rid, params)
             except Exception as e:
@@ -259,6 +268,7 @@ _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
     "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
     "project": _cfg_get_project,
+    "projects_enabled": lambda params: {"value": "on" if _projects_enabled_cfg() else "off"},
     "full": lambda params: {"config": _load_cfg()},
     "prompt": lambda params: {"prompt": _load_cfg().get("custom_prompt", "")},
     "skin": lambda params: {"value": _display_raw().get("skin", "default")},

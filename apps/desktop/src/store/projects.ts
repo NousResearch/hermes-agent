@@ -14,7 +14,7 @@ import { getHermesConfig, hermesApi, type HermesGateway, type SessionInfo } from
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
-import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint, isMissingRpcMethod, isMissingRpcParamsKey, isProjectsDisabledByConfig } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
@@ -27,7 +27,7 @@ import {
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
-import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
 import {
   $currentCwd,
   $selectedStoredSessionId,
@@ -73,6 +73,41 @@ export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySes
 // (same semver label, older install). Null until the first probe.
 export const $projectsRpcAvailable = atom<boolean | null>(null)
 
+// False when the active backend's profile turns the projects feature off
+// (`projects.enabled: false` in config.yaml). Null until the backend answers
+// (or it predates the signal, in which case it stays null = enabled).
+export const $projectsBackendEnabled = atom<boolean | null>(null)
+
+function markProjectsBackendEnabled(enabled: boolean): void {
+  $projectsBackendEnabled.set(enabled)
+}
+
+// Reset on a gateway/profile switch: the next backend has its own config.
+export function resetProjectsBackendEnabled(): void {
+  $projectsBackendEnabled.set(null)
+}
+
+// Ask the backend whether the profile's config turns the projects feature off.
+// The `projects_enabled` config.get key is new alongside the toggle — an older
+// backend answers 4002 (unknown key), and there the feature is simply on.
+export async function probeProjectsBackendEnabled(): Promise<void> {
+  try {
+    const res = await gatewayRequest<{ value?: string }>('config.get', { key: 'projects_enabled' })
+    markProjectsBackendEnabled(res.value !== 'off')
+  } catch (err) {
+    if (isMissingRpcParamsKey(err)) {
+      markProjectsBackendEnabled(true)
+    }
+    // Anything else (gateway not ready, transient failure): leave the atom
+    // alone — the 5061-disabled error from a projects.* call is the backstop.
+  }
+}
+
+/** True while the backend reports the projects feature off; null = unknown. */
+export function projectsBackendDisabled(): boolean {
+  return $projectsBackendEnabled.get() === false
+}
+
 function markProjectsRpcSuccess(): void {
   $projectsRpcAvailable.set(true)
 }
@@ -80,6 +115,15 @@ function markProjectsRpcSuccess(): void {
 function markProjectsRpcFailure(err: unknown): void {
   if (isMissingRpcMethod(err)) {
     $projectsRpcAvailable.set(false)
+  }
+
+  if (isProjectsDisabledByConfig(err)) {
+    // `projects.enabled: false` on the backend: the surface is off, not stale.
+    $projectsBackendEnabled.set(false)
+    $projects.set([])
+    $projectTree.set([])
+    $activeProjectId.set(null)
+    exitProjectScope()
   }
 }
 
@@ -1296,10 +1340,12 @@ export interface ProjectDialogState {
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
 export function openProjectCreate(): void {
-  if ($projectsRpcAvailable.get() === false) {
+  if ($projectsRpcAvailable.get() === false || $projectsBackendEnabled.get() === false) {
     notify({
       kind: 'warning',
-      message: translateNow('sidebar.projects.staleBackend')
+      message: translateNow(
+        $projectsBackendEnabled.get() === false ? 'sidebar.projects.disabledByConfig' : 'sidebar.projects.staleBackend'
+      )
     })
 
     return

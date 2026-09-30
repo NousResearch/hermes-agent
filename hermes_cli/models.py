@@ -1874,10 +1874,12 @@ def _credential_fingerprint(provider: str) -> str:
 
     # External-process providers discover models through the launched program, so the command /
     # argv env overrides identify the catalog the way an API key identifies an HTTP catalog.
+    external_process = False
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(provider)
         if profile is not None and profile.auth_type == "external_process":
+            external_process = True
             for ev in (*profile.process_command_env_vars, profile.process_args_env_var):
                 if ev:
                     parts.append(f"{ev}={os.environ.get(ev, '')}")
@@ -1932,6 +1934,10 @@ def _credential_fingerprint(provider: str) -> str:
         from hermes_cli.codex_models import codex_catalog_credential_identity
 
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
+    elif external_process:
+        # The catalog comes from the program's own handshake, not a token; the CLI rewrites its
+        # OAuth file on every refresh, which would otherwise drop the live list for the curated one.
+        pass
     else:
         try:
             from hermes_constants import get_hermes_home

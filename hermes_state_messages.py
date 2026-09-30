@@ -994,6 +994,36 @@ class SessionMessagesMixin:
             "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
             (session_id, message.get("role"), stored)).fetchall()]
 
+    def _matching_retired_ids(
+        self, conn, session_id: str, retired: Dict[str, Any], watermark: Optional[int] = None,
+    ) -> List[int]:
+        """Active rows equal to a row the alternation repair retired without an id.
+
+        Matched on role, loaded-view content (an empty assistant stores ``None`` or ``""``), tool_call_id
+        and the ids of its tool calls. Only rows at or below *watermark*: the repair ran on a load taken
+        before the snapshot, so a later equal row is another surface's append.
+        """
+        role = str(retired.get("role") or "")
+        bound = watermark is not None
+        rows = conn.execute(
+            "SELECT id, content, tool_call_id, tool_calls FROM messages WHERE session_id = ? AND active = 1 "
+            f"AND role = ?{' AND id <= ?' if bound else ''} ORDER BY id",
+            (session_id, role, *((int(watermark),) if bound else ()))).fetchall()
+        want_calls = list(retired.get("tool_call_ids") or ())
+        matches = []
+        for row in rows:
+            content = self._loaded_view_content(role, self._decode_content(row["content"]))
+            if (content or None) != (retired.get("content") or None):
+                continue
+            if (row["tool_call_id"] or None) != (retired.get("tool_call_id") or None):
+                continue
+            calls = _parse_tool_calls(row["tool_calls"]) or []
+            ids = [call.get("id") for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
+            if ids != want_calls:
+                continue
+            matches.append(int(row["id"]))
+        return matches
+
     def _merged_user_run(
         self, conn, session_id: str, message: Dict[str, Any], watermark: Optional[int] = None,
     ) -> Optional[List[int]]:
@@ -1056,12 +1086,22 @@ class SessionMessagesMixin:
         if covered_ids is None:
             return None
         from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_ROW
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
         merged_away: Set[int] = set()
         for message in unresolved_held or ():
             if not isinstance(message, dict):
+                continue
+            if message.get(RETIRED_ROW):
+                # A row the repair dropped behind another held dict: that dict stands for it in the tail.
+                # The dict's own row, recorded before a fold rewrote its text, is its own tail slot.
+                matches = self._matching_retired_ids(conn, session_id, message, watermark)
+                if len(matches) != 1:
+                    return None
+                proved.extend(matches)
+                if not message.get(OWN_ROW):
+                    merged_away.update(matches)
                 continue
             # The stamp is provenance and text is not: a surface may have re-rendered the dict since the
             # repair (gateway timestamps), and a later row can equal the merged text. So the run is

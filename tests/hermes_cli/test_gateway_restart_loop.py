@@ -380,6 +380,58 @@ class TestProfileFlagGatewayLifecycle:
         assert _contains_gateway_lifecycle_command("hermes gateway restart")
 
 
+class TestProfileFlagPatternBacktracking:
+    """#129281: the profile-flag pattern's flag spans used to allow two
+    consumptions per token (1-or-2 dashes, and value-vs-next-flag), so a
+    benign flag-heavy command that merely contains the literal token `hermes`
+    backtracked exponentially inside one C-level ``re.search`` — holding the
+    GIL, stalling every thread (deadline worker included) until systemd
+    SIGKILLed the gateway. Each token must have exactly one consumption."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_profile_identity(self, monkeypatch):
+        monkeypatch.setenv("HERMES_PROFILE", "zeus")
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+
+    def test_benign_flag_heavy_command_scans_fast(self):
+        # The reported freeze shape: 20 `--exclude` flags used to cost days;
+        # the unambiguous pattern must stay linear in the flag count.
+        import time
+
+        command = (
+            "rclone lsf $HOME/.hermes --recursive --files-only "
+            + " ".join(["--exclude"] * 20)
+        )
+        started = time.monotonic()
+        assert not _contains_gateway_lifecycle_command(command)
+        assert time.monotonic() - started < 10.0
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A `-`-leading token is always the next flag, never a value, so a
+            # negative flag value still leaves the selector reachable.
+            "hermes --threshold -1 -p zeus gateway restart",
+            "hermes -Dkey=val -p zeus gateway stop",
+            "hermes --mode fast --profile zeus --yes gateway stop",
+        ],
+    )
+    def test_detection_semantics_preserved(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should block: {text!r}"
+
+    def test_flag_heavy_sibling_still_allowed_fast(self):
+        import time
+
+        command = (
+            "hermes --mode fast --depth 2 --yes --verbose "
+            + " ".join(f"--opt{i}" for i in range(20))
+            + " -p venus gateway stop"
+        )
+        started = time.monotonic()
+        assert not _contains_gateway_lifecycle_command(command)
+        assert time.monotonic() - started < 10.0
+
+
 class TestCronCreateLifecycleBlock:
     """Verify cron create rejects gateway lifecycle prompts."""
 

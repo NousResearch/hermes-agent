@@ -246,12 +246,18 @@ _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
 _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
     r"hermes\s+"
-    # Any global flags before the profile selector (each may carry a value).
-    r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
+    # Any global flags before the profile selector (each may carry a value). Each token must have
+    # exactly one way to be consumed, or a benign flag-heavy command that merely contains the
+    # literal token `hermes` (a ~/.hermes path is enough) backtracks exponentially across the
+    # dash-count and flag-vs-value choices, freezing the whole process inside one C-level
+    # re.search (#129281). So: a leading `-` (any dash count) starts a flag, and an optional flag
+    # VALUE may not itself start with `-` (a `-`-leading token is always the next flag) — the
+    # consumption of a token stream is then unambiguous and the match is linear.
+    r"(?:-\S+(?:\s+(?!-)\S+)?\s+)*"
     # The selector: exactly the shapes the CLI's `_apply_profile_override` accepts.
     r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
-    # Any global flags between the selector and the subcommand.
-    r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
+    # Any global flags between the selector and the subcommand (same unambiguous flag/value split).
+    r"(?:\s+-\S+(?:\s+(?!-)\S+)?)*"
     r"\s+gateway\s+(?:restart|stop)"
 )
 

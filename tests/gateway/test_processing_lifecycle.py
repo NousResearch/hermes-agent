@@ -362,7 +362,6 @@ _WALKS = {
 
 
 async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
-    from gateway.run import _INTERRUPT_REASON_RESET
     from gateway.run_turn_followup_ack import _turn_result_outcome
 
     run = _WalkRun(asyncio.get_running_loop(), consumed=0 if walk.leftovers else 99)
@@ -433,17 +432,13 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
         await runner._bounded_adapter_teardown(adapter, Platform.SLACK)
 
     async def command(kind, chain):
-        """The runner and adapter work that /stop, /new and /reset do to the parked input and to the
-        turn that is running (/new and /reset also clear the conversation scope)."""
+        """/stop, /new or /reset while a turn runs: the runner's busy-command handler, then the
+        adapter's cancellation of the task that runs the turn."""
         adapter._session_tasks[key] = chain
         before = set(adapter._background_tasks)
         event = MessageEvent(text=f"/{kind}", source=source, message_id=f"{kind}-1")
-        if kind == "stop":
-            await runner._busy_stop_command(event, key, source)
-        else:
-            await runner._interrupt_and_clear_session(
-                key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command")
-            runner._clear_conversation_scope(key, reason="session_reset")
+        handler = runner._busy_stop_command if kind == "stop" else runner._busy_new_command
+        await handler(event, key, source)
         if not chain.done():
             await adapter.cancel_session_processing(key, discard_pending=False)
         await asyncio.gather(*(set(adapter._background_tasks) - before - {chain}), return_exceptions=True)

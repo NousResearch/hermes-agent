@@ -54,6 +54,48 @@ server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
                doc="The clarify tool: ask the user 1-5 questions.")
 
 
+# ── setup_choose ──────────────────────────────────────────────────────────────────────────────
+
+
+class SetupChooseKind(WireEnum):
+    question = "question"
+    accent = "accent"
+    theme = "theme"
+    layout = "layout"
+    connectors = "connectors"
+    plugins = "plugins"
+
+
+class SetupChooseIntent(WireEnum):
+    now = "now"
+    later = "later"
+    save = "save"
+
+
+class SetupChooseOption(Params):
+    id: str
+    label: str
+    detail: str | None = None
+
+
+class SetupChooseRequestParams(ServerRequestParams):
+    kind: SetupChooseKind
+    question: str
+    options: list[SetupChooseOption] | None = None
+    multi_select: bool = False
+    intent: bool = False
+
+
+class SetupChooseResult(Result):
+    picked: str | list[str] | None = None
+    intent: dict[str, SetupChooseIntent] | None = None
+
+
+server_request("setup_choose", params=SetupChooseRequestParams, result=SetupChooseResult,
+               doc="The setup_choose tool: one question or picker card in the setup chat; options null = "
+                   "the app's own list; a response without picked is a cancel.")
+
+
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
 
 

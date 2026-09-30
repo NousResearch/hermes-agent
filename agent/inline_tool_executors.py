@@ -273,6 +273,11 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
     ),
+    "setup_choose": _callback_tool(
+        "tools.setup_choose_tool", "setup_choose_tool", "setup_choose_callback",
+        ("kind", "kind", ""), ("question", "question", ""), ("options", "options"),
+        ("multi_select", "multi_select"), ("intent", "intent"),
+    ),
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,

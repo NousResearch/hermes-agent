@@ -148,9 +148,9 @@ TOOLSETS = {
          "gui_tour", "show_tip"],
     ),
     "setup": _ts(
-        "Onboarding-only surface for the setup profile: catalog plugin/skill install "
-        "requests through the approval card",
-        ["manage_catalog"],
+        "Onboarding-only surface for the setup profile: question and picker cards, and "
+        "catalog plugin/skill install requests through the approval card",
+        ["setup_choose", "manage_catalog"],
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),

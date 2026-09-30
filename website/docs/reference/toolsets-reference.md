@@ -77,7 +77,7 @@ Or in-session:
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search` (via `includes`) | Read-only research + media generation. No file writes, no terminal, no code execution. |
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
-| `setup` | `manage_catalog` | Onboarding-only surface of the desktop setup profile: search the plugin catalog and skills hub, and install items through the approval card. The setup profile's own config enables it (`platform_toolsets.cli`), and only desktop sessions get its tool. `all` does not include it. Not listed by `hermes tools`. |
+| `setup` | `manage_catalog`, `setup_choose` | Onboarding-only surface of the desktop setup profile: ask the user one question or picker card at a time, search the plugin catalog and skills hub, and install items through the approval card. The setup profile's own config enables it (`platform_toolsets.cli`), and only desktop sessions get its tools. `all` does not include it. Not listed by `hermes tools`. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | Native Spotify control (playback, queue, search, playlists, albums, library). Registered by the bundled `spotify` plugin. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |

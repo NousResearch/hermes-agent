@@ -31955,6 +31955,146 @@
         "title": "SessionWorkspaceMoveResult",
         "type": "object"
       },
+      "SetupChooseIntent": {
+        "enum": [
+          "now",
+          "later",
+          "save"
+        ],
+        "title": "SetupChooseIntent",
+        "type": "string"
+      },
+      "SetupChooseKind": {
+        "enum": [
+          "question",
+          "accent",
+          "theme",
+          "layout",
+          "connectors",
+          "plugins"
+        ],
+        "title": "SetupChooseKind",
+        "type": "string"
+      },
+      "SetupChooseOption": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "SetupChooseOption",
+        "type": "object"
+      },
+      "SetupChooseRequestParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SetupChooseKind"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SetupChooseOption"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "multi_select": {
+            "default": false,
+            "title": "Multi Select",
+            "type": "boolean"
+          },
+          "intent": {
+            "default": false,
+            "title": "Intent",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "kind",
+          "question"
+        ],
+        "title": "SetupChooseRequestParams",
+        "type": "object"
+      },
+      "SetupChooseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "picked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Picked"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/SetupChooseIntent"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Intent"
+          }
+        },
+        "title": "SetupChooseResult",
+        "type": "object"
+      },
       "SetupReadyPayload": {
         "additionalProperties": true,
         "description": "``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``.",
@@ -39063,6 +39203,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "setup_choose",
+      "summary": "The setup_choose tool: one question or picker card in the setup chat; options null = the app's own list; a response without picked is a cancel.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SetupChooseRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SetupChooseResult"
         }
       }
     },

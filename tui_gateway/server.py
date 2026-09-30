@@ -2093,7 +2093,7 @@ def _tool_progress_enabled(sid: str) -> bool:
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({
     "clarify", "manage_connections", "setup_mcp",
-    "image_generate", "manage_catalog", "delegate_task",
+    "image_generate", "manage_catalog", "delegate_task", "setup_choose",
     # File edits are the turn's deliverable — the diff card the user reviews.
     "edit_file", "patch", "write_file",
 })

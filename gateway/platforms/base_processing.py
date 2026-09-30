@@ -416,7 +416,6 @@ class BaseProcessingMixin:
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
-        parked = list(self._pending_messages.values())
         pending_reservations: dict[str, list[_PendingDispatchReservation]] = {}
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
@@ -467,14 +466,6 @@ class BaseProcessingMixin:
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
                        self._active_sessions, self._requeue_counts):
             bucket.clear()
-        await self._complete_parked(parked)
+        await self._complete_started()
 
 
-    async def _complete_parked(self, parked: List[MessageEvent]) -> None:
-        """Complete, as CANCELLED, the started messages that were parked for a turn that will not run.
-        The adapter is still connected, as it is when a cancelled running message completes. Called
-        after the tasks are cancelled and the slots flushed, so no running chain can start one of
-        them again and a completion hook that stalls cannot stop the cancellation or the flush."""
-        for event in parked:
-            with contextlib.suppress(Exception):
-                await self._complete_discarded(event)

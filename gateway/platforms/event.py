@@ -108,6 +108,11 @@ class _ProcessingState:
     awaiting_start: bool = False
     # The event copy that runs this input's lifecycle; completions through other copies are ignored.
     owner: Optional["MessageEvent"] = field(default=None, repr=False)
+    # The started, uncompleted inputs of the adapter that reported this start, keyed by state (see
+    # BasePlatformAdapter._track_start). None until the start is reported.
+    tracker: Optional[Dict[int, "MessageEvent"]] = field(default=None, repr=False)
+    # The input was dropped before a turn ran it; it is never started again.
+    discarded: bool = False
 
     def defer(self) -> None:
         """Park the input for a later turn."""
@@ -152,6 +157,8 @@ class _ProcessingState:
         running, for example while it sends a /steer acknowledgement, and must not complete it."""
         self.owner = copy
         self.awaiting_start = True
+        if self.tracker is not None and id(self) in self.tracker:
+            self.tracker[id(self)] = copy
 
     def discard(self) -> bool:
         """Prepare a started input that was parked for a turn that will not run it to complete.
@@ -161,6 +168,17 @@ class _ProcessingState:
             return False
         self.phase = _ProcessingPhase.RUNNING
         self.awaiting_start = False
+        self.discarded = True
+        return True
+
+    def abandon(self) -> bool:
+        """Prepare a started input to complete because its adapter is torn down, whatever its phase.
+        Returns False when it has already completed."""
+        if self.phase is _ProcessingPhase.COMPLETED:
+            return False
+        self.phase = _ProcessingPhase.RUNNING
+        self.awaiting_start = False
+        self.discarded = True
         return True
 
     @property
@@ -200,7 +218,10 @@ class _ProcessingState:
 
     def start(self) -> bool:
         """Begin processing the input. Returns False when its start was already reported, so the
-        turn that runs a parked or handed-over input does not report a second start."""
+        turn that runs a parked or handed-over input does not report a second start. A discarded
+        input is not started again."""
+        if self.discarded:
+            return False
         first = not self.start_notified
         self.phase = _ProcessingPhase.RUNNING
         self.outcome = None
@@ -222,6 +243,8 @@ class _ProcessingState:
         self.phase = _ProcessingPhase.COMPLETED
         self.start_notified = self.awaiting_start = False
         self.owner = None
+        if self.tracker is not None:
+            self.tracker.pop(id(self), None)
         return True
 
     def complete_inline(self) -> bool:

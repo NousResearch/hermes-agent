@@ -263,3 +263,208 @@ async def test_a_queued_followup_is_filtered_too(monkeypatch, tmp_path):
     # ...and exactly one outbound pass over the delivered reply: the terminal turn's text is
     # filtered by the frame that opened the chain, never twice by the nested one.
     assert events.count("agent:response:filter") == 1
+
+
+# ── Puntos de la revisión del mantenedor (30-09-2026) ────────────────────────────────────
+# (1) los carriles de texto «en caliente» (steer / redirect) también deben filtrarse;
+# (2) en un turno con streaming, el reemplazo de salida NO puede perderse;
+# (3) las emisiones deben correr dentro del ámbito del perfil del source, no del llamante.
+
+_busy_unbound = cast(Any, GatewayRunner._try_agent_verb)
+
+
+class _ScopeTrackingStub:
+    """Runner de mentira que registra cuándo está dentro del ámbito de perfil."""
+
+    def __init__(self, hooks):
+        self.hooks = hooks
+        self.en_scope = False
+        self.momentos: list = []          # [(evento, ¿estaba en scope?)]
+        self.hooks.momentos = self.momentos
+        self.seen: list = []
+
+    def _profile_scope_for_source(self, source):
+        # El ámbito real es un context manager SÍNCRONO (``with``), con el trabajo async dentro.
+        @contextlib.contextmanager
+        def _scope():
+            self.en_scope = True
+            try:
+                yield
+            finally:
+                self.en_scope = False
+        return _scope()
+
+    async def _run_agent_inner(self, message, context_prompt, history, source, session_id, **kw):
+        self.seen.append(message)
+        return {"final_response": f"done:{message}", "already_sent": True}
+
+    # Lo que usa el camino de steer/redirect
+    def _steer_text_with_origin(self, text, event):
+        return text
+
+    def _steer_running_agent(self, running_agent, text):
+        running_agent.recibido.append(text)
+        return True
+
+
+class _ScopeAware(_RecordingFilterHooks):
+    """Hooks que anotan, en cada emisión, si el stub estaba dentro del ámbito del perfil."""
+
+    def __init__(self, stub, message_replacement=None, response_prefix=None):
+        super().__init__(message_replacement=message_replacement, response_prefix=response_prefix)
+        self._stub = stub
+
+    async def emit_collect(self, event_type, context):
+        self._stub.momentos.append((event_type, self._stub.en_scope))
+        return await super().emit_collect(event_type, context)
+
+
+class _ScopeHooks(_RecordingFilterHooks):
+    """Registra, en cada emisión, si estaba dentro del ámbito del perfil."""
+
+    momentos: list = []
+
+    async def emit_collect(self, event_type, context):
+        self.momentos.append((event_type, getattr(self, "_en_scope", None)))
+        return await super().emit_collect(event_type, context)
+
+
+@pytest.mark.asyncio
+async def test_streamed_turn_still_delivers_the_replacement():
+    """Punto 2: si el cuerpo ya se envió por streaming, el reemplazo no puede perderse.
+
+    ``already_sent`` se calcula con el texto ANTERIOR al filtro, así que sin reactivar la costura
+    de post-streaming (``response_transformed``) la entrega normal se suprime y el texto filtrado
+    no llega a nadie.
+    """
+    hooks = _RecordingFilterHooks(response_prefix="revelado:")
+    stub = _ScopeTrackingStub(hooks)
+
+    result = await _run_agent_unbound(
+        stub, message="hola", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+        session_id="s-stream",
+    )
+
+    assert result["already_sent"] is True
+    assert result["final_response"] == "revelado:done:hola"
+    # La costura existente debe quedar armada para que el consumidor edite el mensaje ya enviado.
+    assert result["response_transformed"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_non_streamed_turn_does_not_arm_the_transform():
+    """Sin streaming no hay nada que editar: la entrega normal manda el texto filtrado."""
+    hooks = _RecordingFilterHooks(response_prefix="revelado:")
+    stub = _ScopeTrackingStub(hooks)
+    stub._run_agent_inner = None  # no usado; se redefine abajo
+
+    async def _inner(message, context_prompt, history, source, session_id, **kw):
+        stub.seen.append(message)
+        return {"final_response": f"done:{message}"}
+
+    stub._run_agent_inner = _inner
+
+    result = await _run_agent_unbound(
+        stub, message="hola", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+        session_id="s-nostream",
+    )
+
+    assert result["final_response"] == "revelado:done:hola"
+    assert "response_transformed" not in result
+
+
+@pytest.mark.asyncio
+async def test_both_emissions_run_inside_the_source_profile_scope():
+    """Punto 3: el registro de hooks se resuelve por el ámbito ACTIVO en el momento de emitir."""
+    hooks = _RecordingFilterHooks(message_replacement="[x]", response_prefix="y:")
+    stub = _ScopeTrackingStub(hooks)
+    stub.hooks = hooks
+
+    hooks = _ScopeAware(stub, message_replacement="[x]", response_prefix="y:")
+    stub.hooks = hooks
+
+    await _run_agent_unbound(
+        stub, message="dato", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+        session_id="s-scope",
+    )
+
+    assert stub.momentos == [
+        ("agent:message:filter", True),
+        ("agent:response:filter", True),
+    ]
+
+
+class _BusyStub(_ScopeTrackingStub):
+    """Stub que EJERCITA los helpers reales del runner en los carriles en caliente."""
+
+    _filter_inbound_text = cast(Any, GatewayRunner._filter_inbound_text)
+    _text_filter_context = cast(Any, GatewayRunner._text_filter_context)
+
+
+class _AgentDeMentira:
+    """Doble del agente en marcha: registra lo que le llega por steer/redirect."""
+
+    def __init__(self):
+        self.recibido: list = []
+
+    def steer(self, text):
+        self.recibido.append(text)
+        return True
+
+    def redirect(self, text):
+        self.recibido.append(text)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_steer_and_redirect_text_is_filtered_before_reaching_the_model():
+    """Punto 1: el texto tecleado con el agente ocupado también pasa por el filtro.
+
+    Ambas ramas (steer y redirect) desembocan en ``_try_agent_verb``; antes del arreglo el texto
+    llegaba al modelo sin pasar por ``agent:message:filter`` — justo el caso PII.
+    """
+    for verbo in ("steer", "redirect"):
+        stub = _BusyStub(_RecordingFilterHooks())
+        hooks = _ScopeAware(stub, message_replacement="[dni oculto]")
+        stub.hooks = hooks
+        stub.momentos = []
+        agente = _AgentDeMentira()
+
+        ok = await _busy_unbound(
+            stub, agente, verbo, "mi dni es 12345678Z", "s-key",
+            event=MessageEvent(
+                text="mi dni es 12345678Z", message_type=MessageType.TEXT,
+                source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+                message_id="m1",
+            ),
+        )
+
+        assert ok is True
+        assert agente.recibido == ["[dni oculto]"], f"el verbo {verbo} no filtró el texto"
+        assert [e for e, _ in hooks.events] == ["agent:message:filter"]
+        assert hooks.events[0][1]["chat_id"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_the_busy_lanes_filter_inside_the_profile_scope_too():
+    """El mismo cuidado de ámbito que en el funnel, para los carriles en caliente."""
+    stub = _BusyStub(_RecordingFilterHooks())
+    hooks = _ScopeAware(stub, message_replacement="[x]")
+    stub.hooks = hooks
+    stub.momentos = []
+    agente = _AgentDeMentira()
+
+    await _busy_unbound(
+        stub, agente, "steer", "texto", "s-key",
+        event=MessageEvent(
+            text="texto", message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+            message_id="m2",
+        ),
+    )
+
+    assert stub.momentos == [("agent:message:filter", True)]
+

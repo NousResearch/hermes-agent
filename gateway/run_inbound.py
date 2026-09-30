@@ -657,7 +657,7 @@ class GatewayInboundMixin:
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
         if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
-            if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
+            if await self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)

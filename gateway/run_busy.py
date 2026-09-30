@@ -590,7 +590,7 @@ class GatewayBusySessionMixin:
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
             if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
-                steered = self._try_agent_verb(
+                steered = await self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
             if steered:
@@ -602,7 +602,7 @@ class GatewayBusySessionMixin:
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
-            redirected = self._redirect_active_turn(
+            redirected = await self._redirect_active_turn(
                 running_agent, (event.text or "").strip(), session_key, event
             )
         return self._BusySteerOutcome(
@@ -615,11 +615,48 @@ class GatewayBusySessionMixin:
         logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key, why)
         return "queue"
 
-    def _try_agent_verb(
+    def _text_filter_context(self, source: Any, session_id: str) -> dict:
+        """Context handed to the text-filter hooks (same shape the turn funnel builds)."""
+        return {
+            "platform": source.platform.value if getattr(source, "platform", None) else "",
+            "user_id": getattr(source, "user_id", ""),
+            "chat_id": getattr(source, "chat_id", "") or "",
+            "thread_id": str(getattr(source, "thread_id", "")) if getattr(source, "thread_id", None) else "",
+            "chat_type": getattr(source, "chat_type", "") or "",
+            "session_id": session_id or "",
+        }
+
+    async def _filter_inbound_text(self, text: str, event: Any, session_key: str) -> str:
+        """Filter text entering a BUSY turn (steer/redirect) with the same hook as the turn funnel.
+
+        Fail-open exactly like the funnel: a runner without a hook registry, an event without a
+        source, or a hook that raises all leave the text untouched.
+        """
+        if not text:
+            return text
+        source = getattr(event, "source", None)
+        if source is None:
+            return text
+        from gateway.run_turn import apply_collectable_text_filter
+        ctx = self._text_filter_context(source, session_key or "")
+        with self._profile_scope_for_source(source):
+            return await apply_collectable_text_filter(
+                getattr(self, "hooks", None), "agent:message:filter", ctx, "message", text,
+            )
+
+    async def _try_agent_verb(
         self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
     ) -> bool:
-        """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
+        """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure.
+
+        Both busy-input lanes (``/steer`` and ``redirect``) hand the user's text straight to the
+        running turn without passing the turn funnel, so the ``agent:message:filter`` hook is
+        emitted HERE as well: otherwise text typed while the agent is busy — exactly the PII case
+        this pair exists for — would reach the model unfiltered. The text is filtered BEFORE
+        ``_steer_text_with_origin`` decorates it, so the hook sees the user's own words.
+        """
         try:
+            text = await self._filter_inbound_text(text, event, session_key)
             call_text = self._steer_text_with_origin(text, event) if event else text
             if verb == "steer":
                 return self._steer_running_agent(running_agent, call_text)
@@ -628,7 +665,7 @@ class GatewayBusySessionMixin:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
 
-    def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
+    async def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
         """``redirect()`` the running turn onto *event* and re-anchor its delivery to that message.
 
         The turn's reply anchor and ledger identity were bound to the message that OPENED it, and
@@ -636,7 +673,7 @@ class GatewayBusySessionMixin:
         to *event*, so the reply must quote it (#115001). Both redirect entry points (busy
         interrupt mode and the priority path) go through here.
         """
-        if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
+        if not await self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
             return False
         turn = self._fold_into_running_turn(running_agent, session_key, event)
         if turn is None:

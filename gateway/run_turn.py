@@ -1535,7 +1535,6 @@ class GatewayTurnMixin:
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
         reply_expected: Optional[bool] = None,
-        hook_ctx: Optional[dict] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -2269,7 +2268,6 @@ class GatewayTurnMixin:
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
-                hook_ctx=hook_ctx,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -2997,24 +2995,40 @@ class GatewayTurnMixin:
         # built without a hook registry (proxy dispatch, light doubles) has no subscribers to
         # offer: the helper's fail-open contract keeps the turn going instead of raising here.
         hooks = getattr(self, "hooks", None)
-        message = await apply_collectable_text_filter(
-            hooks, "agent:message:filter", filter_ctx, "message", message,
-        )
+        # Both emissions sit INSIDE the source's profile scope: ProfileHookRegistries resolves its
+        # registry from get_hermes_home() at emit time, so emitting outside the scope would run the
+        # profile that the CALLER happened to bind. For the in-band queued follow-up the caller is
+        # the opening turn, while that follow-up's source may belong to another profile (multiplex),
+        # so the wrong hooks/ directory would fire. The scope covers the turn, so it covers both.
         with self._profile_scope_for_source(source):
+            message = await apply_collectable_text_filter(
+                hooks, "agent:message:filter", filter_ctx, "message", message,
+            )
             result = await self._run_agent_inner(
                 message, context_prompt, history, source, session_id, **turn_kwargs,
             )
-        # Outbound mirror: a subscriber may return {"response": ...} to replace what goes out
-        # (e.g. revealing the PII obfuscated on the way in). Same funnel, so a queued follow-up's
-        # reply is filtered too; the shaping and delivery steps that run afterwards (hidden-reasoning
-        # exhaustion, intentional-silence verdict, sanitising) already ran AFTER the filter before
-        # this move, so the order they see is unchanged.
-        if _filter_outbound and isinstance(result, dict):
-            response = result.get("final_response")
-            if isinstance(response, str) and response:
-                result["final_response"] = await apply_collectable_text_filter(
-                    hooks, "agent:response:filter", filter_ctx, "response", response,
-                )
+            # Outbound mirror: a subscriber may return {"response": ...} to replace what goes out
+            # (e.g. revealing the PII obfuscated on the way in). Same funnel, so a queued follow-up's
+            # reply is filtered too. This filter has the LAST WORD on the delivered text: the turn's
+            # own transform_llm_output hooks run earlier, inside the turn finalizer, and the shaping
+            # steps that run later (hidden-reasoning exhaustion, intentional-silence, sanitising)
+            # consume whatever this returns — so when a replacement is offered it wins.
+            if _filter_outbound and isinstance(result, dict):
+                response = result.get("final_response")
+                if isinstance(response, str) and response:
+                    filtered = await apply_collectable_text_filter(
+                        hooks, "agent:response:filter", filter_ctx, "response", response,
+                    )
+                    if filtered != response:
+                        # Punto 2: on a streamed turn the body already reached the user and the
+                        # delivery step suppresses the normal final send (already_sent was computed
+                        # from the PRE-filter text). Without re-arming the existing post-stream seam
+                        # the replacement would never be sent. response_transformed makes the
+                        # consumer edit the streamed message with this filtered text instead (#71643
+                        # seam, same one the plugin transform hooks use).
+                        if result.get("already_sent") or result.get("response_previewed"):
+                            result["response_transformed"] = True
+                        result["final_response"] = filtered
         return result
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":

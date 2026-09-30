@@ -145,13 +145,15 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
             + "print(json.dumps(asyncio.run(asyncio.wait_for(queued_stickers(ROOM, ROOT, URL, BOT, encrypted=ENCRYPTED), timeout=10))))\n"
         )
         retained, target = json.loads(output.strip().splitlines()[-1])
+        # The handlers run concurrently, and the first sticker's handler also sends the busy
+        # acknowledgement, so the handlers can finish in either order.
         _wait_for(
             lambda: (
                 (home / "rich-events-queued").exists()
-                and (home / "rich-events-queued")
-                .read_text(encoding="utf-8")
-                .splitlines()
-                == [retained, target]
+                and sorted(
+                    (home / "rich-events-queued").read_text(encoding="utf-8").splitlines()
+                )
+                == sorted([retained, target])
             ),
             "both native stickers queued",
             timeout=10,

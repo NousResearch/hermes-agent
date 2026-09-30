@@ -21,7 +21,7 @@ import grp
 import threading
 import time
 
-from userscan.registry import probe
+from ..registry import probe
 
 OS = "linux"
 

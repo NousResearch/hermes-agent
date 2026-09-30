@@ -10,7 +10,7 @@ import json
 import os
 import re
 
-from userscan.specs.linux_system import (_ARCH, _dpkg_names, _enabled_units, _home, _read, _read1, _run,
+from .linux_system import (_ARCH, _dpkg_names, _enabled_units, _home, _read, _read1, _run,
     _which, lp)
 
 # ================================================================ hardware

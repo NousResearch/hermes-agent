@@ -25,7 +25,7 @@ import sqlite3
 import threading
 import time
 
-from userscan.registry import probe
+from ..registry import probe
 
 OS = "darwin"
 MAC_EPOCH = 978307200  # 2001-01-01 UTC, Core Data / Cocoa absolute time

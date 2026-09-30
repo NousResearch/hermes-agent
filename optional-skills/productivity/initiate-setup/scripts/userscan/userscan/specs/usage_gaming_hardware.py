@@ -10,8 +10,8 @@ import os
 import re
 import time
 
-from userscan.registry import probe, ps_probe
-from userscan.specs.usage_gaming import (_EVT_NS, _base, _evt_fields, _ex, _ft, _iso, _mtime, _paths, _read,
+from ..registry import probe, ps_probe
+from .usage_gaming import (_EVT_NS, _base, _evt_fields, _ex, _ft, _iso, _mtime, _paths, _read,
     _reg_keys, _reg_values, _unmatch, _wevt)
 
 # ================================================================= HARDWARE

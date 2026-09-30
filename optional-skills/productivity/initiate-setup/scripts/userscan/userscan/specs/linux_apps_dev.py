@@ -12,9 +12,9 @@ import re
 import shutil
 import time
 
-from userscan.specs import apps_dev as ad
-from userscan.specs import apps_dev_devenv as ad_devenv
-from userscan.specs.linux_apps import (DEV, _U, _cachedir, _cfg, _data, _day, _ex, _extra_bins, _fact, _first,
+from . import apps_dev as ad
+from . import apps_dev_devenv as ad_devenv
+from .linux_apps import (DEV, _U, _cachedir, _cfg, _data, _day, _ex, _extra_bins, _fact, _first,
     _is_op, _isdir, _lp, _ls, _mirror, _mtime, _npm_roots, _read_json, _spawn, _which)
 
 # ================================================================== dev

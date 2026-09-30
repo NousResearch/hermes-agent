@@ -12,9 +12,9 @@ import re
 import shutil
 import time
 
-from userscan.specs import apps_dev as ad
-from userscan.specs import apps_dev_devenv as ad_devenv
-from userscan.specs.darwin_apps import (DEV, _AS, _LIB, _U, _app, _brew_prefix, _cfg, _data, _day, _ex,
+from . import apps_dev as ad
+from . import apps_dev_devenv as ad_devenv
+from .darwin_apps import (DEV, _AS, _LIB, _U, _app, _brew_prefix, _cfg, _data, _day, _ex,
     _extra_bins, _fact, _is_op, _isdir, _ls, _mirror, _mp, _mtime, _newest_mtime, _npm_roots, _read_json,
     _spawn, _which)
 

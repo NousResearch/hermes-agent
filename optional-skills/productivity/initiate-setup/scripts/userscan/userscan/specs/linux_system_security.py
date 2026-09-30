@@ -11,7 +11,7 @@ import os
 import re
 import grp
 
-from userscan.specs.linux_system import (_enabled_units, _fv, _home, _ini, _kv, _me, _nm_kind, _nm_profiles,
+from .linux_system import (_enabled_units, _fv, _home, _ini, _kv, _me, _nm_kind, _nm_profiles,
     _read, _read1, _run, _which, lp)
 
 # ================================================================ security

@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-from userscan.registry import probe
+from ..registry import probe
 
 _T0 = time.time()
 _LOCK = threading.Lock()

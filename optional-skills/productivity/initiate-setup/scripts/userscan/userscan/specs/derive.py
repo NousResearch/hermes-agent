@@ -11,7 +11,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
-from userscan.registry import insight
+from ..registry import insight
 
 OPERATOR_TOKENS = ("hn-e2e", "ns960", "ns923", "\\lhm", "/lhm", "\\shots", "user-insights-lab",
                    "\\hermes-", "/hermes-", ".hermes-test")

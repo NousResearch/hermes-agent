@@ -13,11 +13,11 @@ import plistlib
 import re
 import time
 
-from userscan.specs import browser_files as bf
-from userscan.specs import usage_gaming as ug
-from userscan.specs import browser_files_content as bf_content
-from userscan.specs import usage_gaming_games as ug_games
-from userscan.specs.darwin_apps import (FILES, GAMING, MAC_EPOCH, MEDIA, _AS, _LIB, _OP_DEEP, _OP_TOP, _U,
+from . import browser_files as bf
+from . import usage_gaming as ug
+from . import browser_files_content as bf_content
+from . import usage_gaming_games as ug_games
+from .darwin_apps import (FILES, GAMING, MAC_EPOCH, MEDIA, _AS, _LIB, _OP_DEEP, _OP_TOP, _U,
     _app, _day, _dir_readable, _ex, _first, _isdir, _ls, _mirror, _mp, _mtime, _newest_mtime, _plist,
     _read_json, _which)
 

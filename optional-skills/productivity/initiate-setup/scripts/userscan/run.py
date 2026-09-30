@@ -18,7 +18,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from userscan.runner import run, scan_accounts  # noqa: E402
+from userscan.cli import override_env, scan_accounts  # noqa: E402
+from userscan.host import collect_l0  # noqa: E402
+from userscan.runner import run  # noqa: E402
 
 
 def main(argv=None):
@@ -62,9 +64,11 @@ def main(argv=None):
                  if getattr(args, k) is not None}
     # The account pass runs first: its read guard is process-wide and must not overlap run()'s threads.
     accounts = scan_accounts(os_override=os_override, include_operator=args.include_operator) if args.all_users else None
-    out = run(max_tier=args.max_tier, budget_ms=args.budget_ms, allow_vss=args.allow_vss,
-              only=only, skip_family=list(args.skip_family or []), include_deep=args.deep,
-              os_override=os_override, overrides=overrides or None)
+    # Probes that read os.environ directly follow the overrides only while the process env points there.
+    with override_env(collect_l0("env", os_override=os_override, overrides=overrides or None)):
+        out = run(max_tier=args.max_tier, budget_ms=args.budget_ms, allow_vss=args.allow_vss,
+                  only=only, skip_family=list(args.skip_family or []), include_deep=args.deep,
+                  os_override=os_override, overrides=overrides or None)
     if accounts is not None:
         out["all_users"] = accounts
     text = json.dumps(out, indent=2, default=str)

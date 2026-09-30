@@ -11,7 +11,7 @@ import os
 import re
 import sys
 
-from userscan.registry import probe, ps_probe
+from ..registry import probe, ps_probe
 
 # ---------------------------------------------------------------- helpers
 

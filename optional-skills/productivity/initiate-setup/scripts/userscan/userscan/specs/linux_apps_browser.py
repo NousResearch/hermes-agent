@@ -9,9 +9,9 @@ import os
 import re
 import time
 
-from userscan.specs import browser_files as bf
-from userscan.specs import browser_files_comms as bf_comms
-from userscan.specs.linux_apps import (BROWSER, COMMS, _U, _cfg, _data, _day, _desktop, _ex, _first, _flat,
+from . import browser_files as bf
+from . import browser_files_comms as bf_comms
+from .linux_apps import (BROWSER, COMMS, _U, _cfg, _data, _day, _desktop, _ex, _first, _flat,
     _is_op, _isdir, _lp, _ls, _mirror, _newest_mtime, _open_text, _read_json, _snapu)
 
 # ================================================================== browser

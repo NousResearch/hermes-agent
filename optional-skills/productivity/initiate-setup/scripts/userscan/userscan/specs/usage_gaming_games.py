@@ -12,8 +12,8 @@ import re
 import struct
 import time
 
-from userscan.registry import probe
-from userscan.specs.usage_gaming import (_base, _cached, _ex, _ft, _iso, _mtime, _noise, _paths, _read,
+from ..registry import probe
+from .usage_gaming import (_base, _cached, _ex, _ft, _iso, _mtime, _noise, _paths, _read,
     _reg_keys, _reg_values, _unmatch)
 
 # ================================================================= GAMING

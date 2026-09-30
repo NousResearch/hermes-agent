@@ -1,9 +1,6 @@
 """L0 host facts + HostAccess facade (all the primitives probes may use). No I/O at import time."""
 from __future__ import annotations
 
-import builtins
-import contextlib
-import io
 import json
 import os
 import platform
@@ -449,103 +446,6 @@ class HostAccess:
                 os.rmdir(parent)
             except OSError:
                 pass
-
-
-class AggregateHostAccess(HostAccess):
-    """HostAccess for an --all-users pass: stat/scandir/registry only. SQLite, file copies and
-    subprocesses are refused so a probe cannot pull contents out of another account's home."""
-
-    def sqlite(self, path, query, params=(), timeout_ms=1500):
-        return None
-
-    def copy_locked(self, path, dst_name=None, allow_vss=False):
-        return None, "blocked"
-
-    def run(self, args, timeout_ms=5000, text=True):
-        return None
-
-    def powershell(self, script, timeout_ms=8000):
-        return None
-
-
-class _ReadGuard:
-    def __init__(self, roots):
-        self.roots = [os.path.normcase(os.path.realpath(r)).rstrip("\\/") for r in roots if r]
-        self.blocked = 0
-
-    def denies(self, file) -> bool:
-        if isinstance(file, int):
-            return False
-        try:
-            p = os.path.normcase(os.path.realpath(os.fspath(file)))
-        except (TypeError, ValueError, OSError):
-            return False
-        for r in self.roots:
-            if p == r or p.startswith(r + os.sep):
-                self.blocked += 1
-                return True
-        return False
-
-
-@contextlib.contextmanager
-def deny_reads_under(roots):
-    """While active: open(), sqlite3.connect() and subprocess spawns fail with PermissionError for any
-    path under `roots` (spawns are refused outright). stat/scandir still work, so presence probes run."""
-    import sqlite3 as _sq
-    import subprocess as _sp
-    guard = _ReadGuard(roots)
-    real_open, real_io_open, real_connect, real_popen = builtins.open, io.open, _sq.connect, _sp.Popen
-
-    def g_open(file, *a, **kw):
-        if guard.denies(file):
-            raise PermissionError(f"all-users pass: content read refused: {file}")
-        return real_open(file, *a, **kw)
-
-    def g_connect(database, *a, **kw):
-        target = str(database)
-        if target.startswith("file:"):
-            target = target[5:].split("?", 1)[0]
-        if guard.denies(target):
-            raise PermissionError("all-users pass: sqlite refused")
-        return real_connect(database, *a, **kw)
-
-    class g_popen(real_popen):
-        def __init__(self, *a, **kw):
-            self._child_created = False
-            guard.blocked += 1
-            raise PermissionError("all-users pass: subprocess refused")
-
-    builtins.open = io.open = g_open
-    _sq.connect = g_connect
-    _sp.Popen = g_popen
-    try:
-        yield guard
-    finally:
-        builtins.open, io.open, _sq.connect, _sp.Popen = real_open, real_io_open, real_connect, real_popen
-
-
-@contextlib.contextmanager
-def override_env(l0: dict):
-    """Point HOME/USERPROFILE/LOCALAPPDATA/APPDATA/HERMES_HOME at the l0 values named in
-    l0["overridden"] for the duration of a run, so probes that call os.path.expanduser or read
-    os.environ directly follow the override. Empty value = variable unset. Restored on exit."""
-    saved = {}
-    try:
-        for key in l0.get("overridden", ()):
-            for name in OVERRIDABLE.get(key, ()):
-                saved[name] = os.environ.get(name)
-                v = l0.get(key) or ""
-                if v:
-                    os.environ[name] = v
-                else:
-                    os.environ.pop(name, None)
-        yield
-    finally:
-        for name, v in saved.items():
-            if v is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = v
 
 
 def per_user_overrides(os_name: str, home: str) -> dict:

@@ -26,9 +26,9 @@ import sqlite3
 import subprocess
 import time
 
-from userscan.registry import REGISTRY, probe
-from userscan.specs import apps_dev as ad
-from userscan.specs import apps_dev_agents as ad_agents
+from ..registry import REGISTRY, probe
+from . import apps_dev as ad
+from . import apps_dev_agents as ad_agents
 
 MAC = "darwin"
 APPS, AI, DEV, BROWSER, COMMS, FILES, GAMING, MEDIA = (

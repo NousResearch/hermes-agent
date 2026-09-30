@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.parse
 
-from userscan.registry import REGISTRY, probe
+from ..registry import REGISTRY, probe
 
 WEBKIT_OFFSET = 11644473600
 FT_OFFSET = 116444736000000000

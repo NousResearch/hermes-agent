@@ -10,14 +10,14 @@ import os
 import re
 import time
 
-from userscan.specs import browser_files as bf
-from userscan.specs import usage_gaming as ug
-from userscan.specs import browser_files_content as bf_content
-from userscan.specs import usage_gaming_games as ug_games
-from userscan.specs.linux_apps import (FILES, GAMING, MEDIA, _OP_DEEP, _OP_TOP, _U, _age_bucket, _cachedir,
+from . import browser_files as bf
+from . import usage_gaming as ug
+from . import browser_files_content as bf_content
+from . import usage_gaming_games as ug_games
+from .linux_apps import (FILES, GAMING, MEDIA, _OP_DEEP, _OP_TOP, _U, _age_bucket, _cachedir,
     _cfg, _data, _ex, _first, _flat, _isdir, _lp, _ls, _mirror, _mtime, _open_text, _read_json, _snapu,
     _state)
-from userscan.specs.linux_apps_dev import tempfile_dir
+from .linux_apps_dev import tempfile_dir
 
 # ================================================================== files
 

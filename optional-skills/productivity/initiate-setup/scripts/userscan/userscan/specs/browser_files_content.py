@@ -10,7 +10,7 @@ import re
 import statistics
 import time
 
-from userscan.specs.browser_files import (AGE_KEYS, FILE_ATTRIBUTE_REPARSE_POINT, HKCU_EXPLORER,
+from .browser_files import (AGE_KEYS, FILE_ATTRIBUTE_REPARSE_POINT, HKCU_EXPLORER,
     OPERATOR_DEEP_RX, OPERATOR_RX, SENSITIVE_CATS, _age_bucket, _cache_ms, _cached, _categorize, _env, _home,
     _host_of, _isdir, _iso, _probe, _redact, _reg_key, _reg_lastwrite, _reg_values, _walk, _winreg)
 

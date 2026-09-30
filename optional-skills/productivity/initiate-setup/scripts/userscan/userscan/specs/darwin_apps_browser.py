@@ -10,10 +10,10 @@ import os
 import re
 import time
 
-from userscan.specs import browser_files as bf
-from userscan.specs import browser_files_comms as bf_comms
-from userscan.specs import browser_files_content as bf_content
-from userscan.specs.darwin_apps import (BROWSER, COMMS, MAC_EPOCH, _AS, _LIB, _U, _app, _bundles, _day, _ex,
+from . import browser_files as bf
+from . import browser_files_comms as bf_comms
+from . import browser_files_content as bf_content
+from .darwin_apps import (BROWSER, COMMS, MAC_EPOCH, _AS, _LIB, _U, _app, _bundles, _day, _ex,
     _fda_meta, _is_op, _isdir, _ls, _memo, _mirror, _mp, _newest_mtime, _plist, _read_json)
 
 # ================================================================== browser

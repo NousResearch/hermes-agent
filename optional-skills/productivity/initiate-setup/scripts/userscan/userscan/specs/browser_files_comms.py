@@ -9,7 +9,7 @@ import os
 import re
 import time
 
-from userscan.specs.browser_files import (HKCU_EXPLORER, _cached, _env, _ft_iso, _hist_rows, _isdir, _iso,
+from .browser_files import (HKCU_EXPLORER, _cached, _env, _ft_iso, _hist_rows, _isdir, _iso,
     _load_json, _probe, _reg_values, _walk)
 
 # ================================================================ family: comms_work

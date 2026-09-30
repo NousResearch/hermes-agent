@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import contextvars
+import importlib
+import importlib.util
 import json
 import os
 import platform
@@ -51,6 +53,9 @@ _FORK_QUESTION = "Know what you'd like it to make?"
 _FALLBACK_QUESTION = "What sounds better?"
 
 SCAN_DIR = Path(__file__).resolve().parent / "userscan"
+# The scanner package's import name. It is private so that loading it never adds SCAN_DIR (and its
+# top-level run.py) to sys.path of the backend process that runs this file.
+_SCANNER = "initiate_setup_userscan"
 SCAN_TIER = "T1"
 SCAN_CACHE_MAX_AGE_S = 24 * 3600
 SCAN_DEADLINE_S = 11
@@ -369,25 +374,35 @@ def _full_scan(run, path: Path | None) -> dict:
     return profile
 
 
+def _scanner(module: str):
+    """A submodule of the scanner package, loaded once per process under ``_SCANNER``. The package
+    body imports nothing, so it runs before it is registered: a thread that loses the registration
+    race drops a complete copy, and the submodule imports that follow take the import lock."""
+    if _SCANNER not in sys.modules:
+        init = SCAN_DIR / "userscan" / "__init__.py"
+        spec = importlib.util.spec_from_file_location(_SCANNER, init, submodule_search_locations=[str(init.parent)])
+        package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(package)
+        sys.modules.setdefault(_SCANNER, package)
+    return importlib.import_module(f"{_SCANNER}.{module}")
+
+
 def _scan_now() -> tuple[dict, str]:
-    if str(SCAN_DIR) not in sys.path:
-        sys.path.insert(0, str(SCAN_DIR))
-    import userscan.specs  # noqa: F401
-    from userscan import __version__
-    from userscan.host import detect_os
-    from userscan.registry import REGISTRY
-    from userscan.runner import run
+    _scanner("specs")
+    version = sys.modules[_SCANNER].__version__
+    detect_os = _scanner("host").detect_os
+    registry = _scanner("registry").REGISTRY
 
     # The scan's children (git, ps, tmux, ...) act for the served profile, not the launch one.
     from tools.environments.local import served_profile_child_env
-    run = partial(run, child_env=served_profile_child_env())
+    run = partial(_scanner("runner").run, child_env=served_profile_child_env())
     home = _hermes_home()
     path = home / "insights" / "profile.json" if home else None
     cached = _read_json(path)
-    if cached and _cache_is_fresh(cached, __version__):
+    if cached and _cache_is_fresh(cached, version):
         here = detect_os()
-        l1 = run(max_tier=SCAN_TIER, only=sorted({p.id for p in REGISTRY.values()
-                                                  if p.level == "L1" and p.os in ("any", here)}))
+        l1 = run(max_tier=SCAN_TIER, only=sorted({p.id for p in registry.values()
+                                                 if p.level == "L1" and p.os in ("any", here)}))
         if _l1_fired(l1) == _l1_fired(cached):
             return cached, "cache"
     if path is None:
@@ -396,12 +411,12 @@ def _scan_now() -> tuple[dict, str]:
     # backends on the desktop, and the inline-shell hook runs this file as its own process.
     lease = path.with_name(f"{path.name}.scanning")
     seen = _started(cached) if cached else None
-    while (done := _published(path, seen, __version__)) is None:
+    while (done := _published(path, seen, version)) is None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(lease, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
-            _await_lease(lease, path, seen, __version__)
+            _await_lease(lease, path, seen, version)
             continue
         except OSError:
             return _full_scan(run, path), "fresh"

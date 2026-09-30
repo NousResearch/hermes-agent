@@ -8,8 +8,8 @@ import threading
 import time
 import uuid
 
-from .host import (AggregateHostAccess, HostAccess, collect_l0, deny_reads_under, override_env,
-                   per_user_overrides)
+from . import __version__
+from .host import HostAccess, collect_l0
 from .registry import REGISTRY, INSIGHTS, TIERS
 
 
@@ -44,20 +44,17 @@ def _filter_values(out: dict, max_tier: str) -> None:
             f["value"] = v[:5]
 
 
-USER_FAMILIES = ("apps", "ai_agents", "dev", "browser", "comms_work", "files", "gaming", "media")
-
-
 def run(max_tier: str = "T1", budget_ms: int = 4000, allow_vss: bool = False,
         only: list = None, skip_family: list = None, include_deep: bool = False,
         os_override: str = None, overrides: dict = None, child_env: dict = None) -> dict:
     """One collection pass. `os_override` pretends to be another OS for probe selection;
-    `overrides` retargets home/localappdata/appdata/hermes_home (see host.collect_l0);
+    `overrides` retargets home/localappdata/appdata/hermes_home as l0 data only (see host.collect_l0);
+    probes that read os.environ directly follow them only under cli.override_env, which the CLI applies;
     `child_env` is the environment every spawned child gets (default: this process's)."""
     run_id = uuid.uuid4().hex[:12]
     t0 = time.perf_counter()
     l0 = collect_l0(run_id, allow_vss=allow_vss, os_override=os_override, overrides=overrides)
-    with override_env(l0):
-        return _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep, child_env)
+    return _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep, child_env)
 
 
 def _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep, child_env):
@@ -226,7 +223,7 @@ def _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep
     out = {
         "schema": "user-insights/1",
         "run": {"id": run_id, "max_tier": max_tier, "budget_ms": budget_ms,
-                "allow_vss": allow_vss, "collector_version": __import__("userscan").__version__},
+                "allow_vss": allow_vss, "collector_version": __version__},
         "host": l0,
         "timing": timing,
         "facts": facts,
@@ -243,71 +240,6 @@ def _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep
     out["run"]["wall_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     _filter_values(out, max_tier)
     return out
-
-
-def scan_accounts(os_override: str = None, include_operator: bool = False) -> dict:
-    """--all-users: one presence-only pass per login account. Per account it writes the username,
-    home_present, process_count and one boolean per user-level L1 detector. Nothing else from the
-    pass leaves this function: no probe values, no file names, no contents."""
-    t0 = time.perf_counter()
-    run_id = uuid.uuid4().hex[:12]
-    base = collect_l0(run_id, os_override=os_override)
-    h = HostAccess(base)
-    users = h.list_users(include_operator=include_operator)
-    procs = h.process_counts()
-    homes = [u["home"] for u in users if u["home"]]
-    me_home = os.path.normcase(os.path.realpath(base["home"]))
-    detectors = sorted((p for p in REGISTRY.values()
-                        if p.fn and p.level == "L1" and p.family in USER_FAMILIES
-                        and p.os in ("any", base["os"])), key=lambda q: q.id)
-    accounts, touched = [], []
-    for u in users:
-        s = time.perf_counter()
-        home = u["home"]
-        present = bool(home) and os.path.isdir(home)
-        readable = present and os.access(home, os.R_OK | os.X_OK)
-        is_self = present and os.path.normcase(os.path.realpath(home)) == me_home
-        rec = {"user": u["user"], "home_present": present, "home_readable": readable,
-               "is_invoking_user": is_self,
-               "process_count": (procs.get(u["user"], 0) if procs is not None else None),
-               "apps": None, "status": "ok", "detectors_run": 0, "errors": 0, "refused": 0}
-        if not present:
-            rec["status"] = "home_absent"
-        elif not readable:
-            rec["status"] = "home_unreadable"
-        else:
-            touched.append(u["user"])
-            l0u = collect_l0(run_id, os_override=os_override, overrides=per_user_overrides(base["os"], home))
-            l0u["user"] = u["user"]
-            l0u["foreign_user"] = not is_self
-            hu = AggregateHostAccess(l0u)
-            apps, facts = {}, {}
-            with override_env(l0u), deny_reads_under(homes) as guard:
-                for p in detectors:
-                    if p.gate is not None and not _truthy(facts.get(p.gate)):
-                        apps[p.id] = False
-                        continue
-                    rec["detectors_run"] += 1
-                    try:
-                        v = p.fn(hu, facts)
-                    except Exception:
-                        rec["errors"] += 1
-                        v = None
-                    if _truthy(v):
-                        facts[p.id] = v
-                    apps[p.id] = _truthy(v)
-            hu.cleanup()
-            rec["apps"] = apps
-            rec["refused"] = guard.blocked
-        rec["ms"] = round((time.perf_counter() - s) * 1000, 1)
-        accounts.append(rec)
-    return {"os": base["os"], "os_detected": base["os_detected"], "families": list(USER_FAMILIES),
-            "detectors": len(detectors),
-            "process_counts_visible": procs is not None,
-            "processes_other_accounts": (sum(n for u, n in procs.items() if u not in {a["user"] for a in users})
-                                         if procs is not None else None),
-            "accounts": accounts, "touched": touched,
-            "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
 
 def _run_ps_batch(probes, h, gate_ok, max_tier, allow_vss, skipped):

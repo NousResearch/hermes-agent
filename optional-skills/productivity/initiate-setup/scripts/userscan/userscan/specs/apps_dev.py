@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-from userscan.registry import probe
+from ..registry import probe
 
 try:
     import winreg  # noqa: F401

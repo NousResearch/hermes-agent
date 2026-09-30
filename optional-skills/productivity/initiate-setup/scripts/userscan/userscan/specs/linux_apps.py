@@ -24,10 +24,10 @@ import shutil
 import subprocess
 import time
 
-from userscan.registry import REGISTRY, probe
-from userscan.specs import apps_dev as ad
-from userscan.specs import browser_files as bf
-from userscan.specs import apps_dev_agents as ad_agents
+from ..registry import REGISTRY, probe
+from . import apps_dev as ad
+from . import browser_files as bf
+from . import apps_dev_agents as ad_agents
 
 LX = "linux"
 APPS, AI, DEV, BROWSER, COMMS, FILES, GAMING, MEDIA = (

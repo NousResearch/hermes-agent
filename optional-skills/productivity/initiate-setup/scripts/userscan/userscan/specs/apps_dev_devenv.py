@@ -11,8 +11,8 @@ import os
 import re
 import time
 
-from userscan.registry import probe
-from userscan.specs.apps_dev import (DEV, _LA, _PD, _PF, _PF86, _RA, _U, _appx_match, _day, _file_version,
+from ..registry import probe
+from .apps_dev import (DEV, _LA, _PD, _PF, _PF86, _RA, _U, _appx_match, _day, _file_version,
     _is_operator_path, _isdir, _ls, _memo, _mtime, _open, _read_json, _redact, _running, _rv, _spawn,
     _subkeys, _uninst_match, _which, winreg)
 

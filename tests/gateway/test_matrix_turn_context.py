@@ -8,10 +8,12 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import hermes_yaml as yaml
 import pytest
 
+from agent import secret_scope
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.run_turn_runner import TurnRunner
 from gateway.turn_context import TurnContext
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -1216,3 +1218,90 @@ async def test_media_without_a_cached_file_reaches_a_live_session_as_its_caption
         assert (event.media_urls, event.media_types, message, state.persistent.native_image_paths) == (
             [], [], "what is this?", [],
         )
+
+
+@pytest.fixture
+def two_homes(tmp_path, monkeypatch):
+    launch = tmp_path / ".hermes"
+    routed = launch / "profiles" / "b"
+    routed.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    for home in (launch, routed):
+        (home / "config.yaml").write_text(yaml.safe_dump({}), encoding="utf-8")
+    secret_scope.set_multiplex_active(True)
+    yield launch, routed
+    secret_scope.set_multiplex_active(False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("move", ["moved", "move-fails"])
+@pytest.mark.parametrize("mode", ["native", "text"])
+async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
+    monkeypatch, tmp_path, two_homes, mode, move
+):
+    with ExitStack() as stores:
+        import base64
+
+        launch, routed = two_homes
+        adapter = _make_adapter()
+        adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+        parent = _original("$image", "photo.png")
+        parent["content"].update(
+            msgtype="m.image", url="mxc://example.org/image", info={"mimetype": "image/png"}
+        )
+        adapter._client = SimpleNamespace(
+            api=SimpleNamespace(request=AsyncMock(return_value=parent)),
+            download_media=AsyncMock(return_value=base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGNcAAAAASUVORK5CYII="
+            )),
+        )
+        source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+        stores.callback(runner.session_store.close_all_db_handles)
+        runner.adapters = {Platform.MATRIX: adapter}
+        monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: mode)
+
+        async def analyse(_text, paths):
+            return "\n\n".join(f"<pixels of {path}>" for path in paths)
+
+        monkeypatch.setattr(runner, "_enrich_message_with_vision", analyse)
+        if move == "move-fails":
+            monkeypatch.setattr(
+                "gateway.run_inbound.shutil.move", lambda *_args: (_ for _ in ()).throw(OSError("busy"))
+            )
+        turns = []
+        expected = []
+        for turn, home in enumerate((launch, routed, routed, launch)):
+            event = await adapter._build_inbound_event(
+                ROOM, SENDER, f"$reply{turn}", "what is this?", {"body": "what is this?"},
+                {"m.in_reply_to": {"event_id": "$image"}},
+                ctx=("what is this?", True, "dm", None, "Alice", False, source),
+            )
+            session_key = f"session{turn}"
+            runner._session_state(session_key)
+            with _profile_runtime_scope(home):
+                prepared = await runner._prepare_inbound_message_text(
+                    event=event, source=source, history=[], session_key=session_key
+                )
+            [quoted] = event.media_urls
+            turns.append(
+                {
+                    "own": Path(quoted).parent == home / "cache" / "images" and Path(quoted).is_file(),
+                    "pixels": runner._session_state(session_key).persistent.native_image_paths,
+                    "description": f"<pixels of {quoted}>" in prepared,
+                }
+            )
+            visible = move == "moved" or home == launch
+            expected.append(
+                {
+                    "own": visible,
+                    "pixels": [quoted] if visible and mode == "native" else [],
+                    "description": visible and mode == "text",
+                }
+            )
+
+        assert turns == expected

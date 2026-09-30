@@ -48,6 +48,18 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def rehomed_media_path(raw: str) -> str:
+    """Return where ``rehome_inbound_media`` puts the attachment at *raw* for the active profile."""
+    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
+    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
+    if hermes_home_key(active) == hermes_home_key(launch):
+        return raw
+    try:
+        return str(active / "cache" / Path(raw).relative_to(launch / "cache"))
+    except ValueError:
+        return raw
+
+
 def discord_triggering_note(message_id: Any) -> str:
     """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
     return (

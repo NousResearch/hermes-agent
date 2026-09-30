@@ -1941,6 +1941,19 @@ DEFAULT_CONFIG = {
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
+        # Respawn guard: a ready card is held back when its most recent run COMPLETED within this
+        # window (re-spawning finished work is usually a duplicate). Default 1 h — a real second
+        # pass at a landed task is almost always a deliberate re-queue, which the guard already
+        # exempts via its re-queue events. Raise it only if late duplicate spawns cost more than
+        # the wait; lower it to let a manual done→ready run pick up sooner.
+        "respawn_guard_success_window_seconds": 3600,
+        # Respawn guard: a ready card is held back while a GitHub PR URL sits in a comment newer
+        # than this window (re-spawning risks a duplicate PR). Default 24 h matches the observed
+        # PR lifetime ceiling; lowering it to roughly the p90 of PR lifetime frees cards that are
+        # genuinely still open and need more work rather than holding them a full day. A value
+        # <= 0 or unparseable falls back to the default — 0 would release a card the instant its
+        # prior run finished, which is the duplicate-PR case the guard exists to prevent.
+        "respawn_guard_pr_window_seconds": 86400,
         # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.

@@ -564,7 +564,7 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
     try:
         assert opened[0]["device"] == "Microphone Array"
         assert opened[0]["samplerate"] == 48000
-        assert opened[0]["blocksize"] == 12
+        assert opened[0]["blocksize"] == 0
         deadline = time.monotonic() + 2.0
         while not processed and time.monotonic() < deadline:
             time.sleep(0.01)

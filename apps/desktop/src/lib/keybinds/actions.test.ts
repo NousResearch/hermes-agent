@@ -135,3 +135,11 @@ describe('view.tabSlot.N layers over profile.switch.N on ⌘1…⌘9 (#92569)', 
     expect(firstProfileSwitch).toBeGreaterThan(firstTabSlot)
   })
 })
+
+describe('pinned session keybind actions', () => {
+  it.each(['session.pinned.next', 'session.pinned.previous'])('registers %s as an unbound session action', id => {
+    expect(keybindAction(id)).toMatchObject({ id, category: 'session', defaults: [] })
+    expect(defaultBindings()[id]).toEqual([])
+    expect(en.keybinds.actions[id]).toBeTruthy()
+  })
+})

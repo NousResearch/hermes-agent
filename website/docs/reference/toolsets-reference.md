@@ -76,6 +76,7 @@ Or in-session:
 | `matrix_image_packs` | `matrix_image_packs` | List sticker images from Matrix image packs in the current room and packs referenced by the bot account, and send a selected image as a native sticker. Active on the `hermes-matrix` toolset and available only on Matrix. |
 | `matrix_read` | `matrix_read` | Read recent messages, one thread, or one event in the current Matrix room, subject to the Matrix room and user policy. Active on the `hermes-matrix` toolset and available only on Matrix. |
 | `matrix_followup` | `matrix_followup` | Let a new reaction from the requester to the current turn's final Matrix reply start one follow-up turn within ten minutes, optionally limited to specific emoji. Active on the `hermes-matrix` toolset and available only on Matrix. |
+| `matrix_unread` | `matrix_mark_read`, `matrix_unread` | Read the bot account's notification and highlight counts for the current Matrix room or one of its threads, and send an explicit public or private read receipt, subject to the Matrix room and user policy. Active on the `hermes-matrix` toolset and available only on Matrix. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `desktop_ui` | `annotate_preview`, `apply_layout`, `close_terminal`, `desktop_preview`, `drive_preview`, `focus_pane`, `gui_tour`, `react_to_message`, `read_terminal`, `read_window_below`, `show_tip` | Affordances that act on the Hermes desktop app itself — read/close the embedded terminal pane, open, read, close, interact with, and annotate the in-app browser, identify the OS window behind the app, reveal a pane, react to a message, run a guided tour (highlight + narrate UI elements in the app or the preview pane), and apply a layout preset. Enabled for sessions whose source is the desktop app, whichever backend it's connected to (local, SSH, URL, or Hermes Cloud). Never present on CLI, TUI, messaging, or cron sessions. |
 | `project` | `desktop_project` | Create and switch desktop [Projects](../user-guide/cli.md) (named, multi-folder workspaces) via one `create`/`switch`/`list` action enum. GUI / desktop sessions only. |
@@ -109,7 +110,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-slack` | Same as `hermes-cli`. |
 | `hermes-whatsapp` | Same as `hermes-cli`. |
 | `hermes-signal` | Same as `hermes-cli`. |
-| `hermes-matrix` | Adds `matrix_read`, `matrix_reaction`, `matrix_followup` and `matrix_image_packs` on top of `hermes-cli`. |
+| `hermes-matrix` | Adds `matrix_read`, `matrix_reaction`, `matrix_followup`, `matrix_image_packs`, `matrix_unread` and `matrix_mark_read` on top of `hermes-cli`. |
 | `hermes-mattermost` | Same as `hermes-cli`. |
 | `hermes-email` | Same as `hermes-cli`. |
 | `hermes-sms` | Same as `hermes-cli`. |

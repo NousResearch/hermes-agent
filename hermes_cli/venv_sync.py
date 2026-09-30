@@ -228,8 +228,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     root = Path(project_root).resolve()
     if (command_argv(argv)[:1] == ["pm"]
+            or command_argv(argv)[:1] == ["serve"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
+            or os.environ.get("HERMES_SUPERVISED_CHILD")
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
         return None

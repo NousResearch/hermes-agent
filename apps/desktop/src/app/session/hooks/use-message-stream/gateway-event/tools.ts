@@ -118,8 +118,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
       // terminal/process tool calls are the only things that spawn or reap
-      // background processes — sync the composer status stack right after.
-      if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
+      // background processes — sync the composer status stack right after,
+      // even on an interrupted turn (idempotent re-sync; the 5s poll may be
+      // unarmed when no running row is on screen yet, #81114).
+      if (payload?.name === 'terminal' || payload?.name === 'process') {
         void refreshBackgroundProcesses(sessionId)
       }
     }

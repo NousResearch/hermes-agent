@@ -359,6 +359,27 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
 
         row["capabilities"] = caps
 
+        # Keep the catalog's output modality alongside the existing picker
+        # capability flags. This is deliberately best-effort: custom endpoints
+        # and stale models.dev entries must remain selectable when metadata is
+        # unavailable.
+        modalities: dict[str, list[str]] = {}
+        try:
+            from agent.models_dev import get_model_info
+        except Exception:
+            get_model_info = None  # type: ignore[assignment]
+        if get_model_info is not None:
+            for model in row.get("models") or []:
+                try:
+                    info = get_model_info(slug, model, config=metadata_config)
+                    values = getattr(info, "output_modalities", ()) if info is not None else ()
+                    normalized = [str(value).strip().lower() for value in values if str(value).strip()]
+                    if normalized:
+                        modalities[model] = normalized
+                except Exception:
+                    continue
+        row["output_modalities"] = modalities
+
 
 # Newest N models per lab an aggregator row features by default (older tail behind search/show-all);
 # 5 keeps a lab's headliners without letting a prolific vendor flood the view.

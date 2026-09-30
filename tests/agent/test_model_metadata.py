@@ -1981,6 +1981,13 @@ class TestEndpointMetadataParsingRobustness:
         assert _extract_pricing({"input": ["a", "b"]}) == {}
         assert _extract_pricing({"request": {"nested": 1}}) == {}
 
+    def test_boolean_pricing_alias_is_skipped_not_priced(self):
+        # `bool` is an `int` subclass: without an explicit check `true` became float 1.0 and,
+        # with no unit, a believable $1/MTok prompt price; `false` a numeric zero.
+        assert _extract_pricing({"input": True}) == {}
+        assert _extract_pricing({"request": False}) == {}
+        assert _extract_pricing({"input": True, "unit": "per_token"}) == {}
+
     def test_scalar_pricing_aliases_still_parse(self):
         # The subject here is that a scalar under an alias is still PICKED UP, not what
         # its value becomes: `_normalize_token_rates` owns the per-million-to-per-token

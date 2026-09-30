@@ -880,7 +880,14 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                 # arbitrary remote JSON, and a common shape (``modalities: {"input": [...]}``)
                 # puts a list under a pricing alias — the previous set-membership test hashed
                 # it, raised TypeError, and took the whole endpoint's metadata down with it.
-                if value is None or value == "" or not isinstance(value, (int, float, str)):
+                # ``bool`` is excluded explicitly: it is an ``int`` subclass, and ``true``
+                # would otherwise become a believable 1.0 price rather than be skipped.
+                if (
+                    value is None
+                    or value == ""
+                    or isinstance(value, bool)
+                    or not isinstance(value, (int, float, str))
+                ):
                     continue
                 pricing[target] = value
                 break

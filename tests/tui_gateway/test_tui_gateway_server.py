@@ -3186,6 +3186,8 @@ def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path,
         "result"]["type"] == "skill"
     reload = server._methods["skills.reload"]("r", {"session_id": "sid-a"})["result"]
     assert reload["result"]["removed"] == [], reload["output"]
+    assert reload["result"]["total"] == reload["result"]["commands"]
+    assert f"{reload['result']['total']} skill(s) available" in reload["output"]
     # The session-bound registry still offers the project skill after the reload
     # (the multi-slot cache keeps each session-identity's view; the launch-env
     # identity outside any session legitimately sees none of them).

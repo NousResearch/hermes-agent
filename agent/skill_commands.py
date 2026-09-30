@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 # publication and the freshness lookup so a reader always sees a consistent
 # (key, map) pair. Scanning stays outside the lock (#14536, #74574).
 _skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
+# Keep the last map callers could actually see, even when plugin lifecycle
+# invalidation drops the projection cache before /reload-skills can diff it.
+_last_interactive_skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
@@ -612,15 +615,26 @@ def _scan_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
     return commands
 
 
+def _merge_interactive_skill_commands(
+    filesystem_commands: Dict[str, Dict[str, Any]], plugin_commands: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Merge interactive sources with filesystem commands winning collisions."""
+    commands = dict(filesystem_commands)
+    for command, info in plugin_commands.items():
+        if command in commands:
+            logger.warning("Plugin skill %r collides with %r; keeping the first", command, commands[command]["name"])
+        else:
+            commands[command] = info
+    return commands
+
+
 def get_interactive_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Filesystem skills plus profile-scoped plugin skills; never use for
     messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
-    commands = dict(get_skill_commands())
-    for key, info in get_plugin_skill_commands().items():
-        if key in commands:
-            logger.warning("Plugin skill %r collides with %r; keeping the first", key, commands[key]["name"])
-        else:
-            commands[key] = info
+    identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
+    commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
+    with _publish_lock:
+        _last_interactive_skill_commands_by_key[identity] = dict(commands)
     return commands
 
 
@@ -649,15 +663,29 @@ def reload_skills() -> Dict[str, Any]:
     since the last scan shows up without a restart."""
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
-        before_commands = _skill_commands_by_key.get(key, {})
+        before_commands = _last_interactive_skill_commands_by_key.get(key)
+    if before_commands is None:
+        # Preserve only a previously published view. A first-ever reload has
+        # no before-state, so discoveries correctly appear as additions.
+        with _publish_lock:
+            before_commands = dict(_skill_commands_by_key.get(key, {}))
+            if _plugin_skill_commands_home == key[1]:
+                for command, info in _plugin_skill_commands.items():
+                    if command not in before_commands:
+                        before_commands[command] = info
+    before = command_snapshot(before_commands)
+    with _publish_lock:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
-    before = command_snapshot(before_commands)
     invalidate_plugin_skill_commands()
     new_commands = scan_skill_commands()
-    result = diff_command_snapshots(before, command_snapshot(new_commands))
-    result["commands"] = len(new_commands) + len(get_plugin_skill_commands())
+    effective_commands = _merge_interactive_skill_commands(new_commands, get_plugin_skill_commands())
+    after = command_snapshot(effective_commands)
+    result = diff_command_snapshots(before, after)
+    with _publish_lock:
+        _last_interactive_skill_commands_by_key[key] = effective_commands
+    result["commands"] = len(effective_commands)
     return result
 
 

@@ -38,8 +38,9 @@ def _make_fake_agent():
     # core field swap, before the moa branch runs. On a real AIAgent this is a
     # method; without it the swap raises and the rollback undoes every field
     # this test asserts on.
+    agent._reasoning_echo_mode = ""
     agent._reasoning_echo_flag = False
-    agent._read_reasoning_echo_from_config = lambda: False
+    agent._sync_reasoning_echo_from_config = lambda: None
     return agent
 
 

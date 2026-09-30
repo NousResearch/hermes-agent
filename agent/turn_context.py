@@ -68,12 +68,19 @@ def _preflight_request_tokens(
 
 def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     """Whether the active route replays stale thinking text; ``True`` (conservative full
-    charge) when route facts are unavailable."""
+    charge) when route facts are unavailable.
+
+    ``forced_strip`` reads the agent's own active mode (which fallback activation sets from the
+    fallback entry), not ``config["model"]`` — a fallback route's mode is not in the primary config,
+    and the compressor's tail walk must reach the same answer or compaction loops.
+    """
     try:
         from agent.message_sanitization import stale_thinking_reaches_wire
+        from agent.reasoning_params import REASONING_ECHO_NEVER
 
         return stale_thinking_reaches_wire(
-            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url"))
+            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url")),
+            forced_strip=getattr(agent, "_reasoning_echo_mode", "") == REASONING_ECHO_NEVER,
         )
     except Exception:
         return True

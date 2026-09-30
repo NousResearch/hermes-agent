@@ -691,7 +691,8 @@ async def _send(
         if wire_type == "m.room.encrypted" and request.crypto is None:
             raise PackError("Matrix encryption keys are unavailable")
         if (
-            not levels["bot"]["creator_override"]
+            power is not None
+            and not levels["bot"]["creator_override"]
             and levels["bot"]["level"] < levels["required"]["send_message"]
         ):
             raise PackError(f"Matrix bot cannot send {wire_type} in this room")

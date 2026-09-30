@@ -70,6 +70,31 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
     assert [c.split(" ")[0] for c in live[-2:]] == ["U15", "A15"]
 
 
+@pytest.mark.parametrize("row_ids", [True, False])
+@pytest.mark.parametrize("left", ["tool_result", "tool_call"])
+def test_a_row_dropped_ahead_of_the_first_survivor_is_archived_with_it(tmp_path, left, row_ids):
+    """Nothing is kept before a row the repair drops at the head of the history, so the first
+    survivor stands for it."""
+    from agent.conversation_compression_archive import coverage_for_commit
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sid", source="test")
+    for role, content, fields in (KILLED_TURN_LEFT[left][-1], ("user", "U1", {}), ("assistant", "A1", {})):
+        db.append_message("sid", role, content, **fields)
+    watermark = db.get_active_message_watermark("sid")
+    held = db.get_messages_as_conversation("sid", repair_alternation=True, include_row_ids=row_ids)
+    assert [m["content"] for m in held] == ["U1", "A1"]
+    covered_ids, unresolved = coverage_for_commit(db, "sid", held)
+
+    db.archive_and_compact(
+        "sid", [{"role": "user", "content": "summary"}], watermark=watermark,
+        covered_ids=covered_ids, unresolved_held=unresolved)
+
+    assert [row["content"] for row in db.get_messages("sid")] == ["summary"]
+    db.close()
+
+
 def test_the_repair_row_counts_stay_off_the_request_copy(session):
     """The commit reads the counts off the live dict. A transport is handed the request copy, and
     one that forwards unknown keys must not find them there."""

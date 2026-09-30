@@ -19,6 +19,7 @@ import re
 import sys
 import threading
 import time
+import hermes_time
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -1939,7 +1940,7 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
         agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+            getattr(agent, "_rate_limited_until", 0) or 0, hermes_time.deadline_clock() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
     return False
 
 
@@ -2173,7 +2174,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
                 f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
             if cooldown_seconds is not None:
-                remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
+                remaining = max(0, math.ceil(agent._rate_limited_until - hermes_time.deadline_clock()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate

@@ -359,7 +359,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
         self._extra: Dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
-        # (token, expiry monotonic ts) for connector attachment auth; refreshed under
+        # (token, suspend-inclusive expiry ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
@@ -452,13 +452,13 @@ class TeamsAdapter(BasePlatformAdapter):
         """Bot Framework bearer token (client credentials), cached until ~5 min before expiry; connector
         attachments are NOT pre-authenticated, unlike SharePoint downloadUrls. The lock is created lazily
         because ``asyncio.Lock()`` in __init__ may bind the wrong loop."""
-        import time
+        from hermes_time import deadline_clock
         import httpx
         if self._bf_token_lock is None:
             self._bf_token_lock = asyncio.Lock()
         async with self._bf_token_lock:
             cached = self._bf_token_cache
-            if cached and cached[1] > time.monotonic() + 300:
+            if cached and cached[1] > deadline_clock() + 300:
                 return cached[0]
             if not (self._client_id and self._client_secret and self._tenant_id):
                 raise ValueError("Missing TEAMS_CLIENT_ID/SECRET/TENANT_ID for attachment auth")
@@ -468,7 +468,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 resp.raise_for_status()
                 payload = resp.json()
             expires_in = float(payload.get("expires_in", 3600) or 3600)
-            self._bf_token_cache = (payload["access_token"], time.monotonic() + expires_in)
+            self._bf_token_cache = (payload["access_token"], deadline_clock() + expires_in)
             return self._bf_token_cache[0]
 
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:

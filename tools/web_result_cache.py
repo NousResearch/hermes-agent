@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 import time
+import hermes_time
 from contextlib import suppress
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -97,7 +98,7 @@ class SearchMemo:
         key = self._key(provider, query, limit)
         with self._store_lock:
             hit = self._store.get(key)
-            if hit is None or time.monotonic() >= hit[0]:
+            if hit is None or hermes_time.deadline_clock() >= hit[0]:
                 self._store.pop(key, None)
                 return None
         logger.info("web_search cache hit: %r via %s", query, provider)
@@ -109,7 +110,7 @@ class SearchMemo:
             return
         key = self._key(provider, query, limit)
         with self._store_lock:
-            now = time.monotonic()  # opportunistic expiry sweep bounds memory
+            now = hermes_time.deadline_clock()  # opportunistic expiry sweep bounds memory
             for k in [k for k, (exp, _) in self._store.items() if now >= exp]:
                 del self._store[k]
             self._store[key] = (now + ttl_seconds(), _deep_copy(response))

@@ -3,6 +3,7 @@ fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runti
 import logging
 import math
 import time
+import hermes_time
 
 from agent.error_classifier import FailoverReason
 
@@ -47,8 +48,8 @@ def _arm_rate_limit_cooldown(
 ) -> int | None:
     """Arm the primary cooldown until the provider reset, or use exponential backoff.
 
-    ``reset_at`` is an absolute wall-clock timestamp while ``_rate_limited_until`` is monotonic;
-    convert through a duration so wall-clock epoch values never enter the monotonic comparison.
+    ``reset_at`` is an absolute wall-clock timestamp while ``_rate_limited_until`` uses the suspend-inclusive deadline clock;
+    convert through a duration so wall-clock epoch values never enter the deadline comparison.
     Missing, invalid, or expired provider resets retain the 60s → 2m → ... → 4h fallback.
     Only arm when leaving the primary: chain-switching from an active fallback means the primary
     was not the failing source. Return the armed cooldown in seconds, or None when not armed.
@@ -68,7 +69,7 @@ def _arm_rate_limit_cooldown(
     else:
         backoff_seconds = min(60 * (2 ** backoff_count), 14400)
         source = "exponential fallback"
-    agent._rate_limited_until = time.monotonic() + backoff_seconds
+    agent._rate_limited_until = hermes_time.deadline_clock() + backoff_seconds
     logging.info(
         "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",
         backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1, source,

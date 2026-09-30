@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 import time
+import hermes_time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1275,7 +1276,7 @@ def restore_primary_runtime(agent) -> bool:
     # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn
     # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
     # the session. Fixes #20465.
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+    if getattr(agent, "_rate_limited_until", 0) > hermes_time.deadline_clock():
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()

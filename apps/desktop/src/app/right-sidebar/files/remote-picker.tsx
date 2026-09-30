@@ -4,11 +4,13 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { FieldHint } from '@/components/ui/field'
+import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { createRemoteDir, readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { isSubmitEnter } from '@/lib/ime'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 
 function clean(path: string) {
@@ -42,6 +44,20 @@ function childPath(parent: string, name: string) {
   return base === '/' ? `/${name}` : `${base}/${name}`
 }
 
+/**
+ * The picker's filter semantics: case-insensitive substring match on the
+ * folder name, query trimmed. Exported for tests.
+ */
+export function filterFolderEntries<T extends { name: string }>(entries: T[], query: string): T[] {
+  const needle = normalize(query)
+
+  if (!needle) {
+    return entries
+  }
+
+  return entries.filter(entry => entry.name.toLowerCase().includes(needle))
+}
+
 interface PendingSelection {
   defaultPath: string
   resolve: (paths: string[]) => void
@@ -60,6 +76,7 @@ export function RemoteFolderPicker() {
   const [newFolderName, setNewFolderName] = useState<string | null>(null)
   const [newFolderError, setNewFolderError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     setDesktopFsRemotePicker({
@@ -69,6 +86,7 @@ export function RemoteFolderPicker() {
           setCurrentPath(defaultPath)
           setNewFolderName(null)
           setNewFolderError(null)
+          setQuery('')
           setPending({ defaultPath, resolve, title: options?.title || r.remotePickerTitle })
         })
     })
@@ -132,6 +150,8 @@ export function RemoteFolderPicker() {
     return out
   }, [currentPath])
 
+  const visibleEntries = useMemo(() => filterFolderEntries(entries, query), [entries, query])
+
   const cancelNewFolder = () => {
     setNewFolderName(null)
     setNewFolderError(null)
@@ -139,6 +159,9 @@ export function RemoteFolderPicker() {
 
   const navigate = (path: string) => {
     cancelNewFolder()
+    // Navigating drops the filter — the query named a folder in the
+    // listing you just left.
+    setQuery('')
     setCurrentPath(path)
   }
 
@@ -147,6 +170,7 @@ export function RemoteFolderPicker() {
     setPending(null)
     setEntries([])
     setError(null)
+    setQuery('')
     cancelNewFolder()
   }
 
@@ -182,10 +206,18 @@ export function RemoteFolderPicker() {
         bodyClassName="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
         className="h-[min(36rem,calc(100vh-4rem))] max-w-lg"
         onEscapeKeyDown={event => {
-          // One cancel gesture does one thing: Escape abandons the name first.
+          // One cancel gesture does one thing: Escape abandons the folder
+          // name first, then clears the filter, then may dismiss.
           if (newFolderName !== null) {
             event.preventDefault()
             cancelNewFolder()
+
+            return
+          }
+
+          if (query !== '') {
+            event.preventDefault()
+            setQuery('')
           }
         }}
       >
@@ -209,6 +241,18 @@ export function RemoteFolderPicker() {
                 {crumb.label}
               </button>
             ))}
+          </div>
+
+          <div className="shrink-0 border-b border-border/50 px-3 py-2">
+            <Input
+              aria-label={r.remotePickerSearch}
+              autoFocus
+              onChange={event => setQuery(event.target.value)}
+              placeholder={r.remotePickerSearch}
+              prefix={<Codicon name="search" size="0.875rem" />}
+              size="sm"
+              value={query}
+            />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -262,9 +306,16 @@ export function RemoteFolderPicker() {
               <div className="px-2 py-3 text-xs text-destructive">{r.unreadableBody(error)}</div>
             ) : entries.length === 0 ? (
               <div className="px-2 py-3 text-xs text-muted-foreground">{r.emptyBody}</div>
+            ) : visibleEntries.length === 0 ? (
+              <div className="px-2 py-3 text-xs text-muted-foreground">{r.remotePickerNoMatches}</div>
             ) : (
-              entries.map(entry => (
-                <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => navigate(entry.path)} />
+              visibleEntries.map(entry => (
+                <FolderRow
+                  highlight={query}
+                  key={entry.path}
+                  name={pathName(entry.path)}
+                  onClick={() => navigate(entry.path)}
+                />
               ))
             )}
           </div>
@@ -295,7 +346,18 @@ export function RemoteFolderPicker() {
   )
 }
 
-function FolderRow({ disabled = false, name, onClick }: { disabled?: boolean; name: string; onClick: () => void }) {
+function FolderRow({
+  disabled = false,
+  highlight,
+  name,
+  onClick
+}: {
+  disabled?: boolean
+  /** Active filter query — matched characters get accent emphasis. */
+  highlight?: string
+  name: string
+  onClick: () => void
+}) {
   return (
     <button
       className="row-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-(--ui-text-secondary) hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
@@ -304,7 +366,7 @@ function FolderRow({ disabled = false, name, onClick }: { disabled?: boolean; na
       type="button"
     >
       <Codicon name="folder" size="0.875rem" />
-      <span className="min-w-0 truncate">{name}</span>
+      <span className="min-w-0 truncate">{highlight ? <HighlightMatches query={highlight} text={name} /> : name}</span>
     </button>
   )
 }

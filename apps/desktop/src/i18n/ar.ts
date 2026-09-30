@@ -3043,6 +3043,8 @@ export const ar = defineLocale({
     remotePickerCreateFolder: 'إنشاء المجلد',
     remotePickerInvalidFolderName: 'أدخل اسم مجلد واحد بدون شرطات مائلة.',
     remotePickerCreateFolderFailed: error => `تعذر إنشاء المجلد: ${error}`,
+    remotePickerSearch: 'ابحث في المجلدات…',
+    remotePickerNoMatches: 'لا توجد مجلدات تطابق بحثك.',
     folderTip: cwd => cwd,
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',

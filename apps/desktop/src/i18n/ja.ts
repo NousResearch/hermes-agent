@@ -3538,6 +3538,8 @@ export const ja = defineLocale({
     remotePickerCreateFolder: 'フォルダーを作成',
     remotePickerInvalidFolderName: 'スラッシュを含まない 1 つのフォルダー名を入力してください。',
     remotePickerCreateFolderFailed: error => `フォルダーを作成できませんでした (${error})。`,
+    remotePickerSearch: 'フォルダーを検索…',
+    remotePickerNoMatches: '検索に一致するフォルダーがありません。',
     folderTip: cwd => cwd,
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',

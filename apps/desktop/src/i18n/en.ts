@@ -4816,6 +4816,8 @@ export const en: Translations = {
     remotePickerCreateFolder: 'Create folder',
     remotePickerInvalidFolderName: 'Enter a single folder name, without slashes.',
     remotePickerCreateFolderFailed: error => `Could not create the folder (${error}).`,
+    remotePickerSearch: 'Search folders…',
+    remotePickerNoMatches: 'No folders match your search.',
     folderTip: cwd => cwd,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',

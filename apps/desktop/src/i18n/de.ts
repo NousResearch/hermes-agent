@@ -5208,6 +5208,8 @@ export const deOverrides = {
     remotePickerCreateFolder: 'Ordner erstellen',
     remotePickerInvalidFolderName: 'Gib einen einzelnen Ordnernamen ohne Schrägstriche ein.',
     remotePickerCreateFolderFailed: error => `Der Ordner konnte nicht erstellt werden (${error}).`,
+    remotePickerSearch: 'Ordner suchen…',
+    remotePickerNoMatches: 'Keine Ordner entsprechen der Suche.',
     folderTip: cwd => cwd,
     openFolder: 'Ordner öffnen',
     refreshTree: 'Baum aktualisieren',

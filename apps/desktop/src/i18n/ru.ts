@@ -3772,6 +3772,8 @@ export const ru = defineLocale({
     remotePickerCreateFolder: 'Создать папку',
     remotePickerInvalidFolderName: 'Введите одно имя папки без косых черт.',
     remotePickerCreateFolderFailed: error => `Не удалось создать папку (${error}).`,
+    remotePickerSearch: 'Поиск папок…',
+    remotePickerNoMatches: 'Нет папок, соответствующих запросу.',
     folderTip: cwd => cwd,
     openFolder: 'Открыть папку',
     refreshTree: 'Обновить дерево',

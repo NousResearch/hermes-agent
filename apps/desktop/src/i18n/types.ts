@@ -4065,6 +4065,8 @@ export interface Translations {
     remotePickerCreateFolder: string
     remotePickerInvalidFolderName: string
     remotePickerCreateFolderFailed: (error: string) => string
+    remotePickerSearch: string
+    remotePickerNoMatches: string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string

@@ -199,6 +199,7 @@ def build_write_denied_paths(home: str) -> set[str]:
         os.path.join("cache", "bws_cache.json"),
         os.path.join("cache", "bws_cache.enc.json"),
         os.path.join("cache", "op_cache.json"),
+        "slack_tokens.json", "google_chat_user_client_secret.json",
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
@@ -353,6 +354,8 @@ SECRET_STORE_FILES = (
     os.path.join("cache", "op_cache.json"),
     # Also denied as the vault/ tree; named so basename-only consumers catch them too.
     os.path.join("vault", "vault.key"), os.path.join("vault", "vault.json.enc"),
+    # Messaging-platform OAuth / bot tokens written by the adapters themselves.
+    "slack_tokens.json", "google_chat_user_client_secret.json",
 )
 # Whole trees of secret material under HERMES_HOME / <root>. browser-profile/ is a copy of the
 # user's Cookies / Login Data; the platform session stores are logged-in messaging accounts.
@@ -362,6 +365,7 @@ SECRET_STORE_DIRS = (
     os.path.join("platforms", "pairing"), "pairing",
     os.path.join("platforms", "whatsapp", "session"), os.path.join("whatsapp", "session"),
     os.path.join("platforms", "matrix", "store"), os.path.join("matrix", "store"),
+    "google_chat_user_tokens", os.path.join("weixin", "accounts"),
 )
 
 # Directory-prefix read denies: (subdir, message for the directory itself, message for a file

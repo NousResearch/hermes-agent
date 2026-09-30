@@ -93,3 +93,25 @@ def test_current_and_unversioned_configs_migrate_plaintext(tmp_path, monkeypatch
     assert get_env_value(raw["model"]["key_env"]) == "sk-current-secret"
     assert "sk-current-secret" not in path.read_text(encoding="utf-8")
     assert not results["warnings"]
+
+
+@pytest.mark.parametrize("binding", ["key_env", "api_key_env"])
+def test_migration_preserves_populated_declared_binding(tmp_path, monkeypatch, binding):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SHARED_PROVIDER_KEY", "sk-current-bound-secret")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "_config_version": 49,
+        "model": {"provider": "custom", "default": "model-a",
+                  "base_url": "https://bound.example/v1", binding: "SHARED_PROVIDER_KEY",
+                  "api_key": "sk-stale-inline-secret"},
+    }), encoding="utf-8")
+    from hermes_cli.config import get_env_value
+    from hermes_cli.config_migrations import run_migrations
+
+    run_migrations(49, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["model"]["key_env"] == "SHARED_PROVIDER_KEY"
+    assert "api_key" not in raw["model"] and "api_key_env" not in raw["model"]
+    assert get_env_value("SHARED_PROVIDER_KEY") == "sk-current-bound-secret"
+    assert "sk-stale-inline-secret" not in path.read_text(encoding="utf-8")

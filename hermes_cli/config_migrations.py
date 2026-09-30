@@ -689,10 +689,13 @@ def _migrate_to_52(results: Dict[str, Any], quiet: bool) -> None:
         if not secret or (secret.startswith("${") and secret.endswith("}")):
             return
         key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
-        key_env = key_env or _c.custom_endpoint_key_env(identity)
-        _c.save_env_value(key_env, secret)
-        if (_c.get_env_value(key_env) or "").strip() != secret:
-            raise RuntimeError(f"failed to persist {key_env} to .env")
+        # A declared, populated binding is authoritative. Removing stale
+        # plaintext must not rotate a key another configured endpoint uses.
+        if not key_env or not (_c.get_env_value(key_env) or "").strip():
+            key_env = key_env or _c.custom_endpoint_key_env(identity)
+            _c.save_env_value(key_env, secret)
+            if (_c.get_env_value(key_env) or "").strip() != secret:
+                raise RuntimeError(f"failed to persist {key_env} to .env")
         entry["key_env"] = key_env
         entry.pop("api_key_env", None)
         entry.pop("api_key", None)

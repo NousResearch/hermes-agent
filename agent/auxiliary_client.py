@@ -5053,8 +5053,11 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
 
 
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
-    """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
+    """Custom endpoint or the managed llama.cpp runtime for a bare local alias."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
+    from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+
+    managed_llamacpp = req.original_provider in LLAMACPP_ALIASES
     # wrap_base: base for the Anthropic-wrap decision. anthropic_messages must keep the raw
     # /anthropic base while the plain OpenAI client uses the /v1-rewritten custom_base (never
     # /anthropic/chat/completions). Empty means "use custom_base".
@@ -5082,7 +5085,21 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
-    elif main_runtime:
+    elif managed_llamacpp:
+        # Bare llama.cpp routes use the same managed router as the main-model path.
+        # Its bearer key lives with the endpoint, not in OPENAI_API_KEY or the fallback entry.
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            endpoint = resolve_llamacpp_endpoint(config=load_config())
+        except Exception as exc:
+            logger.warning("resolve_provider_client: local model endpoint lookup failed: %s", exc)
+            endpoint = None
+        if endpoint:
+            custom_base = _to_openai_base_url(str(endpoint["base_url"])).strip()
+            custom_key = str(endpoint.get("api_key") or "no-key-required")
+    if not req.explicit_base_url and not custom_base and main_runtime:
         # Reuse main_runtime's concrete base_url + api_key for a named custom provider;
         # re-resolving from bare "custom" loses the name and lands on the wrong provider.
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —

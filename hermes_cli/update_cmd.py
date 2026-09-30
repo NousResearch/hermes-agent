@@ -270,27 +270,59 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait.
 
     Every spawn carries ``windows_hide_flags()``: the updater's git children run under the
-    console-less desktop backend, and a bare spawn flashes a console window each (#117781)."""
+    console-less desktop backend, and a bare spawn flashes a console window each (#117781).
+    """
     from hermes_cli._subprocess_compat import windows_hide_flags
-    # ``_no_prompt_git_kwargs()`` already carries the hide flags for network
-    # calls, so layer them instead of passing the keyword twice.
-    spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
-    spawn_kwargs.setdefault("creationflags", windows_hide_flags())
-    try:
+    project_root = _m().PROJECT_ROOT if cwd is None else cwd
+    if not network:
         return subprocess.run(
-            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+            git_cmd + args, cwd=project_root, capture_output=True,
             text=True, encoding="utf-8", errors="replace", check=check,
-            **spawn_kwargs)
+            creationflags=windows_hide_flags())
+
+    spawn_kwargs = {
+        "cwd": project_root,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        **_no_prompt_git_kwargs(),
+    }
+    proc = subprocess.Popen(git_cmd + args, **spawn_kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=NETWORK_GIT_TIMEOUT_SECONDS)
+        result = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     except subprocess.TimeoutExpired as exc:
-        # subprocess.run already killed the child; the checkout stays consistent because
-        # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
-        # so every caller's existing stderr path prints one clear line.
+        # Popen.communicate() does not kill the process. On Windows, terminate the
+        # whole tree: git-remote-https.exe inherits the pipes and can otherwise keep
+        # cleanup communicate() blocked forever after git.exe exits.
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=windows_hide_flags())
+            except (OSError, subprocess.SubprocessError):
+                proc.kill()
+        else:
+            proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired as cleanup_exc:
+            proc.kill()
+            stdout = cleanup_exc.stdout or exc.stdout or ""
+            stderr = cleanup_exc.stderr or exc.stderr or ""
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
         result = subprocess.CompletedProcess(
-            exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
-        if check:
-            raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
-        return result
+            exc.cmd, 124, stdout=stdout or "",
+            stderr=(stderr or "") +
+            f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
+    return result
 
 
 def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:

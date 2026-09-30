@@ -83,11 +83,21 @@ def _any_mcp_connected() -> bool:
     return _discovery_registered_servers(get_mcp_status() or [])
 
 
+def _servers_awaiting_connect() -> list[str]:
+    from tools.mcp_tool_discovery import mcp_servers_awaiting_connect
+
+    pending = mcp_servers_awaiting_connect()
+    return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one background MCP discovery thread per profile home.
 
     If the first run exits without connecting any server (e.g. startup cancellation / OOM restart),
     later calls may retry instead of pinning the profile in "already started" with zero MCP tools.
+    Likewise a server added to ``mcp_servers`` after that run (``hermes mcp add`` against a running
+    Desktop backend) is connected by the next call, which every agent build makes, so a new session
+    gets its tools without a reload (#76954). Discovery is additive: live servers are untouched.
     """
     home_key = hermes_home_key()
     with _mcp_discovery_lock:
@@ -96,14 +106,19 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             if thread is not None and thread.is_alive():
                 return
             try:
-                if _any_mcp_connected():
-                    return
+                connected = _any_mcp_connected()
+                pending = _servers_awaiting_connect() if connected else []
             except Exception:
                 return
-            logger.warning(
-                "Background MCP discovery previously exited with no connected "
-                "servers; retrying discovery thread"
-            )
+            if connected and not pending:
+                return
+            if connected:
+                logger.info("MCP server(s) %s not connected yet; running discovery", ", ".join(pending))
+            else:
+                logger.warning(
+                    "Background MCP discovery previously exited with no connected "
+                    "servers; retrying discovery thread"
+                )
             _mcp_discovery_started.discard(home_key)
             _mcp_discovery_thread.pop(home_key, None)
 

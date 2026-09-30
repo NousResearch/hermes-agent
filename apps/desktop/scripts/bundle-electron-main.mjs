@@ -56,7 +56,9 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
   }
   await build({
     ...common,
-    entryPoints: [join(source, 'apps/desktop/electron/main.ts')],
+    // entry.ts picks the Linux ozone platform (native Wayland/WSLg) and
+    // relaunches before main.ts loads; Electron reads it only from argv.
+    entryPoints: [join(source, 'apps/desktop/electron/entry.ts')],
     format: 'esm',
     outfile: join(out, 'electron-main.mjs'),
     banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" + envBanner },

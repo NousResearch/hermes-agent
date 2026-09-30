@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
@@ -30,7 +30,9 @@ _IMPORT_MESSAGE_TEXT_FIELDS = (
     "tool_call_id", "tool_name", "effect_disposition", "finish_reason",
     "reasoning", "reasoning_content", "platform_message_id", "message_id",
 )
-_IMPORT_MESSAGE_JSON_FIELDS = ("reasoning_details", "codex_reasoning_items", "codex_message_items")
+_IMPORT_MESSAGE_JSON_FIELDS = (
+    "reasoning_details", "codex_reasoning_items", "codex_message_items", "absorbed_message_uids", "tool_call_uids",
+)
 _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
                            system_prompt_hash,
@@ -257,9 +259,10 @@ class SessionPortabilityMixin:
         return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Titled sessions whose first user turn was a ``/skill`` invocation (their titles
-        describe the expanded skill body, not the request). Returns ``id``, ``title`` and
-        the first-turn ``content`` so callers can re-derive what was typed. Newest first."""
+        """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway
+        auto-load scaffold (their titles describe the expanded skill body, not the
+        request). Returns ``id``, ``title`` and the first-turn ``content`` so callers can
+        re-derive what was typed. Newest first."""
         rows = self._read_rows("""
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -269,10 +272,10 @@ class SessionPortabilityMixin:
                       AND m2.content IS NOT NULL
                     ORDER BY m2.timestamp, m2.id LIMIT 1
                 )
-                WHERE s.title IS NOT NULL AND m.content LIKE ?
+                WHERE s.title IS NOT NULL AND (m.content LIKE ? OR m.content LIKE ?)
                 ORDER BY s.started_at DESC
                 LIMIT ?
-                """, (SKILL_SCAFFOLD_SQL_LIKE, int(limit)))
+                """, (SKILL_SCAFFOLD_SQL_LIKE, AUTO_LOAD_SCAFFOLD_SQL_LIKE, int(limit)))
         return [dict(row) for row in rows]
 
     # ── Export ─────────────────────────────────────────────────────────────

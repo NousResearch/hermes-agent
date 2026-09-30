@@ -774,9 +774,29 @@ export function TreeGroup({
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
-          marker document-wide lookups filter on (see pane-visibility.ts). */}
+          marker document-wide lookups filter on (see pane-visibility.ts).
+          The body carries the zone's right-click menu too: a pane without a
+          header (no strip showing) otherwise has no Close anywhere on screen
+          (#92500) — same ZoneMenu the strip and the edit veil already serve. */}
       {(!node.minimized || mountedPanes.length > 0 || hostedPanes.length > 0) && (
-        <PaneBody hidden={Boolean(node.minimized)}>
+        <PaneBody
+          hidden={Boolean(node.minimized)}
+          wrap={
+            !isEmpty
+              ? body => (
+                  <ZoneMenu {...zoneMenu}>
+                    <div
+                      aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
+                      data-zone-body={node.id}
+                      style={{ display: 'contents' }}
+                    >
+                      {body}
+                    </div>
+                  </ZoneMenu>
+                )
+              : undefined
+          }
+        >
           {hostedPanes.map(paneId => (
             <KeepAlivePaneSlot
               groupId={node.id}
@@ -799,7 +819,7 @@ export function TreeGroup({
               return (
                 <div
                   aria-hidden={!isActive || undefined}
-                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible opacity-0')}
                   inert={!isActive || undefined}
                   key={paneId}
                   {...hiddenPaneProps(!isActive)}

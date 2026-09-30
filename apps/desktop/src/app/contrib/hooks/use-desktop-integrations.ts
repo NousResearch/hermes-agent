@@ -5,6 +5,7 @@ import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-li
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { commandFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
@@ -12,6 +13,7 @@ import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
+import { recordAction } from '@/store/desktop-metrics'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -37,7 +39,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
@@ -120,7 +122,12 @@ export function useDesktopIntegrations({
   // This ref is a one-time lifecycle latch, not a mirror of reactive atom state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    if (!profileReady || isHudWindow() || isBrowserWindow()) {
+    // A peer instance window (Ctrl+Shift+N / New Window) boots on the fresh
+    // draft route by design: it must not replay the primary window's
+    // remembered-route/remembered-session restore, which lands it back on the
+    // very session Window 1 has open (#74948). Connections' source
+    // restoration already skips peers for the same reason.
+    if (!profileReady || isHudWindow() || isBrowserWindow() || isPeerInstanceWindow()) {
       return
     }
 
@@ -239,7 +246,14 @@ export function useDesktopIntegrations({
     // non-overlay route (a page like /skills, or a session route) per profile.
     // Session-shaped routes require an explicit matching owner; unresolved and
     // wrong-profile rows must not replace known-safe navigation.
-    if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
+    // The resume-exhausted session must not be written back into remembered
+    // navigation: the cleanup effect above drops it once, but this
+    // persistence effect re-runs on every session-list refresh while its
+    // deps are unchanged — without the barrier the dead id outlives every
+    // restart and the window boots into the resume-error screen each time.
+    const exhausted = routedSessionId !== null && routedSessionId === resumeExhaustedSessionId
+
+    if (routedSessionId && !exhausted && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
       // A delegate child (source='subagent') is never itself a rememberable
       // destination: it is invisible in the sidebar, so a restart would resume
       // an orphan chat while the sidebar highlights its parent (#56983).
@@ -266,6 +280,7 @@ export function useDesktopIntegrations({
     locationPathname,
     navigate,
     profileReady,
+    resumeExhaustedSessionId,
     resumeLastSession,
     routedSessionId,
     sessions
@@ -476,6 +491,10 @@ export function useDesktopIntegrations({
   // app-level meaning to fall back to; an unfocused swipe is a no-op.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
+      if (commandFocusedTerminal(command)) {
+        return
+      }
+
       if (!commandFocusedPreview(command) && command === 'reload') {
         window.location.reload()
       }
@@ -486,7 +505,10 @@ export function useDesktopIntegrations({
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => {
+      recordAction('workspace.openFolder', 'menu')
+      void openFolderAsProject()
+    })
 
     return () => unsubscribe?.()
   }, [])

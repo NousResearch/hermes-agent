@@ -266,7 +266,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
         mark = f"echo {sentinel}"
         rest = "".join(f"{mark}; {cmd}; " for cmd in more)
-        result = self._exec(f"{mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
+        # xtrace off first: a traced ``+ echo <sentinel>`` line is an extra separator, and the
+        # traces of the transport commands would land inside the payload segments.
+        result = self._exec(f"{{ set +x; }} 2>/dev/null; {mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
         segments = _split_segments(result.stdout or "", sentinel)
         if len(segments) != len(more) + 3:
             return None, None, result
@@ -466,7 +468,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _expand_path(self, path: str) -> str:
         """Expand ``~`` / ``~user`` via the backend's shell (its HOME, not the
-        host's). Must run BEFORE shell escaping — ~ doesn't expand in quotes."""
+        host's). A host path under the configured workspace mount is rewritten
+        to that container path first, so a Windows drive path is readable
+        inside Docker. Must run BEFORE shell escaping — ~ doesn't expand in quotes."""
+        from tools.terminal_tool_config import translate_mounted_host_path
+        host_root = getattr(self.env, "host_cwd", None)
+        container_root = getattr(self.env, "host_cwd_mount", None) or "/workspace"
+        translated = translate_mounted_host_path(path, host_root or "", container_root)
+        if translated:
+            return translated
         if not path or not path.startswith('~'):
             return path
         result = self._exec("echo $HOME")
@@ -1251,7 +1261,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """Delete a single file (directories rejected) via the backend's ``python -c``
         so one code path works on local/docker/ssh AND Windows shells (no ``rm``)."""
         path = self._expand_path(path)
-        denied = get_write_denied_error(path, verb="Delete")
+        # Delete removes the directory entry (a symlink itself, not its target), so
+        # the guards vet the entry as well as the target it resolves to.
+        denied = get_write_denied_error(path, verb="Delete", entry=True)
         if denied:
             return WriteResult(error=denied)
         # Path baked in via repr() for shell-independent quoting; no
@@ -1288,8 +1300,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def move_file(self, src: str, dst: str) -> WriteResult:
         src = self._expand_path(src)
         dst = self._expand_path(dst)
+        # Entry-level op like delete_file: vet both entries, not just their targets.
         for p in (src, dst):
-            denied = get_write_denied_error(p, verb="Move")
+            denied = get_write_denied_error(p, verb="Move", entry=True)
             if denied:
                 return WriteResult(error=denied)
         result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")
@@ -1638,53 +1651,3 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
         return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import ClassVar  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-from agent.file_safety import build_write_denied_paths  # noqa: F401,E402
-from agent.file_safety import build_write_denied_prefixes  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import posixpath  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-MAX_LINES = 2000
-
-MAX_LINE_LENGTH = 2000
-
-WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
-
-WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_READ_LIMIT': ('tools.file_operations_common', 'DEFAULT_READ_LIMIT'),
-    'DEFAULT_READ_OFFSET': ('tools.file_operations_common', 'DEFAULT_READ_OFFSET'),
-    'DEFAULT_SEARCH_LIMIT': ('tools.file_operations_common', 'DEFAULT_SEARCH_LIMIT'),
-    'DEFAULT_SEARCH_OFFSET': ('tools.file_operations_common', 'DEFAULT_SEARCH_OFFSET'),
-    'LINTERS': ('tools.file_operations_lint', 'LINTERS'),
-    'LintResult': ('tools.file_operations_common', 'LintResult'),
-    'MAX_FILE_SIZE': ('tools.transcription_common', 'MAX_FILE_SIZE'),
-    'SEARCH_PRUNE_DIR_NAMES': ('agent.search_policy', 'SEARCH_PRUNE_DIR_NAMES'),
-    'SearchMatch': ('tools.file_operations_common', 'SearchMatch'),
-    'build_write_denied_paths': ('agent.file_safety', 'build_write_denied_paths'),
-    'build_write_denied_prefixes': ('agent.file_safety', 'build_write_denied_prefixes'),
-    'tool_interrupt': ('tools', 'interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

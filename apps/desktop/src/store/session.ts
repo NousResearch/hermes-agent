@@ -16,7 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { isSessionRemovalPending } from './session-removal'
+import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -169,7 +169,9 @@ export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfil
   for (const [key, entry] of [...sessionOwnerHints]) {
     const { route } = entry
 
-    if (route.profile !== from && route.targetProfile !== from) {
+    // Local-connection hints only, like every other rename family: a same-named
+    // profile on another connection was not renamed.
+    if (route.connectionId !== 'local' || (route.profile !== from && route.targetProfile !== from)) {
       continue
     }
 
@@ -326,14 +328,19 @@ export function setRememberedRoute(path: null | string, profile: string): void {
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
+  const profile = connection?.profile?.trim() || 'default'
+
   if (connection?.mode !== 'remote') {
-    return WORKSPACE_CWD_KEY
+    // One desktop runs several local profiles, and one shared key let the last
+    // profile's project leak into every other profile's new chats (#96834).
+    // The default profile keeps the bare key — byte-identical for
+    // single-profile users, the connection-scoped.ts contract.
+    return profile === 'default' ? WORKSPACE_CWD_KEY : `${WORKSPACE_CWD_KEY}.profile.${encodeURIComponent(profile)}`
   }
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
-  const profile = encodeURIComponent(connection.profile || 'default')
 
-  return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
+  return `${WORKSPACE_CWD_KEY}.remote.${base}.${encodeURIComponent(profile)}`
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
@@ -410,9 +417,13 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
     return
   }
 
-  if (remembered) {
-    const { cwd } = await sanitize(remembered)
-    seedLiveCwd(cwd)
+  // An empty memory is meaningful here too: on a local profile switch the
+  // live cwd still belongs to the outgoing profile, so clear it rather than
+  // let the incoming profile's new chats start there (#96834).
+  const { cwd } = remembered ? await sanitize(remembered) : { cwd: '' }
+
+  if (shouldPublish() && !$activeSessionId.get()) {
+    setCurrentCwdTransient(cwd)
   }
 }
 
@@ -704,12 +715,28 @@ export function mergeSessionPage(
     merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
   )
 
+  // The tombstone set is re-read here, not at the caller: optimistic removal
+  // can land between `previous` being captured and this merge committing (a
+  // messaging "Load more" holds its slice for a long time), and a row the
+  // user archived or deleted must not survive through the keep set — the
+  // settle grace keeps a just-archived chat "recently settled" for 30s, which
+  // is exactly the window the survivor path used to resurrect it (#118156).
+  // A tombstone matches ANY id the row has answered to (tip, root, and every
+  // intermediate lineage segment), same as dropTombstoned applies to incoming
+  // rows; a failed RPC untombstones immediately, so the filter is only ever
+  // as sticky as the removal itself.
+  const tombstones = $removedSessionIds.get()
+
+  const tombstoned = (session: SessionInfo): boolean =>
+    tombstones.size > 0 && tombstoneRowIds(session).some(id => tombstones.has(id))
+
   const survivors = previous.filter(
     session =>
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
       // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
       // open tab must not resurrect it into the sidebar (#113273).
       !session.hidden &&
+      !tombstoned(session) &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       !incomingLineageIdMembers.has(identity(session)) &&
@@ -881,6 +908,44 @@ export function touchSessionActivity(
 
     return changed ? next : prev
   })
+}
+
+/** Patch a session's title across EVERY sidebar slice, matching the row by
+ *  any id the conversation has answered to (`sessionMatchesStoredId`) — a
+ *  compression tip, its root, and a middle segment all name the same chat.
+ *  A rename writes one title; every surface that renders the row (recents,
+ *  cron, messaging) must show it without waiting for a profile switch to
+ *  force a refetch (#123337). Reference-stable per slice when nothing
+ *  matched or the title is already current. */
+export function applySessionTitle(storedSessionId: string | null | undefined, title: string | null): void {
+  const id = storedSessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const next = title?.trim() || null
+
+  const patch = (rows: SessionInfo[]): SessionInfo[] => {
+    let changed = false
+
+    const mapped = rows.map(session => {
+      if (!sessionMatchesStoredId(session, id) || session.title === next) {
+        return session
+      }
+
+      changed = true
+
+      return { ...session, title: next }
+    })
+
+    return changed ? mapped : rows
+  }
+
+  setSessions(patch)
+  setCronSessions(patch)
+  setMessagingSessions(patch)
+  setUnlistedSessionOwnerRows(patch)
 }
 
 export const $connection = atom<HermesConnection | null>(null)
@@ -1527,6 +1592,12 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
+
+// The fresh-draft identity lives in store/composer.ts with the draft stash it
+// keys; re-exported here because session.ts is where new-chat lifecycles rotate
+// it (startFreshSessionDraft) and where most call sites already import from.
+export { $freshDraftKey, rotateFreshDraftKey } from './composer'
+
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
 export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
@@ -1578,6 +1649,19 @@ export const setCurrentProvider = (next: Updater<string>) => {
     persistString(key, $currentProvider.get() || null)
   }
 }
+
+/** Move the visible model/provider without claiming it as the composer's sticky
+ *  selection.
+ *
+ *  For values that come from the RUNTIME rather than the user: the periodic
+ *  `session.info` heartbeat's resolved model/provider (e.g. the generic `custom`
+ *  billing class a named provider resolves to). Persisting those through
+ *  `setCurrentModel`/`setCurrentProvider` overwrote the user's actual composer
+ *  pick in localStorage on every heartbeat, so a later new chat followed the
+ *  last-seen runtime class instead of the selection or the Settings default.
+ */
+export const setCurrentModelTransient = (next: Updater<string>) => updateAtom($currentModel, next)
+export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom($currentProvider, next)
 
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)

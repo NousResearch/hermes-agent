@@ -1,10 +1,12 @@
 import { atom, computed } from 'nanostores'
 
-import { readJson, readKey, writeKey } from '@/lib/storage'
+import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
-import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -41,7 +43,10 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  /** `directory`/`missing` are typed non-previewable results from main-process
+   * normalization (#101683): they never reach `openPreview` — callers branch on
+   * them for the native folder action / not-found reporting instead. */
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
@@ -209,11 +214,32 @@ let viewKey = 'default'
 
 export const $previewTabs = atom<PreviewTab[]>([])
 
+// Adoption phase: emissions that carry storage THIS MODULE JUST READ, not a
+// change. nanostores' subscribe fires immediately, and writing what was just
+// read back is a data-loss clobber: every renderer boots against storage it
+// has not adopted yet, and echoing the empty view back overwrites the real
+// record before adoption can read it. A legacy single-array store is wiped
+// this way before `pendingLegacyTabs` is ever adopted; a bucket store loses
+// its `default` bucket the same way.
+let adoptingStoredTabs = true
+
 $previewTabs.subscribe(tabs => {
+  if (adoptingStoredTabs) {
+    return
+  }
+
   // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
 })
+
+// Seed the view with this renderer's own bucket. Without it the primary
+// profile's rail never restores: `viewKey` already IS 'default', so
+// `setPreviewScope` early-returns and nothing else moves the bucket into the
+// atom. Suppressed like the creation emission above — a persist here would
+// echo the just-read record back out (wiping a legacy store before adoption).
+$previewTabs.set(tabsByProfile[viewKey] ?? [])
+adoptingStoredTabs = false
 
 /** Re-home the rail onto the profile that owns the chat on screen. Called by
  *  `session-states.ts` whenever the focused session (or its resolved owner)
@@ -225,6 +251,15 @@ export function setPreviewScope(scope: string) {
     return
   }
 
+  applyPreviewScope(next)
+}
+
+/** Swap the view onto `next`'s bucket (legacy tabs ride along into it). Split
+ *  from `setPreviewScope` so `adoptPersistedBrowserTab` can force a re-home
+ *  onto the bucket a persisted tab lives in — the same-key early return above
+ *  would skip exactly that case (a fresh pop-out renderer starts on 'default'
+ *  while the popped tab belongs to another profile). */
+function applyPreviewScope(next: string) {
   if (pendingLegacyTabs) {
     tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
     pendingLegacyTabs = null
@@ -387,27 +422,56 @@ export function commitBrowserTabLocation(tabId: string, url: string, title?: str
   )
 }
 
-/** Pull one tab from storage into this renderer's atom. A sibling window
- *  (the pop-out) may have committed a newer URL that we never saw. */
+/** Pull one tab out of shared storage into this renderer's view. Two callers,
+ *  two shapes (#119850):
+ *
+ *  - The docked mirror when a pop-out closes (`onBrowserPopoutClosed`): the
+ *    tab is already in this view, so adopt the newer URL/label the sibling
+ *    window committed — every bucket is fair game, because the sibling writes
+ *    through its own scoped view, which is not necessarily this one.
+ *  - A fresh pop-out renderer (`PreviewTilePane` in `?win=browser`): no
+ *    session ever pushes a scope there, so the scoped view starts empty. Find
+ *    the bucket that owns the tab and re-home the view onto it. Re-homing
+ *    rather than splicing the tab into the current bucket keeps this window's
+ *    later writes (address-bar navigation) in the OWNER's bucket — a splice
+ *    would duplicate the tab into the primary profile's rail.
+ *
+ *  Reads every profile bucket plus the pre-scoping single-array shape. */
 export function adoptPersistedBrowserTab(tabId: string) {
   if (!tabId) {
     return
   }
 
   try {
-    const raw = readKey(TABS_STORAGE_KEY)
+    const stored = readJson<unknown>(TABS_STORAGE_KEY)
 
-    if (!raw) {
+    if (!stored) {
       return
     }
 
-    const persisted = decodePreviewTabs(raw).find(tab => tab.id === tabId)
+    const buckets: Array<[string, PreviewTab[]]> = Array.isArray(stored)
+      ? [['default', parseTabList(stored)]]
+      : Object.entries(stored as Record<string, unknown>).map(
+          ([key, value]) => [normalizeProfileKey(key), parseTabList(value)] as [string, PreviewTab[]]
+        )
 
-    if (!persisted || persisted.target.kind !== 'url') {
+    if ($previewTabs.get().some(tab => tab.id === tabId)) {
+      const persisted = buckets.flatMap(([, tabs]) => tabs).find(tab => tab.id === tabId)
+
+      if (persisted?.target.kind === 'url') {
+        commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+      }
+
       return
     }
 
-    commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+    for (const [key, tabs] of buckets) {
+      if (tabs.some(tab => tab.id === tabId)) {
+        applyPreviewScope(key || 'default')
+
+        return
+      }
+    }
   } catch {
     // Storage can throw; the in-memory tab stays as it was.
   }
@@ -559,13 +623,33 @@ export function openBrowserTab() {
   const tabs = $previewTabs.get()
   const current = tabs.find(tab => tab.id === browserTabId(tabs))
 
+  recordFeatureUse('browser_pane')
   openPreview(current?.target ?? blankPage())
+}
+
+/** ⌘⇧L is a TOGGLE: show the Browser when it's away, fold it away when it's
+ *  the thing on screen. "Away" includes dismissed (Close/⌘W), hidden, or
+ *  parked behind a sibling tab — each re-opens through openBrowserTab's reveal
+ *  path with the page it was last showing. "On screen" means the mirrored
+ *  preview-tile pane the layout tree keeps is actually visible, i.e. not
+ *  dismissed/hidden/minimized AND holding its zone's active slot. */
+export function toggleBrowserTab() {
+  const id = browserTabId($previewTabs.get())
+
+  if (isPaneVisible(`${PREVIEW_TILE_PREFIX}:${id}`)) {
+    dismissTreePane(`${PREVIEW_TILE_PREFIX}:${id}`)
+
+    return
+  }
+
+  openBrowserTab()
 }
 
 /** Another Browser, always — the strip's "+". */
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
+  recordFeatureUse('browser_pane')
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
@@ -581,6 +665,7 @@ export function closeRightRailTab(tabId: string) {
 
   const next = current.filter(tab => tab.id !== tabId)
 
+  forgetBrowserPage(tabId)
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
@@ -605,17 +690,69 @@ export function closePreviewForSource(source: string): boolean {
   return closePreviewMatching(source)
 }
 
-/** Close the first tab whose source, url, or label matches any candidate.
- *  Empty candidates are a no-op so a missed match cannot wipe the rail —
- *  closing the whole pane is `closeRightRail`. */
-export function closePreviewMatching(...candidates: string[]): boolean {
+/** Close the first docked Browser tab whose current page URL matches.
+ *  Browsers keep navigation state outside their persisted target so matching
+ *  only target.url misses redirects and in-page navigation. */
+export function closeBrowserPreviewMatchingLiveUrl(...candidates: string[]): boolean {
+  const queries = new Set(
+    candidates
+      .map(value => {
+        try {
+          const url = new URL(value.trim())
+
+          return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+        } catch {
+          return ''
+        }
+      })
+      .filter(Boolean)
+  )
+
+  if (queries.size === 0) {
+    return false
+  }
+
+  const pages = $browserPages.get()
+  const popped = $poppedBrowserTabIds.get()
+  const tabs = $previewTabs.get()
+  const activeId = $rightRailActiveTabId.get()
+  const ordered = [...tabs.filter(tab => tab.id === activeId), ...tabs.filter(tab => tab.id !== activeId)]
+
+  const tab = ordered.find(item => {
+    if (item.target.kind !== 'url' || popped.has(item.id)) {
+      return false
+    }
+
+    const liveUrl = pages[item.id]?.url
+
+    if (!liveUrl) {
+      return false
+    }
+
+    try {
+      return queries.has(new URL(liveUrl).href)
+    } catch {
+      return false
+    }
+  })
+
+  if (!tab) {
+    return false
+  }
+
+  closeRightRailTab(tab.id)
+
+  return true
+}
+
+function closePreviewMatchingTabs(tabs: PreviewTab[], candidates: string[]): boolean {
   const queries = [...new Set(candidates.map(value => value.trim()).filter(Boolean))]
 
   if (queries.length === 0) {
     return false
   }
 
-  const tab = $previewTabs.get().find(item => {
+  const tab = tabs.find(item => {
     const fields = [item.target.source, item.target.url, item.target.label]
 
     return queries.some(query => fields.includes(query))
@@ -628,6 +765,22 @@ export function closePreviewMatching(...candidates: string[]): boolean {
   closeRightRailTab(tab.id)
 
   return true
+}
+
+/** Close the first tab whose source, url, or label matches any candidate.
+ *  Empty candidates are a no-op so a missed match cannot wipe the rail —
+ *  closing the whole pane is `closeRightRail`. */
+export function closePreviewMatching(...candidates: string[]): boolean {
+  return closePreviewMatchingTabs($previewTabs.get(), candidates)
+}
+
+/** Agent-driven close is scoped to the docked rail; an independent Browser
+ *  window owns popped tabs and must not lose its backing state here. */
+export function closeDockedPreviewMatching(...candidates: string[]): boolean {
+  const popped = $poppedBrowserTabIds.get()
+  const docked = $previewTabs.get().filter(tab => !popped.has(tab.id))
+
+  return closePreviewMatchingTabs(docked, candidates)
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it

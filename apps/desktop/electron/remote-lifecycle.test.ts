@@ -14,6 +14,7 @@ import {
   classifySshReuseProof,
   cleanupStale,
   connect,
+  DEFAULT_READY_TIMEOUT_MS,
   disconnect,
   expandRemotePath,
   fingerprintToken,
@@ -23,6 +24,7 @@ import {
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
+  MIN_READY_TIMEOUT_MS,
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
@@ -34,6 +36,7 @@ import {
   READY_RE,
   remotePidAlive,
   remoteSupportsSshOwnership,
+  resolveReadyTimeoutMs,
   scrapeReadyPort,
   spawnLogPath,
   spawnRemoteDashboard,
@@ -184,6 +187,8 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   assert.match(commands[0], /home\.parent\.name/)
   assert.match(commands[0], /profiles/)
   assert.match(commands[0], /\.hermes-update-in-progress/)
+  assert.match(commands[0], /marker\.unlink/)
+  assert.match(commands[0], /\/proc\/%d\/cmdline/)
 })
 
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
@@ -755,11 +760,134 @@ test.skipIf(process.platform === 'win32')(
         false,
         'a duplicate conflicting profile must remain foreign'
       )
+
+      const serveNamedProfile = spawnInstaller(['--profile', 'serve', 'serve', '--isolated', ...backendFlags])
+
+      assert.equal(await waitForEntrypoint(serveNamedProfile), true)
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          serveNamedProfile.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'serve'
+        ),
+        true,
+        'a profile named "serve" must not mask the real serve subcommand'
+      )
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          serveNamedProfile.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
+        false,
+        'a "serve"-named profile must still match the expected profile exactly'
+      )
     } finally {
       for (const process of children) {
         process.kill('SIGTERM')
       }
 
+      await rm(temp, { force: true, recursive: true })
+    }
+  }
+)
+
+test.skipIf(process.platform !== 'linux')(
+  'terminateOwnedDashboardForUpdate SIGTERMs a serve pinned to a "serve"-named profile',
+  async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
+    const installDir = path.join(temp, 'install dir')
+    const venvBin = path.join(installDir, 'venv', 'bin')
+    const pythonLink = path.join(venvBin, 'python')
+    const entrypoint = path.join(installDir, 'hermes')
+    const launcher = path.join(temp, 'hermes launcher')
+    const python = (await exec('command -v python3')).stdout.trim()
+    const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+
+    await mkdir(venvBin, { recursive: true })
+    await symlink(python, pythonLink)
+    await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
+    await writeFile(launcher, `#!/usr/bin/env bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await chmod(launcher, 0o755)
+
+    const child = spawn(
+      launcher,
+      [
+        '--profile',
+        'serve',
+        'serve',
+        '--isolated',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        '0',
+        '--ssh-session-token-file',
+        tokenPath,
+        '--ssh-owner-nonce',
+        SPAWN_NONCE
+      ],
+      { stdio: 'ignore' }
+    )
+
+    const exited = new Promise(resolve => child.once('exit', resolve))
+
+    try {
+      let execed = false
+
+      for (let attempt = 0; attempt < 40 && !execed; attempt += 1) {
+        const command = (await exec(`ps -ww -o command= -p ${child.pid}`)).stdout
+
+        execed = command.includes(entrypoint)
+
+        if (!execed) {
+          await new Promise(resolve => setTimeout(resolve, 25))
+        }
+      }
+
+      assert.equal(execed, true, 'wrapper must exec into the fake installer entrypoint')
+
+      const raw = await readFile(`/proc/${child.pid}/stat`, 'utf8')
+
+      const creationTime = `linux:${
+        raw
+          .slice(raw.lastIndexOf(')') + 2)
+          .trim()
+          .split(/\s+/)[19]
+      }`
+
+      const lock = ownedLock({
+        pid: child.pid,
+        profile: 'serve',
+        hermesPath: launcher,
+        hermesHome: '/unrelated/hermes-home',
+        creationTime
+      })
+
+      const ssh = {
+        exec: async (command: string) => {
+          if (/cat .*\.json/.test(command)) {
+            return `${JSON.stringify(lock)}\n`
+          }
+
+          return (await exec(command, { shell: '/bin/bash' })).stdout
+        }
+      }
+
+      const result = await terminateOwnedDashboardForUpdate(ssh, lock)
+
+      assert.equal(result.terminated, true)
+      await exited
+      assert.equal(child.signalCode, 'SIGTERM')
+    } finally {
+      child.kill('SIGKILL')
       await rm(temp, { force: true, recursive: true })
     }
   }
@@ -1288,6 +1416,54 @@ test('managed update drain never falls back to a bare kill when the identity-bou
     'the final signal must stay inside the identity-checking helper'
   )
 })
+
+test.skipIf(process.platform === 'win32')(
+  'managed update drain reports the real POSIX refusal, not a generic transport error',
+  async () => {
+    // Regression for #124617: the termination probe prints REFUSED (and, on
+    // Darwin, DARWIN_UNAVAILABLE) but used to exit non-zero for it. ssh.exec()
+    // throws on any non-zero remote exit, so the specific message built below
+    // from the probe's stdout was dead code in production — every refusal
+    // collapsed into the generic "Could not terminate the Desktop-owned
+    // remote serve for update." Run the real probe (not a canned string)
+    // against a live-but-foreign local process so its actual exit code
+    // decides the outcome, the same way the real SSH transport does.
+    const dummy = spawn('sleep', ['5'], { stdio: 'ignore' })
+
+    try {
+      const lock = ownedLock({ pid: dummy.pid })
+      const rawLock = JSON.stringify(lock)
+
+      const ssh: Pick<SshConnection, 'exec'> = {
+        async exec(cmd: string): Promise<string> {
+          if (/cat .*lock\.json/.test(cmd)) {
+            return rawLock
+          }
+
+          if (/kill -0 /.test(cmd)) {
+            return 'ALIVE'
+          }
+
+          if (/fields\[19\]/.test(cmd)) {
+            return lock.creationTime
+          }
+
+          if (/print\("OWNED" if ok else "FOREIGN"\)/.test(cmd)) {
+            return 'OWNED'
+          }
+
+          // The real termination probe: execute it for real so its actual
+          // exit code — not a canned string — is what drives the caller.
+          return (await exec(cmd)).stdout
+        }
+      }
+
+      await assert.rejects(terminateOwnedDashboardForUpdate(ssh, lock), /identity changed at the signal boundary/)
+    } finally {
+      dummy.kill('SIGKILL')
+    }
+  }
+)
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
   const reuseToken = 'stored'
@@ -1828,7 +2004,6 @@ test('cleanupStale escalates to SIGKILL when the backend survives the graceful w
     hermesPath: '/x/hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
   })
-
   assert.ok(
     ssh.calls.some(c => /kill -9 9\b/.test(c)),
     'must escalate to SIGKILL after the graceful wait fails'
@@ -1838,7 +2013,6 @@ test('cleanupStale escalates to SIGKILL when the backend survives the graceful w
     'lockfile must still be dropped after the forced kill'
   )
 })
-
 test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid died', async () => {
   const ssh = fakeSsh([
     [/print\("OWNED"/, 'OWNED\n'],
@@ -1855,7 +2029,6 @@ test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid d
     }),
     /Could not terminate/
   )
-
   // The record must survive so the next connect's reap pass retries.
   assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
 })
@@ -2021,4 +2194,30 @@ test('connect() post-spawn cleanup that cannot prove ownership keeps the origina
     !ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
     'record must survive for the next connect to reap'
   )
+})
+
+// ---------------------------------------------------------------------------
+// resolveReadyTimeoutMs (issue #94642): cold-start-tolerant remote budgets
+// ---------------------------------------------------------------------------
+test('honors a valid HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS override', () => {
+  const env = { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: '180000' }
+  assert.equal(resolveReadyTimeoutMs(env), 180_000)
+})
+test('clamps an override below the floor up to the 45s minimum', () => {
+  const env = { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: '1000' }
+  assert.equal(resolveReadyTimeoutMs(env), MIN_READY_TIMEOUT_MS)
+})
+test('rounds a fractional override', () => {
+  const env = { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: '60000.7' }
+  assert.equal(resolveReadyTimeoutMs(env), 60_001)
+})
+test('falls back to the default for malformed / non-positive overrides', () => {
+  for (const bad of ['', 'abc', '0', '-5', 'NaN', undefined]) {
+    const env = bad === undefined ? {} : { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: bad }
+    assert.equal(
+      resolveReadyTimeoutMs(env),
+      DEFAULT_READY_TIMEOUT_MS,
+      `override ${JSON.stringify(bad)} should fall through to the default`
+    )
+  }
 })

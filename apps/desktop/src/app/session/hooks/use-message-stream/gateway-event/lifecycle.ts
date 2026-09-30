@@ -1,6 +1,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { clearClarifyRequest } from '@/store/clarify'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -12,6 +13,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -92,6 +94,31 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'approval.cancelled') {
+    // The backend dropped pending approvals for a session being interrupted or
+    // torn down (#106678) — the deny-resolve is otherwise silent, so a parked
+    // prompt card would keep offering Approve/Reject against an approval that
+    // no longer exists (the backend answers resolved: 0 and the click looks
+    // dead). Clear the parked prompts; the turn's BLOCKED tool result is the
+    // in-transcript signal, same as the timeout path.
+    const cancelled = (event as GatewayEvent<'approval.cancelled'>).payload
+    const runtimeId = String(cancelled?.session_id ?? '')
+    const requestIds = (cancelled?.request_ids ?? []).map(id => String(id)).filter(Boolean)
+
+    if (runtimeId && requestIds.length > 0) {
+      // A request-id mismatch is a no-op in clear(), so a cancelled id can
+      // never wipe a newer prompt re-armed by a live turn on the same session.
+      for (const requestId of requestIds) {
+        clearApprovalRequest(runtimeId, requestId)
+      }
+    } else if (runtimeId) {
+      // No correlation ids on the wire — drop the session's prompt wholesale.
+      clearAllPrompts(runtimeId)
+    }
+
+    return true
+  }
+
   if (event.type === 'session.reclaimed') {
     // The backend reclaimed a live session we may still be holding (idle
     // TTL, LRU cap, or the WS-orphan reap). Without this the runtime id
@@ -105,6 +132,13 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       // Heal while the cached stored-id mapping is still intact, then drop.
       markRuntimeGone(reclaimedRuntimeId)
       dropSessionState(reclaimedRuntimeId)
+      // A prompt keyed to the dead runtime must not outlive it. The runtime id
+      // rotates on every resume (cold/lazy/eager all mint a fresh sid), so the
+      // new runtime's turn-end clears can never remove an entry keyed to THIS
+      // one — a stale approval would re-mount the floating "needs approval"
+      // bar whenever the reclaimed conversation is reopened (#86577).
+      clearAllPrompts(reclaimedRuntimeId)
+      clearClarifyRequest(undefined, reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]
       // (just dropped) and its resume effect is gated on !runtimeId, so a

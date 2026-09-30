@@ -10,11 +10,14 @@ from contextlib import suppress
 from enum import Enum
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 ACTIVITY_DESCRIPTION_MAX = 120
 
 # Durable SessionDB heartbeat cadence. Contract: MUST stay >= 30s — the SessionDB write path is contended and
 # this observation-only projection never justifies extra write pressure. A code constant on purpose (no config
-# can make it a high-frequency writer); matches the kanban auto-heartbeat. force_persist (terminal stamps) is the only bypass.
+# can make it a high-frequency writer); matches the kanban auto-heartbeat. force_persist and terminal
+# compression stamps (see TERMINAL_COMPRESSION_PROVENANCES) are the only bypasses.
 SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 
 
@@ -28,6 +31,30 @@ class ActivityProvenance(str, Enum):
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
     AGENT_COMPRESSION_TURNHOLD = "agent.compression_turnhold"
+
+
+# Provenances that END the user-visible "compressing" phase: the host's progress timeout, a cooldown/
+# backoff block, and the gateway's hygiene turn-hold. Each is written once, at a terminal edge, and must
+# reach the durable projection IMMEDIATELY — the heartbeat above wrote "context compression in progress"
+# moments earlier, so a rate-limited terminal stamp leaves `sessions.last_activity_description` advertising
+# a compression that has already stopped, with no later writer to correct it (the agent may be idle, the
+# process gone). That is the permanently "stuck / compressing" chat users see.
+#
+# Distinct from ``conversation_compression._TERMINAL_COMPRESSION_PROVENANCES``, which answers a different
+# question — "may a detached heartbeat still overwrite this stamp?" — and deliberately excludes TURNHOLD,
+# because after a turn-hold the worker may still be alive and adoptable.
+TERMINAL_COMPRESSION_PROVENANCES = frozenset(
+    {
+        ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+        ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
+        ActivityProvenance.AGENT_COMPRESSION_TURNHOLD,
+    }
+)
+
+
+def is_terminal_compression_provenance(provenance: Optional[ActivityProvenance | str]) -> bool:
+    """True when this stamp ends a compression phase and must bypass the persist rate limit."""
+    return normalize_activity_provenance(provenance) in TERMINAL_COMPRESSION_PROVENANCES
 
 
 def bound_activity_description(description: Optional[str]) -> str:
@@ -57,8 +84,8 @@ def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
     except (TypeError, ValueError):
         cap = sys.maxsize
     if cap >= sys.maxsize:
-        return f"iteration {api_call_count}"
-    return f"iteration {api_call_count}/{cap}"
+        return t("display.iteration_progress.unbounded", n=api_call_count)
+    return t("display.iteration_progress.bounded", n=api_call_count, max=cap)
 
 
 def reset_session_activity_persist_window(agent: Any) -> None:

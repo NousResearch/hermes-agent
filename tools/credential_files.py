@@ -258,6 +258,13 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     # Mount it so the agent's file tools can read dropped binaries (zip/pdf/...) from inside sandbox
     # containers instead of dangling host paths (#76577).
     ("attachments", "attachments"),
+    # Desktop stages a large plain-text paste as a `.txt` under this Hermes-managed dir
+    # (apps/desktop/electron/composer-paste.ts; `COMPOSER_PASTES_DIRNAME` in
+    # agent/context_references.py) and attaches it as `@file:`. Without a mount/sync
+    # entry, remote execution backends (ssh/daytona/vercel_sandbox) never received the
+    # bytes and `to_agent_visible_cache_path` left the gateway-host path dangling on
+    # the remote host (#110174). No legacy alias, so both tuple slots match.
+    ("composer-pastes", "composer-pastes"),
 ]
 
 
@@ -299,8 +306,26 @@ def _remap_cache_path(path: str, container_base: str, src: str, dst: str, join: 
 
 
 def map_cache_path_to_container(host_path: str, container_base: str = "/root/.hermes") -> Optional[str]:
-    """POSIX container path for a host path under an auto-mounted cache dir, else None."""
-    return _remap_cache_path(host_path, container_base, "host_path", "container_path", lambda root, rel: posixpath.join(root, rel.as_posix()))
+    """POSIX container path for a host path under an auto-mounted cache dir, else None.
+
+    Also matches through symlinks: ``@file:`` expansion hands over RESOLVED paths while the mount roots keep
+    HERMES_HOME's configured spelling, so a symlinked home (``~/.hermes`` -> dotfiles, macOS ``/var`` ->
+    ``/private/var``) left a staged attachment's host path in front of the sandboxed agent (#103147)."""
+    def join(root: str, rel: Path) -> str:
+        return posixpath.join(root, rel.as_posix())
+
+    mapped = _remap_cache_path(host_path, container_base, "host_path", "container_path", join)
+    if mapped is not None:
+        return mapped
+    try:
+        real = Path(host_path).resolve()
+        for mount in get_cache_directory_mounts(container_base=container_base):
+            root = Path(mount["host_path"]).resolve()
+            if real.is_relative_to(root):
+                return join(mount["container_path"], real.relative_to(root))
+    except (OSError, RuntimeError):
+        pass
+    return None
 
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:

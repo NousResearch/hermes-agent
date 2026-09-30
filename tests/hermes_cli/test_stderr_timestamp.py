@@ -73,6 +73,38 @@ def test_main_timestamps_each_stderr_line(tmp_path):
     assert lines[2] == "2026-07-15 12:34:56,789 already timestamped"
 
 
+def test_wrapper_timestamps_child_stdout_into_its_own_stdout(tmp_path):
+    """launchd appends the wrapper's stdout to gateway.log; a raw print() there has no stamp,
+    so ``hermes logs gateway --since`` can never filter it out."""
+    stdout_log = tmp_path / "gateway.log"
+    error_log = tmp_path / "gateway.error.log"
+    code = (
+        "import sys\n"
+        "print('[whatsapp] Bridge started on port 3000')\n"
+        "sys.stderr.write('stderr line\\n')\n"
+        "sys.stdout.write('2026-07-15 12:34:56,789 INFO already timestamped\\n')\n"
+        "sys.stdout.write('last line without newline')\n"
+        "sys.exit(7)\n"
+    )
+
+    with open(stdout_log, "ab") as out:
+        rc = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log", str(error_log), "--",
+             sys.executable, "-c", code],
+            stdout=out,
+            timeout=30,
+        ).returncode
+
+    assert rc == 7
+    timestamp = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}"
+    lines = stdout_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3
+    assert re.fullmatch(f"{timestamp} \\[whatsapp\\] Bridge started on port 3000", lines[0])
+    assert lines[1] == "2026-07-15 12:34:56,789 INFO already timestamped"
+    assert re.fullmatch(f"{timestamp} last line without newline", lines[2])
+    assert re.fullmatch(f"{timestamp} stderr line", error_log.read_text(encoding="utf-8").strip())
+
+
 def test_prepare_upgrades_stale_gateway_argv_under_launchd():
     upgraded = stderr_timestamp._prepare_child_command(
         _STALE_GATEWAY_ARGV, _LAUNCHD_ENV

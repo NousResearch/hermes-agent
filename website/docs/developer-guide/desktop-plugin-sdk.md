@@ -423,15 +423,15 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
-`COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
+`COMPOSER_AREAS` (`above`, `top`, `bottom`, `underside`, `leading`, `actions`,
 `attachments`, `middleware`) let a plugin add controls around the message
 composer, provide an attachment source, or transform a draft before it is sent
-(`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
-banner strip above the input and `bottom` a row below the input grid, both
-inside the composer chrome; `underside` is the floating strip BELOW the whole
-composer with no chrome of its own — the seat for a suggestion pill or a status
-hint that should sit outside the input frame (the next-prompt plugin renders its
-"next prompt" pill there).
+(`ComposerMiddleware` with a `handler(draft) => draft | null`). `above` is a
+chrome-free strip ABOVE the whole composer for a persistent banner or dock.
+`top` is a banner strip above the input and `bottom` a row below the input grid,
+both inside the composer chrome; `underside` is the corresponding floating strip
+BELOW the whole composer — the seat for a suggestion pill or a status hint (the
+next-prompt plugin renders its "next prompt" pill there).
 
 ### Composer draft API — read and write the live input
 

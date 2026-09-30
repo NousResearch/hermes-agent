@@ -1368,6 +1368,15 @@ export function ChatBar({
               sessionId={statusSessionId}
             />
           </StatusDrawerContent>
+          {/* Above: chrome-free strip OUTSIDE the composer frame. Persistent
+              banners and docks live here so they remain separate UI chrome
+              instead of becoming part of the message input surface. */}
+          <div
+            className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}
+            data-slot="composer-above"
+          >
+            <ContribSlot area={COMPOSER_AREAS.above} />
+          </div>
           <ComposerPrimitive.Root
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',

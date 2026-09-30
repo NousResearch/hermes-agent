@@ -1302,7 +1302,6 @@ export const en: Translations = {
         noMatch: query => `No pets match "${query}".`,
         installedTag: 'installed',
         generatedTag: 'Generated',
-        countCapped: (cap, total) => `Showing ${cap} of ${total} — type to narrow it down.`,
         count: n => `${n} pet${n === 1 ? '' : 's'}.`,
         uninstall: name => `Uninstall ${name}`,
         delete: name => `Delete ${name}`,

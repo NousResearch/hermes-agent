@@ -1281,7 +1281,6 @@ export const frOverrides = {
         noMatch: query => `Aucun animal ne correspond à « ${query} ».`,
         installedTag: 'installé',
         generatedTag: 'Généré',
-        countCapped: (cap, total) => `Affichage de ${cap} sur ${total} — tapez pour affiner.`,
         count: n => `${n} animal${n === 1 ? '' : 's'}.`,
         uninstall: name => `Désinstaller ${name}`,
         delete: name => `Supprimer ${name}`,

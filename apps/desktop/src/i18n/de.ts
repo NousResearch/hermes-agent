@@ -1277,7 +1277,6 @@ export const deOverrides = {
         noMatch: query => `Keine Haustiere passen zu „${query}“.`,
         installedTag: 'installiert',
         generatedTag: 'Generiert',
-        countCapped: (cap, total) => `${cap} von ${total} angezeigt – tippen Sie, um die Auswahl einzugrenzen.`,
         count: n => `${n} Haustier${n === 1 ? '' : 'er'}.`,
         uninstall: name => `${name} deinstallieren`,
         delete: name => `${name} löschen`,

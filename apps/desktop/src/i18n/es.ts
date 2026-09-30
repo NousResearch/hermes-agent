@@ -1276,7 +1276,6 @@ export const esOverrides = {
         noMatch: query => `No hay mascotas que coincidan con “${query}”.`,
         installedTag: 'instalada',
         generatedTag: 'Generada',
-        countCapped: (cap, total) => `Se muestran ${cap} de ${total}; escribe para acotar la lista.`,
         count: n => `${n} ${n === 1 ? 'mascota' : 'mascotas'}.`,
         uninstall: name => `Desinstalar ${name}`,
         delete: name => `Eliminar ${name}`,

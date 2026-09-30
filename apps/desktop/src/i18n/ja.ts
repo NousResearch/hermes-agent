@@ -828,7 +828,6 @@ export const ja = defineLocale({
         noMatch: query => `「${query}」に一致するペットがありません。`,
         installedTag: 'インストール済み',
         generatedTag: '生成',
-        countCapped: (cap, total) => `${total} 件中 ${cap} 件を表示中——入力して絞り込めます。`,
         count: n => `${n} 件のペット。`,
         uninstall: name => `${name} をアンインストール`,
         delete: name => `${name} を削除`,

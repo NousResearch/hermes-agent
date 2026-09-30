@@ -761,7 +761,6 @@ export const zhHant = defineLocale({
         noMatch: query => `沒有符合「${query}」的寵物。`,
         installedTag: '已安裝',
         generatedTag: '生成',
-        countCapped: (cap, total) => `顯示 ${total} 個中的 ${cap} 個——輸入關鍵字以縮小範圍。`,
         count: n => `${n} 個寵物。`,
         uninstall: name => `解除安裝 ${name}`,
         delete: name => `刪除 ${name}`,

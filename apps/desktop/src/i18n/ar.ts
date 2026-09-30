@@ -818,7 +818,6 @@ export const ar = defineLocale({
         noMatch: query => `لا توجد حيوانات أليفة تطابق "${query}".`,
         installedTag: 'مثبّت',
         generatedTag: 'مُولّد',
-        countCapped: (cap, total) => `عرض ${cap} من ${total} — اكتب لتضييق النتائج.`,
         count: n => `${n} ${n === 1 ? 'حيوان أليف' : 'حيوان أليف'}.`,
         uninstall: name => `إلغاء تثبيت ${name}`,
         delete: name => `حذف ${name}`,

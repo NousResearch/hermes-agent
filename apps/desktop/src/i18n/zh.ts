@@ -977,7 +977,6 @@ export const zh = defineLocale({
         noMatch: query => `没有匹配「${query}」的宠物。`,
         installedTag: '已安装',
         generatedTag: '生成',
-        countCapped: (cap, total) => `显示 ${total} 个中的 ${cap} 个——输入关键词以缩小范围。`,
         count: n => `${n} 个宠物。`,
         uninstall: name => `卸载 ${name}`,
         delete: name => `删除 ${name}`,

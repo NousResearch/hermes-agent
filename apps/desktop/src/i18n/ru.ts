@@ -851,7 +851,6 @@ export const ru = defineLocale({
         noMatch: query => `Нет питомцев, подходящих под «${query}».`,
         installedTag: 'установлен',
         generatedTag: 'Сгенерирован',
-        countCapped: (cap, total) => `Показаны ${cap} из ${total} — начните вводить, чтобы сузить выбор.`,
         count: n => `${n} ${RU_PLURAL(n, 'питомец', 'питомца', 'питомцев')}.`,
         uninstall: name => `Удалить ${name}`,
         delete: name => `Удалить навсегда ${name}`,

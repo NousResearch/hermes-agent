@@ -1469,9 +1469,10 @@ def rename_board(slug: str, payload: RenameBoardBody):
     default_workspace_kind: Optional[str] = None
     if payload.default_workspace_kind is not None:
         default_workspace_kind = payload.default_workspace_kind.strip()  # "" = clear
-    meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id,
-        default_workspace_kind=default_workspace_kind, **_board_display_kwargs(payload))
+    with _value_error_400():
+        meta = kanban_db.write_board_metadata(
+            normed, default_workdir=default_workdir, project_id=project_id,
+            default_workspace_kind=default_workspace_kind, **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
 
 

@@ -133,6 +133,42 @@ def test_patch_board_sets_project_directory(client, tmp_path):
         project_dir.resolve()
     )
 
+
+@pytest.mark.parametrize(
+    "invalid_patch,detail",
+    [
+        ({"default_workspace_kind": "blob"}, "default_workspace_kind"),
+        ({"default_workdir": ""}, "default_workdir"),
+    ],
+    ids=["unknown-kind", "clear-required-anchor"],
+)
+def test_patch_board_refuses_invalid_workspace_without_changing_metadata(
+    client, tmp_path, invalid_patch, detail,
+):
+    kb.create_board(
+        "guarded-default", name="Original", default_workdir=str(tmp_path),
+        default_workspace_kind="dir",
+    )
+    metadata_path = kb.board_metadata_path("guarded-default")
+    original = metadata_path.read_bytes()
+    url = "/api/plugins/kanban/boards/guarded-default"
+    # Observe the real HTTP failure rather than TestClient re-raising the writer's error.
+    with TestClient(client.app, raise_server_exceptions=False) as transport:
+        refused = transport.patch(url, json={"name": "Must not persist", **invalid_patch})
+        assert metadata_path.read_bytes() == original
+        assert refused.status_code == 400, refused.text
+        assert detail in refused.json()["detail"]
+
+        accepted = transport.patch(url, json={
+            "name": "Updated", "default_workspace_kind": "scratch", "default_workdir": "",
+        })
+    assert accepted.status_code == 200, accepted.text
+    board = kb.read_board_metadata("guarded-default")
+    assert board["name"] == "Updated"
+    assert board["default_workspace_kind"] == "scratch"
+    assert board["default_workdir"] is None
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

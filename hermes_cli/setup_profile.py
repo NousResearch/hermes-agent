@@ -159,6 +159,7 @@ def _write_setup_config(path: Path) -> None:
     config["platform_toolsets"] = {**(config.get("platform_toolsets") or {}), "cli": list(_SETUP_TOOLSETS)}
     config["tools"] = {**(config.get("tools") or {}), "tool_search": {"defer": list(_SETUP_DEFERRED_TOOLS)}}
     config["display"] = {**(config.get("display") or {}), "show_reasoning": False}
+    config["skills"] = {**(config.get("skills") or {}), "inline_shell": True, "inline_shell_timeout": 15}
     atomic_config_write(config_path, config)
 
 

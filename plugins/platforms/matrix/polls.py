@@ -7,7 +7,7 @@ from typing import Any
 
 
 UNSTABLE = "org.matrix.msc3381.poll."
-REQUESTER = "ai.hermes.poll.requester"
+REQUESTER = "com.nousresearch.hermes.poll.requester"
 POLL_TYPES = frozenset(f"{prefix}{kind}" for prefix in ("m.poll.", UNSTABLE) for kind in ("start", "response", "end"))
 
 

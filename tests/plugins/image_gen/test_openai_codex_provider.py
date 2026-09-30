@@ -22,15 +22,11 @@ codex_plugin = importlib.import_module("plugins.image_gen.openai-codex")
 
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
-_PNG_HEX = (
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-    "890000000d49444154789c6300010000000500010d0a2db40000000049454e44"
-    "ae426082"
-)
+_PNG_BASE64 = b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
 
 def _png_bytes() -> bytes:
-    return bytes.fromhex(_PNG_HEX)
+    return base64.b64decode(_PNG_BASE64)
 
 
 def _b64_png() -> str:
@@ -250,12 +246,10 @@ class TestGenerate:
     def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
         # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.
         monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
-        # codex_backend monkeypatches httpx.Client; build the fetch client from
-        # the unpatched class so the ref-image download gets the PNG responder.
-        real_client = httpx._client.Client
+        # The shared resolver downloads through the async SSRF-safe client.
         monkeypatch.setattr(
-            "tools.url_safety.create_ssrf_safe_client",
-            lambda **kw: real_client(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **kw: httpx.AsyncClient(
                 transport=httpx.MockTransport(
                     lambda request: httpx.Response(200, content=_png_bytes(), request=request)),
                 **kw))
@@ -275,7 +269,7 @@ class TestGenerate:
 
         assert result["success"] is False
         assert result["error_type"] == "invalid_image_input"
-        assert "not a supported image" in result["error"]
+        assert "not a recognized image" in result["error"]
         assert codex_backend["requests"] == []
 
     def test_http_error_message_surfaces_verbatim_and_bounded(self, provider, codex_backend):

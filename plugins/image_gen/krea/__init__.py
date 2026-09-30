@@ -306,6 +306,24 @@ def _collect_style_refs(
     return deduped[:_MAX_STYLE_REFERENCES]
 
 
+def _resolve_style_refs(refs: List[Any]) -> List[Any]:
+    from tools.image_source import resolve_source_to_url_sync
+
+    resolved: List[Any] = []
+    for ref in refs:
+        if isinstance(ref, str):
+            resolved.append({"url": resolve_source_to_url_sync(ref),
+                             "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH})
+            continue
+        if isinstance(ref, dict) and isinstance(ref.get("url"), str):
+            rich_ref = dict(ref)
+            rich_ref["url"] = resolve_source_to_url_sync(ref["url"])
+            resolved.append(rich_ref)
+            continue
+        resolved.append(ref)
+    return resolved
+
+
 def _build_payload(
     prompt: str, krea_ar: str, creativity: str, style_refs: List[Any], kwargs: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -319,10 +337,7 @@ def _build_payload(
         payload["styles"] = styles
     if style_refs:
         # Krea requires objects — a bare string yields 422 "Expected object, received string".
-        payload["image_style_references"] = [
-            {"url": ref, "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH} if isinstance(ref, str) else ref
-            for ref in style_refs
-        ]
+        payload["image_style_references"] = _resolve_style_refs(style_refs)
     if isinstance(moodboards, list) and moodboards:
         payload["moodboards"] = moodboards[:1]  # Krea caps at 1 moodboard per request.
     return payload
@@ -446,7 +461,10 @@ class KreaImageGenProvider(StaticImageGenProvider):
         model_id, meta = _resolve_model(kwargs.get("model"))
         creativity = _resolve_creativity(kwargs.get("creativity"))
         fail = error_factory("krea", aspect, model=model_id, prompt=prompt)
-        payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs)
+        try:
+            payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs)
+        except Exception as exc:
+            return fail(f"Could not load source image for editing: {exc}", "io_error")
 
         # LoRAs/moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.
         if managed is not None:

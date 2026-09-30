@@ -13,9 +13,8 @@ import plugins.image_gen.openai as openai_plugin
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
 _PNG_HEX = (
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-    "890000000d49444154789c6300010000000500010d0a2db40000000049454e44"
-    "ae426082"
+    "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c02"
+    "0000000b4944415478da6364600000000600023081d02f0000000049454e44ae426082"
 )
 
 
@@ -213,10 +212,10 @@ class TestSourceImageLoading:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         img = tmp_path / "pic.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+        img.write_bytes(bytes.fromhex(_PNG_HEX))
 
         data, name = openai_plugin._load_image_bytes(str(img))
-        assert data == b"\x89PNG\r\n\x1a\nfake-image-bytes"
+        assert data == bytes.fromhex(_PNG_HEX)
         assert name == "pic.png"
 
 
@@ -378,3 +377,49 @@ class TestGenerate:
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 
+    def test_url_response_falls_back_to_bare_url_when_download_fails(self, provider):
+        """Cache failure must not turn into a tool error — symmetric with xAI."""
+        import requests as req_lib
+
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(
+            b64=None, url="https://example.com/img.png",
+        )
+
+        with _patched_openai(fake_client), patch(
+            "plugins.image_gen.openai.save_url_image",
+            side_effect=req_lib.HTTPError("404 from CDN"),
+        ):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["image"] == "https://example.com/img.png"
+
+
+class TestSourceImageHardening:
+    """_load_image_bytes delegates local/data-URI validation to the resolver."""
+
+    _PNG = bytes.fromhex(_PNG_HEX)
+
+    def test_local_image_bytes_and_name(self, tmp_path):
+        path = tmp_path / "cat.png"
+        path.write_bytes(self._PNG)
+
+        data, name = openai_plugin._load_image_bytes(str(path))
+
+        assert data == self._PNG
+        assert name == "cat.png"
+
+    def test_denylisted_local_rejected(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(self._PNG)
+
+        with pytest.raises(ValueError, match="Access denied"):
+            openai_plugin._load_image_bytes(str(env_file))
+
+    def test_non_image_local_rejected(self, tmp_path):
+        path = tmp_path / "notes.txt"
+        path.write_text("not an image")
+
+        with pytest.raises(ValueError, match="not a recognized image"):
+            openai_plugin._load_image_bytes(str(path))

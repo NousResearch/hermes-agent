@@ -20,9 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
@@ -89,80 +87,13 @@ def _httpx_available() -> bool:
     return True
 
 
-def _sniff_image_mime(raw: bytes) -> Optional[str]:
-    from agent.image_routing import _sniff_mime_from_bytes
-
-    mime = _sniff_mime_from_bytes(raw)
-    return mime if mime in _ACCEPTED_INPUT_MIME else None
-
-
-def _encode_input_image(raw: bytes, too_big: str, unsupported: str) -> str:
-    """Size- and MIME-check raw image bytes, then return a canonical ``data:`` URL."""
-    if len(raw) > _MAX_INPUT_IMAGE_BYTES:
-        raise ValueError(too_big)
-    mime = _sniff_image_mime(raw)
-    if mime is None:
-        raise ValueError(unsupported)
-    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-
-
-def _data_url_to_input_image_url(value: str) -> str:
-    if "," not in value:
-        raise ValueError("Image data URL is missing a comma separator")
-    header, data = value.split(",", 1)
-    header_lc = header.lower()
-    if not header_lc.startswith("data:image/") or ";base64" not in header_lc:
-        raise ValueError("Only base64 data:image URLs are supported as Codex image inputs")
-    return _encode_input_image(
-        base64.b64decode(data, validate=True),
-        "Image data URL exceeds 25MB cap",
-        "Image data URL does not contain supported image bytes")
-
-
-def _remote_image_to_data_url(value: str) -> str:
-    """The edit endpoint takes inline data URLs only (as the official client sends), so fetch."""
-    from tools.url_safety import create_ssrf_safe_client, is_safe_url
-
-    if not is_safe_url(value):
-        raise ValueError(f"Image URL failed the SSRF safety check: {value}")
-    with create_ssrf_safe_client(timeout=60.0, follow_redirects=True) as client:
-        response = client.get(value)
-    response.raise_for_status()
-    return _encode_input_image(
-        response.content,
-        f"Image URL exceeds 25MB cap: {value}",
-        f"Image URL did not return a supported image: {value}")
-
-
-def _local_image_to_data_url(value: str) -> str:
-    from agent.file_safety import get_read_block_error
-
-    blocked = get_read_block_error(value)
-    if blocked:
-        raise ValueError(blocked)
-    path = Path(os.path.expanduser(value)).resolve()
-    if not path.is_file():
-        raise ValueError(f"Image input path does not exist or is not a file: {value}")
-    if path.stat().st_size <= 0:
-        raise ValueError(f"Image input path is empty: {value}")
-    return _encode_input_image(
-        path.read_bytes(),
-        f"Image input path exceeds 25MB cap: {value}",
-        f"Image input path is not a supported image: {value}")
-
-
 def _to_input_image(value: str) -> Dict[str, str]:
-    """Convert a URL/data URL/local path into an ``images[]`` entry for ``images/edits``."""
-    candidate = (value or "").strip()
-    if not candidate:
-        raise ValueError("Blank image input")
-    lowered = candidate.lower()
-    if lowered.startswith(("http://", "https://")):
-        image_url = _remote_image_to_data_url(candidate)
-    elif lowered.startswith("data:"):
-        image_url = _data_url_to_input_image_url(candidate)
-    else:
-        image_url = _local_image_to_data_url(candidate)
+    """Convert a validated source into an inline image for the native edits API."""
+    from tools.image_source import resolve_source_sync
+
+    resolved = resolve_source_sync(
+        value, max_bytes=_MAX_INPUT_IMAGE_BYTES, accepted_mimes=_ACCEPTED_INPUT_MIME)
+    image_url = f"data:{resolved.mime};base64,{base64.b64encode(resolved.data).decode('ascii')}"
     return {"image_url": image_url}
 
 

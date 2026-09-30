@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -171,40 +170,19 @@ def _resolve_resolution() -> str:
 
 
 def _xai_image_field(source: str) -> Dict[str, str]:
-    """Edit ``image`` field: URL / data URI pass through; local paths are inlined as ``data:`` URIs."""
-    source = source.strip()
-    if source.lower().startswith(_REMOTE_PREFIXES):
-        return {"url": source, "type": "image_url"}
-    import base64
+    from tools.image_source import resolve_source_to_url_sync
 
-    from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
-
-    raise_if_read_blocked(source)
-    with open(os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
-        raw = fh.read()
-    ext = (os.path.splitext(source)[1].lstrip(".") or "png").lower()
-    if ext == "jpg":
-        ext = "jpeg"
-    return {"url": f"data:image/{ext};base64,{base64.b64encode(raw).decode('utf-8')}", "type": "image_url"}
+    return {"url": resolve_source_to_url_sync(source), "type": "image_url"}
 
 
 def _check_source_images(
-    source_images: List[str], image_url: Optional[str], fail: Any
+    source_images: List[str], fail: Any
 ) -> Optional[Dict[str, Any]]:
-    """Edit-request guard: at most 3 sources, each a remote URL/data URI or an existing local file."""
+    """Reject more source images than xAI's edit endpoint accepts."""
     if len(source_images) > _MAX_SOURCE_IMAGES:
         return fail(
             f"xAI image editing supports at most {_MAX_SOURCE_IMAGES} source images", "too_many_references",
         )
-    for index, source in enumerate(source_images):
-        if source.lower().startswith(_REMOTE_PREFIXES) or Path(source).expanduser().is_file():
-            continue
-        is_primary = index == 0 and image_url and image_url.strip() == source
-        field = "image_url" if is_primary else "reference_image_urls"
-        return fail(
-            f"{field} must be a public HTTPS URL or data URI "
-            "(e.g. the `image`/`public_url` from a prior Imagine result)",
-            "invalid_image_url")
     return None
 
 
@@ -262,7 +240,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
         xai_res = _resolve_resolution()
         source_images = collect_source_images(image_url, reference_image_urls)
         edit_fail = error_factory(provider_name, aspect, model=_EDIT_FALLBACK_MODEL, prompt=prompt)
-        err = _check_source_images(source_images, image_url, edit_fail)
+        err = _check_source_images(source_images, edit_fail)
         if err:
             return err
         is_edit = bool(source_images)

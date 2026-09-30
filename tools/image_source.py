@@ -14,14 +14,16 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Collection, Literal, Optional
 
 # Raw-bytes INGEST budget: deliberately the 50MB download cap, NOT the 20MB provider
 # payload cap — that one is enforced post-resize at the call sites.
 _MAX_INGEST_BYTES = 50 * 1024 * 1024
 
 
-class ImageResolutionError(Exception):
+class ImageResolutionError(ValueError):
+    """A source error that synchronous providers can catch as ``ValueError``."""
+
     def __init__(self, message: str, *, src: str = "", origin: str = ""):
         super().__init__(message)
         self.src, self.origin = src, origin
@@ -44,6 +46,14 @@ class ResolvedImage:
     data: bytes
     mime: str
     origin: str  # one of: data | http | file | local | container
+    # Host path for file-origin sources, used for filename metadata.
+    path: Optional[Path] = None
+
+
+@dataclass(frozen=True)
+class CanonicalLocalSource:
+    path: str
+    scope: Literal["host", "sandbox"]
 
 
 # Explicit URL scheme ("ftp://", "s3://"). Bare Windows drive paths lack the "//".
@@ -51,47 +61,53 @@ _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 async def resolve_image_source(
-    src: str, ctx: ResolveContext, *, permitted: tuple = ("image",)) -> ResolvedImage:
+    src: str,
+    ctx: ResolveContext,
+    *,
+    permitted: tuple = ("image",),
+    max_bytes: Optional[int] = None,
+    accepted_mimes: Optional[Collection[str]] = None,
+) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
-    if s.startswith("data:"):
-        data, mime = _resolve_data_url(s)
-        return _finalize(data, mime, "data", s, permitted)
-    if s.startswith(("http://", "https://")):
+    lower = s.lower()
+    if lower.startswith("data:"):
+        data, mime = _resolve_data_url(s, max_bytes)
+        return _finalize(data, mime, "data", s, permitted, max_bytes, accepted_mimes)
+    if lower.startswith(("http://", "https://")):
         reason = _http_block_reason(s)
         if reason:
             raise SourceUnsafe(reason, src=s)
-        return _finalize(await _download_to_bytes(s), "", "http", s, permitted)
-    if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
+        return _finalize(
+            await _download_to_bytes(s), "", "http", s, permitted, max_bytes, accepted_mimes
+        )
+
+    if _SCHEME_RE.match(s) and not lower.startswith("file://"):
         raise UnsupportedScheme(
             "Unrecognized image source scheme. Use an http(s) URL, a local "
             "file path, a file:// URI, or a data: URL.",
-            src=s)
-    # Everything else is a filesystem path — including bare relative names like "pic.png"
-    # (a path-shape gate here regressed them once).
-    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+            src=s,
+        )
+
+    p = Path(os.path.expanduser(_path_from_file_ref(s)))
+    # A sandbox can read host files only through its mounted media caches.
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
         data = await asyncio.to_thread(host_target.read_bytes)
-        return _finalize(data, "", "file", s, permitted)
+        return _finalize(
+            data, "", "file", s, permitted, max_bytes, accepted_mimes, path=host_target
+        )
     if _is_local_terminal_backend():
-        # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
-    return await _resolve_container_fallback(p, ctx, s, permitted)
+    return await _resolve_container_fallback(
+        p, ctx, s, permitted, max_bytes, accepted_mimes
+    )
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:
-    """Shared credential-read guard: refuse secret-bearing files (.env, auth.json) with a specific
-    error. Guard import is best-effort; a real block always propagates."""
     try:
-        # Shared credential-read guard (agent.file_safety, #57698): refuse secret-bearing files (.env,
-        # auth.json, ...) with an intentional, specific error instead of relying on the magic-byte sniff to
-        # reject them incidentally. Same chokepoint the image-gen/video-gen provider plugins enforce on
-        # model-supplied local paths. Import is best-effort (guard unavailability must not break image
-        # loading); a real block always propagates.
         from agent.file_safety import raise_if_read_blocked
     except Exception:  # noqa: BLE001 — guard unavailable: proceed
         return
@@ -101,16 +117,45 @@ def _guard_credential_read(host_target: Path, src: str) -> None:
         raise SourceUnsafe(str(exc), src=src, origin="file")
 
 
-def _resolve_data_url(s: str) -> tuple[bytes, str]:
+def _path_from_file_ref(s: str) -> str:
+    """Map a path-like reference to a filesystem path, accepting ``file://``.
+
+    Parsed per RFC 8089 rather than a naive prefix strip, so a remote host
+    (``file://server/share/x``) is refused instead of silently reading the
+    local ``/share/x``. ``file://localhost`` names the local host by
+    definition and resolves like a bare path.
+    """
+    if not s.lower().startswith("file://"):
+        return s
+
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    parsed = urlparse(s)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        raise SourceUnsafe(
+            f"Unsupported remote file:// host: {s}", src=s, origin="file"
+        )
+    return url2pathname(parsed.path)
+
+
+def _resolve_data_url(s: str, max_bytes: Optional[int] = None) -> tuple[bytes, str]:
     header, _, payload = s.partition(",")
     if ";base64" not in header:
         raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
     declared = header[len("data:"):].split(";", 1)[0].strip() or "application/octet-stream"
-    # Cheap pre-decode size gate on the encoded length (~4/3 expansion).
-    if (len(payload) * 3) // 4 > _MAX_INGEST_BYTES:
+    # RFC 2397 permits whitespace in the payload (encoders wrap base64 at 76
+    # columns); strip it so validate=True below only rejects real garbage.
+    compact = "".join(payload.split())
+    # Cheap pre-decode size gates on the encoded length. Exact arithmetic
+    # (padding included) so a payload of exactly the cap still decodes.
+    decoded_size = (len(compact) // 4) * 3 - compact[-2:].count("=")
+    if decoded_size > _MAX_INGEST_BYTES:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
+    if max_bytes is not None and decoded_size > max_bytes:
+        raise SourceTooLarge(_max_bytes_message(max_bytes), src=s[:64])
     try:
-        data = base64.b64decode(payload, validate=True)
+        data = base64.b64decode(compact, validate=True)
     except Exception as exc:
         raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
     return data, declared  # real mime verified in _finalize via magic bytes
@@ -195,6 +240,51 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
+def canonical_local_source(src: str, task_id: Optional[str]) -> CanonicalLocalSource:
+    """Resolve a local reference to its host or sandbox path without reading its bytes."""
+    ctx = ResolveContext(task_id=task_id)
+    path = Path(os.path.expanduser(_path_from_file_ref(src.strip())))
+    host_target = _permitted_host_read_target(path, ctx)
+    if host_target is not None and host_target.is_file():
+        return CanonicalLocalSource(str(host_target), "host")
+    if _is_local_terminal_backend():
+        raise SourceNotFound(f"media file not found: '{path}'", src=src, origin="file")
+
+    _ensure_container_env(task_id)
+    env = _get_active_env(task_id)
+    if env is None:
+        raise SourceNotFound(
+            f"'{path}' is not reachable inside the sandbox and no active sandbox session is available",
+            src=src, origin="container")
+    from tools.terminal_tool_config import translate_mounted_host_path
+    translated = translate_mounted_host_path(
+        str(path), getattr(env, "host_cwd", None) or "",
+        getattr(env, "host_cwd_mount", None) or "/workspace")
+    realpath = env.fetch_realpath(translated or str(path))
+    if not realpath:
+        raise SourceNotFound(f"could not resolve '{path}' inside the sandbox", src=src, origin="container")
+    return CanonicalLocalSource(realpath, "sandbox")
+
+
+def resolve_canonical_source_sync(source: CanonicalLocalSource, task_id: Optional[str]) -> ResolvedImage:
+    """Read one canonical local source after approval, using its original filesystem scope."""
+    if source.scope == "host":
+        path = Path(source.path)
+        ctx = ResolveContext(task_id=task_id)
+        if str(path.resolve()) != source.path or _permitted_host_read_target(path, ctx) != path:
+            raise SourceUnsafe("Approved image path changed before it was read", src=source.path)
+        _guard_credential_read(path, source.path)
+        return _finalize(path.read_bytes(), "", "file", source.path, path=path)
+
+    from model_tools import _run_async
+
+    env = _get_active_env(task_id)
+    if env is None or env.fetch_realpath(source.path) != source.path:
+        raise SourceUnsafe("Approved sandbox image path changed before it was read", src=source.path)
+    return _run_async(_resolve_container_fallback(
+        Path(source.path), ResolveContext(task_id=task_id), source.path, bound_env=env))
+
+
 def _ensure_container_env(task_id: Optional[str]) -> None:
     """Lazily bring up the sandbox before an in-sandbox read (vision may be a session's first
     action). Best-effort: failure leaves the env absent and the caller hits the fail-closed error.
@@ -213,9 +303,16 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
 
 
 async def _resolve_container_fallback(
-    p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)) -> ResolvedImage:
-    """Read the bytes inside the sandbox; fail-closed when no env exists (a non-cache host
-    path under a sandbox must never leak via a host fallback).
+    p: Path,
+    ctx: ResolveContext,
+    src: str,
+    permitted: tuple = ("image",),
+    max_bytes: Optional[int] = None,
+    accepted_mimes: Optional[Collection[str]] = None,
+    *,
+    bound_env=None,
+) -> ResolvedImage:
+    """Read the image bytes inside the sandbox (fail-closed when none exists).
 
     Cold-start retry: under Docker the first exec against a fresh container can fail (empty
     pipe) while a second succeeds. On final failure the container's output is folded into the
@@ -227,8 +324,9 @@ async def _resolve_container_fallback(
     import shlex
     # Bring the sandbox up on demand: without this, the first vision_analyze of a session (before any
     # terminal command) has no active env to read from under a non-local backend (issue #62825).
-    _ensure_container_env(ctx.task_id)
-    env = _get_active_env(ctx.task_id)
+    if bound_env is None:
+        _ensure_container_env(ctx.task_id)
+    env = bound_env if bound_env is not None else _get_active_env(ctx.task_id)
     if env is None:
         raise SourceNotFound(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
@@ -264,29 +362,73 @@ async def _resolve_container_fallback(
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
-    return _finalize(data, "", "container", src, permitted)
+    return _finalize(data, "", "container", src, permitted, max_bytes, accepted_mimes)
+
+
+def _max_bytes_message(max_bytes: int) -> str:
+    return f"Source image exceeds the {max_bytes // (1024 * 1024)}MB limit"
+
+
+def _require_accepted_mime(
+    mime: str, accepted_mimes: Optional[Collection[str]], src: str, origin: str
+) -> None:
+    """Reject a sniffed type outside a backend's format allowlist.
+
+    The message names the permitted formats readably, so the model can retry
+    with a format the backend's API actually takes.
+    """
+    if accepted_mimes is None or mime in accepted_mimes:
+        return
+    readable = ", ".join(sorted(m.split("/", 1)[-1].upper() for m in accepted_mimes))
+    raise NotAnImage(
+        f"Source image type {mime} is not supported here; "
+        f"image sources must be one of {readable}",
+        src=src,
+        origin=origin,
+    )
 
 
 def _finalize(
-    data: bytes, declared_mime: str, origin: str, src: str, permitted: tuple = ("image",)
+    data: bytes,
+    declared_mime: str,
+    origin: str,
+    src: str,
+    permitted: tuple = ("image",),
+    max_bytes: Optional[int] = None,
+    accepted_mimes: Optional[Collection[str]] = None,
+    path: Optional[Path] = None,
 ) -> ResolvedImage:
-    """Chokepoint: 50MB ingest cap + type check. Images by magic bytes; video (opt-in) by
-    extension + mp4 sniff — enough because every downstream consumer re-validates."""
+    """Apply the ingest cap, detect the media type and apply optional provider limits.
+
+    The 50 MB ingest cap precedes provider payload limits because callers may
+    resize an image after resolution. Video callers opt in through ``permitted``.
+    """
     from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+
     if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin=origin)
+    if max_bytes is not None and len(data) > max_bytes:
+        raise SourceTooLarge(_max_bytes_message(max_bytes), src=src, origin=origin)
+
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is not None:
         if "image" not in permitted:
             raise NotAnImage("source is an image, but this argument takes a video", src=src, origin=origin)
-        return ResolvedImage(data=data, mime=sniffed, origin=origin)
+        _require_accepted_mime(sniffed, accepted_mimes, src, origin)
+        return ResolvedImage(data=data, mime=sniffed, origin=origin, path=path)
+
     if "image" in permitted and b"<svg" in data[:4096].lower():
-        # Pass SVG through — call sites rasterize it to PNG before embedding.
-        return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
+        # Pass SVG through — the vision call sites rasterize it to PNG
+        # via _normalize_to_supported_image before embedding (providers
+        # only ingest raster images).
+        _require_accepted_mime("image/svg+xml", accepted_mimes, src, origin)
+        return ResolvedImage(data=data, mime="image/svg+xml", origin=origin, path=path)
+
     if "video" in permitted:
         video_mime = _detect_video_mime(data, src)
         if video_mime is not None:
-            return ResolvedImage(data=data, mime=video_mime, origin=origin)
+            _require_accepted_mime(video_mime, accepted_mimes, src, origin)
+            return ResolvedImage(data=data, mime=video_mime, origin=origin, path=path)
         raise NotAnImage("source is not a recognized video (mp4 expected)", src=src, origin=origin)
     raise NotAnImage("source is not a recognized image", src=src, origin=origin)
 
@@ -317,6 +459,50 @@ async def resolve_local_source_to_data_url(
     if not s or s.lower().startswith(("http://", "https://", "data:")):
         return src
     resolved = await resolve_image_source(s, ResolveContext(task_id=task_id), permitted=permitted)
+    encoded = base64.b64encode(resolved.data).decode("ascii")
+    mime = resolved.mime or "application/octet-stream"
+    return f"data:{mime};base64,{encoded}"
+
+
+def resolve_source_sync(
+    src: str,
+    task_id: Optional[str] = None,
+    *,
+    permitted: tuple = ("image",),
+    max_bytes: Optional[int] = None,
+    accepted_mimes: Optional[Collection[str]] = None,
+) -> ResolvedImage:
+    """Resolve a source from synchronous provider code with optional provider limits."""
+    from model_tools import _run_async
+
+    return _run_async(resolve_image_source(
+        src,
+        ResolveContext(task_id=task_id),
+        permitted=permitted,
+        max_bytes=max_bytes,
+        accepted_mimes=accepted_mimes,
+    ))
+
+
+def resolve_source_to_url_sync(
+    src: str,
+    task_id: Optional[str] = None,
+    *,
+    permitted: tuple = ("image",),
+    max_bytes: Optional[int] = None,
+    accepted_mimes: Optional[Collection[str]] = None,
+) -> str:
+    """Pass HTTP URLs through and encode other sources under their detected MIME."""
+    s = (src or "").strip()
+    if s.lower().startswith(("http://", "https://")):
+        return s
+    resolved = resolve_source_sync(
+        s,
+        task_id,
+        permitted=permitted,
+        max_bytes=max_bytes,
+        accepted_mimes=accepted_mimes,
+    )
     encoded = base64.b64encode(resolved.data).decode("ascii")
     mime = resolved.mime or "application/octet-stream"
     return f"data:{mime};base64,{encoded}"

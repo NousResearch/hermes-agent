@@ -876,8 +876,11 @@ class OpenAICompatRoutesMixin:
                 if require_persist:
                     # Keep the two cache modes disjoint: a same-key request that flips the mode must
                     # not be served a result cached under the other mode (a durable retry given a
-                    # non-durable unpersisted answer, or vice versa).
-                    scoped_key = f"{scoped_key}\0require-persist"
+                    # non-durable unpersisted answer, or vice versa). Also scope by the target
+                    # session: a persist receipt is per-session-per-turn, so two same-key wakes for
+                    # different X-Hermes-Session-Id must never share one session's cached True.
+                    target_session = request.headers.get("X-Hermes-Session-Id", "").strip()
+                    scoped_key = f"{scoped_key}\0require-persist\0{target_session}"
 
                 def _cache_if_persisted(r):
                     # compute() returns (result, usage); cache only a committed turn so a durable

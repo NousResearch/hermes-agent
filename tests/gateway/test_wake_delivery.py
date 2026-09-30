@@ -184,13 +184,13 @@ def test_persist_delegation_delivery_raises_without_db():
 
 
 # ---------------------------------------------------------------------------
-# GOV-F25.c AC-7 / AC-8 — PR-B: durable wake self-post (idempotency + persist
-# receipt) on the DEFAULT-profile HTTP path and the SECONDARY in-process path.
+# Durable wake self-post: idempotency + persist receipt on the DEFAULT-profile
+# HTTP path and the SECONDARY-profile in-process path.
 # ---------------------------------------------------------------------------
 
 
 def test_ac_gov_f25_c_7(monkeypatch):
-    """PR-B DEFAULT-profile HTTP branch: deliver_wake sends the opt-in headers and treats a 2xx without the persist ack as undelivered; no owner_profile."""
+    """DEFAULT-profile HTTP branch: deliver_wake sends the opt-in headers and treats a 2xx without the persist ack as undelivered; no owner_profile."""
     import inspect
 
     from aiohttp import web
@@ -304,7 +304,7 @@ class _InProcAdapter:
 
 
 def test_ac_gov_f25_c_8(monkeypatch):
-    """PR-B SECONDARY-profile in-process branch: deliver_wake gates on run_internal_session_turn's persist result AND dedups by idempotency_key (no HTTP, no header)."""
+    """SECONDARY-profile in-process branch: deliver_wake gates on run_internal_session_turn's persist result AND dedups by idempotency_key (no HTTP, no header)."""
     from gateway import wake
     from gateway.platforms.api_server import _IdempotencyCache
 
@@ -332,3 +332,27 @@ def test_ac_gov_f25_c_8(monkeypatch):
             adapter, text="t", session_id="s", profile="owner-b",
             idempotency_key="idem-3", require_persist_ack=True))
     assert adapter.turn_runs == 1  # persisted same-key retry deduped
+
+
+def test_in_process_wake_fingerprints_content(monkeypatch):
+    """The in-process de-dup keys on the wake content, not a constant: a same-key retry with
+    DIFFERENT text re-runs (never silently served the earlier receipt); an identical retry dedups."""
+    from gateway import wake
+    from gateway.platforms.api_server import _IdempotencyCache
+
+    monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+    monkeypatch.setattr(wake, "_RETRY_DELAYS_SECONDS", (0.01, 0.01, 0.01))
+    adapter = _InProcAdapter()
+    adapter.set_turn_persisted(True)
+
+    asyncio.run(wake.deliver_wake(adapter, text="first", session_id="s", profile="owner-b",
+                                  idempotency_key="idem-x", require_persist_ack=True))
+    asyncio.run(wake.deliver_wake(adapter, text="second", session_id="s", profile="owner-b",
+                                  idempotency_key="idem-x", require_persist_ack=True))
+    assert adapter.turn_runs == 2
+
+    adapter.reset_counts()
+    for _ in range(2):
+        asyncio.run(wake.deliver_wake(adapter, text="same", session_id="s", profile="owner-b",
+                                      idempotency_key="idem-y", require_persist_ack=True))
+    assert adapter.turn_runs == 1

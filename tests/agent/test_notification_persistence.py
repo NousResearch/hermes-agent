@@ -30,8 +30,8 @@ def test_muted_wake_preserves_history_and_new_evidence(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GOV-F25.c AC-5 — PR-B: a committed turn's persist receipt (agent flag ->
-# finalize result -> SERVER-GENERATED X-Hermes-Turn-Persisted response header).
+# A committed turn's persist receipt: agent flag -> finalize result ->
+# SERVER-GENERATED X-Hermes-Turn-Persisted response header.
 # ---------------------------------------------------------------------------
 
 
@@ -39,9 +39,10 @@ class _GovF25cAgent:
     """A finalize_turn-shaped agent (mirrors the finalize test harness) that also drives the REAL
     session-persistence funnel for its per-turn persist flag. ``persist`` invokes the unbound
     ``SessionPersistenceMixin._persist_session`` so the flag is set by the source line under test
-    (not by this stub); ``begin_turn`` mirrors the turn-facade per-turn reset. finalize_turn's own
-    internal ``_persist_session`` call resolves to the simplified capture below and never touches the
-    flag, so the value set by ``persist`` is what finalize exposes."""
+    (not by this stub); ``begin_turn`` mirrors the turn-facade per-turn reset. finalize_turn clears the
+    flag to None before its final persist, so the simplified ``_persist_session`` capture below
+    mirrors the real funnel and sets the flag from ``self._committed`` — the value the final persist
+    writes (or None if that step raises before it) is what finalize exposes."""
 
     def __init__(self):
         self.max_iterations = 90
@@ -101,6 +102,10 @@ class _GovF25cAgent:
 
     def _persist_session(self, messages, conversation_history):
         self.persisted_messages = [dict(m) for m in messages]
+        # Mirror the real funnel: the final flush records the per-turn receipt. finalize_turn resets
+        # the flag to None before reaching here, so if this step is never called (an earlier
+        # finalize sub-step raised) the receipt stays None instead of a stale True.
+        self._last_turn_persisted = bool(self._committed)
 
     def _apply_persist_user_message_override(self, messages):
         idx = self._persist_user_message_idx
@@ -205,3 +210,20 @@ def test_ac_gov_f25_c_5():
     _status_forged, headers_forged = _post_chat(persisted=False,
                                                  request_headers={"X-Hermes-Turn-Persisted": "true"})
     assert headers_forged["X-Hermes-Turn-Persisted"] == "false"  # server ignores the forged request value
+
+
+def test_final_persist_failure_clears_stale_receipt():
+    """If the final persist step raises after an earlier mid-turn flush committed, finalize reports
+    turn_persisted None (not a stale True) — a wake caller must never ack an uncommitted turn."""
+    from agent import turn_finalizer
+
+    agent = _GovF25cAgent()
+    agent.begin_turn()
+    agent.persist(committed=True)
+    assert agent._last_turn_persisted is True
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("final persist failed")
+
+    agent._persist_session = _boom
+    assert _finalize(turn_finalizer, agent)["turn_persisted"] is None

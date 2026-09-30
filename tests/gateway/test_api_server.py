@@ -3170,8 +3170,7 @@ class TestCreateAgentModelRecovery:
 
 
 # ---------------------------------------------------------------------------
-# GOV-F25.c AC-6 — persist-gated idempotency (opt-in cache_if at the cache AND
-# the route). PR-B: gateway wake idempotency + persist receipt.
+# Persist-gated idempotency: opt-in cache_if at the cache AND the route.
 # ---------------------------------------------------------------------------
 
 
@@ -3247,3 +3246,35 @@ class TestGovF25cPersistGatedIdempotency:
         assert await self._route_runs(adapter, key="k-rp", require_persist=True, persisted=False, repeats=2) == 2
         # X-Hermes-Require-Persist: a PERSISTED result IS cached (same-key retry served once)
         assert await self._route_runs(adapter, key="k-rp2", require_persist=True, persisted=True, repeats=2) == 1
+
+    @pytest.mark.asyncio
+    async def test_persist_required_cache_scopes_by_session(self, adapter):
+        """A persist receipt is per-session: two persist-required wakes with the SAME Idempotency-Key
+        and body but DIFFERENT X-Hermes-Session-Id each run their own turn; a repeat of one session is
+        deduped, never served the other session's receipt."""
+        import gateway.platforms.api_server as _api
+        _api._idem_cache = _IdempotencyCache()
+        calls = {"n": 0}
+
+        async def compute():
+            calls["n"] += 1
+            return ({"final_response": "ok", "turn_persisted": True}, {"total_tokens": 1})
+
+        async def _post(session_id):
+            request = MagicMock()
+            request.headers = {"Idempotency-Key": "k", "X-Hermes-Require-Persist": "1",
+                               "X-Hermes-Session-Id": session_id}
+            body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+            _outcome, err = await adapter._run_idempotent(
+                request, body, compute, log_label="test",
+                fingerprint_keys=["model", "messages"], route="chat_completions")
+            assert err is None
+
+        token = _api_request_profile.set("profile-durable")
+        try:
+            await _post("sess-A")
+            await _post("sess-A")
+            await _post("sess-B")
+        finally:
+            _api_request_profile.reset(token)
+        assert calls["n"] == 2

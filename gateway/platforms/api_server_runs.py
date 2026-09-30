@@ -622,8 +622,7 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
                     route_source="global", session_history_delivery="1",
                     notification_category=notification_category,
                 )
-                # The finalize result carries turn_persisted (True/False/None); a durable
-                # caller gates its cursor advance on it (see gateway/wake.py).
+                # A durable caller gates its cursor advance on this receipt (see gateway/wake.py).
                 return result.get("turn_persisted") if isinstance(result, dict) else None
             raise RuntimeError(
                 f"internal wake gave up for session {session_id} after {attempts} attempts: {last_err}")
@@ -636,10 +635,16 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
         # path's ``_IdempotencyCache`` ``cache_if``. The key is namespaced disjoint from the HTTP
         # scoped keys so an in-process wake and an HTTP turn never collide; only a persisted
         # result is cached, so an unpersisted same-key retry re-runs until the turn commits.
-        from gateway.platforms.api_server import _idem_cache
+        from gateway.platforms.api_server import _idem_cache, _make_request_fingerprint
         scoped_key = f"in-process-wake\0{profile}\0{session_id}\0{idempotency_key}"
+        # Fingerprint the wake content so a same-key reuse with different text is a conflict/re-run,
+        # not a silent serve of the earlier wake's receipt — the in-process mirror of the HTTP
+        # path's body fingerprint.
+        fingerprint = _make_request_fingerprint(
+            {"text": text, "notification_category": notification_category},
+            keys=["text", "notification_category"])
         return await _idem_cache.get_or_set(
-            scoped_key, "in-process-wake", _run_once_persist,
+            scoped_key, fingerprint, _run_once_persist,
             cache_if=lambda r: r is True)
     return await _run_once_persist()
 

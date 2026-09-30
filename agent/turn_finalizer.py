@@ -618,6 +618,10 @@ def finalize_turn(
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
+    # Fail safe: clear the receipt before the guarded final persist so that if any step in
+    # _persist_step raises before _persist_session commits, turn_persisted reports None (not a stale
+    # True left by an earlier mid-turn flush) — a wake caller must never ack an uncommitted turn.
+    agent._last_turn_persisted = None
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
     # Keep the gateway's separate in-memory history snapshot current even on

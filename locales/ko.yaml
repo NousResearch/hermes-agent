@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "메시지는 현재 실행에 조정 메시지로 전달돼요 (다음 도구 호출 뒤)."
     behavior_interrupt_short: "현재 실행 중단"
     behavior_interrupt_long: "Hermes가 바쁠 때 받은 메시지는 현재 실행을 중단시켜요."
-    status: "**바쁠 때 입력 모드: `{mode}`\n바쁠 때 받은 메시지: _{behavior}_\n`/busy queue`, `/busy steer`, `/busy interrupt`로 변경할 수 있어요."
-    unknown_mode: "알 수 없는 모드 `{arg}`. `/busy queue`, `/busy steer`, `/busy interrupt` 중 하나를 사용하세요."
+    status: "**바쁠 때 입력 모드: `{mode}`\n바쁠 때 받은 메시지: _{behavior}_\n`{prefix}busy queue`, `{prefix}busy steer`, `{prefix}busy interrupt`로 변경할 수 있어요."
+    unknown_mode: "알 수 없는 모드 `{arg}`. `{prefix}busy queue`, `{prefix}busy steer`, `{prefix}busy interrupt` 중 하나를 사용하세요."
     save_failed: "바쁠 때 입력 모드를 설정에 저장하지 못했어요. 모드는 변경되지 않았어요."
     set: "바쁠 때 입력 모드를 **`{mode}`**(으)로 설정했어요 (저장됨).\n_{behavior}_"
   pause:

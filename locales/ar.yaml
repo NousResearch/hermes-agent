@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "ستُوجَّه الرسائل إلى التشغيل الحالي (بعد استدعاء الأداة التالي)."
     behavior_interrupt_short: "تقاطع التشغيل الحالي"
     behavior_interrupt_long: "ستقاطع الرسائل التشغيل الحالي عندما يكون Hermes مشغولًا."
-    status: "**وضع الإدخال أثناء الانشغال: `{mode}`\nالرسائل أثناء الانشغال: _{behavior}_\nغيّره بـ `/busy queue` أو `/busy steer` أو `/busy interrupt`."
-    unknown_mode: "وضع غير معروف `{arg}`. استخدم `/busy queue` أو `/busy steer` أو `/busy interrupt`."
+    status: "**وضع الإدخال أثناء الانشغال: `{mode}`\nالرسائل أثناء الانشغال: _{behavior}_\nغيّره بـ `{prefix}busy queue` أو `{prefix}busy steer` أو `{prefix}busy interrupt`."
+    unknown_mode: "وضع غير معروف `{arg}`. استخدم `{prefix}busy queue` أو `{prefix}busy steer` أو `{prefix}busy interrupt`."
     save_failed: "تعذّر حفظ وضع الإدخال أثناء الانشغال في الإعدادات. لم يتغيّر الوضع."
     set: "تم تعيين وضع الإدخال أثناء الانشغال إلى **`{mode}`** (تم الحفظ).\n_{behavior}_"
   pause:

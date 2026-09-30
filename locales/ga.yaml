@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "Stiúrfar teachtaireachtaí isteach sa rith reatha (tar éis an chéad ghlao uirlise eile)."
     behavior_interrupt_short: "cuirtear isteach ar an rith reatha"
     behavior_interrupt_long: "Cuirfidh teachtaireachtaí isteach ar an rith reatha fad a bhíonn Hermes gnóthach."
-    status: "**Mód ionchuir gnóthach: `{mode}`\nTeachtaireachtaí agus é gnóthach: _{behavior}_\nAthraigh le `/busy queue`, `/busy steer`, nó `/busy interrupt`."
-    unknown_mode: "Mód anaithnid `{arg}`. Úsáid `/busy queue`, `/busy steer`, nó `/busy interrupt`."
+    status: "**Mód ionchuir gnóthach: `{mode}`\nTeachtaireachtaí agus é gnóthach: _{behavior}_\nAthraigh le `{prefix}busy queue`, `{prefix}busy steer`, nó `{prefix}busy interrupt`."
+    unknown_mode: "Mód anaithnid `{arg}`. Úsáid `{prefix}busy queue`, `{prefix}busy steer`, nó `{prefix}busy interrupt`."
     save_failed: "Níorbh fhéidir an mód ionchuir gnóthach a shábháil sa chumraíocht. Mód gan athrú."
     set: "Mód ionchuir gnóthach socraithe go **`{mode}`** (sábháilte).\n_{behavior}_"
   pause:

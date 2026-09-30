@@ -742,8 +742,8 @@ gateway:
     behavior_steer_long: "Messages will be steered into the current run (after the next tool call)."
     behavior_interrupt_short: "interrupts current run"
     behavior_interrupt_long: "Messages will interrupt the current run while Hermes is busy."
-    status: "**Busy input mode: `{mode}`\nMessages while busy: _{behavior}_\nChange with `/busy queue`, `/busy steer`, or `/busy interrupt`."
-    unknown_mode: "Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
+    status: "**Busy input mode: `{mode}`\nMessages while busy: _{behavior}_\nChange with `{prefix}busy queue`, `{prefix}busy steer`, or `{prefix}busy interrupt`."
+    unknown_mode: "Unknown mode `{arg}`. Use `{prefix}busy queue`, `{prefix}busy steer`, or `{prefix}busy interrupt`."
     save_failed: "Busy input mode could not be saved to config. Mode unchanged."
     set: "Busy input mode set to **`{mode}`** (saved).\n_{behavior}_"
   pause:

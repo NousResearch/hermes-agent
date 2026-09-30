@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "Повідомлення скеровуватимуться в поточний запуск (після наступного виклику інструмента)."
     behavior_interrupt_short: "перериває поточний запуск"
     behavior_interrupt_long: "Поки Hermes зайнятий, повідомлення перериватимуть поточний запуск."
-    status: "**Режим введення під час зайнятості: `{mode}`\nПовідомлення під час зайнятості: _{behavior}_\nЗмінити можна через `/busy queue`, `/busy steer` або `/busy interrupt`."
-    unknown_mode: "Невідомий режим `{arg}`. Використовуйте `/busy queue`, `/busy steer` або `/busy interrupt`."
+    status: "**Режим введення під час зайнятості: `{mode}`\nПовідомлення під час зайнятості: _{behavior}_\nЗмінити можна через `{prefix}busy queue`, `{prefix}busy steer` або `{prefix}busy interrupt`."
+    unknown_mode: "Невідомий режим `{arg}`. Використовуйте `{prefix}busy queue`, `{prefix}busy steer` або `{prefix}busy interrupt`."
     save_failed: "Не вдалося зберегти режим введення під час зайнятості в конфігурацію. Режим не змінено."
     set: "Режим введення під час зайнятості: **`{mode}`** (збережено).\n_{behavior}_"
   pause:

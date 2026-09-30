@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "Nachrichten werden in den aktuellen Lauf gelenkt (nach dem nächsten Tool-Aufruf)."
     behavior_interrupt_short: "unterbricht aktuellen Lauf"
     behavior_interrupt_long: "Nachrichten unterbrechen den aktuellen Lauf, während Hermes beschäftigt ist."
-    status: "**Eingabemodus bei Beschäftigung: `{mode}`\nNachrichten während Beschäftigung: _{behavior}_\nÄndern mit `/busy queue`, `/busy steer` oder `/busy interrupt`."
-    unknown_mode: "Unbekannter Modus `{arg}`. Verwenden Sie `/busy queue`, `/busy steer` oder `/busy interrupt`."
+    status: "**Eingabemodus bei Beschäftigung: `{mode}`\nNachrichten während Beschäftigung: _{behavior}_\nÄndern mit `{prefix}busy queue`, `{prefix}busy steer` oder `{prefix}busy interrupt`."
+    unknown_mode: "Unbekannter Modus `{arg}`. Verwenden Sie `{prefix}busy queue`, `{prefix}busy steer` oder `{prefix}busy interrupt`."
     save_failed: "Eingabemodus bei Beschäftigung konnte nicht in der Konfiguration gespeichert werden. Modus unverändert."
     set: "Eingabemodus bei Beschäftigung auf **`{mode}`** gesetzt (gespeichert).\n_{behavior}_"
   pause:

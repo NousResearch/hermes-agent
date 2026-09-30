@@ -857,8 +857,8 @@ gateway:
     status: |-
       **Mode de saisie quand occupé : `{mode}`
       Messages pendant l'occupation : _{behavior}_
-      Modifiez-le avec `/busy queue`, `/busy steer` ou `/busy interrupt`.
-    unknown_mode: "Mode inconnu `{arg}`. Utilisez `/busy queue`, `/busy steer` ou `/busy interrupt`."
+      Modifiez-le avec `{prefix}busy queue`, `{prefix}busy steer` ou `{prefix}busy interrupt`.
+    unknown_mode: "Mode inconnu `{arg}`. Utilisez `{prefix}busy queue`, `{prefix}busy steer` ou `{prefix}busy interrupt`."
     save_failed: "Le mode de saisie quand occupé n'a pas pu être enregistré dans la configuration. Mode inchangé."
     set: |-
       Mode de saisie quand occupé défini sur **`{mode}`** (enregistré).

@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "Los mensajes se redirigirán a la ejecución actual (tras la siguiente llamada a herramienta)."
     behavior_interrupt_short: "interrumpen la ejecución actual"
     behavior_interrupt_long: "Los mensajes interrumpirán la ejecución actual mientras Hermes esté ocupado."
-    status: "**Modo de entrada al estar ocupado: `{mode}`\nMensajes mientras está ocupado: _{behavior}_\nCámbialo con `/busy queue`, `/busy steer` o `/busy interrupt`."
-    unknown_mode: "Modo desconocido `{arg}`. Usa `/busy queue`, `/busy steer` o `/busy interrupt`."
+    status: "**Modo de entrada al estar ocupado: `{mode}`\nMensajes mientras está ocupado: _{behavior}_\nCámbialo con `{prefix}busy queue`, `{prefix}busy steer` o `{prefix}busy interrupt`."
+    unknown_mode: "Modo desconocido `{arg}`. Usa `{prefix}busy queue`, `{prefix}busy steer` o `{prefix}busy interrupt`."
     save_failed: "No se pudo guardar el modo de entrada al estar ocupado en la configuración. El modo no cambió."
     set: "Modo de entrada al estar ocupado establecido en **`{mode}`** (guardado).\n_{behavior}_"
   pause:

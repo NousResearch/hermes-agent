@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "メッセージは現在の実行にステアされます (次のツール呼び出し後)。"
     behavior_interrupt_short: "現在の実行を中断"
     behavior_interrupt_long: "Hermes がビジー状態の間、メッセージは現在の実行を中断します。"
-    status: "**ビジー時の入力モード: `{mode}`\nビジー中のメッセージ: _{behavior}_\n変更するには `/busy queue`、`/busy steer`、または `/busy interrupt` を使ってください。"
-    unknown_mode: "不明なモード `{arg}` です。`/busy queue`、`/busy steer`、または `/busy interrupt` を使ってください。"
+    status: "**ビジー時の入力モード: `{mode}`\nビジー中のメッセージ: _{behavior}_\n変更するには `{prefix}busy queue`、`{prefix}busy steer`、または `{prefix}busy interrupt` を使ってください。"
+    unknown_mode: "不明なモード `{arg}` です。`{prefix}busy queue`、`{prefix}busy steer`、または `{prefix}busy interrupt` を使ってください。"
     save_failed: "ビジー時の入力モードを設定に保存できませんでした。モードは変更されていません。"
     set: "ビジー時の入力モードを **`{mode}`** に設定しました (保存済み)。\n_{behavior}_"
   pause:

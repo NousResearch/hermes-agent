@@ -3572,3 +3572,40 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+class TestPersistedOutputPathInSummary:
+    """A <persisted-output> block's file path must survive tool-result summarization (#128786)."""
+
+    _BLOCK = (
+        "<persisted-output>\n"
+        "This tool result was too large (50,000 characters, 48.8 KB).\n"
+        "Full output saved to: /home/u/.hermes/cache/scratch/spill.txt\n"
+        "Use the read_file tool with offset and limit to access specific sections of this output.\n"
+        "\n"
+        "Preview (first 20 chars):\n"
+        "some preview text...\n"
+        "</persisted-output>"
+    )
+
+    def test_terminal_summary_keeps_persisted_path(self):
+        summary = _summarize_tool_result(
+            "terminal", '{"command": "long-cmd"}', self._BLOCK)
+        assert summary.startswith("[terminal] ran `long-cmd`")
+        assert "full output: /home/u/.hermes/cache/scratch/spill.txt" in summary
+
+    def test_execute_code_summary_keeps_persisted_path(self):
+        summary = _summarize_tool_result(
+            "execute_code", '{"code": "print(1)"}', self._BLOCK)
+        assert summary.startswith("[execute_code]")
+        assert "full output: /home/u/.hermes/cache/scratch/spill.txt" in summary
+
+    def test_fallback_summary_keeps_persisted_path(self):
+        summary = _summarize_tool_result("some_tool", "{}", self._BLOCK)
+        assert summary.startswith("[some_tool]")
+        assert "full output: /home/u/.hermes/cache/scratch/spill.txt" in summary
+
+    def test_plain_content_has_no_suffix(self):
+        summary = _summarize_tool_result(
+            "terminal", '{"command": "ls"}', "total 0\n{\"exit_code\": 0}")
+        assert summary == "[terminal] ran `ls` -> exit 0, 2 lines output"

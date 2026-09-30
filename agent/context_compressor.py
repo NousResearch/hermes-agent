@@ -1842,9 +1842,28 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     line_count = content.count("\n") + 1 if content.strip() else 0
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
-        return summarizer(tool_name, args, content, content_len, line_count)
-    first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
-    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
+        summary = summarizer(tool_name, args, content, content_len, line_count)
+    else:
+        first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
+        summary = f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
+    return _with_persisted_output_path(summary, content)
+
+
+def _with_persisted_output_path(summary: str, content: str) -> str:
+    """Keep a spilled tool result's on-disk path reachable after compression (#128786).
+
+    Oversized tool results arrive as a ``<persisted-output>`` preview plus a path.
+    The one-line summary used to drop that path, so once the turn was compressed the
+    model could no longer reach the full output even though the persisted file still
+    existed — forcing wasteful (sometimes impossible) command re-runs."""
+    try:
+        from tools.tool_result_storage import extract_persisted_path
+        path = extract_persisted_path(content)
+    except Exception:  # noqa: BLE001 — summarization must never fail on the path lookup
+        path = None
+    if not path or path in summary:
+        return summary
+    return f"{summary}; full output: {path}"
 
 
 def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":

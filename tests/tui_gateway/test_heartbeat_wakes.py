@@ -41,9 +41,9 @@ def _session(profile_home=None) -> dict:
 
 def test_a_heartbeat_wake_is_typed_hidden(surface):
     session = _session()
-    assert server._notif_claim_turn(session) is True
+    claim = server._notif_claim_turn(session)
 
-    server._notif_dispatch_event("sid", session, dict(HEARTBEAT), "beat text")
+    server._notif_dispatch_event("sid", session, dict(HEARTBEAT), "beat text", claim)
 
     ((text, kwargs),) = surface
     assert text == "beat text"

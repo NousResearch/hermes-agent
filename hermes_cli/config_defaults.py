@@ -2660,6 +2660,11 @@ DEFAULT_CONFIG = {
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.
         "macos_signing_identity": "",
+        # Windows only: explicit ssh client for SSH connections, the -G config probe and SSH
+        # terminals, e.g. "C:\\Program Files\\Git\\usr\\bin\\ssh.exe" when the in-box OpenSSH is
+        # missing or broken. Empty = System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
+        # Read by the app before its first window; restart to apply. Ignored off-Windows.
+        "ssh_path": "",
         # Auto-continue a turn killed by a crash: resuming re-submits the interrupted prompt if
         # fresh; a stale one just shows the recovered partial transcript.
         "auto_continue": {

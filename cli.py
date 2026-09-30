@@ -208,7 +208,10 @@ from hermes_cli.cli_single_query import (  # noqa: F401,E402
     _sync_cli_session_id_from_agent,
 )
 
-from prompt_toolkit.patch_stdout import patch_stdout
+try:
+    from prompt_toolkit.patch_stdout import patch_stdout
+except ImportError:  # partial/broken prompt_toolkit (#96075); sole use is a `with patch_stdout():`
+    from contextlib import nullcontext as patch_stdout
 try:
     from prompt_toolkit.enums import EditingMode
 except ImportError:  # partial prompt_toolkit stubs in tests

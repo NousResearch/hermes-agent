@@ -164,6 +164,47 @@ If the maintained updater script is missing (for example after antivirus quarant
 
 On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
 
+### Fetch fails with `should_include_obj should only be called on existing objects`
+
+Git 2.53 and newer can crash while fetching into a partial clone when some of its pack files lack a
+`.promisor` marker. That happens when a filtered fetch turned a full or shallow clone into a partial
+one, or when markers were lost. `hermes update` marks those packs and retries the fetch once, and
+an installer rerun marks them before it fetches. An install whose own updater predates that fix
+can't fetch it: rerun the installer, or mark the packs by hand (with Hermes closed) and update again.
+
+The checkout is `hermes-agent` under your Hermes home (`~/.hermes`, or `HERMES_HOME` when set;
+on Windows `%LOCALAPPDATA%\hermes` unless `HERMES_HOME` is set).
+
+```bash
+# macOS / Linux
+repo="${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+for p in "$repo"/.git/objects/pack/pack-*.pack; do [ -e "${p%.pack}.promisor" ] || : > "${p%.pack}.promisor"; done
+```
+
+```powershell
+# Windows
+$repo = Join-Path ($(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" })) 'hermes-agent'
+Get-ChildItem "$repo\.git\objects\pack\pack-*.pack" | ForEach-Object {
+  $m = [IO.Path]::ChangeExtension($_.FullName, '.promisor')
+  if (-not (Test-Path -LiteralPath $m)) { New-Item -ItemType File -Path $m | Out-Null }
+}
+```
+
+The checkout stays a partial clone. Don't remove `remote.origin.promisor` / `partialclonefilter` to
+get past the crash: objects that only release tags or update backups reach were never downloaded,
+so a non-partial checkout then fails `git gc` with `bad tree object`. If you already did, fetch the
+missing objects and check that none are left before turning automatic cleanup back on:
+
+```bash
+git -C "$repo" rev-list --objects --missing=print --all | grep '^?' | cut -c2- | git -C "$repo" fetch -q --no-tags --stdin origin
+git -C "$repo" rev-list --objects --missing=error --all >/dev/null && echo complete
+```
+
+```powershell
+git -C $repo rev-list --objects --missing=print --all | Where-Object { $_.StartsWith('?') } | ForEach-Object { $_.Substring(1) } | git -C $repo fetch -q --no-tags --stdin origin
+git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE   # 0 = complete
+```
+
 ### Updating against a non-default branch: `--branch`
 
 On the default source channel, `hermes update` tracks `origin/main`. Use

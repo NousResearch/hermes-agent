@@ -71,7 +71,7 @@ class DurableSyncStore:
     ) -> None:
         """Advance the cursor and drop the admitted event IDs that *keep* does not return.
 
-        *keep* names the IDs of responses whose cursors are not written yet. It is called under
+        *keep* returns the IDs of responses whose cursors are not written yet. It is called under
         the write lock, so an ID admitted while this write waits for the lock is kept too.
         """
         await self._commit(next_batch=next_batch, keep=keep)

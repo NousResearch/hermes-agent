@@ -178,6 +178,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_max_chars = _SYNC_MSG_MAX_CHARS
         # Recall prefetch gate: contexts that skip the per-turn memory round-trip.
         self._agent_context, self._prefetch_skip_contexts = "primary", _PREFETCH_SKIP_CONTEXTS
+        self._migration_notice_shown = False
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
@@ -286,6 +287,16 @@ class Mem0MemoryProvider(MemoryProvider):
         # (see MemoryProvider.initialize). Drives the recall-prefetch gate below.
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._prefetch_skip_contexts = _parse_skip_contexts(cfg.get("prefetch_skip_contexts"))
+        # Migration notice, once per process: this changes a default, so say so and how to get
+        # the old behaviour back (plugins/AGENTS.md: default changes need an existing-config signal).
+        if (self._prefetch_skip_contexts and not self._prefetch_allowed()
+                and not self._migration_notice_shown and cfg.get("prefetch_skip_contexts") is None):
+            logger.info(
+                "mem0: recall prefetch is now skipped in non-interactive contexts (%s); "
+                "set prefetch_skip_contexts=none in mem0.json to restore the previous behaviour",
+                sorted(self._prefetch_skip_contexts),
+            )
+            self._migration_notice_shown = True
         self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:

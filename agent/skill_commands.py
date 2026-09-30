@@ -349,7 +349,7 @@ def _build_skill_message(
         try:
             skill_view_target = str(skill_dir.relative_to(_skills_dir()))
         except ValueError:
-            skill_view_target = skill_dir.name  # external dir — use the skill name
+            skill_view_target = str(loaded_skill.get("name") or skill_dir.name)
         parts += ["", "[This skill has supporting files (paths relative to the skill directory above):]"]
         parts += [f"- {sf}" for sf in supporting]
         parts.append(

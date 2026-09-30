@@ -8,9 +8,18 @@ import type { SkillInfo } from '@/types/hermes'
  */
 
 export function catalogSourceFor(provenance: SkillInfo['provenance']): 'built-in' | 'hub' | 'external' | 'local' {
-  if (provenance === 'bundled') return 'built-in'
-  if (provenance === 'hub') return 'hub'
-  if (provenance === 'external') return 'external'
+  if (provenance === 'bundled') {
+    return 'built-in'
+  }
+
+  if (provenance === 'hub') {
+    return 'hub'
+  }
+
+  if (provenance === 'external') {
+    return 'external'
+  }
+
   return 'local'
 }
 

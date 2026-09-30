@@ -9,10 +9,11 @@ import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILL
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
+import { catalogSourceFor } from '../skills/skill-provenance'
+
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogEntry, parseCatalog } from './catalog-data'
-import { catalogSourceFor } from '../skills/skill-provenance'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]

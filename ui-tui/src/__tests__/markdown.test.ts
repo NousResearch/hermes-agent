@@ -71,6 +71,28 @@ const renderPlain = (node: React.ReactNode) =>
     .split('\n')
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
 
+describe('physics math rendering', () => {
+  it.each([
+    String.raw`$E = \hbar \omega$`,
+    String.raw`\(E = \hbar \omega\)`,
+    String.raw`$$E = \hbar \omega$$`,
+    ['$$', String.raw`E = \hbar \omega`, '$$'].join('\n'),
+    [String.raw`\[`, String.raw`E = \hbar \omega`, String.raw`\]`].join('\n')
+  ])('renders physics symbols through the real Markdown component: %s', text => {
+    const rendered = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text })).join('\n')
+    expect(rendered).toContain('E = ℏ ω')
+    expect(rendered).not.toContain(String.raw`\hbar`)
+  })
+
+  it('preserves code and unknown commands rather than treating every backslash as math', () => {
+    const text = 'Code: `\\hbar`; unknown: $\\hbarExtra$'
+    const rendered = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text })).join('\n')
+    expect(rendered).toContain(String.raw`\hbar`)
+    expect(rendered).toContain(String.raw`\hbarExtra`)
+    expect(rendered).not.toContain('ℏ')
+  })
+})
+
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
     expect(matches('say _hi_ there')).toEqual(['_hi_'])

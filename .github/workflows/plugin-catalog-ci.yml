@@ -24,6 +24,32 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          fetch-depth: 0 # need the merge-base to diff the PR's changed files
+          persist-credentials: false # this job is read-only
+
+      - name: Catalog PRs must only touch plugin-catalog/
+        run: |
+          set -euo pipefail
+          # The gate's own enforcement code (this workflow, the validator, the
+          # composite actions, the built hermes) resolves from the PR checkout,
+          # so an admission PR must be data-only: a diff that also touches
+          # tooling could neuter the gate vetting it. PRs that legitimately
+          # change the gate itself get reviewed under the normal workflows,
+          # which do not have this restriction.
+          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          # git diff runs on its own so its failure still fails the step
+          # instead of looking like "nothing outside the catalog".
+          NON_CATALOG=$(git diff --name-only "$MERGE_BASE"...HEAD)
+          NON_CATALOG=$(printf '%s' "$NON_CATALOG" | grep -v '^plugin-catalog/' || true)
+          if [ -n "$NON_CATALOG" ]; then
+            echo "::error::catalog PRs must only touch plugin-catalog/**, found:"
+            # Filenames are PR-controlled; a newline in one could smuggle a
+            # workflow command into the log.
+            printf '%s' "$NON_CATALOG" | tr '\0\n' ' '
+            echo
+            exit 1
+          fi
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -48,6 +74,32 @@ jobs:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0 # need the merge-base to diff changed catalog files
+          # `hermes plugins validate` below runs pinned-repo code; keep the
+          # job's token out of .git/config where that code could read it.
+          persist-credentials: false
+
+      - name: Catalog PRs must only touch plugin-catalog/
+        run: |
+          set -euo pipefail
+          # The gate's own enforcement code (this workflow, the validator, the
+          # composite actions, the built hermes) resolves from the PR checkout,
+          # so an admission PR must be data-only: a diff that also touches
+          # tooling could neuter the gate vetting it. PRs that legitimately
+          # change the gate itself get reviewed under the normal workflows,
+          # which do not have this restriction.
+          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          # git diff runs on its own so its failure still fails the step
+          # instead of looking like "nothing outside the catalog".
+          NON_CATALOG=$(git diff --name-only "$MERGE_BASE"...HEAD)
+          NON_CATALOG=$(printf '%s' "$NON_CATALOG" | grep -v '^plugin-catalog/' || true)
+          if [ -n "$NON_CATALOG" ]; then
+            echo "::error::catalog PRs must only touch plugin-catalog/**, found:"
+            # Filenames are PR-controlled; a newline in one could smuggle a
+            # workflow command into the log.
+            printf '%s' "$NON_CATALOG" | tr '\0\n' ' '
+            echo
+            exit 1
+          fi
 
       - name: Find changed catalog entries
         id: changed
@@ -194,14 +246,16 @@ jobs:
               echo "::error file=$entry::subdir '$SUBDIR' resolves outside the pinned clone"
               FAILED=1; echo "::endgroup::"; continue
             fi
-            # Confinement is per-symlink too: a committed link inside the plugin
-            # dir must resolve inside the clone, or the manifest check and
-            # `hermes plugins validate` read non-pinned files.
-            if [ -d "$PLUGIN_DIR" ] && ! find "$PLUGIN_DIR" -type l -print0 | while IFS= read -r -d '' link; do
+            # Confinement is per-symlink too, across the whole clone: find does
+            # not descend into a symlinked directory, so an allowed in-clone
+            # link like plugin/ext -> ../lib would otherwise hide lib/evil ->
+            # /outside from a PLUGIN_DIR-only scan while reads through it still
+            # escape the pin.
+            if ! find "$CLONE_DIR" -path "$CLONE_DIR/.git" -prune -o -type l -print0 | while IFS= read -r -d '' link; do
                 target=$(realpath -m -- "$link")
                 case "$target" in "$CLONE_DIR"|"$CLONE_DIR"/*) ;; *) exit 1 ;; esac
               done; then
-              echo "::error file=$entry::a symlink inside the plugin dir resolves outside the pinned clone"
+              echo "::error file=$entry::a symlink in the repo resolves outside the pinned clone"
               FAILED=1; echo "::endgroup::"; continue
             fi
             # Native plugin.yaml OR portable Agent Plugins v1 plugin.json
@@ -223,11 +277,11 @@ jobs:
             # plugin may read the API, or manage its own data files).
             # NUL-delimited both ways: committed filenames with spaces or
             # newlines must not split into grep options or forged log lines.
-            SELF_UPDATE=$(grep -rlZE 'releases/latest|raw\.githubusercontent\.com' \
+            SELF_UPDATE=$(grep -rlZE 'releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com' \
                 --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' \
                 --include='*.jsx' --include='*.tsx' --include='*.mts' --include='*.cts' \
                 "$PLUGIN_DIR" \
-              | xargs -r0 grep -lZE 'writeTextFile|renamePath|writeFile\(' || true)
+              | xargs -r0 grep -lZE 'writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync|cpSync|createWriteStream' || true)
             SELF_UPDATE=$(printf '%s' "$SELF_UPDATE" | tr '\0\n' ' ')
             if [ -n "$SELF_UPDATE" ]; then
               echo "::error file=$entry::self-updating code in catalog build (fetches GitHub AND writes plugin files): $SELF_UPDATE"

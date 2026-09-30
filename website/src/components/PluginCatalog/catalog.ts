@@ -43,6 +43,8 @@ export interface CatalogPlugin {
   /** ISO dates from git history (first listing / last re-pin); present once the dates extractor runs. */
   addedAt?: string | null;
   updatedAt?: string | null;
+  /** 1-based curated hero rank from catalog-curation.json; absent when uncurated. */
+  featured?: number | null;
   /** Lowercase pre-joined haystack for the search filter (built at load). */
   _search?: string;
 }

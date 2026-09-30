@@ -1,12 +1,12 @@
 import './catalog.css'
 
-import { type ReactNode, useState } from 'react'
+import { type CSSProperties, type ReactNode, useState } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
-import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
+import { CatalogDates, CatalogHeaderMeta, CatalogMetadata, CatalogRating } from './catalog-metadata'
 
 export function catalogIcon(category: string) {
   const icons: Record<string, string> = {
@@ -60,7 +60,10 @@ const CARD_ACCENTS = [
   '[--catalog-accent:var(--ui-yellow)]'
 ]
 
+export type CatalogCardVariant = 'default' | 'hero' | 'showcase' | 'compact' | 'horizontal'
+
 interface CatalogCardProps {
+  variant?: CatalogCardVariant
   entry: CatalogEntry
   action: ReactNode
   accentIndex: number
@@ -68,9 +71,10 @@ interface CatalogCardProps {
   onCategory: (category: string) => void
   onTag: (tag: string) => void
   onSearch: (value: string) => void
+  style?: CSSProperties
 }
 
-export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch }: CatalogCardProps) {
+export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default', style }: CatalogCardProps) {
   return (
     <article
       className={cn(
@@ -78,10 +82,17 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
         CARD_ACCENTS[accentIndex % CARD_ACCENTS.length]
       )}
       data-catalog-card
+      data-catalog-editorial-art={(variant !== 'hero' && entry.imageUrl?.includes("official-art")) || undefined}
+      data-catalog-variant={variant}
       data-entry-id={entry.id}
+      style={style}
     >
-      {entry.imageUrl && <CatalogImage className="aspect-[2/1]" key={entry.imageUrl} src={entry.imageUrl} />}
-      <div className="flex min-h-0 w-full flex-1 flex-col gap-2 p-3">
+      {variant !== 'hero' && entry.imageUrl && ((variant !== 'compact' && variant !== 'showcase') || entry.imageUrl.includes('official-art')) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl} src={entry.imageUrl} />}
+      {variant !== 'default' && <div className="catalog-card-topline">
+        <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>{entry.author || catalogLabel(entry.source)}</span>
+        {variant !== 'hero' && <span className="relative shrink-0">{action}</span>}
+      </div>}
+      <div className="catalog-card-copy flex min-h-0 w-full flex-col gap-2 p-3">
         <div className="flex min-w-0 items-center gap-2.5">
           {/* Its ::after stretches over the whole card, so any empty spot opens the
               detail; real controls sit above it (`relative`). One focus stop per card. */}
@@ -91,26 +102,27 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
             className="min-w-0 flex-1 text-left font-semibold leading-snug after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
             onClick={() => onOpen(entry)}
           >
-            <span className="line-clamp-2 min-w-0 break-words text-lg">{entry.name}</span>
+            <span className="catalog-card-title line-clamp-2 min-w-0 break-words text-lg">{variant === 'default' ? entry.name : catalogLabel(entry.name)}</span>
           </RowButton>
-          {action && (
-            <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          {variant === 'default' && action && (
+            <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-hover:transition-none group-focus-within:opacity-100 group-focus-within:transition-none">
               {action}
             </span>
           )}
         </div>
         {/* In a fixed-height grid cell the description is what gives way. */}
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
-          <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          {variant === 'default' && <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
             <CatalogHeaderMeta entry={entry} />
-          </span>
-          <span className="line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
+            <CatalogRating entry={entry} />
+          </span>}
+          <span className="catalog-card-description line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
             {entry.description}
           </span>
         </div>
       </div>
-      <div className="px-3 pb-3 [&_button]:relative">
+      {variant === 'default' && <div className="catalog-card-metadata px-3 pb-3 [&_button]:relative">
         <CatalogMetadata
           entry={entry}
           onCategory={onCategory}
@@ -118,10 +130,19 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
           onSearch={onSearch}
           onTag={onTag}
         />
-      </div>
-      <div className="mt-auto px-3 pb-3">
+      </div>}
+      {variant !== 'default' && (
+        <div className="catalog-card-footer">
+          <CatalogHeaderMeta entry={entry} />
+          <span className="flex shrink-0 items-center gap-3">
+            <CatalogRating entry={entry} />
+            {variant === 'hero' && <span className="catalog-hero-action relative shrink-0">{action}</span>}
+          </span>
+        </div>
+      )}
+      {variant === 'default' && <div className="catalog-card-dates mt-auto px-3 pb-3">
         <CatalogDates entry={entry} />
-      </div>
+      </div>}
     </article>
   )
 }

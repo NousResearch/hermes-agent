@@ -62,12 +62,12 @@ export function CatalogDetail({
   ] as [string, ReactNode][]
 
   return (
-    <div className="min-w-0 space-y-5" data-catalog-detail={kind} ref={root}>
+    <div className={cn('min-w-0 space-y-5', dialog && 'pb-4 [&>:not(img)]:mx-4 [&>:first-child:not(img)]:mt-4')} data-catalog-detail={kind} ref={root}>
       {entry.imageUrl && (
         <CatalogImage
           className={cn(
             'aspect-[2/1] object-cover',
-            dialog ? '-mx-4 -mt-4 w-[calc(100%+2rem)] max-w-none rounded-t-xl' : 'w-full rounded-md'
+            dialog ? 'w-full rounded-t-xl' : 'w-full rounded-md'
           )}
           key={entry.imageUrl}
           src={entry.imageUrl}

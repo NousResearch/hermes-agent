@@ -227,7 +227,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 px-4 pb-2">
+    <div className="capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2">
       <ConnectorsDirectory
         addYourOwn={
           <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">

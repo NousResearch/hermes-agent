@@ -28,6 +28,7 @@ export type {
   UsageModelData
 } from './billing-types'
 export { groupCatalogPlugins, PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from './catalog-browse'
+export { type FeaturedCandidate, pickFeatured } from './catalog-featured'
 export { pluginCatalogInstallUrl, skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
 export {
   driveChargeSettlement,

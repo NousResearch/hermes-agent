@@ -1,4 +1,4 @@
-import { PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from '@hermes/shared'
+import { sortCatalogPlugins } from '@hermes/shared'
 
 import type { CatalogEntry, CatalogKind } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
@@ -16,22 +16,18 @@ export const EMPTY_FACETS: CatalogFacets = { sources: [], categories: [], tags: 
 
 export const catalogSources = (entries: CatalogEntry[]) => [...new Set(entries.map(entry => entry.source))]
 
-/** Category facet rows with counts; plugins follow the shared taxonomy order. */
-export function catalogCategories(entries: CatalogEntry[], kind: CatalogKind) {
+/** Category facet rows with counts, A–Z with "Other" last. */
+export function catalogCategories(entries: CatalogEntry[]) {
   const values = new Map<string, { label: string; count: number }>()
 
   for (const entry of entries) {
     values.set(entry.category, { label: entry.categoryLabel, count: (values.get(entry.category)?.count ?? 0) + 1 })
   }
 
-  if (kind === 'plugins') {
-    return PLUGIN_CATEGORY_ORDER.filter(key => values.has(key)).map(
-      key => [key, { ...values.get(key)!, label: PLUGIN_CATEGORIES[key].label }] as const
-    )
-  }
-
-  return [...values].sort((a, b) => b[1].count - a[1].count)
+  return [...values].sort((a, b) => categoryRank(a) - categoryRank(b) || a[1].label.localeCompare(b[1].label))
 }
+
+const categoryRank = (row: [string, { label: string }]) => (row[0] === 'other' || row[1].label.toLowerCase() === 'other' ? 1 : 0)
 
 /** The most common tags plus whatever is selected; search covers the long tail. */
 export function catalogTags(entries: CatalogEntry[], selected: string[], limit: number): FacetRow[] {

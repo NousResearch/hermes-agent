@@ -1,0 +1,90 @@
+/* Figma Frame 330's geometry, with the existing desktop card and theme surfaces. */
+/* Reference 121:5782: full-card hard-light artwork, no alpha-mask strip. */
+[data-catalog-card][data-catalog-variant] { border-color: transparent; }
+[data-catalog-editorial-art] .catalog-card-description { color: var(--ui-text-primary); }
+:root:not(.dark) [data-catalog-editorial-art] { --catalog-art-shade: 65%; }
+[data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card]:not(:hover) { filter: none; }
+[data-catalog-card][data-catalog-editorial-art] { isolation: isolate; background: color-mix(in srgb, var(--color-primary) 28%, var(--ui-chat-bubble-background)); }
+[data-catalog-card][data-catalog-editorial-art] .catalog-card-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; opacity: 1; filter: grayscale(1); mix-blend-mode: luminosity; }
+[data-catalog-editorial-art] { --catalog-art-shade: 50%; }
+:root.dark [data-catalog-editorial-art] { --catalog-art-shade: 72%; }
+[data-catalog-editorial-art]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(to bottom, transparent 8%, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 42%, var(--ui-chat-bubble-background) 92%); }
+[data-catalog-card][data-catalog-editorial-art] .catalog-card-copy { flex: none; background: none; }
+[data-catalog-card][data-catalog-editorial-art][data-catalog-variant=showcase] .catalog-card-topline { margin-bottom: 72px; }
+[data-catalog-variant=compact] .catalog-card-footer { padding-bottom: 20px; }
+[data-catalog-results] { container-type: inline-size; }
+.catalog-search-header { padding-top: 20px; }
+.catalog-filter-bar { padding-block: var(--capabilities-gap-controls) 0; }
+.catalog-filter-row { display: flex; align-items: center; gap: 15px; min-width: 0; }
+.catalog-filter-chips { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; overflow-x: auto; padding-block: 4px; }
+.catalog-filter-row > :first-child { flex-shrink: 0; }
+.catalog-filter-trigger { display: flex; flex: none; align-items: center; gap: 8px; }
+.catalog-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 20px 12px; }
+.catalog-card-footer > span:first-child { min-width: 0; width: auto; flex: 1; justify-content: flex-start; }
+.catalog-card-footer [data-slot=badge] { max-width: none; }
+.catalog-discovery { padding-bottom: 48px; }
+.catalog-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: var(--capabilities-gap-section) 20px var(--capabilities-gap-heading); }
+:is(.catalog-discovery, .capabilities-sections) > section:first-child .catalog-section-heading { padding-top: var(--capabilities-gap-lead); }
+.catalog-section-heading h2 { margin: 0; font-size: 1.4rem; font-weight: 600; letter-spacing: -.025em; }
+.catalog-section-heading p { margin: 6px 0 0; font-size: .8125rem; color: var(--ui-text-tertiary); }
+.catalog-bento { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+.catalog-bento > [data-catalog-card] { height: 100%; grid-column: var(--bento-x, auto) / span var(--bento-w, 1); grid-row: var(--bento-y, auto) / span var(--bento-h, 1); }
+.catalog-bento > [data-catalog-card] .catalog-card-footer { margin-top: auto; }
+.catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+[data-catalog-card]:not([data-catalog-variant=default]) { height: auto; }
+.catalog-card-topline { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px; font-size: .75rem; color: var(--ui-text-tertiary); }
+[data-catalog-card]:not([data-catalog-variant=default]) .catalog-card-copy { padding: 0 20px 16px; }
+[data-catalog-card]:not([data-catalog-variant=default]) .catalog-card-metadata { padding: 0 20px 16px; }
+[data-catalog-card]:not([data-catalog-variant=default]) .catalog-card-dates { padding: 0 20px 16px; }
+[data-catalog-variant=hero] { isolation: isolate; justify-content: flex-start; padding: 20px; gap: 12px; }
+[data-catalog-variant=hero] .catalog-card-topline { padding: 0; margin: 0; }
+[data-catalog-card][data-catalog-variant=hero] .catalog-card-copy { padding: 0; }
+[data-catalog-variant=hero] .catalog-card-footer { padding: 0; }
+[data-catalog-variant=hero] .catalog-card-footer > .catalog-hero-action { width: auto; margin-left: auto; }
+[data-catalog-variant=hero]:not([data-catalog-editorial-art]) .catalog-card-image { position: absolute; inset: 0 0 0 auto; width: 42%; height: 100%; object-fit: contain; z-index: -1; }
+[data-catalog-variant=hero] .catalog-card-copy { flex: none; max-width: 58%; }
+[data-catalog-variant=hero] .catalog-card-copy button > span { font-size: 2rem; }
+[data-catalog-variant=hero] .catalog-card-dates { margin-top: 0; }
+[data-catalog-card][data-catalog-variant=showcase] { display: flex; flex-direction: column; }
+[data-catalog-card] > * { min-width: 0; max-width: 100%; }
+[data-catalog-variant=showcase] .catalog-card-topline { padding: 20px; }
+.catalog-bento:has([data-catalog-editorial-art]) > [data-catalog-card]:not([data-catalog-editorial-art]) .catalog-card-copy { margin-top: auto; }
+[data-catalog-variant=showcase] .catalog-card-copy { padding: 0 20px 16px; }
+[data-catalog-variant=showcase] .catalog-card-description { -webkit-line-clamp: 2; }
+[data-catalog-variant=showcase] .catalog-card-metadata { margin: 0; }
+[data-catalog-variant=showcase] [data-catalog-metadata] { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; }
+[data-catalog-variant=showcase] .catalog-card-footer { align-self: stretch; }
+[data-catalog-variant=showcase] .catalog-card-title { font-size: 1.125rem; line-height: 1.4; }
+[data-catalog-variant=showcase] .catalog-card-metadata { padding-inline: 24px; }
+[data-catalog-card]:not([data-catalog-variant=default]) .catalog-card-description { -webkit-line-clamp: 3; }
+[data-catalog-card][data-catalog-variant=compact] { height: auto; }
+[data-catalog-variant=compact] .catalog-card-topline { margin-bottom: 0; }
+.catalog-card-topline { flex-shrink: 0; }
+.catalog-feature-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+.catalog-feature-row > [data-catalog-card] { height: 100%; }
+.catalog-feature-row > [data-catalog-card] .catalog-card-copy { margin-top: auto; }
+.catalog-feature-row > [data-catalog-card] .catalog-card-description { -webkit-line-clamp: 2; min-height: calc(2lh); }
+.catalog-banner-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+/* Small banner: title and one line of copy left; meta then the switch right. */
+[data-catalog-card][data-catalog-variant=horizontal] { flex-direction: row; align-items: center; gap: 12px; min-height: 90px; padding: 0 20px; }
+[data-catalog-variant=horizontal] .catalog-card-copy { flex: 1; order: 0; padding: 16px 0; }
+[data-catalog-card][data-catalog-variant=horizontal] .catalog-card-copy { padding: 16px 0; }
+[data-catalog-variant=horizontal] .catalog-card-title { font-size: 1rem; }
+[data-catalog-card][data-catalog-variant=horizontal] .catalog-card-description { -webkit-line-clamp: 1; }
+[data-catalog-variant=horizontal] .catalog-card-footer { order: 1; padding: 0; }
+[data-catalog-variant=horizontal] .catalog-card-topline { order: 2; padding: 0; }
+[data-catalog-variant=horizontal] .catalog-card-topline > span:first-child { display: none; }
+[data-catalog-variant=horizontal] .catalog-card-image { display: none; }
+.catalog-developer { position: relative; isolation: isolate; aspect-ratio: 3 / 1; min-height: 280px; overflow: hidden; border-radius: var(--radius-lg); background: var(--ui-chat-bubble-background); padding: 32px; }
+.catalog-developer-art { position: absolute; width: 42%; height: 225%; right: 13%; top: -58%; transform: rotate(48deg); pointer-events: none; background: color-mix(in srgb, var(--color-primary) 70%, transparent); mask: url('../../../assets/catalog-wing-retro.svg') center / contain no-repeat; mask-mode: luminance; mix-blend-mode: multiply; }
+:root.dark .catalog-developer-art { mix-blend-mode: screen; }
+.catalog-developer-content { position: relative; height: 100%; min-height: 216px; display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }
+.catalog-developer-mark { display: block; width: 30px; height: 18px; background: var(--ui-text-primary); mask: url('../../../assets/catalog-wing-retro.svg') center / contain no-repeat; mask-mode: luminance; transform: rotate(48deg) scale(2); }
+.catalog-developer h3 { font-size: 2rem; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; }
+.catalog-developer-content p { max-width: 340px; }
+.catalog-developer-ctas { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; padding-top: 28px; }
+.catalog-developer-management { display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; }
+@container (max-width: 540px) { .catalog-developer { aspect-ratio: auto; padding: 24px; } .catalog-developer-art { right: -15%; background: color-mix(in srgb, var(--color-primary) 30%, transparent); } }
+@container (max-width: 960px) { .catalog-bento, .catalog-feature-row, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-bento { grid-auto-flow: row dense; } .catalog-bento > [data-catalog-card] { grid-column: auto / span var(--bento-w, 1); grid-row: auto / span var(--bento-h, 1); } }
+@container (max-width: 720px) { .catalog-bento, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-banner-list { grid-template-columns: minmax(0, 1fr); } .catalog-section-heading { padding-top: 32px; } .catalog-filter-bar > div:first-child { flex-wrap: wrap; } }
+@container (max-width: 440px) { .catalog-bento, .catalog-feature-row, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: minmax(0, 1fr); } .catalog-bento > [data-catalog-card] { grid-column: auto; grid-row: auto; } [data-catalog-variant=hero] .catalog-card-copy { max-width: 100%; } }

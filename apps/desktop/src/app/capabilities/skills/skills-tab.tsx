@@ -4,7 +4,6 @@ import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { Switch } from '@/components/ui/switch'
 import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
@@ -14,6 +13,7 @@ import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
 import { CatalogAlert } from '../catalog/catalog-alert'
+import { CatalogSwitch } from '../catalog/catalog-switch'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
 
@@ -258,7 +258,7 @@ function ScopedSkillsTab({
         profile={profile}
         query={query}
         renderInstalledAction={skill => (
-          <Switch
+          <CatalogSwitch
             aria-label={skill.name}
             checked={skill.enabled}
             disabled={controlsDisabled}

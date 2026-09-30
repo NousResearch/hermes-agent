@@ -1,0 +1,28 @@
+{
+  "artwork": {
+    "skills": {
+      "autonomous-ai-agents/computer-use": "official-art-feature.jpg",
+      "autonomous-ai-agents/codex": "official-art.jpg",
+      "autonomous-ai-agents/hermes-agent": "official-art-card-one.jpg"
+    },
+    "plugins": {
+      "desktop:kanban": "official-art.jpg",
+      "desktop:hermes-bots": "official-art-card-two.jpg",
+      "desktop:hermes-radio": "official-art-card-one.jpg"
+    }
+  },
+  "featured": {
+    "skills": [
+      "autonomous-ai-agents/hermes-agent",
+      "autonomous-ai-agents/computer-use",
+      "autonomous-ai-agents/codex",
+      "autonomous-ai-agents/claude-code"
+    ],
+    "plugins": [
+      "hermes-memory-wiki",
+      "blender",
+      "touchdesigner",
+      "hermes-telegram-business"
+    ]
+  }
+}

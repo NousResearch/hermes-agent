@@ -25,7 +25,9 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import CatalogFeatured from "../../components/CatalogFeatured";
 import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
+import { pickFeatured } from "../../../../apps/shared/src/catalog-featured";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -489,6 +491,20 @@ export default function PluginCatalogPage() {
     return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
 
+  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // catalog-curation.json, rotated weekly, shown only while browsing everything.
+  const featured = useMemo(
+    () =>
+      pickFeatured(allPlugins, (p) => ({
+        featured: p.featured,
+        official: p.tier === "official",
+        pictured: Boolean(p.image),
+        addedAt: p.addedAt,
+        stars: p.stars,
+      })),
+    [allPlugins],
+  );
+
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const p of allPlugins) {
@@ -774,7 +790,23 @@ export default function PluginCatalogPage() {
               </div>
             </div>
           ) : filtered.length > 0 && grouped ? (
-            grouped.map(([cat, plugins]) => {
+            <>
+            {featured && tierFilter === "all" && !pickerMode && (
+              <CatalogFeatured
+                author={featured.maintainer}
+                cta="View plugin"
+                description={featured.description}
+                href={pluginPagePath(featured.name)}
+                label="Featured plugin"
+                tags={[
+                  tierOf(featured).label,
+                  categoryOf(featured).label,
+                  featured.version && `v${featured.version}`,
+                ]}
+                title={featured.name}
+              />
+            )}
+            {grouped.map(([cat, plugins]) => {
               const conf = CATEGORY_CONFIG[cat];
               return (
                 <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
@@ -793,7 +825,8 @@ export default function PluginCatalogPage() {
                   </div>
                 </section>
               );
-            })
+            })}
+            </>
           ) : filtered.length > 0 ? (
             <>
               <div className={styles.resultsBar} role="status">

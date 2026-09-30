@@ -1,0 +1,40 @@
+/* The one content column every Capabilities tab sits in: search, filters,
+   sections and directory rows all share these edges. */
+:root {
+  /* Shared vertical rhythm, the same on every tab. */
+  --capabilities-gap-controls: 16px; /* search → its filter / segment row */
+  --capabilities-gap-lead: 20px; /* last control row → first section heading */
+  --capabilities-gap-section: 48px; /* one section → the next section's heading */
+  --capabilities-gap-heading: 20px; /* section heading → its cards or rows */
+}
+
+.capabilities-page,
+.catalog-search-header,
+.catalog-filter-bar,
+.catalog-filtered-results,
+.catalog-discovery {
+  width: 100%;
+  max-width: 1228px;
+  margin-inline: auto;
+  padding-inline: 24px;
+}
+
+/* Scrollers reserve the gutter on both sides so the column stays centred on
+   the same axis as the chrome above it. */
+.capabilities-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+@container (max-width: 440px) {
+  .capabilities-page,
+  .catalog-search-header,
+  .catalog-filter-bar,
+  .catalog-filtered-results,
+  .catalog-discovery {
+    padding-inline: 12px;
+  }
+}

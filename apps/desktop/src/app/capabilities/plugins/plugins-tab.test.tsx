@@ -10,7 +10,7 @@ import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
-import { $connection } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { PageSearchShell } from '../../page-search-shell'
 import { parseCatalog } from '../catalog/catalog-data'
@@ -96,6 +96,7 @@ vi.mock('@/api/toolsets', async importOriginal => ({
 }))
 
 beforeEach(() => {
+  $gatewayState.set('open')
   $pluginRecords.set({})
   $agentPlugins.set([])
   $agentPluginsStatus.set('ready')
@@ -710,7 +711,8 @@ describe('PluginsTab catalog UX', () => {
     fireEvent.change(search, { target: { value: 'weather' } })
     expect(await screen.findByRole('heading', { name: weatherEntry.name })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'garden-plugin' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Installed', pressed: false }))
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Installed', pressed: false }))
     expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
     expect(search.value).toBe('weather')
     fireEvent.click(screen.getAllByRole('button', { name: 'Clear filters' })[0])

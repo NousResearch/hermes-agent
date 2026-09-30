@@ -171,13 +171,14 @@ def intro_resends(prompt: str) -> bool:
 def _opening(suggested: str | None, said: set, replies: dict):
     reply = replies.get("name")
     if reply is None:
-        card = {"kind": "question", "question": _NAME_QUESTION, "multi_select": False}
-        if suggested:
-            card["options"] = [{"id": "suggested", "label": suggested}]
+        # ``options`` is required by the tool schema; the history must carry it even when empty.
+        card = {"kind": "question", "question": _NAME_QUESTION,
+                "options": [{"id": "suggested", "label": suggested}] if suggested else [], "multi_select": False}
         reply = _json_object((yield "" if INTRO in said else INTRO, "setup_choose", card))
     if "accent" in replies:
         return
     picked = reply.get("picked")
     name = (suggested or "") if picked == "suggested" else picked.strip() if isinstance(picked, str) else ""
     line = f"Good to meet you, {name}." if name else "Good to meet you."
-    yield "" if line in said else line, "setup_choose", {"kind": "accent", "question": "Which colour?", "multi_select": False}
+    accent = {"kind": "accent", "question": "Which colour?", "options": [], "multi_select": False}
+    yield "" if line in said else line, "setup_choose", accent

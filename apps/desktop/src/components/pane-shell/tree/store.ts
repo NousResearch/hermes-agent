@@ -16,7 +16,7 @@ import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
-import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
+import { isPopoutWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
@@ -57,7 +57,7 @@ function persist(tree: LayoutNode | null) {
   // A secondary window (single-chat pop-out) shares the origin's localStorage;
   // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
   // A popped-out Browser is the same class of window.
-  if (isSecondaryWindow() || isBrowserWindow()) {
+  if (isSecondaryWindow() || isPopoutWindow()) {
     return
   }
 

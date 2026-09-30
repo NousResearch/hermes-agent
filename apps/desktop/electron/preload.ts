@@ -58,6 +58,20 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
+  openCanvasWindow: tab => ipcRenderer.invoke('hermes:window:openCanvas', tab),
+  closeCanvasWindow: provider => ipcRenderer.invoke('hermes:window:closeCanvas', provider),
+  onCanvasPopoutClosed: callback => {
+    const listener = (_event, provider) => callback(provider)
+    ipcRenderer.on('hermes:canvas-popout:closed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:canvas-popout:closed', listener)
+  },
+  onCanvasPopoutTab: callback => {
+    const listener = (_event, tab) => callback(tab)
+    ipcRenderer.on('hermes:canvas-popout:tab', listener)
+
+    return () => ipcRenderer.removeListener('hermes:canvas-popout:tab', listener)
+  },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   windowControls: {
     custom: customWindowControlsEnabled(),
@@ -248,6 +262,51 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  pen: {
+    status: () => ipcRenderer.invoke('hermes:pen:status'),
+    open: options => ipcRenderer.invoke('hermes:pen:open', options),
+    close: options => ipcRenderer.invoke('hermes:pen:close', options),
+    tool: (name, payload) => ipcRenderer.invoke('hermes:pen:tool', name, payload),
+    session: sessionId => ipcRenderer.invoke('hermes:pen:session', sessionId),
+    adopt: sessionId => ipcRenderer.invoke('hermes:pen:adopt', sessionId),
+    restore: sessionId => ipcRenderer.invoke('hermes:pen:restore', sessionId),
+    library: () => ipcRenderer.invoke('hermes:pen:library'),
+    libraryDelete: target => ipcRenderer.invoke('hermes:pen:library-delete', target),
+    libraryRename: (target, nextName) => ipcRenderer.invoke('hermes:pen:library-rename', target, nextName),
+    reveal: target => ipcRenderer.invoke('hermes:pen:reveal', target),
+    onEvent: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pen:event', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pen:event', listener)
+    },
+    // Import from the web: pen.dev's capturer runs in main against the
+    // preview <webview> guest, named by webContents id.
+    import: {
+      pick: (guestId, active) => ipcRenderer.invoke('hermes:pen:import:pick', guestId, active),
+      hoverPathEntry: (guestId, index) => ipcRenderer.invoke('hermes:pen:import:hover-path', guestId, index),
+      selectPathEntry: (guestId, index) => ipcRenderer.invoke('hermes:pen:import:path', guestId, index),
+      run: (guestId, options) => ipcRenderer.invoke('hermes:pen:import:run', guestId, options),
+      onPicker: callback => {
+        const listener = (_event, payload) => callback(payload)
+        ipcRenderer.on('hermes:pen:import:picker', listener)
+
+        return () => ipcRenderer.removeListener('hermes:pen:import:picker', listener)
+      },
+      onAction: callback => {
+        const listener = (_event, payload) => callback(payload)
+        ipcRenderer.on('hermes:pen:import:action', listener)
+
+        return () => ipcRenderer.removeListener('hermes:pen:import:action', listener)
+      },
+      onProgress: callback => {
+        const listener = (_event, payload) => callback(payload)
+        ipcRenderer.on('hermes:pen:import:progress', listener)
+
+        return () => ipcRenderer.removeListener('hermes:pen:import:progress', listener)
+      }
+    }
+  },
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

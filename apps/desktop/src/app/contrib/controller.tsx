@@ -1,3 +1,6 @@
+// Side-effect import: registers the pen provider with the canvas-tile surface.
+import '../chat/pen-tile'
+
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
@@ -35,6 +38,7 @@ import {
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import { PenLibraryDialog } from '@/components/pen-library-dialog'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -48,6 +52,7 @@ import {
   LayoutDashboard,
   PanelBottom,
   PanelTop,
+  Pencil,
   SlidersHorizontal,
   Upload,
   Users,
@@ -72,6 +77,8 @@ import {
   SIDEBAR_MAX_WIDTH,
   sidebarSide
 } from '@/store/layout'
+import { $penLibraryOpen, openPenCanvas, openPenLibrary, watchPenSession } from '@/store/pen'
+import { watchPenImport } from '@/store/pen-import'
 import { $profiles } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
@@ -97,9 +104,11 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isBrowserWindow, isCanvasWindow, isHudWindow, isPopoutWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
+import { CanvasPopoutShell } from '../chat/canvas-popout-shell'
+import { seatCanvasWindow, watchCanvasTiles } from '../chat/canvas-tile'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchPreviewTiles } from '../chat/preview-tile'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -459,6 +468,61 @@ registry.registerMany([
       keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
       run: () => void runImportProfileFlow()
     } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.newCanvas',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.newCanvas',
+      label: 'New canvas',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'design', 'draw', 'pencil', 'mockup', 'figma'],
+      run: () => void openPenCanvas()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.openFile',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.openFile',
+      label: 'Open .pen file…',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'design', 'open', 'file', 'pencil'],
+      run: () =>
+        void window.hermesDesktop
+          ?.selectPaths({
+            filters: [{ name: 'Pen Design Files', extensions: ['pen'] }]
+          })
+          .then(paths => {
+            const file = paths?.[0]
+
+            if (file) {
+              void openPenCanvas({ path: file })
+            }
+          })
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.library',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.library',
+      label: 'Browse canvases…',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'pens', 'design', 'library', 'browse', 'recent', 'open', 'pencil'],
+      run: () => void openPenLibrary()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.closeCanvas',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.closeCanvas',
+      label: 'Close canvas',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'close', 'hide', 'dismiss', 'pencil'],
+      run: () => void window.hermesDesktop?.pen?.close()
+    } satisfies PaletteContribution
   }
 ])
 
@@ -482,13 +546,20 @@ hydrateContributedPanes()
 // tiles there would still run, and preview-tile watching would try to dock
 // into a tree this window never renders (and, in the HUD, paint a webview
 // into the transparent overlay).
-if (!isBrowserWindow() && !isHudWindow()) {
+if (!isPopoutWindow() && !isHudWindow()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
   startTileBackendIdentityGuard()
   watchRouteTiles()
   watchPreviewTiles()
+  watchCanvasTiles()
+  watchPenSession()
+  watchPenImport()
 }
+
+// A `?win=canvas` window seats the one tab it was opened with and follows
+// what the docked side hands it; the chat-following logic above stays there.
+seatCanvasWindow()
 
 // Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
 // never hides a pinned chat (and pre-existing pins migrate transparently).
@@ -798,6 +869,7 @@ registerPaneCloser('files', () =>
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+  const penLibraryOpen = useStore($penLibraryOpen)
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -816,6 +888,14 @@ export function ContribController() {
     return (
       <ContribWiring>
         <BrowserPopoutShell />
+      </ContribWiring>
+    )
+  }
+
+  if (isCanvasWindow()) {
+    return (
+      <ContribWiring>
+        <CanvasPopoutShell />
       </ContribWiring>
     )
   }
@@ -843,6 +923,8 @@ export function ContribController() {
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />
+
+          <PenLibraryDialog onOpenChange={(open: boolean) => $penLibraryOpen.set(open)} open={penLibraryOpen} />
 
           {/* The REAL statusbar (model pill, command center, agents, …) with
               statusBar.left/right contributions merged in. Unmounted — not

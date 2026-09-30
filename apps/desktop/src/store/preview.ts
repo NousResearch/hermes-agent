@@ -541,7 +541,7 @@ export function previewTabId(target: PreviewTarget): RightRailTabId {
   return `${target.kind}:${target.url}`
 }
 
-const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
+export const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
 
 /** A Browser tab's id, minted the way a terminal's is — there is no identity to
  *  derive one from. Random rather than the lowest free slot: an id is never

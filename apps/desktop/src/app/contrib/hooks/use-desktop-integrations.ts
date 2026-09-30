@@ -39,7 +39,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
+import { isHudWindow, isPeerInstanceWindow, isPopoutWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
@@ -127,7 +127,7 @@ export function useDesktopIntegrations({
     // remembered-route/remembered-session restore, which lands it back on the
     // very session Window 1 has open (#74948). Connections' source
     // restoration already skips peers for the same reason.
-    if (!profileReady || isHudWindow() || isBrowserWindow() || isPeerInstanceWindow()) {
+    if (!profileReady || isHudWindow() || isPopoutWindow() || isPeerInstanceWindow()) {
       return
     }
 
@@ -515,7 +515,7 @@ export function useDesktopIntegrations({
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {
-    if (isSecondaryWindow() || isBrowserWindow()) {
+    if (isSecondaryWindow() || isPopoutWindow()) {
       return
     }
 

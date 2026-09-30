@@ -5,7 +5,7 @@ import { ExternalOpenFailedDialog } from './external-open-failed-dialog'
 
 const windowsMock = vi.hoisted(() => ({
   isHudWindow: vi.fn(() => false),
-  isBrowserWindow: vi.fn(() => false)
+  isPopoutWindow: vi.fn(() => false)
 }))
 
 vi.mock('@/store/windows', () => windowsMock)
@@ -33,7 +33,7 @@ function fail(listener: unknown, url: string, message?: string, code?: 'missing-
 
 afterEach(() => {
   windowsMock.isHudWindow.mockReturnValue(false)
-  windowsMock.isBrowserWindow.mockReturnValue(false)
+  windowsMock.isPopoutWindow.mockReturnValue(false)
   vi.restoreAllMocks()
   cleanup()
 

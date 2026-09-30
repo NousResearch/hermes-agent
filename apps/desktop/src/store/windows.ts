@@ -1,3 +1,5 @@
+import type { CanvasTab } from '@/app/chat/canvas-tile'
+
 import { notifyError } from './notifications'
 
 // Window flag set by the Electron main process when it opens a standalone
@@ -107,11 +109,60 @@ export function windowBrowserTabId(): null | string {
   }
 }
 
+// `?win=canvas`: a canvas provider's pane (pen, …) in its own OS window. The
+// docked tab rides the query (`provider`, `doc`, `title`, `url`) so the
+// window can seat it with no layout tree and no store of its own.
+let canvasWindowCache: boolean | null = null
+
+export function isCanvasWindow(): boolean {
+  if (canvasWindowCache !== null) {
+    return canvasWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('win') === 'canvas'
+  } catch {
+    result = false
+  }
+
+  canvasWindowCache = result
+
+  return result
+}
+
+export function windowCanvasTab(
+  search = typeof window === 'undefined' ? '' : window.location.search
+): CanvasTab | null {
+  try {
+    const params = new URLSearchParams(search)
+    const provider = params.get('provider')?.trim()
+
+    if (params.get('win') !== 'canvas' || !provider) {
+      return null
+    }
+
+    return {
+      provider,
+      docId: params.get('doc') ?? '',
+      title: params.get('title') ?? '',
+      url: params.get('url') ?? ''
+    }
+  } catch {
+    return null
+  }
+}
+
+// A popped-out pane (Browser, canvas) in its own window: full-window surface,
+// no session sidebar, no layout tree, no chrome that belongs to the app shell.
+export const isPopoutWindow = (): boolean => isBrowserWindow() || isCanvasWindow()
+
 // True for any window that is NOT the primary app instance — a secondary
-// session window, the HUD, or a popped-out Browser. Single-claim channels
+// session window, the HUD, or a popped-out Browser / canvas. Single-claim channels
 // (the quick-entry capture bridge, the pet overlay control bridge) and the
 // install/onboarding overlays belong to the primary alone.
-export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
+export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isPopoutWindow()
 
 // A full peer window renders the ordinary app shell against the backend that
 // Electron already has running. It is not an auxiliary/specialized renderer,
@@ -268,6 +319,22 @@ export async function openBrowserInNewWindow(tabId: string): Promise<boolean> {
   }
 
   return runWindowOpen(() => window.hermesDesktop.openBrowserWindow(tabId), 'Could not pop out browser')
+}
+
+// True when the shell can pop a canvas pane into its own OS window.
+export function canOpenCanvasWindow(): boolean {
+  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openCanvasWindow === 'function'
+}
+
+/** Pop a canvas provider's pane into its own OS window (or hand an open one
+ *  the tab). Returns whether it opened so the caller can seat the tile again
+ *  on failure. */
+export async function openCanvasInNewWindow(tab: CanvasTab): Promise<boolean> {
+  if (!canOpenCanvasWindow()) {
+    return false
+  }
+
+  return runWindowOpen(() => window.hermesDesktop.openCanvasWindow(tab), 'Could not pop out canvas')
 }
 
 // Resume a session in the user's own terminal emulator, running the TUI there.

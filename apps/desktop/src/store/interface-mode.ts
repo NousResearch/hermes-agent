@@ -4,7 +4,7 @@ import { createLayoutPersistence } from '@/lib/layout-persistence'
 import { type Codec, persistentAtom } from '@/lib/persisted'
 import type { SidebarRowMeta } from '@/store/layout'
 import type { ToolViewMode } from '@/store/tool-view'
-import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
+import { isHudWindow, isPopoutWindow, isSecondaryWindow } from '@/store/windows'
 
 // Interface mode: does this window show the machinery, or just the
 // conversation? Two answers. ADVANCED is the app as it has always been — every
@@ -58,7 +58,7 @@ export const $interfaceMode = persistentAtom<InterfaceMode>(
 
 export const modeLayout = createLayoutPersistence(
   $interfaceMode.get(),
-  !isSecondaryWindow() && !isBrowserWindow() && !isHudWindow()
+  !isSecondaryWindow() && !isPopoutWindow() && !isHudWindow()
 )
 
 export function setInterfaceMode(mode: InterfaceMode) {

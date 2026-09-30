@@ -15,6 +15,8 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { openPenCanvas, runPenTool } from '@/store/pen'
+import { importActivePreviewToCanvas } from '@/store/pen-import'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -76,7 +78,7 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * would win the race, so the tool reports "no preview tab / no terminal" while
  * the owner's pane is open (#113348).
  */
-const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+const WINDOW_OWNED_REQUESTS = new Set(['pen.tool', 'preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
 
 /**
  * A window not hosting the session declines instead of staying silent. The
@@ -598,11 +600,85 @@ const tour: Handler = ({ isActiveSession, request }) => {
     )
 }
 
+const penTool: Handler = ({ deps, isActiveSession, request, sessionId }) => {
+  // pen_canvas tool: `open` / `close` own the pane; anything else is one of the
+  // editor's own MCP tools run against the live canvas. `open` also fetches the
+  // editor's current tool list so the agent never works from a stale schema.
+  const p = request.params
+  const action = str(p.action)
+  const args = p.args && typeof p.args === 'object' ? (p.args as Record<string, unknown>) : {}
+  // The request names the RUNTIME session; ties and the pane follow the chat's
+  // STORED id. For the chat on screen that is whatever the pane follows (a
+  // compressed chat keeps the id it navigated to); otherwise its stored id.
+  const storedId = deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId
+  const chatId = (isActiveSession ? $selectedStoredSessionId.get() : null) || storedId || sessionId || null
+
+  const run =
+    action === 'open'
+      ? openPenCanvas(
+          {
+            name: typeof args.name === 'string' ? args.name : undefined,
+            path: typeof args.path === 'string' ? args.path : undefined
+          },
+          chatId
+        ).then(async doc => {
+          if (!doc) {
+            return null
+          }
+
+          const schema = await runPenTool('schema')
+          const payload = schema.success ? schema.result : undefined
+
+          const tools =
+            payload && typeof payload === 'object' && 'tools' in payload ? (payload as { tools: unknown }).tools : payload
+
+          return {
+            success: true,
+            result: {
+              docId: doc.docId,
+              fileURI: doc.fileURI || null,
+              tools,
+              // The list above has no draw tools, and a model that only reads it
+              // invents some. Say how the canvas is actually changed.
+              start:
+                "Every change to the canvas is a script run with execute({ input: '<pen script>' }). " +
+                "Before the first execute: read_skill(), then read_skill({ path: 'pen-schema.md' }) and " +
+                "read_skill({ path: 'execute.md' }); get_style for the document's palette and type.",
+              schemaError: schema.success ? undefined : schema.error
+            }
+          }
+        })
+      : action === 'close'
+        ? (window.hermesDesktop?.pen?.close() ?? Promise.resolve()).then(() => ({
+            success: true,
+            result: { closed: true }
+          }))
+        : action === 'import'
+          ? importActivePreviewToCanvas(
+              {
+                mode: args.mode === 'page' || args.mode === 'selection' ? args.mode : undefined,
+                selector: typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : undefined,
+                url: typeof args.url === 'string' && args.url.trim() ? args.url.trim() : undefined
+              },
+              chatId
+            ).then(
+              ({ error, imported, nodes, success, url }) => ({ success, result: { imported, nodes, url }, error }),
+              (error: unknown) => ({ success: false, error: error instanceof Error ? error.message : String(error) })
+            )
+          : runPenTool(action, args)
+
+  void run.then(
+    result => answerValue(request, result),
+    () => answerValue(request, null)
+  )
+}
+
 /** Method → handler. Every `ServerRequestMap` key the desktop answers. */
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
   'display.install.sudo': displayInstallSudo,
+  'pen.tool': penTool,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,

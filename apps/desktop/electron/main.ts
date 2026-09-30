@@ -119,6 +119,15 @@ import {
 } from './browser-windows'
 import { createBundleSkewChecker } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
+import {
+  buildCanvasWindowUrl,
+  CANVAS_WINDOW_HEIGHT,
+  CANVAS_WINDOW_MIN_HEIGHT,
+  CANVAS_WINDOW_MIN_WIDTH,
+  CANVAS_WINDOW_WIDTH,
+  type CanvasWindowTab,
+  isCanvasWindowTab
+} from './canvas-windows'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
@@ -404,6 +413,7 @@ import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
+import { shutdownPenHost, wirePenCanvas } from './pen'
 import { petOverlayClickThrough } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -14039,31 +14049,32 @@ function createSessionWindow(sessionId, { connectionId = null, profile = null, w
   return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
 }
 
-// Popped-out in-app Browser: same webview + address bar as a docked Browser
-// tab, in its own OS window. One window per tab id (re-open focuses); closing
-// it tells the other renderers so they can dock the tab again.
-const browserWindows = createSessionWindowRegistry()
-
-function notifyBrowserPopoutClosed(tabId) {
-  if (typeof tabId !== 'string' || !tabId) {
-    return
-  }
-
+// Popped-out surfaces (in-app Browser, canvas): the same pane a docked tile
+// renders, in its own OS window. One window per key (re-open focuses); closing
+// it tells every renderer so the docked side can seat the tile again.
+function broadcastToRenderers(channel: string, payload: unknown) {
   for (const other of BrowserWindow.getAllWindows()) {
     if (!other.isDestroyed()) {
-      other.webContents.send('hermes:browser-popout:closed', tabId)
+      other.webContents.send(channel, payload)
     }
   }
 }
 
-function spawnBrowserWindow(tabId) {
+function spawnPopoutWindow({
+  kind,
+  size,
+  url,
+  onClosed
+}: {
+  kind: string
+  size: { width: number; height: number; minWidth: number; minHeight: number }
+  url: string
+  onClosed: () => void
+}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
-    width: BROWSER_WINDOW_WIDTH,
-    height: BROWSER_WINDOW_HEIGHT,
-    minWidth: BROWSER_WINDOW_MIN_WIDTH,
-    minHeight: BROWSER_WINDOW_MIN_HEIGHT,
+    ...size,
     title: 'Hermes',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
@@ -14086,10 +14097,10 @@ function spawnBrowserWindow(tabId) {
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-  attachRendererConsoleCapture(win, 'browser-window', rememberLog)
+  attachRendererConsoleCapture(win, `${kind}-window`, rememberLog)
 
   installWindowRendererLifecycle(win, {
-    kind: 'browser',
+    kind,
     callbacks: {
       log: rememberLog,
       reload: () => {
@@ -14103,22 +14114,75 @@ function spawnBrowserWindow(tabId) {
   })
 
   minimizeToTray.registerWindow(win)
-  win.on('closed', () => notifyBrowserPopoutClosed(tabId))
+  win.on('closed', onClosed)
 
-  loadWindowUrl(
-    win,
-    buildBrowserWindowUrl(tabId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-    }),
-    'Browser window'
-  )
+  loadWindowUrl(win, url, `${kind} window`)
 
   return win
 }
 
+const browserWindows = createSessionWindowRegistry()
+
+function spawnBrowserWindow(tabId) {
+  return spawnPopoutWindow({
+    kind: 'browser',
+    size: {
+      width: BROWSER_WINDOW_WIDTH,
+      height: BROWSER_WINDOW_HEIGHT,
+      minWidth: BROWSER_WINDOW_MIN_WIDTH,
+      minHeight: BROWSER_WINDOW_MIN_HEIGHT
+    },
+    url: buildBrowserWindowUrl(tabId, {
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    onClosed: () => broadcastToRenderers('hermes:browser-popout:closed', tabId)
+  })
+}
+
 function createBrowserWindow(tabId) {
   return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
+}
+
+// One canvas window per provider. Re-opening while it is up focuses it and
+// hands it the tab (the live document can change under a popped canvas — an
+// agent opens another .pen, the user switches chats), so the window follows
+// instead of a second guest appearing in the docked tree.
+const canvasWindows = createSessionWindowRegistry()
+
+function createCanvasWindow(tab: CanvasWindowTab) {
+  const existing = canvasWindows.get(tab.provider)
+
+  const win = canvasWindows.openOrFocus(tab.provider, () =>
+    spawnPopoutWindow({
+      kind: 'canvas',
+      size: {
+        width: CANVAS_WINDOW_WIDTH,
+        height: CANVAS_WINDOW_HEIGHT,
+        minWidth: CANVAS_WINDOW_MIN_WIDTH,
+        minHeight: CANVAS_WINDOW_MIN_HEIGHT
+      },
+      url: buildCanvasWindowUrl(tab, {
+        devServer: DEV_SERVER,
+        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+      }),
+      onClosed: () => broadcastToRenderers('hermes:canvas-popout:closed', tab.provider)
+    })
+  )
+
+  if (win && win === existing && !win.isDestroyed()) {
+    win.webContents.send('hermes:canvas-popout:tab', tab)
+  }
+
+  return win
+}
+
+function closeCanvasWindow(provider: string) {
+  const win = canvasWindows.get(provider)
+
+  if (win && !win.isDestroyed()) {
+    win.close()
+  }
 }
 
 // Additional full "instance" windows — peers of the primary that render the
@@ -15870,6 +15934,20 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   createBrowserWindow(tabId.trim())
 
   return { ok: true }
+})
+ipcMain.handle('hermes:window:openCanvas', async (_event, tab) => {
+  if (!isCanvasWindowTab(tab)) {
+    return { ok: false, error: 'invalid-canvas-tab' }
+  }
+
+  createCanvasWindow(tab)
+
+  return { ok: true }
+})
+ipcMain.handle('hermes:window:closeCanvas', async (_event, provider) => {
+  if (typeof provider === 'string' && provider.trim()) {
+    closeCanvasWindow(provider.trim())
+  }
 })
 
 // Hand a session to the user's OWN terminal emulator, running the TUI against
@@ -19323,6 +19401,7 @@ app.whenReady().then(() => {
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
+  wirePenCanvas({ hermesHome: HERMES_HOME, preloadPath: path.join(APP_ROOT, 'dist', 'pen-web-preload.cjs') })
   installEmbedReferer()
   installRemoteHeaderRules()
 
@@ -19601,6 +19680,9 @@ app.on('before-quit', event => {
   // callbacks cannot recreate a backend for a registration whose app is
   // already quitting (#91668).
   sshBootstrapCoordinator.shutdown()
+
+  // Drop the embed-bridge port so a relaunch doesn't meet a stale handshake.
+  shutdownPenHost()
 
   const backendNeedsWait = backendQuitNeedsWait({
     connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),

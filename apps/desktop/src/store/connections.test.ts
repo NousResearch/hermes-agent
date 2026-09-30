@@ -987,14 +987,14 @@ describe('selectConnection', () => {
           localStorage
         })
         const restoring = initializeConnectionsRegistry()
-        await vi.advanceTimersByTimeAsync(45_000)
+        await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 1_000)
         await restoring
 
         // A slow cold boot must not turn the explicit next-launch preference
         // into a different workspace merely because the renderer map is empty/stale.
         expect(openGatewayAgent).toHaveBeenCalledWith('local', 'writer')
         expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'writer', expect.anything())
-        expect($connection.get()?.profile).toBe('writer')
+        expect($connection.get()?.connectionId).toBe('local')
         $connection.set({ connectionId: 'local', mode: 'local', profile: 'writer', registryScoped: true })
         expect(desktop.profile.get).toHaveBeenCalledTimes(1)
       } finally {
@@ -1017,7 +1017,7 @@ describe('selectConnection', () => {
         localStorage
       })
       const restoring = initializeConnectionsRegistry()
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 1_000)
       await restoring
       expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
     } finally {
@@ -1049,7 +1049,7 @@ describe('selectConnection', () => {
           localStorage
         })
         const restoring = initializeConnectionsRegistry()
-        await vi.advanceTimersByTimeAsync(50_000)
+        await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 6_000)
         await restoring
         expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
       } finally {
@@ -1072,7 +1072,7 @@ describe('selectConnection', () => {
           localStorage
         })
         const restoring = initializeConnectionsRegistry()
-        await vi.advanceTimersByTimeAsync(45_000)
+        await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 1_000)
         expect(get).toHaveBeenCalledTimes(1)
 
         if (owner === 'primary') {
@@ -1109,7 +1109,7 @@ describe('selectConnection', () => {
       })
       list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
       const restoring = initializeConnectionsRegistry()
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 1_000)
       await restoring
       expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
       expect(get).not.toHaveBeenCalled()

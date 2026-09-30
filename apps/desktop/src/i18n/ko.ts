@@ -1946,6 +1946,11 @@ export const ko = defineLocale({
         successBody: '이 터미널의 원격 지출이 승인되었습니다.'
       },
       charge: {
+        added: amount => (amount ? `$${amount} 충전되었습니다.` : '크레딧이 충전되었습니다.'),
+        unconfirmedBody: message =>
+          `${message} 마지막 결제의 완료 여부가 확인되지 않았습니다. 다시 시도하기 전에 잔액과 결제 기록을 확인하세요.`,
+        failedBody: reason => `결제가 완료되지 않았습니다(${reason}).`,
+
         failedTitle: '결제 실패',
         unconfirmedTitle: '결제 결과를 확인할 수 없습니다',
         checkTitle: '결제 상태 확인 실패',
@@ -1984,6 +1989,8 @@ export const ko = defineLocale({
         planCard: { freeTier: '무료' }
       },
       errors: {
+        remoteSpendingReconnect: who => `${who} 이 기기를 다시 인증하려면 설정 → 게이트웨이에서 다시 연결하세요.`,
+
         consentRequired: {
           title: '카드 확인이 필요합니다',
           message: '이 터미널에서 결제할 수 있도록 포털에서 카드를 확인하세요'
@@ -2013,14 +2020,34 @@ export const ko = defineLocale({
           title: '새 충전을 시작하세요',
           message: '🔴 해당 결제 키는 이미 다른 금액에 사용되었습니다. 새 충전을 시작하세요.'
         },
-        noPaymentMethod: { title: '저장된 카드가 없습니다' },
+        noPaymentMethod: {
+          message:
+            '💳 이 터미널에서 결제할 카드가 아직 저장되지 않았습니다. 포털에서 카드를 등록하세요. 일회성 크레딧 구매만으로는 재사용할 카드가 저장되지 않습니다.',
+          title: '저장된 카드가 없습니다'
+        },
         orgAccessDenied: {
           title: '조직 접근이 거부되었습니다',
           message: '이 토큰은 관리 권한이 있는 조직에 연결되어 있지 않습니다'
         },
-        monthlyCapExceeded: { title: '월 지출 한도에 도달했습니다', messageReached: '🔴 월 지출 한도에 도달했습니다.' },
-        rateLimited: { title: '현재 결제 요청이 너무 많습니다' },
-        stripeUnavailable: { title: 'Stripe에 문제가 발생했습니다' },
+        monthlyCapExceeded: {
+          messageHeadroom: remaining => `🔴 월 지출 한도에 도달했습니다. 남은 한도는 $${remaining}입니다.`,
+          title: '월 지출 한도에 도달했습니다',
+          messageReached: '🔴 월 지출 한도에 도달했습니다.'
+        },
+        rateLimited: {
+          message: mins =>
+            mins > 0
+              ? `🟡 현재 결제 요청이 너무 많습니다. 약 ${mins}분 후 다시 시도하세요. 결제 실패를 의미하지는 않습니다.`
+              : '🟡 현재 결제 요청이 너무 많습니다. 결제 실패를 의미하지는 않습니다.',
+          title: '현재 결제 요청이 너무 많습니다'
+        },
+        stripeUnavailable: {
+          message: mins =>
+            mins > 0
+              ? `Stripe에 문제가 발생했습니다. 약 ${mins}분 후 다시 시도하세요.`
+              : 'Stripe에 문제가 발생했습니다. 잠시 후 다시 시도하세요.',
+          title: 'Stripe에 문제가 발생했습니다'
+        },
         upgradeCapExceeded: {
           title: '일일 요금제 변경 한도에 도달했습니다',
           message: '일일 요금제 변경 한도에 도달했습니다. 내일 다시 시도하세요'

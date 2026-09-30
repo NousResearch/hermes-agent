@@ -544,7 +544,6 @@ class _GatewayRun:
             self._task.cancel()
 
 
-# How long a cancelled caller waits for the gateway-side send to report its outcome.
 _CANCELLED_SEND_GRACE_SECONDS = 5.0
 
 
@@ -634,7 +633,9 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
 
 
 async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
+    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result.
+    A sender that finishes a started send despite a cancellation, as the Matrix sender does,
+    returns its receipt while the caller stays cancelled. The remaining chunks are not sent."""
     result = None
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
@@ -644,6 +645,10 @@ async def _send_chunks(chunks, send_one):
         result = await send_one(chunk, i == len(chunks) - 1)
         if isinstance(result, dict) and result.get("error"):
             break
+        task = asyncio.current_task()
+        if i < len(chunks) - 1 and task is not None and task.cancelling():
+            return {"error": f"send cancelled after {i + 1} of {len(chunks)} chunks were delivered",
+                    "message_id": result.get("message_id") if isinstance(result, dict) else None}
     return result
 
 

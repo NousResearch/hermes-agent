@@ -35,7 +35,20 @@ def capture_session_identity(*, session_id=None, stored_session_id=None,
         profile = get_active_profile_name()
     return dict(runtime_session_id=runtime_session_id, stored_session_id=stored_session_id,
                 session_id=session_id, task_id=None, profile=profile, hermes_home=home,
-                source=source, surface=surface, session_origin=session_origin)
+                source=source, surface=surface, session_origin=session_origin,
+                parent_session_id=None)
+
+
+def bind_delegated_parent(child, parent_session_id) -> None:
+    """Record the delegating parent on a subagent's captured identity.
+
+    Set only at the delegation spawn site: ``_parent_session_id`` also carries
+    compression and branch lineage, which is not a parent/child relationship a
+    plugin may extend authority across.
+    """
+    identity = getattr(child, "_plugin_session_identity", None)
+    if isinstance(identity, dict) and parent_session_id:
+        identity["parent_session_id"] = parent_session_id
 
 
 def agent_session_identity(agent) -> dict[str, Any]:
@@ -47,7 +60,7 @@ def agent_session_identity(agent) -> dict[str, Any]:
     captured = getattr(agent, "_plugin_session_identity", None)
     identity: dict[str, Any] = dict(captured) if isinstance(captured, dict) else dict.fromkeys((
         "runtime_session_id", "stored_session_id", "session_id", "task_id",
-        "profile", "hermes_home", "source", "surface"))
+        "profile", "hermes_home", "source", "surface", "parent_session_id"))
     identity["session_id"] = getattr(agent, "session_id", None)
     identity["task_id"] = getattr(agent, "_current_task_id", None)
     return identity

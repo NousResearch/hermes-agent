@@ -255,6 +255,8 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    from hermes_cli.session_hook_context import bind_delegated_parent
+    bind_delegated_parent(child, parent_sid)
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent

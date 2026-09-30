@@ -310,6 +310,47 @@ def test_library_identity_and_cli_finalization_never_borrow_ambient_ids(tmp_path
     assert all(value is None for key, value in unknown.items() if key != "session_id")
 
 
+def test_delegated_child_hooks_name_the_delegating_parent_and_nothing_else_does(tmp_path, monkeypatch):
+    """A plugin scoping resources per conversation must know which session delegated a
+    subagent. Only the delegation spawn names a parent: compression/branch lineage passed
+    as ``parent_session_id`` to AIAgent is not a delegation and must not read as one."""
+    from run_agent import AIAgent
+    from agent.conversation_loop import _restore_or_build_system_prompt
+    from agent.tool_executor import _pre_tool_block, _ToolCallRef
+    from tools.delegate_tool import _build_child_agent
+
+    home = tmp_path / "profile"
+    install_probe(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def make_agent(**kwargs):
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+                patch("model_tools.check_toolset_requirements", return_value={}):
+            return AIAgent(model="test-model", api_key="test", provider="custom",
+                           base_url="http://127.0.0.1:1/v1", enabled_toolsets=[], quiet_mode=True,
+                           skip_context_files=True, skip_memory=True, skip_background_review=True,
+                           **kwargs)
+
+    parent = make_agent()
+    lineage = make_agent(parent_session_id=parent.session_id)  # compression/branch-style edge
+    with patch("model_tools.get_tool_definitions", return_value=[]), \
+            patch("model_tools.check_toolset_requirements", return_value={}):
+        child = _build_child_agent(task_index=0, goal="probe", context=None, toolsets=None, model=None,
+                                   max_iterations=1, task_count=1, parent_agent=parent)
+    try:
+        for agent, expected in ((parent, None), (lineage, None), (child, parent.session_id)):
+            monkeypatch.setattr(agent, "_build_system_prompt", lambda _: "A test prompt")
+            _restore_or_build_system_prompt(agent, None, [])
+            start = receipts(home, "on_session_start")[-1]
+            assert start["session_id"] == agent.session_id
+            assert start["parent_session_id"] == expected
+            _pre_tool_block(agent, _ToolCallRef("terminal", {"command": "true"}, "task", "call", []))
+            assert receipts(home, "pre_tool_call")[-1]["parent_session_id"] == expected
+    finally:
+        for agent in (child, lineage, parent):
+            agent.close()
+
+
 def test_supplied_history_never_publishes_fresh_permission_provenance(tmp_path, monkeypatch):
     from run_agent import AIAgent
     from agent.conversation_loop import _restore_or_build_system_prompt

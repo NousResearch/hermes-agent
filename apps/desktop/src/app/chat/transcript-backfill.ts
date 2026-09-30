@@ -17,6 +17,7 @@
 
 import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { reconcileFoldedMessages, representedRowIds } from '@/lib/chat-messages/folded-identity'
 import {
   recordTranscriptBackfillPage,
   tailStateFromPage,
@@ -48,6 +49,8 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   if (existing.length === 0 || olderPage.length === 0) {
     return existing
   }
+
+  ;[existing, olderPage] = reconcileFoldedMessages(existing, olderPage)
 
   const existingRowIndices = new Map<number, number>()
   const existingIdIndices = new Map<string, number>()
@@ -135,7 +138,7 @@ function pageCoversWindow(previous: ChatMessage[], refreshedIds: Set<string>, re
 }
 
 function durableRowIds(messages: ChatMessage[]): Set<number> {
-  return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
+  return new Set(messages.flatMap(representedRowIds))
 }
 
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
@@ -207,7 +210,7 @@ function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage
 function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean {
   const rowIds = durableRowIds(first)
 
-  return second.some(message => message.rowId !== undefined && rowIds.has(message.rowId))
+  return second.some(message => representedRowIds(message).some(row => rowIds.has(row)))
 }
 
 interface StoredRowSlot {
@@ -278,15 +281,18 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     return refreshedTail
   }
 
+  ;[previous, refreshedTail] = reconcileFoldedMessages(previous, refreshedTail)
+
   // The first rendered message can be a page-local tool fold whose id is not
   // durable. Anchor on the first shared persisted row anywhere in the page.
   const refreshedRowIds = durableRowIds(refreshedTail)
 
-  const firstDurable = refreshedTail.find(message => message.rowId !== undefined)
+  const firstDurable = refreshedTail.find(message => representedRowIds(message).length > 0)
 
-  const anchor = firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
+  const anchorRowId = firstDurable === undefined ? undefined : representedRowIds(firstDurable)[0]
 
-  const anchorRowId = firstDurable?.rowId
+  const anchor =
+    anchorRowId === undefined ? -1 : previous.findIndex(message => representedRowIds(message).includes(anchorRowId))
 
   // A hit on the first row, or a hit after a prefix whose stored ids are all
   // earlier, is the backfill anchor. A hit further down on a row that was
@@ -294,7 +300,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   const prefixIsEarlier =
     anchor > 0 &&
     anchorRowId !== undefined &&
-    previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
+    previous.slice(0, anchor).every(message => representedRowIds(message).every(row => row < anchorRowId))
 
   if (anchor === 0) {
     return retainCompletedTurnTools(refreshedTail, previous)
@@ -384,7 +390,7 @@ export async function extendRefreshPageToOverlap(
   }
 
   const sharesPrevious = (messages: ChatMessage[]) =>
-    messages.some(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+    messages.some(message => representedRowIds(message).some(row => previousRowIds.has(row)))
 
   if (sharesPrevious(refreshedTail)) {
     return refreshedTail

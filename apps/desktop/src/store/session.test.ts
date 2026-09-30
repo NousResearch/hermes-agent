@@ -25,6 +25,7 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $freshDraftKey,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -52,6 +53,7 @@ import {
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
@@ -326,6 +328,19 @@ describe('knownSessionOwner', () => {
     setSessionOwnerHint('hidden', route)
 
     expect(knownSessionOwner([], 'hidden')).toEqual(route)
+  })
+})
+
+describe('fresh draft identity', () => {
+  it('rotates for each new-chat lifecycle and persists the current key', () => {
+    const previous = $freshDraftKey.get()
+    const first = rotateFreshDraftKey()
+    const second = rotateFreshDraftKey()
+
+    expect(first).not.toBe(previous)
+    expect(second).not.toBe(first)
+    expect($freshDraftKey.get()).toBe(second)
+    expect(window.localStorage.getItem('hermes.desktop.freshDraftKey')).toBe(second)
   })
 })
 
@@ -1042,6 +1057,8 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.profile.profile-a')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.profile.profile-b')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -1187,6 +1204,41 @@ describe('workspaceCwdForNewSession', () => {
     await ensureDefaultWorkspaceCwd(() => true)
 
     expect($currentCwd.get()).toBe('')
+  })
+
+  it('scopes the local workspace memory per profile, keeping the bare key for default (#96834)', () => {
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+    setCurrentCwd('/home/user/default-project')
+    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd')).toBe('/home/user/default-project')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+    setCurrentCwd('/home/user/project-a')
+    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd.profile.profile-a')).toBe('/home/user/project-a')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-b' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('/home/user/default-project')
+  })
+
+  it('switching to a local profile with no memory clears the outgoing profile folder (#96834)', async () => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd: vi.fn(async (cwd: string) => ({ cwd })),
+      settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
+    }
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
+    setCurrentCwd('/home/user/project-a')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-b' } as never)
+    await ensureDefaultWorkspaceCwd(() => true)
+    expect($currentCwd.get()).toBe('')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
+    await ensureDefaultWorkspaceCwd(() => true)
+    expect($currentCwd.get()).toBe('/home/user/project-a')
   })
 
   it('remembers only the workspace the user picked, not the one they looked at', () => {

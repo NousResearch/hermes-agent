@@ -1,5 +1,5 @@
 import { makeNousCloudBackendDownError } from './backend-health'
-import { gatewayTicketFailure } from './connection-config'
+import { gatewayTicketFailure, gatewayTicketTransportMessage } from './connection-config'
 import { oauthTicketFailureAuthMessage } from './native-auth-decisions'
 
 interface RemoteOauthTicketDeps {
@@ -27,12 +27,16 @@ export async function resolveRemoteOauthTicket(
   try {
     return await deps.mintGatewayWsTicket(baseUrl, headers)
   } catch (error) {
+    // Transport faults keep one headline ("could not reach") but the copy now
+    // names the actual failure class — timeout/DNS vs connection refused vs
+    // an HTTP fault — so fleet logs stop hiding three different upstream
+    // causes behind one sentence (#98647).
     throw (
       makeNousCloudBackendDownError(baseUrl, error) ??
       gatewayTicketFailure(
         error,
         oauthTicketFailureAuthMessage(hadNativeSession),
-        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+        gatewayTicketTransportMessage(error)
       )
     )
   }

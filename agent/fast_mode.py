@@ -1,7 +1,7 @@
 """Bounded fast-mode windows (``/fast auto`` and ``/fast cold``).
 
-``agent.service_tier``: ``None`` (normal), ``"priority"`` (static fast, pinned into
-``agent.request_overrides`` at build time), ``"auto"`` (every user turn opens a
+``agent.service_tier``: ``None`` (normal), ``"priority"`` / ``"ultrafast"`` (static tiers,
+pinned into ``agent.request_overrides`` at build time), ``"auto"`` (every user turn opens a
 window of ``agent.fast_auto_seconds``) or ``"cold"`` (only a session's first turn,
 no prior history, opens it). The provider's fast override is layered onto request
 kwargs only while the window is open; only per-request params (``service_tier`` /
@@ -20,6 +20,27 @@ DEFAULT_WINDOW_SECONDS = 60
 # Documented fast-mode rate-limit headers; a limit of 0 means the organization has no fast
 # capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
+#: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
+#: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
+STATIC_TIERS = frozenset({"priority", "ultrafast"})
+NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none"})
+# User/config word -> agent.service_tier. The single table every surface (config loaders, /fast
+# on CLI / gateway / TUI) parses through, so a new tier is one edit.
+SERVICE_TIER_WORDS: dict[str, str] = {
+    "fast": "priority", "priority": "priority", "on": "priority",
+    "ultrafast": "ultrafast", "auto": "auto", "cold": "cold",
+}
+
+
+def parse_service_tier(raw: Any) -> str | None:
+    """``agent.service_tier`` for a user/config word; None for normal and for unknown words."""
+    value = str(raw or "").strip().lower()
+    return None if value in NORMAL_TIER_WORDS else SERVICE_TIER_WORDS.get(value)
+
+
+def service_tier_word(tier: Any) -> str:
+    """The user-facing word for a stored tier (``priority`` -> ``fast``, None/"" -> ``normal``)."""
+    return {"priority": "fast", None: "normal", "": "normal"}.get(tier, tier)
 
 
 def begin_turn(agent: Any, conversation_history: Any) -> None:

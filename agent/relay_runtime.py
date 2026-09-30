@@ -11,6 +11,8 @@ import importlib
 import inspect
 import logging
 import os
+import platform
+import sys
 import threading
 import tomllib
 import uuid
@@ -854,6 +856,12 @@ class RelayHostRegistry:
                 return host
             try:
                 host = RelayRuntime(profile_key=key)
+            except ModuleNotFoundError as exc:
+                if _is_expected_missing_relay(exc):
+                    logger.info("NeMo Relay is unavailable on Intel macOS; using NoopRelayRuntime")
+                else:
+                    logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
+                host = NoopRelayRuntime(profile_key=key, reason=str(exc))
             except Exception as exc:
                 logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
                 host = NoopRelayRuntime(profile_key=key, reason=str(exc))
@@ -1312,6 +1320,15 @@ def current_profile_key() -> str:
 def _load_nemo_relay() -> Any:
     """Load the binding only when a producer or consumer needs Relay."""
     return importlib.import_module("nemo_relay")
+
+
+def _is_expected_missing_relay(exc: ModuleNotFoundError) -> bool:
+    """Return whether Relay is intentionally unavailable on this platform."""
+    return (
+        exc.name == "nemo_relay"
+        and sys.platform == "darwin"
+        and platform.machine() == "x86_64"
+    )
 
 
 def _configured_plugin_inputs() -> Path | None:

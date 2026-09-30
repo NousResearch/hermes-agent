@@ -1043,6 +1043,27 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
     relay_runtime._reset_for_tests()
 
 
+def test_core_runtime_does_not_warn_for_expected_intel_macos_absence(monkeypatch, caplog):
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+    def missing_relay(name: str):
+        assert name == "nemo_relay"
+        raise ModuleNotFoundError(name, name=name)
+
+    monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
+    monkeypatch.setattr(relay_runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(relay_runtime.platform, "machine", lambda: "x86_64")
+    caplog.set_level("WARNING")
+
+    host = relay_runtime.HOST_REGISTRY.for_profile()
+
+    assert isinstance(host, relay_runtime.NoopRelayRuntime)
+    assert "Hermes Relay runtime initialization failed" not in caplog.text
+    assert "NeMo Relay is unavailable on Intel macOS" not in caplog.text
+    relay_runtime._reset_for_tests()
+
+
 def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     direct_runtime,
     monkeypatch,

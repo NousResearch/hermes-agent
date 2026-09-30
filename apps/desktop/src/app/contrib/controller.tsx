@@ -59,7 +59,6 @@ import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from 
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
-import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import {
   $fileBrowserOpen,

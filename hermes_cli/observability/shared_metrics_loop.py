@@ -140,9 +140,10 @@ def builtin_memory_ops(action: Any, operations: Any) -> list[str]:
     return [memory_op(action)]
 
 
-def record_builtin_memory_call(action: Any, operations: Any, *, outcome: str) -> None:
-    """One row per operation of a built-in ``memory`` tool call (a batch applies all or none)."""
-    _record_memory_ops(builtin_memory_ops(action, operations), provider="builtin", outcome=outcome)
+def record_builtin_memory_call(action: Any, operations: Any, *, outcome: str, provider: Any = "builtin") -> None:
+    """One row per operation of a built-in ``memory`` tool call (a batch applies all or none).
+    ``provider`` names the memory provider that claimed the write, if any."""
+    _record_memory_ops(builtin_memory_ops(action, operations), provider=provider, outcome=outcome)
 
 
 def _provider_result_failed(result: Any) -> bool:

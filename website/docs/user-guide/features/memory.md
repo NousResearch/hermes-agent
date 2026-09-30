@@ -8,16 +8,18 @@ description: "How Hermes Agent remembers across sessions — MEMORY.md, USER.md,
 
 Hermes Agent has bounded, curated memory that persists across sessions. This lets it remember your preferences, your projects, your environment, and things it has learned.
 
+When an external memory provider is active, Hermes offers generic user-profile writes to that provider before changing the local store. Honcho currently claims single `add` writes to `target="user"` and saves them as conclusions. Other providers continue using the built-in store unless they implement this ownership contract.
+
 ## How It Works
 
-Two files make up the agent's memory:
+Two files make up the built-in local memory:
 
 | File | Purpose | Char Limit |
 |------|---------|------------|
 | **MEMORY.md** | Agent's personal notes — environment facts, conventions, things learned | 2,200 chars (~800 tokens) |
 | **USER.md** | User profile — your preferences, communication style, expectations | 1,375 chars (~500 tokens) |
 
-Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
+Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages memory via the `memory` tool — it can add, replace, or remove entries. If an external provider claims a user-profile write, that provider becomes the primary durable owner for that write and Hermes does not also fake a local USER.md success.
 
 :::caution One agent per Hermes home
 Don't point two agent processes at the same Hermes home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](../profiles.md) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](./memory-providers.md) instead.
@@ -121,7 +123,6 @@ For information the agent needs to remember about the environment, workflows, an
 - Environment facts (OS, tools, project structure)
 - Project conventions and configuration
 - Tool quirks and workarounds discovered
-- Completed task diary entries
 - Skills and techniques that worked
 
 ### `user` — User Profile
@@ -134,6 +135,8 @@ For information about the user's identity, preferences, and communication style:
 - Workflow habits
 - Technical skill level
 
+With an active external memory provider, this target is provider-backed when the provider claims the write. Honcho stores single `add` writes as persistent conclusions; generic `replace`, `remove`, and atomic batches return an error under Honcho. Use its conclusion tools with IDs for edits.
+
 ## What to Save vs Skip
 
 ### Save These (Proactively)
@@ -144,7 +147,6 @@ The agent saves automatically — you don't need to ask. It saves when it learns
 - **Environment facts:** "This server runs Debian 12 with PostgreSQL 16" → save to `memory`
 - **Corrections:** "Don't use `sudo` for Docker commands, user is in docker group" → save to `memory`
 - **Conventions:** "Project uses tabs, 120-char line width, Google-style docstrings" → save to `memory`
-- **Completed work:** "Migrated database from MySQL to PostgreSQL on 2026-01-15" → save to `memory`
 - **Explicit requests:** "Remember that my API key rotation happens monthly" → save to `memory`
 
 ### Skip These
@@ -510,6 +512,13 @@ Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-write
 For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 7 external memory provider plugins — Honcho, OpenViking, Mem0, Holographic, RetainDB, ByteRover, and Supermemory — and more, such as Hindsight, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
+
+Provider-aware routing applies at the generic `memory` tool boundary:
+
+- `target="user"` facts, preferences, and corrections are offered to the active provider first when it claims that operation.
+- If the provider accepts the write and fails, Hermes returns a clear tool error instead of silently writing USER.md.
+- `target="memory"` remains the built-in local store for agent notes such as environment facts, project conventions, and tool/runtime lessons.
+- Session transcripts and `session_search` are recall mechanisms; they are not curated durable memory.
 
 ```bash
 hermes memory setup      # pick a provider and configure it

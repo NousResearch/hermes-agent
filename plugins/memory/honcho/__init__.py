@@ -18,7 +18,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import MemoryProvider, is_trivial_prompt
+from agent.memory_provider import MemoryProvider, MemoryWriteIntent, MemoryWriteResult, is_trivial_prompt
 from agent.coding_context import INTERACTIVE_CODING_PLATFORMS as _LOCAL_PLATFORMS
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
@@ -219,6 +219,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Configure recall settings and start (or defer) Honcho session creation."""
+        if kwargs.get("author_is_bot"):
+            self._turn_author = {"is_bot": True}
+        self._memory_write_replay = {"session_id": session_id, "kwargs": {
+            key: kwargs[key] for key in ("platform", "cwd", "user_id", "user_id_alt",
+                                   "gateway_session_key", "session_title", "session_title_source",
+                                   "agent_context", "author_is_bot")
+            if isinstance(kwargs.get(key), (str, int, bool))}}
         self._recall_generation = object()
         try:
             agent_context, platform = kwargs.get("agent_context", ""), kwargs.get("platform", "cli")
@@ -855,6 +862,46 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         thread = spawn_context_thread(_run, name=name, owner=self)
         thread.start()
         return thread
+
+    def wants_memory_write(self, intent: MemoryWriteIntent) -> bool:
+        return intent.target == "user" and intent.action in {"add", "replace", "remove", "batch"}
+
+    def preflight_memory_write(self, intent: MemoryWriteIntent) -> Optional[MemoryWriteResult]:
+        if intent.action != "add":
+            return MemoryWriteResult(handled=True, provider=self.name,
+                                     error="Honcho generic memory supports user-profile add only; use honcho_conclude with a conclusion ID for edits. Atomic batches are unavailable.")
+        if self._turn_author.get("is_bot") or not self._writes_enabled():
+            return MemoryWriteResult(handled=True, provider=self.name,
+                                     error="Honcho writes are disabled for this turn.")
+        return None
+
+    def memory_write_replay_context(self) -> Dict[str, Any]:
+        context = dict(getattr(self, "_memory_write_replay", {}))
+        if context and self._session_key:
+            context["session_key"] = self._session_key
+        if context and self._turn_author.get("is_bot"):
+            context["kwargs"] = {**context["kwargs"], "author_is_bot": True}
+        return context
+
+    def handle_memory_write(self, intent: MemoryWriteIntent) -> MemoryWriteResult:
+        if not self.wants_memory_write(intent):
+            return MemoryWriteResult(handled=False)
+        refused = self.preflight_memory_write(intent)
+        if refused is not None:
+            return refused
+        if not (intent.content or "").strip():
+            return MemoryWriteResult(handled=True, provider=self.name, error="Content is required for add.")
+        if not self._session_ready() and not self._ensure_session():
+            return MemoryWriteResult(handled=True, provider=self.name, error="Honcho session is not ready; retry the write.")
+        if not self._manager or not self._session_key:
+            return MemoryWriteResult(handled=True, provider=self.name, error="Honcho session is unavailable.")
+        try:
+            committed = self._manager.create_conclusion(self._session_key, intent.content.strip(), peer="user")
+        except Exception as exc:
+            return MemoryWriteResult(handled=True, provider=self.name, error=f"Honcho write failed: {exc}")
+        return MemoryWriteResult(handled=True, success=bool(committed), provider=self.name,
+                                 message="User profile memory saved to Honcho." if committed else "",
+                                 error="Honcho did not confirm the write." if not committed else "")
 
     def on_memory_write(
         self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None,

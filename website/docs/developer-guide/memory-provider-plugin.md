@@ -86,6 +86,12 @@ entry point at a package rather than a single module if you ship either.
 
 ## The MemoryProvider ABC
 
+### Owning generic memory writes
+
+Providers can implement `wants_memory_write(intent)` and `handle_memory_write(intent)` to own a structured generic `memory` write. The intent carries the action, target, complete content, optional old text, operations list, and provenance metadata. Return `True` from `wants_memory_write` only for operations the provider can either commit with the generic tool's semantics or refuse clearly. A claimed failure is final: Hermes does not write to the built-in store. Unclaimed writes use the built-in store and notify providers only after a successful local commit.
+
+The memory approval gate runs before a claimed write commits. For a pending write to replay after the original agent exits, implement `memory_write_replay_context()` with a JSON-serializable `session_id` and `kwargs` needed by `initialize()`. Approval verifies that the same provider is still configured, then initializes it with that identity and calls `handle_memory_write`. Claimed replace/remove operations that require approval fail closed until the provider can pin the reviewed remote target. If a local fallback would mislead the user but your backend cannot provide atomic batch or stable entry semantics, claim the operation and return a clear failure without writing; `preflight_memory_write()` can return that refusal before the approval gate stages anything.
+
 Your plugin implements the `MemoryProvider` abstract base class from `agent/memory_provider.py`:
 
 ```python

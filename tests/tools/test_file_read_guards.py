@@ -19,6 +19,7 @@ from tools.file_tools import (
     read_file_tool,
     write_file_tool,
     _is_blocked_device,
+    _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
 )
 from tools.file_tools_write_guards import _READ_DEDUP_STATUS_MESSAGE
@@ -690,6 +691,13 @@ class TestConfigOverride(unittest.TestCase):
         result = json.loads(read_file_tool("/tmp/cfgtest2.txt", task_id="cfg2"))
         self.assertNotIn("error", result)
         self.assertIn("content", result)
+
+    @patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("config boom"))
+    def test_config_load_failure_falls_back_and_logs(self, _mock_cfg):
+        """A failing config loader should yield the default limit and leave a debug trace."""
+        with self.assertLogs("tools.file_tools", level="DEBUG") as logs:
+            self.assertEqual(_get_max_read_chars(), _DEFAULT_MAX_READ_CHARS)
+        self.assertTrue(any("config boom" in line for line in logs.output))
 
 
 # ---------------------------------------------------------------------------

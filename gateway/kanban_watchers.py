@@ -1075,11 +1075,17 @@ class GatewayKanbanWatchersMixin:
                     continue
                 seen_db_paths.add(resolved_db_path)
                 try:
+                    if _kb.count_pending_approval_relays_ro(board=slug) == 0:
+                        continue
+                except Exception:
+                    pass
+                try:
                     conn = _kb.connect(board=slug)
                 except Exception:
                     continue
                 try:
-                    # Cheap zero-relay early exit (idle cost near zero).
+                    # Expire stale requests on this board before listing
+                    _kb.expire_approval_relay_requests(conn)
                     if _kb.count_pending_approval_relay_requests(conn) == 0:
                         continue
                     for req in _kb.list_pending_approval_relay_requests(conn):
@@ -1103,21 +1109,6 @@ class GatewayKanbanWatchersMixin:
                 finally:
                     conn.close()
             return relays
-
-        # Expire rows nobody resolved; drop their queue entries so a late
-        # button click cannot resolve a request the worker already gave up
-        # on (and prune the delivered set to still-pending ids).
-        def _expire_stale() -> None:
-            try:
-                conn = _kb.connect()
-                try:
-                    _kb.expire_approval_relay_requests(conn)
-                finally:
-                    conn.close()
-            except Exception:
-                pass
-
-        await asyncio.to_thread(_expire_stale)
 
         relays = await asyncio.to_thread(_collect_relays)
         pending_ids = {r["request"]["request_id"] for r in relays}

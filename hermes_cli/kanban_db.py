@@ -11931,6 +11931,38 @@ def count_pending_approval_relay_requests(
     return int(row[0]) if row else 0
 
 
+def count_pending_approval_relays_ro(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+    now: Optional[int] = None,
+) -> int:
+    """Read-only probe for pending approval relay requests.
+
+    Like count_notify_subs, opens the database read-only to avoid invoking
+    connect() and paying schema init or writable locks on empty/idle boards.
+    """
+    path = db_path if db_path is not None else kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    except Exception:
+        return 0
+    try:
+        now_ts = int(time.time()) if now is None else int(now)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM kanban_approval_relay "
+            "WHERE status = ? AND expires_at > ?",
+            (_APPROVAL_RELAY_PENDING, now_ts),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return 0
+    finally:
+        conn.close()
+
+
 def resolve_approval_relay_request(
     conn: sqlite3.Connection,
     request_id: str,

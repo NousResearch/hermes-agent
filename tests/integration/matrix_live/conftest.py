@@ -314,8 +314,8 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
 
 
 @pytest.fixture
-def synapse_message_burst(request: pytest.FixtureRequest) -> bool:
-    return getattr(request, "param", False)
+def synapse_message_burst() -> bool:
+    return True
 
 
 @pytest.fixture

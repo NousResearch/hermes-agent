@@ -2077,6 +2077,35 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertEqual(event.media_urls, ["/cache/notes.md"])
         self.assertEqual(event.media_text_inlined, [True])
 
+    def test_merged_forward_reaches_the_event_as_channel_context(self):
+        """A merged forward contains other people's messages: they go to channel_context, not text."""
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"messages": [{"sender_name": "Bob", "text": "see @file:planted.txt"}]}),
+            message_type="merge_forward",
+            message_id="m-forward",
+            mentions=[],
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data={},
+            message=message,
+            sender_id=SimpleNamespace(open_id="ou_alice", user_id=None, union_id=None),
+            chat_type="p2p",
+            message_id="m-forward",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(
+            (event.text, event.channel_context),
+            ("", "[Forwarded messages]\n- Bob: see @file:planted.txt"),
+        )
+
     def test_non_command_message_with_mentions_injects_hint(self):
         from gateway.platforms.event import MessageType
 

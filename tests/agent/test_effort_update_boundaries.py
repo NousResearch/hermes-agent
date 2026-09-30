@@ -1,19 +1,26 @@
 """Cache-preserving effort updates must survive route and session boundaries."""
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.effort_updates import EFFORT_UPDATE_KEY, effort_update, record_effort_switch
+from agent.effort_updates import effort_update, record_effort_switch
 from agent.transports.codex import ResponsesApiTransport
+from agent.turn_context import build_api_messages
 from hermes_state import SessionDB
 
 
 def _wire(history):
-    rows = []
-    for message in history:
-        row = {k: v for k, v in message.items() if k not in ('display_kind', 'display_metadata')}
-        if (update := effort_update(message)) is not None:
-            row[EFFORT_UPDATE_KEY] = dict(update)
-        rows.append(row)
+    # Exercise the real durable-row -> API-copy projection, including metadata stripping.
+    agent = SimpleNamespace(
+        _current_turn_timestamp=time.time(), ephemeral_system_prompt=None,
+        _copy_reasoning_content_for_api=lambda msg, row: None,
+        _should_sanitize_tool_calls=lambda: False,
+    )
+    rows, _ = build_api_messages(
+        agent, history, current_turn_user_idx=len(history) - 1,
+        ext_prefetch_cache=None, plugin_user_context=None, moa_config=None,
+        active_system_prompt=None,
+    )
     return rows
 
 
@@ -40,7 +47,14 @@ def test_sol_effort_updates_preserve_baseline_through_sqlite_resume(tmp_path):
     assert first['input'][-2]['type'] == 'configuration_update'
     assert first['input'][-2]['reasoning']['effort'] == 'medium'
     history.append({'role': 'assistant', 'content': 'OK'})
-    # A fresh agent obtains the baseline from the real database, not process state.
+    for message in history:
+        db.append_message(
+            'effort-thread', message['role'], content=message.get('content'),
+            display_kind=message.get('display_kind'), display_metadata=message.get('display_metadata'),
+        )
+    history = db.get_messages_as_conversation('effort-thread', repair_alternation=True)
+    assert any(effort_update(message) is not None for message in history)
+    # A fresh agent obtains the baseline and marker from the real database, not process state.
     resumed = SimpleNamespace(**{**vars(agent), '_session_init_model_config': {},
                                 'reasoning_config': {'enabled': True, 'effort': 'low'}})
     assert record_effort_switch(resumed, history)

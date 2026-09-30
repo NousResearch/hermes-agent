@@ -281,6 +281,11 @@ export interface Translations {
     /** Optional — English fallback until translated. */
     loadWhat?: string;
     scriptRequired?: string;
+    modelUsesDefault?: string;
+    modelNotNeeded?: string;
+    modelDefaultOption?: string;
+    modelDefaultHint?: string;
+    modelNotNeededHint?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;

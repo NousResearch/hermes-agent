@@ -163,7 +163,7 @@ class TestGetWriteDeniedError:
         monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
         err = get_write_denied_error(str(outside))
         assert err is not None
-        assert "outside HERMES_WRITE_SAFE_ROOT" in err
+        assert "outside the configured workdir allowed roots" in err
         assert str(safe_root) in err
         assert "protected system/credential file" not in err
 
@@ -202,7 +202,7 @@ class TestSafeRootDenialMessageIntegration:
 
         res = ops.write_file(str(outside), "content")
         assert res.error is not None
-        assert "outside HERMES_WRITE_SAFE_ROOT" in res.error
+        assert "outside the configured workdir allowed roots" in res.error
         assert str(safe_root) in res.error
         assert "credential" not in res.error
         assert not outside.exists()

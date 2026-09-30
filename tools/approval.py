@@ -625,10 +625,16 @@ def _unattended_contexts() -> list[_Unattended]:
     if _is_cron_approval_context():
         contexts.append(_CRON_CTX)
     elif _is_unattended_platform_approval_context():
+        platform = _get_session_platform()
+        clause = (
+            f"this session runs on an unattended platform ({platform}) with no user present to approve it"
+            if platform
+            else "this profile is configured as unattended (approvals.unattended_profiles) "
+                 "with no user present to approve it"
+        )
         contexts.append(_Unattended(
             "unattended", "unattended_mode",
-            "this session runs on an unattended platform "
-            f"({_get_session_platform()}) with no user present to approve it",
+            clause,
             "on unattended platforms", "sessions on this surface are intentionally trusted",
         ))
     return contexts

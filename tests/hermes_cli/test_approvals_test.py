@@ -195,3 +195,36 @@ class TestOutputAndWiring:
         assert rc == 0
         assert "ls -la" in out
         assert "-- ls" not in out
+
+
+def test_unattended_profile_denies_without_prompt(monkeypatch):
+    """A profile listed in approvals.unattended_profiles never publishes a prompt:
+    the verdict comes from the unattended context's *_mode (deny by default)."""
+    monkeypatch.setattr(
+        approval_context, "_get_approval_config",
+        lambda: {"unattended_profiles": ["attendant"], "unattended_mode": "deny"},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "attendant")
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+
+    verdict = at.evaluate_command("rm -rf /tmp/x", env_type="local")
+
+    assert verdict["verdict"] == "unattended-deny"
+    assert verdict["exit_code"] == 3
+
+
+def test_profile_not_listed_still_asks(monkeypatch):
+    """Profiles outside the list keep the interactive verdict."""
+    monkeypatch.setattr(
+        approval_context, "_get_approval_config",
+        lambda: {"unattended_profiles": ["attendant"], "unattended_mode": "deny"},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "worker")
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+
+    verdict = at.evaluate_command("rm -rf /tmp/x", env_type="local")
+
+    assert verdict["verdict"] == "ask-approval"
+    assert verdict["exit_code"] == 2

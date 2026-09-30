@@ -135,14 +135,47 @@ def _is_cron_approval_context() -> bool:
 _UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
 
 
+def _unattended_profiles() -> frozenset[str]:
+    """``approvals.unattended_profiles`` — profiles that must never raise a prompt.
+
+    A profile listed here is treated as an unattended surface *regardless of the
+    platform it runs on*. It exists for agents whose channel has no ``/approve``
+    route (the adapter never renders an approval card and no human can answer), or
+    that must simply never ask: a dangerous command is then decided by
+    ``approvals.unattended_mode`` (default deny) instead of publishing a prompt
+    that only blocks the turn until the timeout and fails closed anyway.
+    """
+    try:
+        raw = _get_approval_config().get("unattended_profiles") or []
+        return frozenset(str(name).strip() for name in raw if str(name).strip())
+    except Exception:
+        return frozenset()
+
+
+def _is_unattended_profile_approval_context() -> bool:
+    """True when the ACTIVE profile is listed in ``approvals.unattended_profiles``."""
+    profiles = _unattended_profiles()
+    if not profiles:
+        return False
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() in profiles
+    except Exception:
+        return False
+
+
 def _is_unattended_platform_approval_context() -> bool:
-    """True when the session platform is a programmatic/unattended surface.
+    """True when the session platform is a programmatic/unattended surface, or the
+    active profile is configured as unattended (``approvals.unattended_profiles``).
 
     Webhook, msgraph_webhook, and api_server sessions bind ``HERMES_SESSION_PLATFORM`` like chat gateways
     do, but there is no human who can resolve a pending approval. Treating them as gateway approval contexts
     blocks the session for the full approval timeout (60-300s) and then fails closed anyway — the deadlock
     in #37284/#87509.
     """
+    if _is_unattended_profile_approval_context():
+        return True
     return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
 
 

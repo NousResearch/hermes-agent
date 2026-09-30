@@ -21,7 +21,7 @@ EXIT_DENY = 3
 
 _VERDICT_EXIT = {
     "allow": EXIT_ALLOW, "ask-approval": EXIT_ASK, "hardline-deny": EXIT_DENY,
-    "user-deny": EXIT_DENY,
+    "user-deny": EXIT_DENY, "unattended-deny": EXIT_DENY,
 }
 
 
@@ -106,6 +106,26 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     # 7. Dangerous-pattern detection → would prompt.
     is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
     if is_dangerous:
+        # 7a. Unattended contexts (cron, single-query, an unattended platform, or a profile
+        # listed in approvals.unattended_profiles): the command is decided by that context's
+        # *_mode, and nothing is ever published as a prompt. Reporting "would prompt" here
+        # would misdescribe the runtime.
+        unattended = approval._unattended_contexts()
+        if unattended:
+            ctx = unattended[0]
+            if ctx.mode() == "deny":
+                return result(
+                    "unattended-deny", rule=ctx.cfg_key,
+                    detail=(description + "; " + ctx.clause
+                            + ", so approvals." + ctx.cfg_key
+                            + " decides it - blocked without a prompt"),
+                )
+            return result(
+                "allow", rule=ctx.cfg_key,
+                detail=(description + "; " + ctx.clause
+                        + ", and approvals." + ctx.cfg_key
+                        + " is set to approve on this surface"),
+            )
         return result(
             "ask-approval", rule=description,
             detail="matches a dangerous-command pattern; the runtime would "

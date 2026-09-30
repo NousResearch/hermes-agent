@@ -70,7 +70,6 @@ const finderJunk = new Set(['.DS_Store'])
 function isJunk(name) {
   const parts = name.split('/')
   return finderJunk.has(parts[parts.length - 1])
-    || parts.some(part => generated.has(part))
     || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
     || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
 }

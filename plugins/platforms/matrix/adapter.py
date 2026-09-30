@@ -190,8 +190,9 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
-# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply".
-_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^>\s*<(@[^>]+)>\s*(.*)$")
+# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply". An emote
+# fallback starts with "> * <@alice:example.org>".
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
 
 
 def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
@@ -294,6 +295,27 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
         idx += 1  # the blank line separating the quote from the reply belongs to the quote
     head = "\n".join(lines[:idx])
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
+
+
+def _has_reply_fallback(body: str, content: dict) -> bool:
+    """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
+
+    Matrix 1.13 (MSC2781) removed reply fallbacks, so a modern client sends the reply as typed
+    and a leading ``> `` block is the user's quotation. A legacy client marks its fallback with
+    an ``<mx-reply>`` element at the start of the HTML body. Its plain fallback starts with the
+    quoted sender's pill (``> <@user:srv>``, or ``> * <@user:srv>`` for an emote) and ends with
+    a blank line.
+    """
+    if not body.startswith("> "):
+        return False
+    formatted_body = content.get("formatted_body")
+    if (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
+            and formatted_body.lstrip().startswith("<mx-reply>")):
+        return True
+    if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
+        return False
+    quote_block, reply_text = _split_reply_fallback(body)
+    return quote_block.endswith("\n\n") or not reply_text
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -2159,9 +2181,9 @@ class MatrixAdapter(BasePlatformAdapter):
             # Strip the mention from the reply text only: the quote block carries the
             # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
-            # and silently dropped the replied-to author (#111233). Only a real reply carries a
-            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
-            if relation.reply_target:
+            # and silently dropped the replied-to author (#111233). Without a fallback, a leading
+            # quote is the user's own text, so the mention is stripped from the whole body.
+            if relation.reply_target and _has_reply_fallback(body, source_content):
                 quote_block, reply_text = _split_reply_fallback(body)
                 body = quote_block + self._strip_mention(reply_text)
             else:

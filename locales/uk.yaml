@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
     choice_cold: "cold — швидко лише на першому ході сесії"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, ціна ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступний лише для GPT-6 Astra (поточна модель: `{model}`)."
   footer:
     status: "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Використання: `/footer [on|off|status]`"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Керувати рівнем зусиль міркування та його показом"
   fast:
-    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показати або змінити оформлення (тему) інтерфейсу"
   indicator:
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "Швидкий режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Використання: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступний лише для GPT-6 Astra (поточна модель: {model})."
+      usage: "Використання: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: встановлено {value} {scope}"
     hatch:

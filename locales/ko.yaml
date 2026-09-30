@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — 표준 처리"
     choice_auto: "auto — 매 턴의 처음 몇 초 동안 빠름"
     choice_cold: "cold — 세션의 첫 턴에만 빠름"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 가격 6배)"
+    ultrafast_not_supported: "⚡ Ultrafast는 GPT-6 Astra에서만 사용할 수 있습니다 (현재 모델: `{model}`)."
   footer:
     status: "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
     usage: "사용법: `/footer [on|off|status]`"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "추론 강도와 표시 관리"
   fast:
-    description: "빠른 모드 — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "빠른 모드 — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "화면 스킨/테마 표시 또는 변경"
   indicator:
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "빠른 모드"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "사용법: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast는 GPT-6 Astra에서만 사용할 수 있습니다 (현재 모델: {model})."
+      usage: "사용법: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}을(를) {value}(으)로 설정했어요 {scope}"
     hatch:

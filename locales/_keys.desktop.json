@@ -204,6 +204,8 @@
     "assistant.thread.errorCodes.loop_error.title",
     "assistant.thread.errorCodes.model_not_found.body",
     "assistant.thread.errorCodes.model_not_found.title",
+    "assistant.thread.errorCodes.no_reply.body",
+    "assistant.thread.errorCodes.no_reply.title",
     "assistant.thread.errorCodes.overloaded.body",
     "assistant.thread.errorCodes.overloaded.title",
     "assistant.thread.errorCodes.payload_too_large.body",

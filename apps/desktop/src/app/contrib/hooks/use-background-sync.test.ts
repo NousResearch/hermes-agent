@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifyProjectsChanged, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
 import {
   $activeSessionId,
@@ -24,6 +24,7 @@ import {
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
+import { makeSessionInfo } from '@/test/session-info'
 
 import {
   type ActiveTranscriptRefreshDeps,
@@ -498,6 +499,96 @@ describe('active transcript refresh', () => {
     })
 
     expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('skips the tile fetch when the sidebar row fingerprint is unchanged', async () => {
+    $changeEventsAvailable.set(true)
+
+    const TILE_RUNTIME_ID = 'runtime-tile-3'
+    const TILE_STORED_ID = 'stored-tile-3'
+
+    const row = makeSessionInfo({
+      id: TILE_STORED_ID,
+      last_active: 99,
+      message_count: 2,
+      preview: 'a'
+    })
+
+    setSessions([row])
+
+    const signatureRef = { current: new Map<string, string>() }
+    signatureRef.current.set(`tile-meta:${TILE_STORED_ID}`, sessionListFingerprint(row))
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'q', role: 'user', timestamp: 1 },
+        { content: 'a', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: TILE_STORED_ID
+    } as never)
+
+    const updateSessionState = vi.fn()
+    const requestSequenceRef = { current: 0 }
+
+    await act(async () => {
+      await reconcileTileTranscriptsForTest({
+        tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+    })
+
+    // The row's message_count / last_active / preview have not moved, so the
+    // 120-row fetch itself is skipped — not just the paint (#95767).
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('still fetches when the sidebar row moved', async () => {
+    $changeEventsAvailable.set(true)
+
+    const TILE_RUNTIME_ID = 'runtime-tile-4'
+    const TILE_STORED_ID = 'stored-tile-4'
+
+    const row = makeSessionInfo({
+      id: TILE_STORED_ID,
+      last_active: 100,
+      message_count: 3,
+      preview: 'new answer'
+    })
+
+    setSessions([row])
+    // Armed for the OLD row — the new row must break the gate and fetch.
+    const signatureRef = { current: new Map<string, string>() }
+    signatureRef.current.set(
+      `tile-meta:${TILE_STORED_ID}`,
+      sessionListFingerprint({ ...row, last_active: 99, message_count: 2, preview: 'a' })
+    )
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'q', role: 'user', timestamp: 1 },
+        { content: 'a', role: 'assistant', timestamp: 2 },
+        { content: 'new answer', role: 'assistant', timestamp: 3 }
+      ],
+      session_id: TILE_STORED_ID
+    } as never)
+
+    const updateSessionState = vi.fn()
+    const requestSequenceRef = { current: 0 }
+
+    await act(async () => {
+      await reconcileTileTranscriptsForTest({
+        tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined, { passive: true })
+    expect(updateSessionState).toHaveBeenCalled()
   })
 
   it('reads an older page so a long turn filling the newest page keeps the rendered prefix', async () => {

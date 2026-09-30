@@ -5527,6 +5527,10 @@ export const deOverrides = {
           body: provider =>
             `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
         },
+        no_reply: {
+          title: 'Die Antwort wurde nicht fertig',
+          body: 'Hermes hat diesen Durchlauf ohne Antwort beendet. Versuchen Sie es erneut, um sie noch einmal zu senden.'
+        },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
           body: 'Die Verbindung ist abgebrochen, bevor die Antwort fertig war. Versuchen Sie es erneut, um sie noch einmal zu senden.'

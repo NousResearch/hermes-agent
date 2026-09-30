@@ -1938,8 +1938,10 @@ def _run_agent_with_watchdog(
     _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     # Carry scheduler-scoped ContextVar state (e.g. env passthrough) into the worker thread.
     _cron_context = contextvars.copy_context()
+    _cron_persist = _cron_persist_stub(job, prompt)
     _cron_future = _cron_pool.submit(
-        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+        _cron_context.run, agent.run_conversation, prompt,
+        task_id=task_id, persist_user_message=_cron_persist)
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
@@ -4243,7 +4245,7 @@ from cron.scheduler_script import (  # noqa: E402
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (  # noqa: E402
-    _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil, _parse_wake_gate,
+    _block_and_pause_job, _build_job_prompt, _cron_persist_stub, _guard_job_credential_exfil, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

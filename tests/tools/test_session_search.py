@@ -543,7 +543,7 @@ class TestCrossProfileRead:
 
 
 # =========================================================================
-# Cron demotion in discover ranking (#19434)
+# Cron exclusion from discovery (default) + explicit source:cron opt-in
 # =========================================================================
 
 class TestCronDemotion:
@@ -575,14 +575,14 @@ class TestCronDemotion:
         result = json.loads(session_search(query="venom project", limit=1, db=db))
         assert result["success"] is True
         assert result["count"] == 1
-        # With cron drowning FTS, bare BM25/recency would return a cron_* hit.
-        # Demotion must put the user's interactive session first.
+        # Cron sessions are excluded from discovery by default; the user's
+        # interactive session is the only possible hit.
         assert result["results"][0]["source"] == "telegram"
         assert result["results"][0]["session_id"] == "s_user"
 
-    def test_cron_still_reachable_when_only_match(self, db):
-        """Demotion must not exclude cron — when only cron matches, it still
-        comes back."""
+    def test_cron_excluded_by_default_even_when_only_match(self, db):
+        """Default discovery never returns cron rows, even when they are the
+        only matches — scheduled bulk output is not the user's recall corpus."""
         now = int(time.time())
         db.create_session("cron_only", source="cron")
         db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
@@ -592,8 +592,36 @@ class TestCronDemotion:
         db._conn.commit()
         result = json.loads(session_search(query="archive sweep", db=db))
         assert result["success"] is True
+        assert result["count"] == 0
+
+    def test_cron_reachable_via_named_token(self, db):
+        """The exact blank-separated `source:cron` token opts back in."""
+        now = int(time.time())
+        db.create_session("cron_named", source="cron")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 500, "cron_named"))
+        db.append_message("cron_named", role="user", content="quarterly archive sweep")
+        db.append_message("cron_named", role="assistant", content="Archive sweep complete.")
+        db._conn.commit()
+        result = json.loads(session_search(query="source:cron archive sweep", db=db))
+        assert result["success"] is True
         assert result["count"] == 1
         assert result["results"][0]["source"] == "cron"
+        assert result["results"][0]["session_id"] == "cron_named"
+
+    def test_cron_match_all_when_token_is_whole_query(self, db):
+        """`source:cron` alone lists recent cron sessions without FTS."""
+        now = int(time.time())
+        db.create_session("cron_listed", source="cron")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 500, "cron_listed"))
+        db.append_message("cron_listed", role="user", content="nightly digest run")
+        db.append_message("cron_listed", role="assistant", content="Digest sent.")
+        db._conn.commit()
+        result = json.loads(session_search(query="source:cron", db=db))
+        assert result["success"] is True
+        assert result["count"] >= 1
+        assert any(r["session_id"] == "cron_listed" for r in result["results"])
 
 
 # =========================================================================

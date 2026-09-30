@@ -122,3 +122,43 @@ def test_reserialised_form_is_canonical():
     """Recovered output is compact JSON so the canon-args cache stays stable."""
     out = _repair_tool_call_arguments('command": "echo  hi"}', "t")
     assert out == json.dumps({"command": "echo  hi"}, separators=(",", ":"))
+
+
+
+def test_non_ascii_payload_is_still_recognised_as_the_tail():
+    """A non-ASCII payload must survive: ``json.dumps`` defaults to ``ensure_ascii=True``.
+
+    The prepend-only guard re-serialises the candidate and checks the received bytes are
+    its tail.  With the default ASCII escaping a payload containing e.g. ``→`` is claimed
+    to be ``\u2192``, the tail check fails, and a perfectly recoverable call is discarded
+    (observed on ``memory``, whose Indonesian content is full of non-ASCII punctuation).
+    """
+    import run_agent  # noqa: F401
+
+    import json as _json
+
+    for ensure_ascii in (False, True):
+        for obj, tool in (
+            ({"operations": [{"action": "add", "content": "DITOLAK → adopt"}], "target": "memory"}, "memory"),
+            ({"path": "/tmp/x.py", "content": 's = "café"\nprint(s)'}, "write_file"),
+            ({"command": "grep → /tmp/f"}, "terminal"),
+        ):
+            full = _json.dumps(obj, ensure_ascii=ensure_ascii)
+            prefix = '{"'
+            assert full.startswith(prefix)
+            out = _repair_tool_call_arguments(full[len(prefix):], tool)
+            assert out is not None, (obj, ensure_ascii)
+            assert _json.loads(out) == obj, (obj, ensure_ascii)
+
+
+def test_literal_newline_inside_value_is_recoverable():
+    """A dropped head can leave a LITERAL newline in the value; strict JSON rejects it."""
+    import run_agent  # noqa: F401
+
+    import json as _json
+
+    full = _json.dumps({"path": "/tmp/a.md", "content": "line1\nline2\tend"})
+    assert full.startswith('{"')
+    out = _repair_tool_call_arguments(full[2:], "write_file")
+    assert out is not None
+    assert _json.loads(out) == {"path": "/tmp/a.md", "content": "line1\nline2\tend"}

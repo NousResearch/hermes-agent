@@ -219,8 +219,11 @@ def _try_leading_prefix_repair(raw_stripped: str, prefixes, tool_name: str) -> s
         if not any(
             len(ser) > len(raw_cmp) and ser.endswith(raw_cmp)
             for ser in (
-                _squash_control_bytes(json.dumps(parsed, separators=sep))
-                for sep in ((",", ":"), (",", ": "), (", ", ":"), (", ", ": "))
+                _squash_control_bytes(
+                    json.dumps(parsed, separators=sep, ensure_ascii=ea)
+                )
+                for ea in (False, True)
+                for sep in ((",", ":"), (",", ": "), (", ", ": "), (", ", ":"))
             )
         ):
             continue

@@ -4,7 +4,8 @@ A *peer* is another Hermes gateway running the ``api_server`` platform; its stoc
 API is the transport (no new server surface). ``dm`` resolves the remote canonical
 "Bot Chat" session (creating it when missing) and runs ONE synchronous turn — the
 cross-machine twin of ``hermes -p <bot> chat --in ~ -c "Bot Chat"``. ``run``/``status``
-/``stop`` do the same turn through the async Runs API. Peer labels/URLs live in
+/``stop`` do the same turn through the async Runs API; ``run --new`` instead starts
+an independent task session on the same profile. Peer labels/URLs live in
 config.yaml (``bot_peers``); the key lives in ``~/.hermes/.env`` as
 ``HERMES_PEER_<NAME>_KEY``. ``<peer>/<profile>`` targets the ``/p/<profile>/`` mirror.
 """
@@ -321,10 +322,13 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
                 "Warning: this peer does not advertise restart-durable "
                 "run replay; keep the run ID and avoid blind retries "
                 "after a gateway restart.", file=sys.stderr)
-        session_id = _ensure_bot_chat(base, key)
+        # Let the Runs API allocate a session after reserving the retry key;
+        # creating one here would change the request identity on every retry.
+        session_fields = {} if getattr(args, "new", False) else {
+            "session_id": _ensure_bot_chat(base, key)}
         result = _request(
             f"{base}/v1/runs", key, method="POST",
-            body=_turn_body(message, message_key="input", session_id=session_id),
+            body=_turn_body(message, message_key="input", **session_fields),
             headers={"Idempotency-Key": idempotency_key})
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return _peer_failure(peer_name, exc)
@@ -333,12 +337,15 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
         print(f"Peer '{peer_name}' did not return a run ID.", file=sys.stderr)
         return 1
     payload = {
-        "peer": peer_name, "profile": profile, "session_id": session_id, "run_id": run_id,
+        "peer": peer_name, "profile": profile, **session_fields, "run_id": run_id,
         "status": result.get("status") or "started", "idempotency_key": idempotency_key,
         "replayed": bool(result.get("replayed", False))}
     replay = " (replayed)" if payload["replayed"] else ""
+    # Acceptance does not report a new session's ID. Read it through peer status;
+    # a run ID is a control handle, not a client-side session identity contract.
     return _emit(args, payload, [
-        f"{run_id}: {payload['status']}{replay}", f"session_id: {session_id}",
+        f"{run_id}: {payload['status']}{replay}",
+        *([f"session_id: {session_fields['session_id']}"] if session_fields else []),
         f"idempotency_key: {idempotency_key}"])
 
 
@@ -437,6 +444,7 @@ def build_peer_parser(subparsers) -> None:
             '  hermes peer dm spark "Message from 🤖 dixie (@dixie): disk status?"\n'
             '  hermes peer dm spark/researcher "..."   # named profile on a multiplexed peer\n'
             "  hermes peer run spark --idempotency-key ticket-123 < long-task.txt\n"
+            '  hermes peer run spark --new "independent task"\n'
             "  hermes peer status spark run_abc123\n"
             "  hermes peer stop spark run_abc123\n"
             "  hermes peer remove spark\n"
@@ -464,6 +472,9 @@ def build_peer_parser(subparsers) -> None:
         else:
             sp.add_argument("message", nargs="?", default=None, help="Message text (or stdin)")
             if name == "run":
+                sp.add_argument(
+                    "--new", action="store_true",
+                    help="Start a fresh task session on the same profile instead of continuing Bot Chat")
                 sp.add_argument(
                     "--idempotency-key", default=None, help="Stable retry key (generated when omitted)")
         sp.add_argument("--json", action="store_true", default=False, help="Emit a JSON result")

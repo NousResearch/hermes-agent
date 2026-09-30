@@ -11,7 +11,7 @@ import logging
 import os
 from pathlib import Path
 import tempfile
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from mautrix.crypto.store.asyncpg import PgCryptoStore
@@ -67,10 +67,13 @@ class DurableSyncStore:
         return self._next_batch
 
     async def put_next_batch(
-        self, next_batch: str, *, keep: frozenset[str] = frozenset()
+        self, next_batch: str, *, keep: Callable[[], frozenset[str]] = frozenset
     ) -> None:
-        """Advance the cursor. Admitted event IDs outside *keep* belong to responses at or
-        before *next_batch*, so the homeserver will not deliver them again."""
+        """Advance the cursor and drop the admitted event IDs that *keep* does not return.
+
+        *keep* names the IDs of responses whose cursors are not written yet. It is called under
+        the write lock, so an ID admitted while this write waits for the lock is kept too.
+        """
         await self._commit(next_batch=next_batch, keep=keep)
 
     def reserve_intake(self, event_id: str) -> bool:
@@ -104,14 +107,14 @@ class DurableSyncStore:
         *,
         next_batch: str | None = None,
         event_ids: tuple[str, ...] = (),
-        keep: frozenset[str] = frozenset(),
+        keep: Callable[[], frozenset[str]] = frozenset,
     ) -> None:
         async def write() -> None:
             async with self._write_lock:
                 accepted = (
                     self._accepted_events | set(event_ids)
                     if event_ids
-                    else self._accepted_events & keep
+                    else self._accepted_events & keep()
                 )
                 cursor = next_batch if next_batch is not None else self._next_batch
                 await asyncio.to_thread(self._write, cursor, accepted)
@@ -199,8 +202,13 @@ class SyncCheckpoints:
     before then resumes from the older cursor and delivers the buffered events again.
     """
 
-    def __init__(self, store: DurableSyncStore) -> None:
+    def __init__(
+        self,
+        store: DurableSyncStore,
+        dispatching: Callable[[], frozenset[str]] = frozenset,
+    ) -> None:
         self.store = store
+        self._dispatching = dispatching
         self._pending: deque[_PendingCheckpoint] = deque()
         self._task: asyncio.Task | None = None
         self._failed: tuple[str, ...] | None = None
@@ -219,7 +227,7 @@ class SyncCheckpoints:
             if not _consumed(receipt)
         )
         if not receipts and not self._pending:
-            await self.store.put_next_batch(next_batch)
+            await self.store.put_next_batch(next_batch, keep=self._unwritten_intakes)
             return
         self._pending.append(_PendingCheckpoint(next_batch, seen, receipts))
         if self._task is None or self._task.done():
@@ -246,11 +254,17 @@ class SyncCheckpoints:
                 self._failed = failed
                 self._pending.clear()
                 return
-            later = frozenset().union(
-                *(pending.seen for pending in list(self._pending)[1:])
+            await self.store.put_next_batch(
+                checkpoint.next_batch, keep=self._unwritten_intakes
             )
-            await self.store.put_next_batch(checkpoint.next_batch, keep=later)
             self._pending.popleft()
+
+    def _unwritten_intakes(self) -> frozenset[str]:
+        """Intake IDs of the responses after the cursor being written: the queued ones and
+        the one that is still being dispatched."""
+        return frozenset().union(
+            *(pending.seen for pending in list(self._pending)[1:]), self._dispatching()
+        )
 
     def take_failure(self) -> tuple[str, ...] | None:
         """Event IDs whose buffered intake failed since the last call, or None."""
@@ -338,6 +352,10 @@ class SyncDispatch:
         """Cancel *task* on disconnect without making sync dispatch wait for it."""
         self._owned_tasks.add(task)
         task.add_done_callback(self._owned_tasks.discard)
+
+    def dispatching_intakes(self) -> frozenset[str]:
+        """The intake event IDs of the response that is being dispatched."""
+        return frozenset(self._seen_intakes)
 
     def take_intakes(self) -> tuple[frozenset[str], tuple[tuple[str, asyncio.Future], ...]]:
         """The intake event IDs of the last response, and the receipts still buffered."""

@@ -47,8 +47,7 @@ def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
     plugins_mod._reset_plugin_managers_for_tests()
     import agent.skill_commands as sc
     try:
-        monkeypatch.setattr(sc, "_skill_commands", {})
-        monkeypatch.setattr(sc, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc, "_skill_commands_by_key", {})
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             from gateway.run_inbound import GatewayInboundMixin
 

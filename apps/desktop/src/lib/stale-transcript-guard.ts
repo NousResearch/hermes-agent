@@ -69,6 +69,31 @@ function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined 
   return undefined
 }
 
+function durableRowIds(messages: readonly ChatMessage[]): Set<number> {
+  const rowIds = new Set<number>()
+
+  for (const message of messages) {
+    if (typeof message.rowId === 'number') {
+      rowIds.add(message.rowId)
+    }
+
+    for (const part of message.parts) {
+      if (part.type === 'text' && typeof part.sourceRowId === 'number') {
+        rowIds.add(part.sourceRowId)
+      }
+    }
+  }
+
+  return rowIds
+}
+
+function haveSameDurableRows(left: readonly ChatMessage[], right: readonly ChatMessage[]): boolean {
+  const leftRows = durableRowIds(left)
+  const rightRows = durableRowIds(right)
+
+  return leftRows.size > 0 && leftRows.size === rightRows.size && [...leftRows].every(rowId => rightRows.has(rowId))
+}
+
 /**
  * Chat messages to install when the authoritative latest page is ahead of the
  * local view. Null when the local view is current.
@@ -93,6 +118,10 @@ export function messagesIfTranscriptBehind(
 
   if (localMessages.length === 0) {
     return remoteChat
+  }
+
+  if (haveSameDurableRows(localMessages, remoteChat)) {
+    return null
   }
 
   const localTip = lastDurableRowId(localMessages)

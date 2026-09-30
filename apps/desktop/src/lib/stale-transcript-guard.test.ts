@@ -81,6 +81,18 @@ describe('messagesIfTranscriptBehind', () => {
     expect(messagesIfTranscriptBehind(windowMessages, page)).not.toBeNull()
   })
 
+  it('is current when folding the same durable rows produces different message counts', () => {
+    const localMessages: ChatMessage[] = [
+      { id: 'assistant', parts: [{ type: 'text', text: 'answer', sourceRowId: 2 }], role: 'assistant', rowId: 2 }
+    ]
+    const refreshedMessages: ChatMessage[] = [
+      { id: 'tool', parts: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'shell' }], role: 'tool', rowId: 1 },
+      { id: 'assistant', parts: [{ type: 'text', text: 'answer', sourceRowId: 2 }], role: 'assistant', rowId: 2 }
+    ]
+
+    expect(messagesIfTranscriptBehind(localMessages, refreshedMessages)).toBeNull()
+  })
+
   it('is current when both sides hold the same notices and the same turns', () => {
     const rows = [userTurn(1, 'ask'), assistantTurn(2, 'answer'), modelSwitchNotice(3)]
 

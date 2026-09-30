@@ -307,6 +307,33 @@ class TestCliPromptCallbackWiring:
 
         assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "cancel"
 
+    def test_mcp_elicitation_worker_preserves_callback_and_title(self, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+        import tools.approval_prompt as approval_prompt
+        import tools.terminal_tool as terminal_tool
+        from tools.mcp_tool_sampling import ElicitationHandler
+
+        seen = {}
+
+        def callback(command, description, **kwargs):
+            seen.update(kwargs)
+            return "once"
+
+        monkeypatch.setattr(terminal_tool, "_get_approval_callback", lambda: callback)
+
+        def fake_request(*args, **kwargs):
+            cb = terminal_tool._get_approval_callback()
+            assert cb is not None
+            return cb(args[0], args[1], title=kwargs["title"])
+
+        monkeypatch.setattr(approval_prompt, "request_elicitation_consent", fake_request)
+
+        handler = ElicitationHandler("srv", {"timeout": 5}, call_context=lambda: None)
+        invoke = handler._consent_thunk("approve", "description")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(invoke).result() == "once"
+        assert seen["title"] == "MCP server 'srv' requests approval"
+
 
 class TestTrustNormalization:
     def test_unknown_trust_value_treated_as_untrusted(self):

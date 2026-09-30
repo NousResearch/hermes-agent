@@ -688,9 +688,6 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
     )
 
 
-_BARE_URL_RE = re.compile(r"(?<![<(\[])(https?://[^\s<>]+)")
-
-
 def _silent_allowed_mentions():
     """``AllowedMentions`` denying every ping, for status/progress traffic only.
 
@@ -706,25 +703,22 @@ def _silent_allowed_mentions():
         everyone=False, users=False, roles=False, replied_user=False)
 
 
-def _suppress_link_unfurl(content: str) -> str:
-    """Wrap bare URLs in ``<>`` so Discord links them without generating an embed preview.
-
-    The edit path is why this is content-level rather than a flag: ``PartialMessage.edit`` has no
-    ``suppress_embeds`` parameter (only ``Message.send`` does), so a status message whose preview can
-    never unfurl is the only version of "no embed" that survives every edit to the same message.
-    """
-    return _BARE_URL_RE.sub(lambda m: f"<{m.group(1)}>", content)
-
-
 def _is_progress_wire(metadata: Optional[Dict[str, Any]]) -> bool:
-    """True for status/progress sends, which get the no-mention/no-embed wire policy.
+    """Only explicit progress traffic is quiet; approvals/notices retain their policy."""
+    return isinstance(metadata, dict) and metadata.get("progress") is True
 
-    Scoped to the non-conversational marker the gateway already stamps on progress/status traffic, so
-    ordinary replies keep their normal mention behaviour (a real answer may legitimately ping).
-    """
-    if not isinstance(metadata, dict):
-        return False
-    return bool(metadata.get("progress") or _metadata_marks_nonconversational(metadata))
+
+async def _edit_discord_text(msg, content, extra):
+    if not extra.get("suppress_embeds"):
+        return await msg.edit(content=content, **extra)
+    # PartialMessage.edit has no suppress flag. Use the SDK's existing parameter
+    # builder + PATCH transport (no fetch, no rewriting fenced command bytes).
+    from discord.http import handle_message_parameters
+    with handle_message_parameters(
+        content=content, allowed_mentions=extra["allowed_mentions"],
+        flags=discord.MessageFlags(suppress_embeds=True),
+    ) as params:
+        return await msg._state.http.edit_message(msg.channel.id, msg.id, params=params)
 
 
 def _discord_ready_timeout_seconds() -> float:
@@ -3144,8 +3138,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
-                if progress_wire:
-                    chunk = _suppress_link_unfurl(chunk)
                 try:
                     msg = await channel.send(content=chunk, reference=chunk_reference, **send_extra)
                 except Exception as e:
@@ -3293,16 +3285,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         progress_wire = _is_progress_wire(metadata)
         edit_extra: Dict[str, Any] = {}
         if progress_wire:
+            edit_extra["suppress_embeds"] = True
             silent = _silent_allowed_mentions()
             if silent is not None:
                 edit_extra["allowed_mentions"] = silent
         try:
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel((metadata or {}).get("thread_id") or chat_id)
             msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
-            if progress_wire:
-                # No ``suppress_embeds`` on the edit path, so the links themselves are neutralized.
-                formatted = _suppress_link_unfurl(formatted)
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
             if finalize:
@@ -3323,7 +3313,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                 self._last_overflow_preview.pop(_preview_key, None)
             try:
-                await msg.edit(content=formatted, **edit_extra)
+                await _edit_discord_text(msg, formatted, edit_extra)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
@@ -3335,7 +3325,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
                         return SendResult(success=True, message_id=message_id)
-                    await msg.edit(content=truncated, **edit_extra)
+                    await _edit_discord_text(msg, truncated, edit_extra)
                     self._last_overflow_preview[_preview_key] = truncated
                 else:
                     raise
@@ -3352,9 +3342,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         keeps its original error string and carries its classified kind. A caller that retries an edit
         re-issues identical text, so retrying a transport failure cannot duplicate visible content."""
         from gateway.platforms.base import classify_send_error
-        if _is_discord_transport_error(exc):
+        import aiohttp
+        if isinstance(exc, (TimeoutError, ConnectionError, aiohttp.ClientConnectionError)):
             return SendResult(success=False, error=str(exc), retryable=True, error_kind="transient")
-        return SendResult(success=False, error=str(exc), error_kind=classify_send_error(exc, str(exc)))
+        if isinstance(exc, discord.HTTPException):
+            if exc.status == 429:
+                return SendResult(success=False, error=str(exc), retryable=True, error_kind="rate_limited",
+                                  retry_after=getattr(exc, "retry_after", None))
+            if exc.status >= 500:
+                return SendResult(success=False, error=str(exc), retryable=True, error_kind="transient")
+        kind = classify_send_error(exc, str(exc))
+        # Text-shaped errors are not evidence of a retryable transport failure.
+        return SendResult(success=False, error=str(exc),
+                          error_kind="unknown" if kind in {"transient", "rate_limited"} else kind)
 
     @staticmethod
     def _is_reply_reference_rejected(err: Exception) -> bool:
@@ -3390,10 +3390,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
         if len(chunks) <= 1:
             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
-            await msg.edit(content=chunks[0] if chunks else formatted, **extra)
+            await _edit_discord_text(msg, chunks[0] if chunks else formatted, extra)
             return SendResult(success=True, message_id=message_id)
         try:
-            await msg.edit(content=chunks[0], **extra)
+            await _edit_discord_text(msg, chunks[0], extra)
         except Exception as e:
             logger.error(
                 "[%s] Overflow split: first-chunk edit failed: %s", self.name, e, exc_info=True,
@@ -3413,15 +3413,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Prior message without to_reference (duck-typed): build the reference from ids.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(content=chunk, reference=reference, **extra)
             except Exception as send_err:
-                # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
+                # Only a definitive reference rejection proves this POST did not land.
+                # A timeout/reset may have landed: return failure, never replay the tail.
+                if extra.get("suppress_embeds") and not self._is_reply_reference_rejected(send_err):
+                    return SendResult(success=False, message_id=message_id,
+                        continuation_message_ids=tuple(continuation_ids),
+                        error=str(send_err), error_kind="ambiguous")
                 logger.warning(
                     "[%s] Overflow continuation send failed (%s); retrying without reply reference",
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(content=chunk, reference=None, **extra)
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",

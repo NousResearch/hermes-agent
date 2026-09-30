@@ -94,9 +94,12 @@ async def test_background_child_card_survives_turn_end_and_stays_on_its_route():
     await asyncio.to_thread(run_children)
     await _settle(adapter, lambda text: "Reading" in text)
     card = adapter.latest()
-    assert len(adapter.sent) == 1 and adapter.sent[0][0] == "thread-1" and adapter.sent[0][2] == {"thread_id": "thread-1"}
+    assert len(adapter.sent) == 1 and adapter.sent[0][0] == "thread-1"
+    assert adapter.sent[0][2] == {"thread_id": "thread-1", "progress": True, "non_conversational": True}
     assert "claude-opus-5-5" in card and "gpt-5.5" in card and "1/2" in card and "2/2" in card
-    assert "python3 -m pytest -q" in card and "<@123>" not in card
+    assert "python3 -m pytest -q tests/<@123>" in card
+    # Preserve command text; the explicit progress metadata enforces no mentions
+    # on the real serialized wire (tests/test_discord_child_progress_wire.py).
     assert "secret chain of thought" not in card
     assert first._ctx.progress_queue.empty()  # never the finished turn's own bubble
 
@@ -160,29 +163,9 @@ async def test_verbose_keeps_full_terminal_command_and_shutdown_marks_interrupte
     assert "⏹️" in adapter.latest() and len(adapter.sent) == 1
 
 
-@pytest.mark.asyncio
-async def test_live_turn_uses_native_activity_lane_then_hands_over_to_one_card():
-    """A live turn shows delegated activity through the same native presentation as its own tool lines;
-    the standalone card is the post-turn fallback, so the children never render twice at once."""
-    loop = asyncio.get_running_loop()
-    adapter = _Adapter()
-    relayed = []
-    current = [True]
-    consumer = SimpleNamespace(accepts_tool_progress=True, on_tool_progress=relayed.append)
-    turn = _turn(adapter, loop, turn_current=lambda: current[0], stream_consumer=consumer)
-    child = _child(turn)
-
-    await asyncio.to_thread(lambda: (child("subagent.start", preview="g"),
-                                     child("tool.started", "terminal", "ls", {"command": "ls -la /srv"})))
-    await asyncio.sleep(0.3)
-    assert not adapter.sent and not adapter.edits  # nothing posted beside the native lane
-    assert any("ls -la /srv" in line for line in relayed)
-
-    # The dispatching turn ends while the children keep running: the card takes over, exactly once.
-    current[0] = False
-    await asyncio.to_thread(lambda: child("tool.started", "read_file", "a.py", {"path": "a.py"}))
-    await _settle(adapter, lambda text: "a.py" in text)
-    assert len(adapter.sent) == 1 and adapter.sent[0][0] == "thread-1"
+# The native-lane contract is exercised with the actual DiscordAdapter and
+# GatewayStreamConsumer in tests/test_discord_child_progress_wire.py. A fake
+# accepts_tool_progress=True consumer is not a Discord capability proof.
 
 
 @pytest.mark.asyncio
@@ -198,7 +181,7 @@ async def test_oversized_verbose_command_survives_across_chunks_and_never_rewrit
 
     owner = turn._child_progress
     deadline = asyncio.get_running_loop().time() + 5
-    while not owner._chunk_ids and asyncio.get_running_loop().time() < deadline:
+    while owner._cursor < len(owner._parts) and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.02)
     delivered = "\n".join([c[1] for c in adapter.sent] + [e[2] for e in adapter.edits])
     bodies = re.findall(r"```\n(.*?)\n```", delivered, re.S)

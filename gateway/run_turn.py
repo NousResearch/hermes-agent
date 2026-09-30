@@ -4308,10 +4308,15 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
-            await self._run_agent_cleanup_turn_tasks(
-                turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
-                _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
-            )
+            try:
+                await self._run_agent_cleanup_turn_tasks(
+                    turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
+                    _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
+                )
+            finally:
+                # A cancelled-before-start progress task never executes its own finally.
+                # End this turn explicitly; generation ownership can remain true afterward.
+                turn_runner.end_progress_turn()
 
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
         self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)

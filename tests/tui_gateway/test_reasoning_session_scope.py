@@ -53,6 +53,18 @@ class TestSessionInfoReasoningEffort:
         assert info["reasoning_effort"] == ""
         assert info["reasoning_effort_wire"] == ""
 
+    def test_pending_route_does_not_report_old_effort_as_wire(self) -> None:
+        """A pending model/provider switch must not compare the old effort with the new route."""
+        agent = _agent({"enabled": True, "effort": "xhigh"})
+        session = {
+            "agent": agent,
+            "pending_model_switch": {"display_model": "gpt-6.1-sol", "display_provider": "openai-codex"},
+        }
+        info = _session_info(agent, session)
+        assert info["model"] == "gpt-6.1-sol"
+        assert info["provider"] == "openai-codex"
+        assert info["reasoning_effort_wire"] == ""
+
     def test_wire_level_is_what_the_route_actually_sends(self) -> None:
         """`ultra` is a Hermes-internal step (#61634): the route clamps it, and the Desktop must be able to
         say so ("ultra sends max on this route") instead of presenting Ultra as a distinct wire level."""

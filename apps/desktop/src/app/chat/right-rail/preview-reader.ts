@@ -16,7 +16,7 @@
 import { findGroup } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $hoveredTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs, type PreviewTab } from '@/store/preview'
+import { type PreviewTab, previewTabsForAgent } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 
 import { nudgeOverlay } from './preview-nudge'
@@ -121,7 +121,7 @@ function openTabInGroup(groupId: null | string, tabs: PreviewTab[]): null | Prev
  * an explicit open living in a different group — that is follow()'s clobber,
  * not a look.
  */
-export function resolveActivePreviewTab(tabs: PreviewTab[] = $previewTabs.get()): null | PreviewTab {
+export function resolveActivePreviewTab(tabs: PreviewTab[] = previewTabsForAgent()): null | PreviewTab {
   if (tabs.length === 0) {
     return null
   }
@@ -167,7 +167,7 @@ function withMultiNote(note: string | undefined, multi: boolean): string | undef
 
 /** Read the preview the user is looking at. Null only when no tab is open at all. */
 export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<null | PreviewReadResult> {
-  const tabs = $previewTabs.get()
+  const tabs = previewTabsForAgent()
   const tab = resolveActivePreviewTab(tabs)
 
   if (!tab) {

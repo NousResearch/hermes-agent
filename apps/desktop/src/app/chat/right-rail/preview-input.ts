@@ -22,7 +22,7 @@
  */
 
 import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs } from '@/store/preview'
+import { previewTabsForAgent } from '@/store/preview'
 
 /** The subset of Electron's input events the agent needs to drive a page. */
 export type PreviewInputEvent =
@@ -63,7 +63,7 @@ export function registerPreviewInput(tabId: string, handle: PreviewInputHandle):
 /** The ACTIVE preview tab's input channel. Null = nothing real to drive, and
  *  the caller falls back to synthesizing events inside the page. */
 export function activePreviewInput(): PreviewInputHandle | null {
-  const tabs = $previewTabs.get()
+  const tabs = previewTabsForAgent()
   const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
 
   return (tab && handles.get(tab.id)) || null

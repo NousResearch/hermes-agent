@@ -49,14 +49,17 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
 
   const before = $previewTabs.get()
 
-  const tab = openPreview({
-    kind: 'url',
-    url,
-    source: url,
-    label: input.label || 'Viewer',
-    transient: true,
-    browserContext: 'isolated'
-  })
+  const tab = openPreview(
+    {
+      kind: 'url',
+      url,
+      source: url,
+      label: input.label || 'Viewer',
+      transient: true,
+      browserContext: 'isolated'
+    },
+    input.session.profile
+  )
 
   // A new ticket on a reused tab rebuilds its guest; never bind to the outgoing one.
   const prior = before.find(item => item.id === tab.id)

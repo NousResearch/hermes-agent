@@ -167,6 +167,17 @@ function loadTabsByProfile(): TabsByProfile {
 
 const tabsByProfile = loadTabsByProfile()
 
+// An explicitly opened plugin viewer is a live, one-shot document. Keep it
+// mounted across chat/profile focus changes; never persist or recreate it.
+const viewerTabs = new Map<string, { owner: string; tab: PreviewTab }>()
+
+const isLiveViewerTab = (tab: PreviewTab) =>
+  tab.target.kind === 'url' && tab.target.transient === true && tab.target.browserContext === 'isolated'
+
+function tabsForScope(key: string): PreviewTab[] {
+  return [...(tabsByProfile[key] ?? []), ...Array.from(viewerTabs.values(), entry => entry.tab)]
+}
+
 /** Inline bytes are not restorable. Strip them from images, and skip remote
  *  HTML and artifact tabs that cannot render without their in-memory payload. */
 function persistableTabs(tabs: PreviewTab[]): PreviewTab[] {
@@ -216,6 +227,33 @@ let viewKey = 'default'
 
 export const $previewTabs = atom<PreviewTab[]>([])
 
+/** Human viewers stay mounted across profiles, not available to their agents. */
+export function previewTabsForAgent(): PreviewTab[] {
+  return $previewTabs.get().filter(tab => {
+    const viewer = viewerTabs.get(tab.id)
+
+    return !isLiveViewerTab(tab) || viewer?.owner === viewKey
+  })
+}
+
+/** The agent's close verb must not dismiss another profile's retained viewer. */
+export function closeAgentPreviews(...candidates: string[]): boolean {
+  const queries = candidates.map(value => value.trim()).filter(Boolean)
+
+  const tabs = previewTabsForAgent().filter(
+    tab =>
+      queries.length === 0 ||
+      queries.some(query => [tab.target.source, tab.target.url, tab.target.label].includes(query))
+  )
+
+  // A targeted close retires one matching tab, like closePreviewMatching.
+  for (const tab of queries.length ? tabs.slice(0, 1) : tabs) {
+    closeRightRailTab(tab.id)
+  }
+
+  return tabs.length > 0
+}
+
 // Adoption phase: emissions that carry storage THIS MODULE JUST READ, not a
 // change. nanostores' subscribe fires immediately, and writing what was just
 // read back is a data-loss clobber: every renderer boots against storage it
@@ -230,8 +268,18 @@ $previewTabs.subscribe(tabs => {
     return
   }
 
-  // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
-  tabsByProfile[viewKey] = [...tabs]
+  for (const id of viewerTabs.keys()) {
+    if (!tabs.some(tab => tab.id === id && isLiveViewerTab(tab))) {
+      viewerTabs.delete(id)
+    }
+  }
+
+  for (const tab of tabs.filter(isLiveViewerTab)) {
+    viewerTabs.set(tab.id, { owner: viewerTabs.get(tab.id)?.owner ?? viewKey, tab })
+  }
+
+  // Live viewers are window-owned; ordinary tabs remain profile-scoped.
+  tabsByProfile[viewKey] = tabs.filter(tab => !isLiveViewerTab(tab))
   persistTabs()
 })
 
@@ -269,7 +317,7 @@ function applyPreviewScope(next: string) {
   }
 
   viewKey = next
-  $previewTabs.set(tabsByProfile[next] ?? [])
+  $previewTabs.set(tabsForScope(next))
 }
 
 /** Drop one profile's rail. Delete counterpart of the tiles store's
@@ -278,11 +326,15 @@ export function dropPreviewTabsForProfile(profile: string) {
   const key = normalizeProfileKey(profile)
 
   delete tabsByProfile[key]
-  persistTabs()
 
-  if (key === viewKey) {
-    $previewTabs.set([])
+  for (const [id, entry] of viewerTabs) {
+    if (entry.owner === key) {
+      viewerTabs.delete(id)
+    }
   }
+
+  persistTabs()
+  $previewTabs.set(tabsForScope(viewKey))
 }
 
 /** Move one profile's rail to another. Rename counterpart of the tiles store's
@@ -303,6 +355,12 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
     tabsByProfile[to] = [...(tabsByProfile[to] ?? []), ...moved]
   }
 
+  for (const entry of viewerTabs.values()) {
+    if (entry.owner === from) {
+      entry.owner = to
+    }
+  }
+
   // The view belongs to the renamed profile; only its NAME changed. Re-point it
   // BEFORE the atom is set, so the persist subscriber writes the new bucket
   // rather than resurrecting the one just deleted.
@@ -315,7 +373,7 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   persistTabs()
 
   if (wasInView) {
-    $previewTabs.set(tabsByProfile[to] ?? [])
+    $previewTabs.set(tabsForScope(to))
   }
 }
 
@@ -618,7 +676,7 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget) {
+export function openPreview(target: PreviewTarget, viewerOwnerProfile?: string) {
   const current = $previewTabs.get()
 
   const id =
@@ -632,6 +690,10 @@ export function openPreview(target: PreviewTarget) {
 
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
+
+  if (isLiveViewerTab(tab) && viewerOwnerProfile) {
+    viewerTabs.set(id, { owner: normalizeProfileKey(viewerOwnerProfile), tab })
+  }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   noteExplicitPreviewOpen(id)

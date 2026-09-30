@@ -7,8 +7,7 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
-  closePreviewMatching,
-  closeRightRail,
+  closeAgentPreviews,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
@@ -121,12 +120,12 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         }
 
         if (!target) {
-          closeRightRail()
+          closeAgentPreviews()
 
           return
         }
 
-        if (closePreviewMatching(target)) {
+        if (closeAgentPreviews(target)) {
           return
         }
 
@@ -142,7 +141,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               }
             }
 
-            closePreviewMatching(...candidates)
+            closeAgentPreviews(...candidates)
           }
         )
 

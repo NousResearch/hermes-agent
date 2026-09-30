@@ -241,6 +241,9 @@ def _remove_entry(store: Store, entry_name: str) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
+_RESTORED_DISPLACEMENT_SUFFIX = ".restored"
+
+
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
@@ -271,7 +274,18 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
             displaced.rename(entry)
         raise
     if had_entry:
-        _remove_entry(store, displaced.name)
+        try:
+            _remove_entry(store, displaced.name)
+        except OSError as exc:
+            # The prior entry is live again. A Windows handle on the displaced
+            # tree must not turn successful recovery into another failed install.
+            # Mark only this post-restore orphan as safe for `hermes pm gc`.
+            marker = store.entry(f"{displaced.name}{_RESTORED_DISPLACEMENT_SUFFIX}")
+            try:
+                marker.touch()
+            except OSError:
+                raise exc
+            LOG.warning("Keeping locked restored displacement %s for pm gc: %s", displaced, exc)
 
 
 @contextmanager

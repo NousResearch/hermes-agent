@@ -264,6 +264,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
                 }
             finally:
                 reset_hermes_home_override(foreign_scope)
+            continuation = home in selections
             selections[home] = item["selection_id"]
             result = await adapter.matrix_image_packs(
                 "send",
@@ -286,10 +287,10 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
                 {
                     **PACK["images"]["fox"],
                     "m.relates_to": {
-                        "m.in_reply_to": {"event_id": "$question"},
+                        "m.in_reply_to": {"event_id": "$sent" if continuation else "$question"},
                         "rel_type": "m.thread",
                         "event_id": "$root",
-                        "is_falling_back": False,
+                        "is_falling_back": continuation,
                     },
                 },
                 {"metrics_method": "sendMessageEvent"},

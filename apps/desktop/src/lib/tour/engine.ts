@@ -292,7 +292,17 @@ export function runTourEngine(
 
     if (!holder.driver) {
       clearOrphans()
-      holder.driver = factory(base)
+      // Esc, the X and an overlay click end a highlight too; without this
+      // hook the tour-active flag would stay set for the rest of the session.
+      holder.driver = factory({
+        ...base,
+        onDestroyed: () => {
+          holder.driver = undefined
+          holder.release?.()
+          holder.release = undefined
+          host?.onEnd?.()
+        }
+      })
     }
 
     // A one-off highlight is its own arrival, so it uses the settle-down enter.

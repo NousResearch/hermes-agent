@@ -144,6 +144,16 @@ export function ModelPill({
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
+      {/* Route identity, not label text: the provider of THIS surface's
+          resolved route (chat-bar snapshot, else the live SessionView atoms —
+          the same source the tooltip already uses). Independent of the
+          `composer.modelPill` label override, and hidden until a model lands
+          so a resolving pill never shows a stale route. */}
+      {Boolean(currentModel.trim() && currentProvider.trim()) && (
+        <span className="shrink-0 text-(--ui-text-quaternary)" data-testid="model-route-provider">
+          {providerDisplayName(currentProvider)}
+        </span>
+      )}
       {pinnedOverride && (
         <span
           aria-label={copy.modelPinned}

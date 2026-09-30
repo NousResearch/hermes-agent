@@ -81,7 +81,8 @@ def poll_client(start, relations=(), *, levels=None, crypto=None):
 
 
 async def dispatch_as(adapter, requester, tool, args):
-    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id=requester, transport_adapter=adapter)
+    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id=requester, transport_adapter=adapter,
+                              transport_loop=asyncio.get_running_loop())
     try:
         return await dispatch(tool, args)
     finally:
@@ -123,7 +124,8 @@ async def test_registry_uses_each_receiving_adapter_and_native_sdk_types(action,
         client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)),
                                  get_state_event=state, send_message_event=send)
         adapter = adapter_for(client, actor)
-        tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id="@alice:server", transport_adapter=adapter)
+        tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id="@alice:server", transport_adapter=adapter,
+                                  transport_loop=asyncio.get_running_loop())
         try:
             result = await dispatch(f"matrix_poll_{action}", args)
             denied = await dispatch(f"matrix_poll_{action}", {**args, "room_id": "!other:server"})
@@ -173,7 +175,10 @@ async def test_results_and_writes_fail_closed_and_polls_remain_passive(problem):
     client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)), crypto=None,
                              send_message_event=AsyncMock())
     adapter = adapter_for(client, "@bot:server")
-    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id="@intruder:server" if problem == "unauthorized" else "@alice:server", transport_adapter=adapter)
+    tokens = set_session_vars(
+        platform="matrix", chat_id=ROOM, user_id="@intruder:server" if problem == "unauthorized" else "@alice:server",
+        transport_adapter=adapter, transport_loop=asyncio.get_running_loop(),
+    )
     try:
         result = await dispatch("matrix_poll_results", {"poll_id": "$poll", "limit": 1})
         vote = await dispatch("matrix_poll_vote", {"poll_id": "$poll", "limit": 1, "answers": ["unknown"]})
@@ -190,13 +195,13 @@ async def test_results_and_writes_fail_closed_and_polls_remain_passive(problem):
     assert "error" in vote
     if problem == "passive":
         visible = await read_matrix_context(adapter, "event", ROOM, "$poll", 1, requester="@alice:server")
-        parsed = await history_entry(client, start, adapter._event_context_cache, ROOM)
+        parsed = await history_entry(client, start, adapter._event_context_cache, ROOM, before=None)
         assert parsed is not None
         entry, _ = parsed
         assert visible == {"events": [{
             "event_id": "$poll", "sender": "@bot:server", "body": "[poll: Which?; answers: a: A; b: B]",
             "msgtype": None, "thread_id": None, "timestamp": 50, "sender_authorized": True,
-        }], "errors": []}
+        }], "errors": [], "skipped": 0}
         assert entry.text == visible["events"][0]["body"]
 
 
@@ -222,13 +227,13 @@ async def test_encrypted_stable_poll_end_appears_in_reads_and_history():
     adapter = adapter_for(client, "@bot:server")
 
     visible = await read_matrix_context(adapter, "event", ROOM, "$end", 1, requester="@alice:server")
-    parsed = await history_entry(client, encrypted, MatrixEventContextCache(), ROOM)
+    parsed = await history_entry(client, encrypted, MatrixEventContextCache(), ROOM, before=None)
 
     closure = "[poll end event; closure authority must be checked]"
     assert visible == {"events": [{
         "event_id": "$end", "sender": "@alice:server", "body": closure,
         "msgtype": None, "thread_id": None, "timestamp": 70, "sender_authorized": True,
-    }], "errors": []}
+    }], "errors": [], "skipped": 0}
     assert parsed is not None and parsed[0].text == closure
 
 

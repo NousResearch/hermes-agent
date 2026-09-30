@@ -16,6 +16,7 @@ from plugins.platforms.matrix.reaction_context import (
     fetch_event_reactions,
 )
 from plugins.platforms.matrix.reply_context import MatrixEventContext
+from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 
 
 @pytest.mark.asyncio
@@ -169,7 +170,8 @@ async def test_catch_up_reports_incomplete_reactions(relations, expected):
 @pytest.mark.asyncio
 async def test_catch_up_reactions_belong_to_the_messages_that_the_scan_kept(scope, previous_turn, targets):
     """A scan that stops at the previous turn leaves out the thread root and the older
-    messages, so their reactions are not looked up and no other message receives them."""
+    messages, and every scan passes over the bot's status notices. Their reactions are not
+    looked up, and no other message receives them."""
     from urllib.parse import unquote
 
     from tests.gateway.test_matrix import (
@@ -181,8 +183,11 @@ async def test_catch_up_reactions_belong_to_the_messages_that_the_scan_kept(scop
         _catch_up_message("$reply", "@bot:example.org", "Previous answer", relates_to),
         _catch_up_message("$older", "@bob:example.org", "Older", relates_to),
     ]
+    status = _catch_up_message("$status", "@bot:example.org", "Still working", relates_to)
+    status["content"] |= {"msgtype": "m.notice", NON_CONVERSATIONAL_KEY: True}
     adapter = _catch_up_adapter([
         _catch_up_message("$gated-2", "@bob:example.org", "Gated two", relates_to),
+        status,
         _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
         *(older if previous_turn else []),
     ], thread=scope == "thread")

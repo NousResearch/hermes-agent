@@ -207,6 +207,26 @@ def _ensure_screen_for_headed_chromium() -> None:
         ensure_started_for_tool()
 
 
+def _windows_browser_elevation_error() -> Optional[str]:
+    """Return an actionable error when Windows would start Chrome elevated.
+
+    Chrome can exit successfully without creating its DevTools endpoint when its
+    launcher and desktop token are elevated; treating that as a generic backend
+    failure hides the actual configuration error.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return None
+    if elevated:
+        return "The local browser backend cannot run elevated on Windows; start Hermes from a non-Administrator process."
+    return None
+
+
+
 def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str,
                          stdin_payload: Optional[bytes] = None) -> "subprocess.Popen":
     """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``;
@@ -217,6 +237,10 @@ def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, 
     cancels asyncio's running task on 3.11), STARTF_USESTDHANDLES + close_fds so the child
     gets ONLY our three handles (leaked console handles kill the Rust daemon grandchild).
     """
+    elevation_error = _windows_browser_elevation_error()
+    if elevation_error:
+        raise RuntimeError(elevation_error)
+
     fds = [os.open(os.path.join(socket_dir, f"_{slot}_{tag}"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
            for slot in ("stdout", "stderr")]
     stdin: Any = subprocess.DEVNULL
@@ -744,7 +768,11 @@ def _spawn_and_collect(
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        # agent-browser may have already forked Chrome/its daemon; killing only the
+        # CLI leaves the browser tree behind and defeats the orphan reaper's clean
+        # shutdown path. Use the same parent-first tree teardown as session cleanup.
+        from tools.browser_tool_lifecycle import _kill_process_tree
+        _kill_process_tree(proc)
         proc.wait()
         stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
         _unlink_command_output_files(stdout_path, stderr_path)

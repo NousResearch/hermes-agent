@@ -160,6 +160,9 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     AGENT_BROWSER_HEADED opts into a window, except on a display-less Linux host (launch would die).
     """
     _bt = _origin()
+    elevation_error = _session._windows_browser_elevation_error()
+    if elevation_error:
+        return None, _RP + elevation_error
     try:
         os.unlink(os.path.join(copy_dir, "DevToolsActivePort"))  # stale port confuses reuse probes
     except OSError:

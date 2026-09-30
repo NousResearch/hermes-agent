@@ -427,7 +427,8 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 `attachments`, `middleware`) let a plugin add controls around the message
 composer, provide an attachment source, or transform a draft before it is sent
 (`ComposerMiddleware` with a `handler(draft) => draft | null`). `above` is a
-chrome-free strip ABOVE the whole composer for a persistent banner or dock.
+full-width, chrome-free strip ABOVE the whole composer for a persistent banner
+or dock; the contribution owns any internal horizontal inset.
 `top` is a banner strip above the input and `bottom` a row below the input grid,
 both inside the composer chrome; `underside` is the corresponding floating strip
 BELOW the whole composer — the seat for a suggestion pill or a status hint (the

@@ -109,6 +109,28 @@ def _native_voice_payload(request):
 
 
 @pytest.mark.asyncio
+async def test_send_voice_uses_probed_duration_when_oggopus_rejects_source(tmp_path, monkeypatch):
+    audio = tmp_path / "reply.mp3"
+    audio.write_bytes(b"mp3 bytes")
+    adapter, channel, request = _voice_adapter(None)
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _channel: False)
+    monkeypatch.setattr(
+        "tools.transcription_audio._probe_audio_duration",
+        lambda path: 1.44,
+    )
+
+    class _RejectingOggOpus:
+        def __init__(self, _path):
+            raise ValueError("not OggOpus")
+
+    monkeypatch.setitem(sys.modules, "mutagen.oggopus", SimpleNamespace(OggOpus=_RejectingOggOpus))
+    result = await adapter.send_voice("555", str(audio))
+
+    assert result.success is True
+    assert _native_voice_payload(request)["attachments"][0]["duration_secs"] == 1.44
+
+
+@pytest.mark.asyncio
 async def test_send_retries_without_reference_when_reply_target_is_deleted():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 

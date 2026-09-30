@@ -104,10 +104,10 @@ function answer(capabilities: unknown) {
   })
 }
 
-async function submitDialog() {
+async function submitDialog(members = roster) {
   const onCreated = vi.fn()
   const onClose = vi.fn()
-  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
+  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={members} />)
 
   for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
@@ -200,6 +200,57 @@ it('keeps a standalone classic composer through transient failures without retar
     expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
     expect(request.mock.calls.every(call => !call[1].startsWith('groups.') || call[1] === 'groups.capabilities')).toBe(true)
   } finally { vi.useRealTimers() }
+})
+
+it('keeps a mixed-connection classic composer on a canonical surface without offering creation', async () => {
+  answer(CANONICAL_GROUP_CAPABILITIES)
+  const mixed = [roster[0], { ...roster[1], connectionId: 'remote' }]
+  await act(async () => { render(<GroupChatWorkspace group="Across machines" members={mixed} />) })
+  const composer = screen.getByRole('textbox')
+  fireEvent.change(composer, { target: { value: 'Keep working across machines' } })
+  expect((composer as HTMLTextAreaElement).value).toBe('Keep working across machines')
+  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities'])
+})
+
+it.each([false, true])('selects the canonical or classic creation path for a mixed roster: %s', async mixed => {
+  answer(CANONICAL_GROUP_CAPABILITIES)
+  const members = [roster[0], { ...roster[1], connectionId: mixed ? 'remote' : 'local' }]
+  const { onCreated, onClose } = await submitDialog(members)
+  expect(onCreated).toHaveBeenCalledOnce()
+  expect(onClose).toHaveBeenCalledOnce()
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(mixed ? 0 : 1)
+  expect(updateGroupChat).toHaveBeenCalledTimes(mixed ? 1 : 0)
+  expect(Object.values($canonicalGroupBindings.get())).toHaveLength(mixed ? 0 : 1)
+
+  if (mixed) {
+    expect(screen.getByRole('status').textContent).toContain('another connection')
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'info', message: expect.stringContaining('another connection') }))
+    expect(Object.values($groupChats.get())[0].members?.map(member => member.connectionId)).toEqual(['local', 'remote'])
+  }
+})
+
+it('explains a hosted-profile create refusal in the dialog and room gate without creating classic state', async () => {
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+    throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
+  })
+  const { onCreated, onClose } = await submitDialog()
+  expect(screen.getByRole('alert').textContent).toContain('hosted_rooms.profiles')
+  expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
+  expect(onCreated).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect($groupChats.get()).toEqual({})
+  expect($canonicalGroupBindings.get()).toEqual({})
+  cleanup()
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
+  expect(screen.getByRole('alert').textContent).toContain('hosted_rooms.profiles')
+  expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect(openWorkspace).not.toHaveBeenCalled()
 })
 
 function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {

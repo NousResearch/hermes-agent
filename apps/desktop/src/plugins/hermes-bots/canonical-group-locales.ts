@@ -1,4 +1,12 @@
 export interface CanonicalGroupMessages {
+  legacyRoom: string
+  checkingDriver: string
+  startGatewayGroup: string
+  classicCount: string
+  classicConnection: string
+  classicMembers: string
+  createRefused: string
+  hostedProfileOwners: string
   refreshGroups: string
   loadingGroup: string
   loadingGroups: string
@@ -18,8 +26,18 @@ export interface CanonicalGroupMessages {
   uploadFailed: string
 }
 
+export const HOSTED_PROFILE_OWNERS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners'
+
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    legacyRoom: 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.',
+    checkingDriver: 'Checking group driver…',
+    startGatewayGroup: 'Start gateway group',
+    classicCount: 'This roster stays classic: gateway groups need two to six Bots.',
+    classicConnection: 'This roster stays classic: it includes Bots on another connection.',
+    classicMembers: 'This roster stays classic: gateway groups need unique profiles and unique, non-reserved handles.',
+    createRefused: 'The gateway refused to create this group. On a default install, list each Bot under hosted_rooms.profiles in the owning gateway config, then try again.',
+    hostedProfileOwners: 'Hosted profile configuration guide',
     refreshGroups: 'Refresh gateway groups',
     loadingGroup: 'Loading group…',
     loadingGroups: 'Loading gateway groups…',
@@ -39,6 +57,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed'
   },
   ja: {
+    legacyRoom: 'これは従来のDesktopルームです。このメンバーでゲートウェイ管理のグループを開始できます。過去の履歴はここに残り、再実行されません。',
+    checkingDriver: 'グループの実行機能を確認中…',
+    startGatewayGroup: 'ゲートウェイのグループを開始',
+    classicCount: 'このメンバー構成は従来方式のままです。ゲートウェイのグループには2〜6体のBotが必要です。',
+    classicConnection: '別の接続上のBotが含まれるため、このメンバー構成は従来方式のままです。',
+    classicMembers: 'このメンバー構成は従来方式のままです。ゲートウェイのグループには重複しないプロフィールと、予約語ではない固有のハンドルが必要です。',
+    createRefused: 'ゲートウェイがグループの作成を拒否しました。標準構成では、管理元のゲートウェイ設定のhosted_rooms.profilesに各Botを登録してから、再試行してください。',
+    hostedProfileOwners: 'ホストするプロフィールの設定ガイド',
     refreshGroups: 'ゲートウェイのグループを更新',
     loadingGroup: 'グループを読み込み中…',
     loadingGroups: 'ゲートウェイのグループを読み込み中…',
@@ -58,6 +84,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました'
   },
   zh: {
+    legacyRoom: '这是旧版Desktop群组。可使用这些成员创建由网关管理的群组；旧记录会保留在此处，不会重新执行。',
+    checkingDriver: '正在检查群组运行程序…',
+    startGatewayGroup: '启动网关群组',
+    classicCount: '此成员组合保留经典模式：网关群组需要2至6个Bot。',
+    classicConnection: '此成员组合保留经典模式：其中包含其他连接上的Bot。',
+    classicMembers: '此成员组合保留经典模式：网关群组需要不同的配置档和唯一且非保留的昵称。',
+    createRefused: '网关拒绝创建此群组。默认安装下，请在所属网关配置的hosted_rooms.profiles中列出每个Bot，然后重试。',
+    hostedProfileOwners: '托管配置档设置指南',
     refreshGroups: '刷新网关群组',
     loadingGroup: '正在加载群组…',
     loadingGroups: '正在加载网关群组…',
@@ -77,6 +111,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败'
   },
   'zh-hant': {
+    legacyRoom: '這是舊版Desktop群組。可使用這些成員建立由閘道管理的群組；舊記錄會保留在此處，不會重新執行。',
+    checkingDriver: '正在檢查群組執行程式…',
+    startGatewayGroup: '啟動閘道群組',
+    classicCount: '此成員組合保留經典模式：閘道群組需要2至6個Bot。',
+    classicConnection: '此成員組合保留經典模式：其中包含其他連線上的Bot。',
+    classicMembers: '此成員組合保留經典模式：閘道群組需要不同的設定檔和唯一且非保留的暱稱。',
+    createRefused: '閘道拒絕建立此群組。預設安裝下，請在所屬閘道設定的hosted_rooms.profiles中列出每個Bot，然後重試。',
+    hostedProfileOwners: '託管設定檔設定指南',
     refreshGroups: '重新整理閘道群組',
     loadingGroup: '正在載入群組…',
     loadingGroups: '正在載入閘道群組…',
@@ -96,6 +138,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗'
   },
   ar: {
+    legacyRoom: 'هذه غرفة Desktop قديمة. ابدأ مجموعة تديرها البوابة بهؤلاء الأعضاء؛ يبقى السجل القديم هنا ولا يُعاد تشغيله.',
+    checkingDriver: 'جارٍ التحقق من مشغّل المجموعة…',
+    startGatewayGroup: 'بدء مجموعة البوابة',
+    classicCount: 'تبقى هذه التشكيلة بالنمط الكلاسيكي: تحتاج مجموعات البوابة إلى بوتين إلى ستة بوتات.',
+    classicConnection: 'تبقى هذه التشكيلة بالنمط الكلاسيكي: تتضمن بوتات على اتصال آخر.',
+    classicMembers: 'تبقى هذه التشكيلة بالنمط الكلاسيكي: تحتاج مجموعات البوابة إلى ملفات تعريف فريدة وأسماء مستخدم فريدة وغير محجوزة.',
+    createRefused: 'رفضت البوابة إنشاء هذه المجموعة. في التثبيت الافتراضي، أدرج كل بوت ضمن hosted_rooms.profiles في إعدادات البوابة المالكة، ثم أعد المحاولة.',
+    hostedProfileOwners: 'دليل إعداد ملفات التعريف المستضافة',
     refreshGroups: 'تحديث مجموعات البوابة',
     loadingGroup: 'جارٍ تحميل المجموعة…',
     loadingGroups: 'جارٍ تحميل مجموعات البوابة…',
@@ -115,6 +165,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع'
   },
   ru: {
+    legacyRoom: 'Это старая комната Desktop. Создайте группу под управлением шлюза с этими участниками; прежняя история останется здесь и не будет выполнена заново.',
+    checkingDriver: 'Проверка исполнителя группы…',
+    startGatewayGroup: 'Создать группу шлюза',
+    classicCount: 'Эта группа останется классической: группе шлюза нужны от двух до шести ботов.',
+    classicConnection: 'Эта группа останется классической: в ней есть боты на другом подключении.',
+    classicMembers: 'Эта группа останется классической: группе шлюза нужны уникальные профили и уникальные незарезервированные имена пользователей.',
+    createRefused: 'Шлюз отказался создать группу. При стандартной установке укажите каждого бота в hosted_rooms.profiles в конфигурации шлюза-владельца и повторите попытку.',
+    hostedProfileOwners: 'Руководство по настройке размещённых профилей',
     refreshGroups: 'Обновить группы шлюза',
     loadingGroup: 'Загрузка группы…',
     loadingGroups: 'Загрузка групп шлюза…',
@@ -137,6 +195,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Не удалось загрузить файл'
   },
   fr: {
+    legacyRoom: 'Ceci est un ancien salon Desktop. Démarrez un groupe géré par la passerelle avec ces membres ; l’ancien historique reste ici et n’est pas rejoué.',
+    checkingDriver: 'Vérification du pilote de groupe…',
+    startGatewayGroup: 'Démarrer un groupe de passerelle',
+    classicCount: 'Ce groupe reste classique : les groupes de passerelle nécessitent deux à six Bots.',
+    classicConnection: 'Ce groupe reste classique : il inclut des Bots sur une autre connexion.',
+    classicMembers: 'Ce groupe reste classique : les groupes de passerelle nécessitent des profils uniques et des identifiants uniques non réservés.',
+    createRefused: 'La passerelle a refusé de créer ce groupe. Sur une installation par défaut, indiquez chaque Bot dans hosted_rooms.profiles dans la configuration de la passerelle propriétaire, puis réessayez.',
+    hostedProfileOwners: 'Guide de configuration des profils hébergés',
     refreshGroups: 'Actualiser les groupes de la passerelle',
     loadingGroup: 'Chargement du groupe…',
     loadingGroups: 'Chargement des groupes de la passerelle…',
@@ -158,6 +224,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Échec du téléversement'
   },
   de: {
+    legacyRoom: 'Dies ist ein alter Desktop-Raum. Starten Sie mit diesen Mitgliedern eine vom Gateway verwaltete Gruppe; der bisherige Verlauf bleibt hier und wird nicht erneut ausgeführt.',
+    checkingDriver: 'Gruppentreiber wird geprüft…',
+    startGatewayGroup: 'Gateway-Gruppe starten',
+    classicCount: 'Diese Gruppe bleibt klassisch: Gateway-Gruppen benötigen zwei bis sechs Bots.',
+    classicConnection: 'Diese Gruppe bleibt klassisch: Sie enthält Bots auf einer anderen Verbindung.',
+    classicMembers: 'Diese Gruppe bleibt klassisch: Gateway-Gruppen benötigen eindeutige Profile und eindeutige, nicht reservierte Nutzernamen.',
+    createRefused: 'Das Gateway hat die Erstellung dieser Gruppe abgelehnt. Tragen Sie bei einer Standardinstallation jeden Bot unter hosted_rooms.profiles in der Konfiguration des zuständigen Gateways ein und versuchen Sie es erneut.',
+    hostedProfileOwners: 'Anleitung zur Konfiguration gehosteter Profile',
     refreshGroups: 'Gateway-Gruppen aktualisieren',
     loadingGroup: 'Gruppe wird geladen…',
     loadingGroups: 'Gateway-Gruppen werden geladen…',
@@ -180,6 +254,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Hochladen fehlgeschlagen'
   },
   es: {
+    legacyRoom: 'Esta es una sala Desktop antigua. Inicia un grupo gestionado por la pasarela con estos miembros; el historial anterior permanece aquí y no se vuelve a ejecutar.',
+    checkingDriver: 'Comprobando el controlador de grupo…',
+    startGatewayGroup: 'Iniciar grupo de pasarela',
+    classicCount: 'Este grupo sigue siendo clásico: los grupos de pasarela necesitan entre dos y seis Bots.',
+    classicConnection: 'Este grupo sigue siendo clásico: incluye Bots en otra conexión.',
+    classicMembers: 'Este grupo sigue siendo clásico: los grupos de pasarela necesitan perfiles únicos e identificadores únicos no reservados.',
+    createRefused: 'La pasarela rechazó crear este grupo. En una instalación predeterminada, incluye cada Bot en hosted_rooms.profiles en la configuración de la pasarela propietaria y vuelve a intentarlo.',
+    hostedProfileOwners: 'Guía de configuración de perfiles alojados',
     refreshGroups: 'Actualizar grupos de la pasarela',
     loadingGroup: 'Cargando grupo…',
     loadingGroups: 'Cargando grupos de la pasarela…',

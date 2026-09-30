@@ -13,7 +13,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 
 import { groupExecutionMode } from './canonical-group-capabilities'
-import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupEligibility, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups, isCanonicalGroupCreateRefusal } from './canonical-groups'
 import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './group-test-utils'
 
 beforeEach(() => {
@@ -103,6 +103,9 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
   host.requestProfile.mockImplementation(async (_route, method, params) => method === 'groups.create'
     ? { room: { room_id: params.room_id, name: params.name, members: params.members } } : { accepted: true })
   const { binding, room } = await createCanonicalGroup(route, 'Team', members)
+  expect(canonicalGroupEligibility(route, members)).toEqual({ eligible: true, roster: room.members })
+  const six = Array.from({ length: 6 }, (_, index) => ({ name: `member-${index}`, connectionId: route.connectionId }))
+  expect(canonicalGroupEligibility(route, six).eligible).toBe(true)
   expect(binding).toEqual({ ...route, roomId: room.room_id })
   expect(room.room_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   expect(room.members).toEqual([
@@ -114,8 +117,16 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     [{ ...members[0], connectionId: 'source-b' }, members[1]],
     [{ ...members[0], remoteSource: true, connectionId: undefined }, members[1]],
     [{ ...members[0], route: { connectionId: 'source-b', profile: 'alice', targetProfile: 'alice', mode: 'remote' as const } }, members[1]],
-    [members[0]], [members[0], members[0]]
-  ]) {await expect(createCanonicalGroup(route, 'Team', invalid)).rejects.toThrow()}
+    [members[0]], [members[0], members[0]], [...six, { name: 'seventh' }],
+    [{ ...members[0], handle: 'ALL' }, members[1]],
+    [{ ...members[0], handle: 'everyone' }, members[1]],
+    [{ ...members[0], handle: 'BOB' }, members[1]],
+    [{ ...members[0], targetProfile: 'BOB' }, members[1]],
+    [{ ...members[0], handle: ' ' }, members[1]]
+  ]) {
+    expect(canonicalGroupEligibility(route, invalid).eligible).toBe(false)
+    await expect(createCanonicalGroup(route, 'Team', invalid)).rejects.toThrow()
+  }
 
   expect(host.requestProfile).toHaveBeenCalledTimes(1)
   host.requestProfile.mockClear()
@@ -141,4 +152,13 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
 
   expect(host.requestProfile).toHaveBeenCalledTimes(count)
   expect(host.request).not.toHaveBeenCalled()
+})
+
+it('recognizes only typed invalid-params creation refusals, not transport or unrelated errors', () => {
+  expect(isCanonicalGroupCreateRefusal({ code: 4001, data: { reason: 'invalid_params' } })).toBe(true)
+
+  for (const error of [null, new Error('invalid_params'), { code: 4001 },
+    { code: 4001, data: { reason: 'not_ready' } }, { code: 401, data: { reason: 'invalid_params' } }]) {
+    expect(isCanonicalGroupCreateRefusal(error)).toBe(false)
+  }
 })

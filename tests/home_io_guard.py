@@ -86,6 +86,11 @@ class HomeIOGuard:
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
+            # Payload installs keep their manifest beside the checkout under the
+            # Hermes home. Reading its presence is layout discovery, not state
+            # access, just like the other metadata probes below.
+            if metadata and any(absolute == os.path.join(root, "manifest.json") for root in roots):
+                return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
             # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is
             # command lookup, not reading Hermes state. CI has no such entries.

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -100,6 +101,9 @@ def test_live_route_changes_require_fresh_usage(tmp_path, monkeypatch, transitio
         quiet_mode=True, skip_context_files=True, skip_memory=True, save_trajectories=False,
     )
     try:
+        # This fixture calls request assembly without the turn prologue, whose
+        # admission clock normally owns the replay-expiry cutoff.
+        agent._current_turn_timestamp = time.time()
         history = [{"role": "user", "content": "Review the implementation."}]
         if transition in {"fallback", "restore_primary"}:
             agent._fallback_chain = [destination]

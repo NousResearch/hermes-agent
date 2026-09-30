@@ -1156,18 +1156,21 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
     status = "running"
-    if name == "approval.responded":
-        approval_session_key = self._run_approval_sessions.get(run_id)
-        if approval_session_key:
-            from tools.approval import list_gateway_approvals
+    status_fields = {}
+    # Any control-plane event can race with a new approval (not only a response).
+    # Steering reads its request body asynchronously after checking run status.
+    approval_session_key = self._run_approval_sessions.get(run_id)
+    if approval_session_key:
+        from tools.approval import list_gateway_approvals
 
-            pending = list_gateway_approvals(approval_session_key)
-            if pending:
-                from gateway.platforms.api_server import _approval_request_event
+        pending = list_gateway_approvals(approval_session_key)
+        if pending:
+            from gateway.platforms.api_server import _approval_request_event
 
-                status = "waiting_for_approval"
-                fields["approval"] = _approval_request_event(run_id, pending[0])
-    self._set_run_status(run_id, status, last_event=name, **fields)
+            status = "waiting_for_approval"
+            status_fields["approval"] = _approval_request_event(run_id, pending[0])
+            fields.update(status_fields)
+    self._set_run_status(run_id, status, last_event=name, **status_fields)
     q = self._run_streams.get(run_id)
     if q is not None:
         with suppress(Exception):

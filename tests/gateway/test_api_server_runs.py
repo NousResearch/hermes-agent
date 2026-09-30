@@ -203,32 +203,74 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
-def test_approval_response_keeps_run_waiting_when_another_request_remains():
-    adapter = _make_adapter()
+@pytest.mark.asyncio
+async def test_pending_approvals_survive_steer_race_and_partial_answers(adapter, monkeypatch):
+    from types import SimpleNamespace
+    from gateway.platforms import api_server
+
     run_id = "run-multiple-approvals"
     adapter._run_approval_sessions[run_id] = run_id
-    adapter._run_statuses[run_id] = {
-        "run_id": run_id,
-        "status": "waiting_for_approval",
-        "approval": {"request_id": "approval-old"},
-    }
-    next_approval = {"request_id": "approval-next", "command": "rm -rf build"}
+    adapter._set_run_status(run_id, "running")
+    adapter._active_run_agents[run_id] = SimpleNamespace(steer=lambda text: bool(text))
+    stream = adapter._run_streams[run_id] = _RunStream()
+    _claim_run(adapter, run_id)
+    entries = [approval_gateway_wait._ApprovalEntry({"request_id": f"approval-{i}",
+                                                   "command": f"rm -r fixture-{i}"}) for i in (1, 2)]
+    notify = api_server_runs._make_approval_notify(
+        adapter, SimpleNamespace(run_id=run_id, queue=stream), _api_server=api_server)
+    reading_body = asyncio.Event()
+    read_json = adapter._read_json_body
 
-    with (
-        patch.object(approval_mod, "list_gateway_approvals", return_value=[next_approval]),
-        patch(
-            "gateway.platforms.api_server._approval_request_event",
-            return_value={"request_id": "approval-next"},
-        ),
-    ):
-        api_server_runs._mark_run_event(
-            adapter, run_id, "approval.responded", resolved=1, request_id="approval-old"
-        )
+    async def observed_read(request):
+        reading_body.set()
+        return await read_json(request)
 
-    status = adapter._run_statuses[run_id]
-    assert status["status"] == "waiting_for_approval"
-    assert status["last_event"] == "approval.responded"
-    assert status["approval"] == {"request_id": "approval-next"}
+    monkeypatch.setattr(adapter, "_read_json_body", observed_read)
+
+    async def steer_body():
+        yield b'{"input":'
+        # Deterministically add approvals after the handler's running-state check,
+        # while its real HTTP request-body read is still suspended.
+        await asyncio.wait_for(reading_body.wait(), timeout=5)
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = entries.copy()
+        for entry in entries:
+            notify(entry.data)
+        yield b'"continue when approved"}'
+
+    try:
+        async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+            events_response = await client.get(f"/v1/runs/{run_id}/events")
+            response = await client.post(f"/v1/runs/{run_id}/steer", data=steer_body(),
+                                         headers={"Content-Type": "application/json"})
+            assert response.status == 200, await response.text()
+            response = await client.get(f"/v1/runs/{run_id}")
+            status = await response.json()
+            assert status["status"] == "waiting_for_approval"
+            assert status["approval"]["request_id"] == entries[0].data["request_id"]
+            for index, choice in enumerate(("deny", "once")):
+                response = await client.post(f"/v1/runs/{run_id}/approval", json={
+                    "choice": choice, "request_id": entries[index].data["request_id"]})
+                assert response.status == 200, await response.text()
+                assert (await response.json())["resolved"] == 1
+                assert entries[index].result == choice
+                status = await (await client.get(f"/v1/runs/{run_id}")).json()
+                if index == 0:
+                    assert status["status"] == "waiting_for_approval"
+                    assert status["approval"]["request_id"] == entries[1].data["request_id"]
+                else:
+                    assert status["status"] == "running"
+                    assert "approval" not in status
+            frames = [await asyncio.wait_for(_read_sse_frame(events_response), timeout=5) for _ in range(5)]
+            responses = [event for _, event in frames if event["event"] == "approval.responded"]
+            assert responses[0]["approval"]["request_id"] == entries[1].data["request_id"]
+            assert "approval" not in responses[1]
+            stream.put_nowait(None)
+            events_response.close()
+    finally:
+        stream.put_nowait(None)
+        approval_mod.unregister_gateway_notify(run_id)
+        adapter._active_run_agents.pop(run_id, None)
 
 
 # ---------------------------------------------------------------------------

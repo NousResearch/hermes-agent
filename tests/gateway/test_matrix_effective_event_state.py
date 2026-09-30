@@ -730,7 +730,8 @@ async def test_formatting_rechecks_redaction_after_last_display_name_lookup(scop
     if scope in {"reply", "reply-inline"}:
         body = f"> <{SENDER}> withdrawn secret\n\nquestion" if scope == "reply-inline" else "question"
         context = adapter._extract_reply_context(
-            ROOM, body, {"m.in_reply_to": {"event_id": target}}, sender=SENDER, chat_type="group",
+            ROOM, body, {"body": body}, {"m.in_reply_to": {"event_id": target}}, sender=SENDER,
+            chat_type="group",
         )
     elif scope == "room":
         context = adapter.fetch_room_context(ROOM, "$current")
@@ -980,8 +981,9 @@ async def test_inline_reply_after_replacement_redaction_validates_and_retries(qu
     with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
         for _ in range(3):
             replies.append(await adapter._extract_reply_context(
-                ROOM, body, {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
-                formatted_body=formatted_body,
+                ROOM, body, {"body": body, **({"format": "org.matrix.custom.html",
+                                               "formatted_body": formatted_body} if formatted_body else {})},
+                {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
             ))
             if not keys_available:
                 assert cache.history_entry(ROOM, "$target") == MatrixEventContext(
@@ -1123,8 +1125,8 @@ async def test_typed_invalidation_retains_dependency_until_successful_retry(reda
         RuntimeError("recovery unavailable"), new,
     ])))
     replies = [await adapter._extract_reply_context(
-        ROOM, f"> <{SENDER}> withdrawn secret\n\nquestion", {"m.in_reply_to": {"event_id": "$target"}},
-        sender=SENDER, chat_type="group",
+        ROOM, f"> <{SENDER}> withdrawn secret\n\nquestion", {"body": f"> <{SENDER}> withdrawn secret\n\nquestion"},
+        {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
     ) for _ in range(3)]
 
     assert (invalidated, replies, cache.history_entry(ROOM, "$target")) == (
@@ -1206,7 +1208,8 @@ async def test_context_refreshes_edit_at_last_asynchronous_boundary(scope: str, 
     if scope.startswith("reply"):
         body = f"> <{SENDER}> before\n\nquestion" if scope == "reply-inline" else "question"
         context = adapter._extract_reply_context(
-            ROOM, body, {"m.in_reply_to": {"event_id": target}}, sender=SENDER, chat_type="group",
+            ROOM, body, {"body": body}, {"m.in_reply_to": {"event_id": target}}, sender=SENDER,
+            chat_type="group",
         )
     elif scope in {"room", "room-decrypt", "room-fetch"}:
         context = adapter.fetch_room_context(ROOM, "$current")
@@ -1278,8 +1281,8 @@ async def test_catch_up_observed_replacement_redaction_invalidates_before_reply_
         await fetch_thread_entries(adapter._client, cache, ROOM, "$edit", limit=1, before_event_id="$current")
     invalidated = cache.history_entry(ROOM, "$target")
     replies = [await adapter._extract_reply_context(
-        ROOM, f"> <{SENDER}> withdrawn secret\n\nquestion", {"m.in_reply_to": {"event_id": "$target"}},
-        sender=SENDER, chat_type="group",
+        ROOM, f"> <{SENDER}> withdrawn secret\n\nquestion", {"body": f"> <{SENDER}> withdrawn secret\n\nquestion"},
+        {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
     ) for _ in range(2)]
 
     assert (invalidated, replies) == (
@@ -1352,8 +1355,8 @@ async def test_validated_bounded_read_updates_reply_and_existing_formatting_snap
     adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
     result = await adapter.read_matrix_context("event", ROOM, "$target", 1, requester=SENDER)
     reply = await adapter._extract_reply_context(
-        ROOM, f"> <{SENDER}> before\n\nquestion", {"m.in_reply_to": {"event_id": "$target"}},
-        sender=SENDER, chat_type="group",
+        ROOM, f"> <{SENDER}> before\n\nquestion", {"body": f"> <{SENDER}> before\n\nquestion"},
+        {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
     )
     formatted = await adapter._format_history_context(ROOM, [before], "History")
 
@@ -1556,7 +1559,8 @@ async def test_active_context_keeps_effective_state_after_eviction(scope: str, c
     independent.store(ROOM, "$target", replace(parent))
 
     if scope == "reply":
-        context = adapter._extract_reply_context(ROOM, "question", {"m.in_reply_to": {"event_id": "$target"}},
+        context = adapter._extract_reply_context(ROOM, "question", {"body": "question"},
+                                                {"m.in_reply_to": {"event_id": "$target"}},
                                                 sender=SENDER, chat_type="group")
     elif scope == "room":
         context = adapter.fetch_room_context(ROOM, "$current")

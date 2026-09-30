@@ -1381,6 +1381,9 @@ export const zh = defineLocale({
         '确定移除所有已启用的工具集吗？这将禁用记忆、终端、网络搜索、委派以及大多数其他工具，直到你重新启用它们。',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      autoFocusComposerTitle: '窗口重获焦点时聚焦聊天输入框',
+      autoFocusComposerDesc:
+        '回到 Hermes 时（Alt+Tab、点击程序坞）把光标放回消息输入框，避免丢失第一个输入的字符。绝不会从终端、对话框或其他输入框抢走光标。仅对本设备生效。',
       disableF12Title: '禁用 F12 开发者工具',
       disableF12Desc: '阻止 F12 打开开发者工具。Ctrl+Shift+I（Mac 上为 Cmd+Opt+I）仍然可用。',
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',

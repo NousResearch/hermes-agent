@@ -10,6 +10,7 @@ import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
+import { $autoFocusComposer, setAutoFocusComposer } from '@/store/auto-focus-composer'
 import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
@@ -103,6 +104,7 @@ function ConfigSettingsInner({
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
+  const autoFocusComposer = useStore($autoFocusComposer)
   const disableF12 = useStore($disableF12)
   const alwaysExternalLinks = useStore($alwaysExternalLinks)
   // The editable draft is local (debounced autosave watches it), but it's seeded
@@ -453,6 +455,13 @@ function ConfigSettingsInner({
             id={settingElementId(SETTING_IDS.advanced.keepAwake)}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
+          />
+          <ToggleRow
+            checked={autoFocusComposer}
+            description={c.autoFocusComposerDesc}
+            id={settingElementId(SETTING_IDS.advanced.autoFocusComposer)}
+            label={c.autoFocusComposerTitle}
+            onChange={setAutoFocusComposer}
           />
           <ToggleRow
             checked={disableF12}

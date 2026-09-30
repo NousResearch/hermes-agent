@@ -1698,6 +1698,9 @@ export const frOverrides = {
       keepAwakeTitle: "Garder l'ordinateur éveillé",
       keepAwakeDesc:
         "Empêcher cette machine de se mettre en veille pendant les exécutions longues ou nocturnes. L'écran peut toujours s'obscurcir.",
+      autoFocusComposerTitle: 'Focaliser la saisie du chat au retour du focus',
+      autoFocusComposerDesc:
+        "Remet le curseur dans la zone de message quand vous revenez sur Hermes (Alt+Tab, clic sur le dock), pour que le premier caractère tapé arrive bien dans la discussion. Ne reprend jamais le curseur d'un terminal, d'un dialogue ou d'un autre champ. Ne s'applique qu'à cet appareil.",
       disableF12Title: 'Désactiver les outils de développement avec F12',
       disableF12Desc:
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",

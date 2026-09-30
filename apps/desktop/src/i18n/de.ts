@@ -1691,6 +1691,9 @@ export const deOverrides = {
       keepAwakeTitle: 'Computer wach halten',
       keepAwakeDesc:
         'Verhindert, dass dieser Rechner in den Ruhezustand wechselt, damit Läufe über Nacht oder länger weiterlaufen. Der Bildschirm kann trotzdem abdunkeln.',
+      autoFocusComposerTitle: 'Chateingabe bei Fensterfokus automatisch fokussieren',
+      autoFocusComposerDesc:
+        'Setzt den Cursor beim Zurückkehren zu Hermes (Alt+Tab, Dock-Klick) zurück in das Eingabefeld, damit das erste getippte Zeichen im Chat landet. Nimmt einem Terminal, Dialog oder anderen Feld nie den Cursor weg. Gilt nur für dieses Gerät.',
       disableF12Title: 'F12-DevTools deaktivieren',
       disableF12Desc:
         'Verhindert, dass F12 die Entwicklertools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',

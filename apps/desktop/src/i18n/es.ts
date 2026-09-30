@@ -1692,6 +1692,9 @@ export const esOverrides = {
       keepAwakeTitle: 'Mantener el equipo activo',
       keepAwakeDesc:
         'Impide que este equipo entre en reposo para que las ejecuciones largas o nocturnas continúen. La pantalla puede seguir atenuándose.',
+      autoFocusComposerTitle: 'Enfocar la entrada del chat al recuperar el foco',
+      autoFocusComposerDesc:
+        'Vuelve a poner el cursor en el cuadro de mensaje al regresar a Hermes (Alt+Tab, clic en el dock), para que el primer carácter escrito llegue al chat. Nunca quita el cursor a un terminal, un diálogo u otra entrada. Solo se aplica a este equipo.',
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',

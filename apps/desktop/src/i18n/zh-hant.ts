@@ -1163,6 +1163,9 @@ export const zhHant = defineLocale({
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      autoFocusComposerTitle: '視窗重獲焦點時聚焦聊天輸入框',
+      autoFocusComposerDesc:
+        '回到 Hermes 時（Alt+Tab、點按 Dock）把游標放回訊息輸入框，避免遺失第一個輸入的字元。絕不會從終端機、對話框或其他輸入框搶走游標。僅對本裝置生效。',
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',

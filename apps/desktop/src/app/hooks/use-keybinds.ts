@@ -95,6 +95,7 @@ import {
   requestVoiceToggle
 } from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
+import { handleWindowActivate } from '../chat/composer/focus-on-window-activate'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
@@ -619,6 +620,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // ⌘/Ctrl+L moves focus to the composer. Bubble phase so capture-phase
     // claimants run first; the priority ladder lives in focus-chord.ts.
     window.addEventListener('keydown', handleComposerFocusChord)
+    // Window regain → composer focus (#38993), opt-in. Same surface gate as
+    // the chord: never steals the caret from an input, terminal, or overlay.
+    window.addEventListener('focus', handleWindowActivate)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
@@ -627,6 +631,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
       window.removeEventListener('paste', handleWindowPaste)
       window.removeEventListener('keydown', handleComposerFocusChord)
+      window.removeEventListener('focus', handleWindowActivate)
     }
   }, [])
 }

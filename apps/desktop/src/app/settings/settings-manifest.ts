@@ -156,6 +156,14 @@ export const SETTINGS_MANIFEST = {
       keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power'],
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
+    autoFocusComposer: {
+      subpage: 'desktop',
+      keywords: ['focus', 'window', 'composer', 'input', 'activate', 'alt-tab', 'caret', 'type'],
+      copy: t => ({
+        label: t.settings.config.autoFocusComposerTitle,
+        description: t.settings.config.autoFocusComposerDesc
+      })
+    },
     disableF12: {
       subpage: 'desktop',
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],

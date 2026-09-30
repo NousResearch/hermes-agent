@@ -1111,6 +1111,9 @@ export const ja = defineLocale({
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      autoFocusComposerTitle: 'ウィンドウ再フォーカス時にチャット入力へフォーカス',
+      autoFocusComposerDesc:
+        'Hermes へ戻ったとき（Alt+Tab、Dock クリック）にカーソルを入力欄へ戻し、最初の一文字を取りこぼさないようにします。ターミナル・ダイアログ・他の入力欄からフォーカスを奪うことはありません。このデバイスのみに適用されます。',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
         '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'

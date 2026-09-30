@@ -47,6 +47,27 @@ def _assert_turn_unchanged(runner, adapter, key, agent, guard):
 
 
 @pytest.mark.asyncio
+async def test_busy_exec_enters_routed_runtime_scope(busy_gateway, tmp_path):
+    from hermes_constants import get_hermes_home
+
+    runner, adapter, event, key, agent, guard = busy_gateway
+    home = tmp_path / "routed-profile"
+    home.mkdir()
+    runner.config.multiplex_profiles = True
+    runner._resolve_profile_home_for_source = lambda source: home
+    original_home = get_hermes_home()
+
+    async def execute(command, snippet):
+        assert get_hermes_home() == home
+        return "scoped-result"
+
+    runner._hm_run_exec_quick_command = AsyncMock(side_effect=execute)
+    assert await runner._hm_try_busy_exec_quick_command(event, event.source) == (True, "scoped-result")
+    assert get_hermes_home() == original_home
+    _assert_turn_unchanged(runner, adapter, key, agent, guard)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["adapter", "runner"])
 @pytest.mark.parametrize("mode", ["queue", "steer", "interrupt"])
 async def test_exec_quick_command_during_active_turn(busy_gateway, entry, mode):

@@ -1067,7 +1067,8 @@ class GatewayInboundMixin:
         qcmd = self._hm_quick_commands().get(command)
         if not isinstance(qcmd, dict) or qcmd.get("type") != "exec":
             return False, None
-        handled, result, _ = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
+        async with self._async_profile_scope_for_source(source):
+            handled, result, _ = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
         return handled, result
 
     async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:

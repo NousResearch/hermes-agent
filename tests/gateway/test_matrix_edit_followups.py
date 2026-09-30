@@ -13,6 +13,7 @@ import pytest
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.run_busy import GatewayBusySessionMixin
+from gateway.session import SessionStore
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -65,7 +66,7 @@ def adapter_for(monkeypatch, policy=None, raw=None):
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._get_display_name = AsyncMock(return_value="Alice")
     adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
-        display_name="Project", room_topic=None, server_name="example.org", members_digest="members",
+        display_name="Project", room_topic=None, server_name="example.org", room_state=None,
     ))
     monkeypatch.setattr(adapter, "_background_read_receipt", lambda *args: None)
     adapter.set_authorization_check(lambda *args, **kwargs: True)
@@ -146,7 +147,9 @@ class BusyRunner(GatewayBusySessionMixin):
 @pytest.mark.parametrize("mode", ["interrupt", "steer", "queue"])
 @pytest.mark.parametrize("position", ["slot", "overflow"])
 @pytest.mark.parametrize("policy_change", ["unchanged", "opt-out", "room-denied", "mention-required", "redacted", "edit-redacted", "sender-denied"])
-async def test_pending_edits_coalesce_without_entering_the_active_turn(monkeypatch, mode, position, policy_change):
+async def test_pending_edits_coalesce_without_entering_the_active_turn(
+    monkeypatch, tmp_path, mode, position, policy_change,
+):
     adapter = adapter_for(monkeypatch, {ROOM: True})
     runner = BusyRunner(adapter, mode)
     adapter.set_message_handler(AsyncMock())
@@ -178,12 +181,10 @@ async def test_pending_edits_coalesce_without_entering_the_active_turn(monkeypat
     queued = replace(pending[0])
     cold_runner = object.__new__(GatewayRunner)
     cold_runner.config = GatewayConfig()
+    cold_runner.session_store = SessionStore(tmp_path / "sessions", cold_runner.config)
     monkeypatch.setattr(cold_runner, "_is_user_authorized_for_source", lambda source: policy_change != "sender-denied")
     monkeypatch.setattr(cold_runner, "_intake_adapter_for", lambda source: adapter)
     monkeypatch.setattr(cold_runner, "_peek_session_state", lambda key: None)
-    monkeypatch.setattr(type(adapter), "fetch_inbound_context", AsyncMock(return_value=None))
-    monkeypatch.setattr(type(adapter), "fetch_mention_context", AsyncMock(return_value=None))
-    monkeypatch.setattr(type(adapter), "take_turn_channel_context", lambda *args: None)
     if policy_change == "opt-out":
         adapter._process_edits = frozenset()
     if policy_change == "room-denied":
@@ -209,15 +210,13 @@ async def test_pending_edits_coalesce_without_entering_the_active_turn(monkeypat
     adapter._session_tasks.clear()
 
 
-def cold_runner_for(monkeypatch, adapter):
+def cold_runner_for(monkeypatch, adapter, tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     monkeypatch.setattr(runner, "_is_user_authorized_for_source", lambda source: True)
     monkeypatch.setattr(runner, "_intake_adapter_for", lambda source: adapter)
     monkeypatch.setattr(runner, "_peek_session_state", lambda key: None)
-    monkeypatch.setattr(type(adapter), "fetch_inbound_context", AsyncMock(return_value=None))
-    monkeypatch.setattr(type(adapter), "fetch_mention_context", AsyncMock(return_value=None))
-    monkeypatch.setattr(type(adapter), "take_turn_channel_context", lambda *args: None)
     return runner
 
 
@@ -228,7 +227,7 @@ class QueueTextRunner(BusyRunner):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text_first", [False, True], ids=["text-after-correction", "text-before-correction"])
-async def test_queue_mode_text_takes_its_own_turn_beside_a_pending_correction(monkeypatch, text_first):
+async def test_queue_mode_text_takes_its_own_turn_beside_a_pending_correction(monkeypatch, tmp_path, text_first):
     adapter = adapter_for(monkeypatch, {ROOM: True})
     adapter._busy_text_mode = "queue"
     runner = QueueTextRunner(adapter, "queue")
@@ -255,7 +254,7 @@ async def test_queue_mode_text_takes_its_own_turn_beside_a_pending_correction(mo
     for step in ([follow_up, correct] if text_first else [correct, follow_up]):
         await step()
 
-    cold_runner = cold_runner_for(monkeypatch, adapter)
+    cold_runner = cold_runner_for(monkeypatch, adapter, tmp_path)
     turns = []
     while True:
         await adapter._flush_text_debounce_now("session")

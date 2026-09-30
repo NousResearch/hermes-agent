@@ -195,6 +195,14 @@ class GatewayBusySessionMixin:
             held._processing_state.attach(_ProcessingCompletion(event_adapter, event))
         return None
 
+    async def _complete_parked_overflow(self: "GatewayRunner", adapter: Any) -> None:
+        """Complete, as CANCELLED, the started messages of *adapter* that wait in an overflow FIFO. The
+        adapter is being torn down, so no turn will run them."""
+        for state in list(self._sessions_map().values()):
+            for event in list(state.conversation.queued_events):
+                if self._parked_event_adapter(event) is adapter:
+                    await adapter._complete_discarded(event)
+
     def _parked_event_adapter(self: "GatewayRunner", event: Any) -> Optional["BasePlatformAdapter"]:
         from gateway.platforms.base import BasePlatformAdapter
 

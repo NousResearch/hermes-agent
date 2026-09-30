@@ -20,11 +20,10 @@ def test_model_reads_an_event_and_the_room_from_its_live_matrix_session(
 ) -> None:
     async def exchange() -> None:
         client = live_room.observer.client(live_room.homeserver)
-        seen: set[str] = set()
         try:
             await asyncio.wait_for(client.sync(timeout=0), timeout=60)
 
-            async def send_and_wait(body: str) -> str:
+            async def send_and_wait(body: str, reply: str) -> str:
                 sent = await client.room_send(
                     live_room.room_id,
                     "m.room.message",
@@ -41,13 +40,13 @@ def test_model_reads_an_event_and_the_room_from_its_live_matrix_session(
                         if (
                             isinstance(event, RoomMessageText)
                             and event.sender == live_room.bot.user_id
-                            and event.event_id not in seen
+                            and event.body == reply
                         ):
-                            seen.add(event.event_id)
                             return sent.event_id
 
             target = await asyncio.wait_for(
-                send_and_wait("Read target [history:blue]"), timeout=60
+                send_and_wait("Read target [history:blue]", "Matrix live reply"),
+                timeout=60,
             )
             gateway.model.push(
                 ToolCall("tool_search", {"queries": ["Matrix read event"]}),
@@ -76,7 +75,8 @@ def test_model_reads_an_event_and_the_room_from_its_live_matrix_session(
                 Text("Read complete"),
             )
             await asyncio.wait_for(
-                send_and_wait("Read the earlier Matrix event"), timeout=60
+                send_and_wait("Read the earlier Matrix event", "Read complete"),
+                timeout=60,
             )
 
             requests = gateway.model.main_requests()

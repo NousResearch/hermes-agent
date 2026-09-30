@@ -60,6 +60,22 @@ def _is_path_unsafe(value: object, *, strict: bool = True) -> bool:
 
 _CHAT_TYPE_PREFIX = {"group": "group: ", "channel": "channel: "}
 
+# Shared/public surfaces where a group-addressed onboarding hint, tip, or setup prompt reads as
+# gateway spam to everyone but the one person it's meant for. Used to gate one-time system notices
+# (first-contact intro, no-home-channel prompt, busy/tool-progress tips) so they fire only in a
+# private 1:1 context; route feedback to logs / the home channel / an admin instead of the group.
+_GROUP_NOTICE_CHAT_TYPES = frozenset({"group", "channel"})
+
+
+def is_group_notice_source(source: Any) -> bool:
+    """True when ``source`` is a shared group/channel chat, not a private 1:1 (dm/thread/etc).
+
+    One-time onboarding hints, "no home channel" prompts, and busy/tool-progress tips are meant
+    for the individual Hermes is addressing, never for a whole group; callers must skip sending
+    (or emitting) them here and fall back to a debug log, the home channel, or an admin DM.
+    """
+    return getattr(source, "chat_type", None) in _GROUP_NOTICE_CHAT_TYPES
+
 
 @dataclass
 class SessionSource:

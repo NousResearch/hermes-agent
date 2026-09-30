@@ -28,7 +28,7 @@ from gateway.response_filters import display_kind_for_event, is_machinery_displa
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, is_group_notice_source,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -1392,9 +1392,19 @@ class GatewayTurnMixin:
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
-        system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
+        system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild.
+
+        Neither is appropriate for a shared group/channel: onboarding a whole group and asking it
+        to set a home channel is gateway noise for everyone but the person Hermes should be
+        addressing. Both are suppressed there (log only); see ``is_group_notice_source``."""
         from gateway.run import _hermes_home, _home_target_env_var, _load_gateway_config
         if history:
+            return
+        if is_group_notice_source(source):
+            logger.debug(
+                "First-contact onboarding/no-home-channel notices suppressed for group/channel "
+                "source (%s)", getattr(source.platform, "value", source.platform),
+            )
             return
         if not await self.async_session_store.has_any_sessions():
             _intro_note = (

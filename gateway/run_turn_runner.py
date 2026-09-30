@@ -213,9 +213,15 @@ class TurnRunner:
 
     def _progress_onboarding_hint(self, kwargs: dict) -> None:
         """First-touch onboarding: the first time a tool exceeds _LONG_TOOL_THRESHOLD_S while
-        streaming every tool (progress_mode == "all"), append a one-time /verbose hint."""
+        streaming every tool (progress_mode == "all"), append a one-time /verbose hint.
+
+        Never in a group/channel: skip without consuming the flag so it can still fire the first
+        time this happens in a private chat."""
         from gateway.run import _hermes_home, _load_gateway_config
+        from gateway.session import is_group_notice_source
         ctx = self._ctx
+        if is_group_notice_source(ctx.source):
+            return
         try:
             if (kwargs.get("duration") or 0) >= ctx._LONG_TOOL_THRESHOLD_S and ctx.progress_mode == "all":
                 from agent.onboarding import TOOL_PROGRESS_FLAG, is_seen, mark_seen, tool_progress_hint_gateway

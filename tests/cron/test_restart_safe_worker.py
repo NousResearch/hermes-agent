@@ -142,6 +142,7 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     payload.write_text(
         json.dumps({
             "job": {"id": "job-1", "execution_id": "exec-1"},
+            "extra_prompt": "run only this once",
             "profile_home": str(tmp_path / "profile"),
         }),
         encoding="utf-8",
@@ -168,6 +169,7 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     adopted.assert_called_once_with("exec-1")
     run.assert_called_once()
     assert run.call_args.args[0]["id"] == "job-1"
+    assert run.call_args.kwargs["extra_prompt"] == "run only this once"
     expected_home = (tmp_path / "profile").resolve()
     assert observed_homes == [expected_home, expected_home]
     assert ack.exists()
@@ -861,8 +863,67 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
 
     assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
 
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, extra_prompt=None)
     run.assert_not_called()
+
+
+def test_shared_run_path_forwards_one_off_prompt_to_external_worker(monkeypatch):
+    import cron.scheduler as scheduler
+
+    launch = Mock(return_value=True)
+    run = Mock(side_effect=AssertionError("agent ran inside gateway"))
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
+    monkeypatch.setattr(scheduler, "run_job", run)
+    job = {"id": "job-1", "execution_id": "exec-1"}
+
+    assert scheduler.run_one_job(
+        job, adapters={"discord": object()}, extra_prompt="ONE-OFF"
+    ) is True
+
+    launch.assert_called_once_with(job, extra_prompt="ONE-OFF")
+    run.assert_not_called()
+
+
+def test_launch_external_worker_writes_one_off_prompt_into_handoff_payload(
+    tmp_path, monkeypatch
+):
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    _spawned, payloads, _handoff, _get = _stub_external_worker_launch(
+        scheduler, monkeypatch
+    )
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+
+    assert scheduler._launch_external_cron_worker(
+        job, extra_prompt="ONE-OFF CONTEXT"
+    ) is True
+    assert payloads[0]["extra_prompt"] == "ONE-OFF CONTEXT"
+
+
+def test_planned_fire_writes_no_prompt_into_handoff_payload(tmp_path, monkeypatch):
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    _spawned, payloads, _handoff, _get = _stub_external_worker_launch(
+        scheduler, monkeypatch
+    )
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert payloads[0]["extra_prompt"] is None
 
 
 def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
@@ -997,7 +1058,7 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
 
     created.assert_called_once_with("tool-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-tool"
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, extra_prompt=None)
     run.assert_not_called()
 
 
@@ -1178,7 +1239,7 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
     monkeypatch.setattr(
         scheduler, "_launch_external_cron_worker",
-        lambda job: scheduler._wait_for_external_cron_worker(
+        lambda job, **_kwargs: scheduler._wait_for_external_cron_worker(
             object(), execution_id=job["execution_id"]))
     marks = []
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: marks.append((a, k)) or True)

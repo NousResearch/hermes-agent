@@ -2728,7 +2728,7 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
+            if _launch_external_cron_worker(job, extra_prompt=extra_prompt):
                 return True
         except Exception as handoff_error:
             # Past the handoff the worker may have adopted the row, run side effects
@@ -3494,7 +3494,7 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(job: dict, *, extra_prompt: Optional[str] = None) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3570,6 +3570,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
             json.dump(
                 {
                     "job": job,
+                    "extra_prompt": extra_prompt,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
                 },
@@ -3741,6 +3742,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     try:
         payload = json.loads(payload_path.read_text(encoding="utf-8-sig"))
         job = payload["job"]
+        extra_prompt = payload.get("extra_prompt")
         profile_home = Path(payload["profile_home"]).resolve()
         execution_id = str(job["execution_id"])
     except Exception:
@@ -3817,7 +3819,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                return run_one_job(job, adapters=None, loop=None, verbose=False)
+                return run_one_job(job, adapters=None, loop=None, verbose=False, extra_prompt=extra_prompt)
             finally:
                 if old_external_execution is None:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)

@@ -281,6 +281,9 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
             payload = json.loads(body[len(BLACKBOARD_PREFIX):])
         except json.JSONDecodeError:
             continue
+        # Any agent can comment on the root, so the payload may be valid JSON that is not an object.
+        if not isinstance(payload, dict):
+            continue
         key = payload.get("key")
         if not isinstance(key, str) or not key:
             continue

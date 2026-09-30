@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ Nada para compactar: esta sessão roda no runtime app-server do Codex, cujo contexto fica em um tópico controlado pelo Codex que só existe enquanto o agente está ativo. Envie uma mensagem primeiro e depois /compress — ou /reset para começar do zero."
     codex_compacted: "🗜️ Tópico do app-server do Codex compactado (thread/compact). O espelho da transcrição permanece inalterado por design — o app-server agora carrega o contexto compactado."
     codex_incomplete: "⚠️ A compactação do app-server do Codex não foi concluída — o tópico permanece inalterado. Verifique os logs do app-server, tente /compress novamente ou use /reset para uma sessão limpa."
+    persist_failed: "⚠️ A compressão foi executada, mas não foi possível salvar o resultado — o banco de dados da sessão estava ocupado (bloqueado). Nada foi perdido; sua transcrição está inalterada. Execute /compress novamente em instantes para tentar de novo."
   debug:
     upload_failed: "✗ Falha ao carregar relatório de depuração: {error}"
     header: "**Relatório de depuração carregado:**"

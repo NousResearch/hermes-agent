@@ -158,6 +158,7 @@ gateway:
     codex_nothing: "🗜️ Nothing to compact: this session runs on the Codex app-server runtime, whose context lives in a Codex-owned thread that only exists while the agent is active. Send a message first, then /compress — or /reset to start fresh."
     codex_compacted: "🗜️ Codex app-server thread compacted (thread/compact). The transcript mirror is unchanged by design — the app-server now carries the compacted context."
     codex_incomplete: "⚠️ Codex app-server compaction did not complete — the thread is unchanged. Check the app-server logs, retry /compress, or /reset for a clean session."
+    persist_failed: "⚠️ Compression ran, but the result could not be saved — the session database was busy (locked). Nothing was lost; your transcript is unchanged. Run /compress again in a moment to retry."
   debug:
     upload_failed: "✗ Failed to upload debug report: {error}"
     header: "**Debug report uploaded:**"

@@ -3637,6 +3637,10 @@ class _CommitOutcome:
     session_commit_succeeded: bool = False
     compacted_in_place: bool = False
     made_progress: bool = False
+    # True when a compacted list was produced but the DB write that would persist it (rotation child
+    # create or in-place archive_and_compact) raised and was rolled back: a locked/contended state.db,
+    # an FK error, ENOSPC. session_id is unchanged, the same surface signature as a genuine no-op.
+    persist_failed: bool = False
 
 
 def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
@@ -3716,6 +3720,7 @@ def _commit_compaction(
     """
     session_commit_succeeded = False
     compacted_in_place = False
+    persist_failed = False
     commit_started_at = time.monotonic()
     split_status = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
@@ -3849,6 +3854,11 @@ def _commit_compaction(
                 compressed = messages
                 made_progress = False
                 _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
+            # Any exception out of the commit means the compacted list never reached the store, unless a
+            # genuine in-place commit already landed (compacted_in_place is set right after it) and a later
+            # bookkeeping step raised; that is not a persistence failure.
+            if not compacted_in_place:
+                persist_failed = True
             split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
             # If rotation rolled back to the parent, agent.session_id is the indexed parent
             # and old_session_id was cleared: recovery, not an un-indexed orphan.
@@ -3869,7 +3879,7 @@ def _commit_compaction(
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
         split_status=split_status, session_commit_succeeded=session_commit_succeeded,
-        compacted_in_place=compacted_in_place, made_progress=made_progress,
+        compacted_in_place=compacted_in_place, made_progress=made_progress, persist_failed=persist_failed,
     )
 
 
@@ -4001,6 +4011,7 @@ def _begin_compression_attempt(
         raise RuntimeError("a compression notification is already pending")
     agent._last_compression_attempt_recorded = True
     agent._last_compression_attempt_in_place = None
+    agent._last_compaction_persist_failed = False
     agent._compression_skipped_due_to_lock = None
     # Clear the lock-skip signal at the VERY TOP, before the codex route and the breaker gates below can
     # early-return (per-attempt state rule, #58630/#69853). A stale ``True``/holder value from a prior
@@ -4255,6 +4266,9 @@ def compress_context(
             return messages, commit.refused_prompt
         compressed = commit.compressed
         split_status = commit.split_status
+        # Callers (compress_now) read this to tell a TRANSIENT, retryable save failure from a genuine
+        # nothing-to-compress no-op: both leave session_id unchanged, so an id diff cannot separate them.
+        agent._last_compaction_persist_failed = commit.persist_failed
         _compressed_est = _finish_compaction_boundary(
             agent, compressed, new_system_prompt=new_system_prompt, old_session_id=commit.old_session_id,
             in_place=in_place, compacted_in_place=commit.compacted_in_place,

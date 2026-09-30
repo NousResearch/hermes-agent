@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ Sıkıştırılacak bir şey yok: bu oturum Codex app-server çalışma zamanında çalışıyor; bağlamı, yalnızca ajan aktifken var olan Codex'e ait bir thread'de tutulur. Önce bir mesaj gönderin, sonra /compress — ya da sıfırdan başlamak için /reset kullanın."
     codex_compacted: "🗜️ Codex app-server thread'i sıkıştırıldı (thread/compact). Transkript aynası tasarım gereği değişmedi — sıkıştırılmış bağlamı artık app-server taşıyor."
     codex_incomplete: "⚠️ Codex app-server sıkıştırması tamamlanmadı — thread değişmedi. App-server günlüklerini kontrol edin, /compress komutunu yeniden deneyin veya temiz bir oturum için /reset kullanın."
+    persist_failed: "⚠️ Sıkıştırma çalıştı ancak sonuç kaydedilemedi — oturum veritabanı meşguldü (kilitli). Hiçbir şey kaybolmadı; dökümünüz değişmedi. Yeniden denemek için birazdan /compress komutunu tekrar çalıştırın."
   debug:
     upload_failed: "✗ Hata ayıklama raporu yüklenemedi: {error}"
     header: "**Hata ayıklama raporu yüklendi:**"

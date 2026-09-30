@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ 没有可压缩的内容：此会话运行在 Codex app-server 运行时上，其上下文保存在 Codex 管理的线程中，仅在代理活跃时存在。请先发送一条消息再 /compress——或用 /reset 重新开始。"
     codex_compacted: "🗜️ Codex app-server 线程已压缩（thread/compact）。转录副本按设计保持不变——压缩后的上下文现由 app-server 承载。"
     codex_incomplete: "⚠️ Codex app-server 压缩未完成——线程保持不变。请检查 app-server 日志、重试 /compress，或用 /reset 开始一个干净的会话。"
+    persist_failed: "⚠️ 压缩已执行，但结果无法保存——会话数据库正忙（已锁定）。没有丢失任何内容；你的记录未发生变化。请稍后再次运行 /compress 重试。"
   debug:
     upload_failed: "✗ 无法上传调试报告：{error}"
     header: "**调试报告已上传：**"

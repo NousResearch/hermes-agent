@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ 압축할 내용이 없어요: 이 세션은 Codex app-server 런타임에서 실행되고, 컨텍스트는 에이전트가 활성 상태일 때만 존재하는 Codex 소유 스레드에 있어요. 먼저 메시지를 보낸 뒤 /compress를 실행하거나, /reset으로 새로 시작하세요."
     codex_compacted: "🗜️ Codex app-server 스레드를 압축했어요(thread/compact). 설계상 트랜스크립트 미러는 바뀌지 않고, 이제 app-server가 압축된 컨텍스트를 가지고 있어요."
     codex_incomplete: "⚠️ Codex app-server 압축이 완료되지 않아 스레드는 그대로예요. app-server 로그를 확인하고 /compress를 다시 시도하거나, /reset으로 깨끗한 세션을 시작하세요."
+    persist_failed: "⚠️ 압축은 실행되었지만 결과를 저장하지 못했습니다 — 세션 데이터베이스가 사용 중(잠김)이었습니다. 손실된 것은 없으며 대화 기록은 그대로입니다. 잠시 후 /compress를 다시 실행해 재시도하세요."
   debug:
     upload_failed: "✗ 디버그 보고서 업로드 실패: {error}"
     header: "**디버그 보고서가 업로드되었습니다:**"

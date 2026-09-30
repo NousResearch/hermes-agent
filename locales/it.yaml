@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ Niente da compattare: questa sessione usa il runtime app-server di Codex, il cui contesto vive in un thread gestito da Codex che esiste solo mentre l'agente è attivo. Invia prima un messaggio, poi /compress — oppure /reset per ricominciare da zero."
     codex_compacted: "🗜️ Thread dell'app-server Codex compattato (thread/compact). La copia della trascrizione resta invariata per design — ora è l'app-server a contenere il contesto compattato."
     codex_incomplete: "⚠️ La compattazione dell'app-server Codex non è stata completata — il thread è invariato. Controlla i log dell'app-server, riprova /compress oppure usa /reset per una sessione pulita."
+    persist_failed: "⚠️ La compressione è stata eseguita, ma non è stato possibile salvare il risultato: il database della sessione era occupato (bloccato). Non è andato perso nulla; la tua trascrizione è invariata. Esegui di nuovo /compress tra un momento per riprovare."
   debug:
     upload_failed: "✗ Caricamento del report di debug non riuscito: {error}"
     header: "**Report di debug caricato:**"

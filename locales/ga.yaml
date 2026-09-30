@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ Níl aon rud le dlúthú: ritheann an seisiún seo ar am rite app-server Codex, a bhfuil a chomhthéacs i snáithe faoi úinéireacht Codex nach ann dó ach fad a bhíonn an gníomhaire gníomhach. Seol teachtaireacht ar dtús, ansin /compress — nó /reset chun tosú as an nua."
     codex_compacted: "🗜️ Dlúthaíodh snáithe app-server Codex (thread/compact). Tá scáthán na traschríbhinne gan athrú d'aon ghnó — is ag an app-server atá an comhthéacs dlúthaithe anois."
     codex_incomplete: "⚠️ Níor críochnaíodh dlúthú app-server Codex — tá an snáithe gan athrú. Seiceáil logaí an app-server, bain triail eile as /compress, nó /reset le haghaidh seisiún glan."
+    persist_failed: "⚠️ Rith an comhbhrú, ach níorbh fhéidir an toradh a shábháil — bhí bunachar sonraí an tseisiúin gnóthach (faoi ghlas). Níor cailleadh aon rud; tá do thras-scríbhinn gan athrú. Rith /compress arís i gceann nóiméid chun triail eile a bhaint as."
   debug:
     upload_failed: "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header: "**Tuairisc dhífhabhtaithe uaslódáilte:**"

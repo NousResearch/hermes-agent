@@ -158,6 +158,7 @@ gateway:
     codex_nothing: "🗜️ Nincs mit tömöríteni: ez a munkamenet a Codex app-server futtatókörnyezeten fut, amelynek kontextusa egy Codex által kezelt szálban él, és csak addig létezik, amíg az ügynök aktív. Küldj előbb egy üzenetet, majd /compress — vagy /reset a tiszta kezdéshez."
     codex_compacted: "🗜️ A Codex app-server szál tömörítve (thread/compact). Az átirat tükre szándékosan változatlan — a tömörített kontextust mostantól az app-server hordozza."
     codex_incomplete: "⚠️ A Codex app-server tömörítése nem fejeződött be — a szál változatlan. Nézd meg az app-server naplóit, próbáld újra a /compress parancsot, vagy /reset a tiszta munkamenethez."
+    persist_failed: "⚠️ A tömörítés lefutott, de az eredményt nem sikerült menteni — a munkamenet-adatbázis foglalt volt (zárolva). Semmi nem veszett el; az átirat változatlan. Futtasd újra a /compress parancsot egy pillanat múlva."
   debug:
     upload_failed: "✗ Nem sikerült feltölteni a hibakeresési jelentést: {error}"
     header: "**Hibakeresési jelentés feltöltve:**"

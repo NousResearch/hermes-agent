@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ Niks om saam te pers nie: hierdie sessie loop op die Codex app-server-looptyd, waarvan die konteks in 'n Codex-beheerde draad lê wat slegs bestaan terwyl die agent aktief is. Stuur eers 'n boodskap, dan /compress — of /reset om van voor te begin."
     codex_compacted: "🗜️ Codex app-server-draad saamgepers (thread/compact). Die transkripsie-spieël is doelbewus onveranderd — die app-server dra nou die saamgeperste konteks."
     codex_incomplete: "⚠️ Codex app-server-saampersing is nie voltooi nie — die draad is onveranderd. Kyk na die app-server-logs, probeer /compress weer, of /reset vir 'n skoon sessie."
+    persist_failed: "⚠️ Kompressie het geloop, maar die resultaat kon nie gestoor word nie — die sessiedatabasis was besig (gesluit). Niks is verloor nie; jou transkripsie is onveranderd. Voer /compress oor 'n oomblik weer uit om te herprobeer."
   debug:
     upload_failed: "✗ Kon nie ontfoutverslag oplaai nie: {error}"
     header: "**Ontfoutverslag opgelaai:**"

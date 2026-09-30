@@ -566,6 +566,13 @@ class GatewaySessionCommandsMixin:
                                      task_id=session_entry.session_id or "default"))
             if result.status == "nothing_to_do":
                 return t("gateway.compress.nothing_to_do")
+            if result.status == "persist_failed":
+                # Nothing persisted, so there is no before/after to report and no store mutation may
+                # follow (zeroing last_prompt_tokens would destroy the tokenizer-truth figure).
+                pf_lines = [t("gateway.compress.persist_failed")]
+                if request.focus_topic:
+                    pf_lines.append(t("gateway.compress.focus_line", topic=request.focus_topic))
+                return "\n".join(pf_lines)
             if result.status != "compressed":
                 return "\n".join(render_compress_result(result))
             await self._persist_manual_compression(tmp_agent, session_entry, source, result.after_messages)

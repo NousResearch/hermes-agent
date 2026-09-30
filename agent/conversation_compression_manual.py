@@ -11,6 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+#: A compacted transcript was produced but its DB write was rolled back (locked/contended state.db, FK error,
+#: ENOSPC). It leaves session_id unchanged like a genuine no-op, but it is a TRANSIENT, retryable failure.
+PERSIST_FAILED = (
+    "Compression ran, but the result could not be saved (the session database was busy). "
+    "Nothing was lost; the transcript is unchanged. Run /compress again in a moment to retry.")
+
 #: Every surface renders the same refusal; hard truncation has no persistence path outside the guarded
 #: ``_compress_context`` rotation, so ``--aggressive`` is refused rather than mis-parsed as a focus topic.
 AGGRESSIVE_UNSUPPORTED = (
@@ -31,7 +37,7 @@ class CompressRequest:
 
 @dataclass
 class CompressResult:
-    status: str  # "preview" | "compressed" | "lock_skipped" | "nothing_to_do"
+    status: str  # "preview" | "compressed" | "lock_skipped" | "nothing_to_do" | "persist_failed"
     before_messages: List[Dict[str, Any]]
     after_messages: List[Dict[str, Any]]
     before_tokens: int
@@ -122,6 +128,7 @@ def compress_now(
                     absorbed.append(dropped)
                 row["_absorbed_row_ids"] = absorbed
         tail_rows.append(row)
+    session_before = getattr(agent, "session_id", None)
     try:
         compressed, _ = agent._compress_context(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
@@ -137,6 +144,12 @@ def compress_now(
         finalize_context_engine_compression_notification(agent, committed=False)
         return CompressResult("lock_skipped", before, before, before_tokens, before_tokens, request,
                               lock_holder=lock_signal if isinstance(lock_signal, str) else None)
+    # Type-pinned for the same reason. Rotation (id moved) or an in-place commit means something WAS persisted.
+    if (getattr(agent, "_last_compaction_persist_failed", False) is True
+            and getattr(agent, "session_id", None) == session_before
+            and getattr(agent, "_last_compaction_in_place", False) is not True):
+        finalize_context_engine_compression_notification(agent, committed=False)
+        return CompressResult("persist_failed", before, before, before_tokens, before_tokens, request)
     # Stamped copies mean the in-place commit stored the tail and already returned head + tail. Rotation, a
     # no-op or a rolled-back commit leave them unstamped, and the tail is then only in the caller's dicts.
     if tail and not all(row.get(_DB_PERSISTED_MARKER) is True for row in tail_rows):
@@ -155,5 +168,7 @@ def render_compress_result(result: CompressResult, *, prefix: str = "") -> List[
         return [f"{prefix}{describe_compression_lock_skip(result.lock_holder or True)}"]
     if result.status == "nothing_to_do":
         return [f"{prefix}Nothing to compress yet."]
+    if result.status == "persist_failed":
+        return [f"{prefix}{PERSIST_FAILED}"]
     summary = result.summary or {}
     return [f"{prefix}{line}" for line in (summary.get("headline"), summary.get("token_line"), summary.get("note")) if line]

@@ -155,6 +155,7 @@ gateway:
     codex_nothing: "🗜️ Nichts zu komprimieren: Diese Sitzung läuft auf der Codex-App-Server-Runtime, deren Kontext in einem Codex-eigenen Thread liegt, der nur existiert, solange der Agent aktiv ist. Senden Sie zuerst eine Nachricht, dann /compress — oder /reset für einen Neustart."
     codex_compacted: "🗜️ Codex-App-Server-Thread komprimiert (thread/compact). Der Transkript-Spiegel bleibt absichtlich unverändert — der App-Server trägt jetzt den komprimierten Kontext."
     codex_incomplete: "⚠️ Die Komprimierung im Codex-App-Server wurde nicht abgeschlossen — der Thread ist unverändert. Prüfen Sie die App-Server-Logs, wiederholen Sie /compress oder verwenden Sie /reset für eine saubere Sitzung."
+    persist_failed: "⚠️ Die Komprimierung lief, aber das Ergebnis konnte nicht gespeichert werden — die Sitzungsdatenbank war belegt (gesperrt). Es ging nichts verloren; dein Transkript ist unverändert. Führe /compress in einem Moment erneut aus, um es noch einmal zu versuchen."
   debug:
     upload_failed: "✗ Debug-Bericht konnte nicht hochgeladen werden: {error}"
     header: "**Debug-Bericht hochgeladen:**"

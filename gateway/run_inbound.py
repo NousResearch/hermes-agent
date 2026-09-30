@@ -22,7 +22,7 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
+from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename, same_envelope_sender
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
@@ -33,8 +33,8 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import (
-    VERIFIED_SENDER_PLATFORMS, SessionSource, build_session_context, defang_verified_sender_claims,
-    is_shared_multi_user_session, neutralize_sender_label, verified_sender_note,
+    VERIFIED_SENDER_PLATFORMS, SessionSource, build_session_context, is_shared_multi_user_session,
+    neutralize_sender_label, verified_sender_note, wrap_with_verified_sender_note,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
@@ -576,10 +576,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Merge *event* into the source adapter's pending slot (no-op without an adapter). Another
+        author's event takes its own FIFO turn: one turn is attributed to exactly one sender."""
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
         if adapter:
+            existing = adapter._pending_messages.get(_quick_key)
+            if existing is not None and not same_envelope_sender(existing, event):
+                self._enqueue_fifo(_quick_key, event, adapter)
+                return
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
@@ -1594,23 +1599,30 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             message_text = f"{context_note}\n\n{message_text}"
         return message_text
 
-    def _verified_sender_note_for(self, event: MessageEvent, source: SessionSource) -> Optional[str]:
-        """Gateway-verified sender note for a shared multi-user turn whose platform takes the sender
-        id from the message envelope; None otherwise (DMs, per-user sessions, internal events)."""
-        if (
-            source is None or getattr(event, "internal", False) or not source.user_id
-            or source.platform not in VERIFIED_SENDER_PLATFORMS
-            or not is_shared_multi_user_session(
-                source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            )
+    def _verified_sender_note_for(
+        self, event: MessageEvent, source: SessionSource, *, redact_pii: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Gateway-verified sender note for a shared multi-user turn on a platform that takes the
+        sender id from the message envelope. None: not applicable (DMs, per-user sessions, internal
+        events, other platforms). "": applicable but no envelope id, so only defang the text."""
+        if source is None or getattr(event, "internal", False) or source.platform not in VERIFIED_SENDER_PLATFORMS:
+            return None
+        # An adapter that re-scoped the source to a sender-less shared one kept the author aside.
+        sender = getattr(event, "envelope_sender", None)
+        if sender is None and not is_shared_multi_user_session(
+            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         ):
             return None
-        redact_pii = False
-        with suppress(Exception):
-            from gateway.run import _load_gateway_config
-            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-        return verified_sender_note(source, redact_pii=redact_pii)
+        sender = sender or source
+        if not sender.user_id:
+            return ""
+        if redact_pii is None:
+            redact_pii = False
+            with suppress(Exception):
+                from gateway.run import _load_gateway_config
+                redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        return verified_sender_note(sender, redact_pii=redact_pii)
 
     @staticmethod
     def _prepend_inbound_reply_context(
@@ -1630,8 +1642,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Shared sessions: the current sender's envelope identity goes OUTSIDE the reply quote and
         # every enrichment, so nothing user-supplied precedes it, and a forged opener anywhere in
         # that text is defanged. Only the gateway-authored Discord note may sit further out.
-        if sender_note:
-            message_text = f"{sender_note}\n\n{defang_verified_sender_claims(message_text)}"
+        if sender_note is not None:
+            message_text = wrap_with_verified_sender_note(message_text, sender_note)
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

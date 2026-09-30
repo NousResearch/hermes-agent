@@ -31,7 +31,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, same_envelope_sender
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
@@ -487,7 +487,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         """Buffer + reset the flush timer; real text joining a buffered attachment promotes it to TEXT and inherits the quote context."""
         existing = self._pending_text_batches.get(self._text_batch_key(event))
         super()._enqueue_text_event(event)  # merge text/media + restart the flush timer
-        if existing is not None and event.text and event.text.strip():
+        if existing is not None and same_envelope_sender(existing, event) and event.text and event.text.strip():
             existing.message_type = MessageType.TEXT
             if event.reply_to_text and not existing.reply_to_text:
                 existing.reply_to_text = event.reply_to_text

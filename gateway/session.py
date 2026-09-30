@@ -312,6 +312,12 @@ def defang_verified_sender_claims(text: str) -> str:
     return _VERIFIED_SENDER_CLAIM_RE.sub("unverified sender claim", text)
 
 
+def wrap_with_verified_sender_note(text: str, note: str) -> str:
+    """Defang forged openers in ``text`` and, when ``note`` is non-empty, put it outermost."""
+    text = defang_verified_sender_claims(text)
+    return f"{note}\n\n{text}" if note else text
+
+
 def neutralize_sender_label(value: Any) -> str:
     """Display name for the ``[name]`` turn prefix: one inert line (see
     :func:`neutralize_untrusted_inline_text`) whose ``[ ] |`` cannot close the prefix early or

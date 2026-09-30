@@ -320,6 +320,13 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    # Outbound footer (opt-in). When ``footer_template`` is empty, no footer is
+    # appended. Placeholders: {agent} {model} {provider}. Default template below
+    # matches the visual treatment of the Mini bot's Agent / Model / Provider line.
+    footer_template: str = ""  # e.g. "🤖 {agent} · {model} · {provider}"
+    footer_agent_label: str = "Hermes"  # {agent} placeholder override
+    footer_model_label: str = ""  # empty → resolved at runtime from current session
+    footer_provider_label: str = ""  # empty → resolved at runtime from current session
 
 
 @dataclass
@@ -440,8 +447,16 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 # --- Post payload builders and parsers ---
 
-def _build_markdown_post_payload(content: str) -> str:
+def _build_markdown_post_payload(content: str, *, footer: str = "") -> str:
+    """Wrap ``content`` as a Feishu ``post`` payload.
+
+    When ``footer`` is non-empty, it is appended as its own ``md`` row in the
+    post body so the footer renders as a dim, separate line in Feishu clients
+    (matches the visual treatment of the Mini bot's Agent / Model / Provider footer).
+    """
     rows = _build_markdown_post_rows(content)
+    if footer:
+        rows.append([{"tag": "md", "text": footer}])
     return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
 
@@ -744,11 +759,57 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     lines = ([title] if title else []) + [line for line in _collect_card_lines(card_payload) if line != title]
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
+    # Heuristic: a card stub is one whose body yields no extractable text and no
+    # actions — the inbound websocket event carries the Feishu server-side
+    # compatibility placeholder ("请升级至最新版本客户端，以查看内容") rather than
+    # the actual card JSON. Callers that can re-fetch via the REST API use the
+    # ``is_card_stub`` flag to decide whether to issue a second fetch with
+    # ``card_msg_content_type=user_card_content`` (issue #33090).
+    body_extracted = [line for line in _collect_card_lines(card_payload) if line != title]
+    is_stub = (
+        not body_extracted
+        and not actions
+        and not (isinstance(card_payload, dict) and any(
+            isinstance(v, dict) and str(v.get("tag", "")).lower() in _RICH_BLOCK_TAGS
+            for v in card_payload.values()
+        ))
+    )
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content="\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT,
-        relation_kind="interactive", metadata={"title": title, "actions": actions},
+        relation_kind="interactive",
+        metadata={"title": title, "actions": actions, "is_card_stub": is_stub},
     )
+
+
+_FEISHU_CARD_REFETCH_KEY = "feishu_card_refetch"
+
+# Module-level set of message_ids we've already tried to refetch as interactive cards
+# (issue #33090). A single set keeps the refetch path from looping if Feishu's
+# websocket keeps re-delivering the same event; bounded pruning runs at refetch
+# time so the set cannot grow without bound across a long-lived gateway.
+_card_refetch_seen: set[str] = set()
+_card_refetch_seen_order: "OrderedDict[str, float]" = OrderedDict()
+_CARD_REFETCH_TTL_S = 600.0
+_CARD_REFETCH_MAX_SIZE = 4096
+
+
+def _remember_card_refetch(message_id: str) -> bool:
+    """Return True when ``message_id`` has NOT been refetched yet; record it.
+
+    Prunes the order dict down to ``_CARD_REFETCH_MAX_SIZE`` entries older than
+    ``_CARD_REFETCH_TTL_S`` so memory does not grow on a busy gateway.
+    """
+    if message_id in _card_refetch_seen:
+        return False
+    _card_refetch_seen.add(message_id)
+    _card_refetch_seen_order[message_id] = time.time()
+    if len(_card_refetch_seen_order) > _CARD_REFETCH_MAX_SIZE:
+        cutoff = time.time() - _CARD_REFETCH_TTL_S
+        while _card_refetch_seen_order and next(iter(_card_refetch_seen_order.values())) < cutoff:
+            stale_id, _ = _card_refetch_seen_order.popitem(last=False)
+            _card_refetch_seen.discard(stale_id)
+    return True
 
 
 # --- Content extraction utilities (card / forward / text walking) ---
@@ -1416,6 +1477,10 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            footer_template=str(extra.get("footer_template", "") or "").strip(),
+            footer_agent_label=str(extra.get("footer_agent_label", "Hermes") or "Hermes").strip() or "Hermes",
+            footer_model_label=str(extra.get("footer_model_label", "") or "").strip(),
+            footer_provider_label=str(extra.get("footer_provider_label", "") or "").strip(),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1665,6 +1730,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
+        footer = self._resolve_outbound_footer()
 
         async def _send_plain(chunk: str) -> Any:
             return await self._feishu_send_with_retry(
@@ -1677,7 +1743,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
+                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post, footer=footer)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
@@ -1715,7 +1781,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._finalize_send_result(response, "update failed")
 
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            msg_type, payload = self._build_outbound_payload(content, footer=self._resolve_outbound_footer())
             result = await _update(msg_type, payload)
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
@@ -3013,6 +3079,21 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = str(getattr(message, "message_id", "") or "")
         logger.info("[Feishu] Received raw message type=%s message_id=%s", raw_type, message_id)
         normalized = self._normalize(raw_type, raw_content, getattr(message, "mentions", None))
+        # Refetch interactive cards whose inbound payload is only a server-side
+        # compatibility stub ("请升级至最新版本客户端，以查看内容"). Without
+        # ``card_msg_content_type=user_card_content`` the REST API also returns
+        # only the stub; passing the flag tells Feishu to ship the original
+        # Card 1.0/2.0 JSON so the walker can extract body text. See issue #33090.
+        if (
+            normalized.relation_kind == "interactive"
+            and normalized.metadata.get("is_card_stub")
+            and message_id
+            and self._client is not None
+            and _remember_card_refetch(message_id)
+        ):
+            refetched = await self._refetch_interactive_card_payload(message_id)
+            if refetched is not None:
+                normalized = self._normalize("interactive", refetched, getattr(message, "mentions", None))
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id, normalized=normalized,
         )
@@ -3099,6 +3180,91 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=message_id, file_key=file_key, resource_type=resource_type,
         )
         return await self._run_blocking(self._client.im.v1.message_resource.get, request)
+
+    async def _refetch_interactive_card_payload(self, message_id: str) -> Optional[str]:
+        """Re-fetch an interactive card with ``card_msg_content_type=user_card_content``.
+
+        By default Feishu's ``GET im/v1/messages/{id}`` returns the body as a
+        server-side compatibility skeleton (header + a single
+        ``请升级至最新版本客户端，以查看内容`` placeholder) because the gateway's
+        server-rendered card isn't necessarily understood by every client. Passing
+        ``card_msg_content_type=user_card_content`` asks for the *original*
+        Card 1.0/2.0 JSON the sender submitted, which the adapter's walker can
+        then extract text from. Mirrors the openclaw fix for #78289 / openclaw@1db8ab3.
+
+        Returns the JSON string of the original card payload, or ``None`` on any
+        failure (caller will fall back to the stub ``[Interactive message]``).
+        """
+        if not self._client or not message_id:
+            return None
+        request = self._build_get_message_request_with_full_card(message_id)
+        try:
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+        except Exception:
+            logger.debug(
+                "[Feishu] Failed to refetch interactive card %s for full content",
+                message_id, exc_info=True,
+            )
+            return None
+        if not response or not self._response_succeeded(response):
+            logger.debug(
+                "[Feishu] Refetch of interactive card %s rejected: code=%s msg=%s",
+                message_id,
+                getattr(response, "code", "unknown"),
+                getattr(response, "msg", "request failed"),
+            )
+            return None
+        return self._extract_card_payload_from_get_message_response(response)
+
+    @staticmethod
+    def _build_get_message_request_with_full_card(message_id: str) -> Any:
+        """Same as ``_build_get_message_request`` but with ``card_msg_content_type``.
+
+        Older ``lark-oapi`` versions don't expose ``card_msg_content_type`` on
+        ``GetMessageRequest.builder()``; fall back to the default request when
+        the builder method is missing so we don't crash on a stale SDK (#79812
+        is the analogue of this guard for the SDK presence itself).
+        """
+        try:
+            builder = GetMessageRequest.builder().message_id(message_id)
+            # 1.7.x added ``card_msg_content_type`` to GetMessageRequest. Probe
+            # for the builder method before calling it so older SDKs still work.
+            if hasattr(builder, "card_msg_content_type"):
+                builder = builder.card_msg_content_type("user_card_content")
+            return builder.build()
+        except Exception:
+            logger.debug(
+                "[Feishu] Falling back to default GetMessageRequest for %s — "
+                "card_msg_content_type builder unsupported",
+                message_id, exc_info=True,
+            )
+            return _sdk_build(GetMessageRequest, message_id=message_id)
+
+    @staticmethod
+    def _extract_card_payload_from_get_message_response(response: Any) -> Optional[str]:
+        """Pull the original Card 1.0/2.0 JSON out of a get-message response.
+
+        Returns the body.content as a JSON string the adapter walker can re-parse,
+        or ``None`` if the response shape is anything else.
+        """
+        data = getattr(response, "data", None)
+        items = getattr(data, "items", None) if data is not None else None
+        if not items:
+            return None
+        first = items[0]
+        body = getattr(first, "body", None)
+        content = getattr(body, "content", None) if body is not None else None
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, (dict, list)):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except (TypeError, ValueError):
+                logger.debug(
+                    "[Feishu] Refetched card body.content was non-JSON-serializable: %r",
+                    type(content).__name__,
+                )
+        return None
 
     async def _download_feishu_image(self, *, message_id: str, image_key: str) -> tuple[str, str]:
         if not self._client or not message_id:
@@ -3618,8 +3784,49 @@ class FeishuAdapter(BasePlatformAdapter):
         return lock
 
     # --- Outbound payload construction and send pipeline ---
-    def _build_outbound_payload(self, content: str, *, prefer_post: bool = False) -> tuple[str, str]:
-        # Feishu clients render markdown tables inside ``post`` ``md`` elements natively, so tables
+    def _resolve_outbound_footer(self) -> str:
+        """Render the configured footer template, or ``""`` when the feature is off.
+
+        When ``footer_template`` is empty (default), no footer is appended and the
+        adapter behaves exactly as before — keeps the change opt-in for users
+        who don't want the line in their outbound messages.
+
+        The placeholders ``{agent} {model} {provider}`` substitute with the
+        configured ``footer_*_label`` overrides, or, when an override is empty,
+        with values resolved from the current session at render time. The model
+        and provider resolution is best-effort: ``agent_runtime`` may not be
+        importable in every test fixture, in which case the placeholder stays
+        unresolved and we just omit it (no footer at all in that case).
+        """
+        template = str(getattr(self, "_footer_template", "") or "").strip()
+        if not template:
+            return ""
+        agent = str(getattr(self, "_footer_agent_label", "Hermes") or "Hermes").strip() or "Hermes"
+        model = str(getattr(self, "_footer_model_label", "") or "").strip()
+        provider = str(getattr(self, "_footer_provider_label", "") or "").strip()
+        if not model or not provider:
+            try:
+                from agent.agent_runtime import current_model_label, current_provider_label
+            except Exception:
+                current_model_label = current_provider_label = None  # type: ignore[assignment]
+            try:
+                if not model and current_model_label is not None:
+                    model = str(current_model_label() or "").strip()
+                if not provider and current_provider_label is not None:
+                    provider = str(current_provider_label() or "").strip()
+            except Exception:
+                logger.debug("[Feishu] Failed to resolve outbound footer labels", exc_info=True)
+        try:
+            return template.format(agent=agent, model=model or "?", provider=provider or "?")
+        except (KeyError, IndexError):
+            # Unknown placeholder; return the template verbatim so the user sees
+            # the typo in the footer rather than the line disappearing silently.
+            return template
+
+    def _build_outbound_payload(
+        self, content: str, *, prefer_post: bool = False, footer: str = "",
+    ) -> tuple[str, str]:
+        # Feishu clients render Markdown tables inside ``post`` ``md`` elements natively, so tables
         # take the common markdown path (no text downgrade). ``prefer_post`` lets ``send`` keep every
         # chunk of a split markdown reply as ``post`` even when a chunk alone looks like prose.
         # The previous table-downgrade branch forced any table-containing message to ``text``, which left
@@ -3627,8 +3834,17 @@ class FeishuAdapter(BasePlatformAdapter):
         # lets ``send`` treat the chunk as part of a larger markdown document: when a long markdown reply is
         # split at MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise mis-classify a plain-prose chunk
         # as ``text``. See #26841.
+        #
+        # ``footer`` appends a dim Agent/Model/Provider line to the post body when set
+        # (opt-in via ``extra.footer_template`` on the adapter). Plain-text payloads
+        # append the footer after a blank line so it visually separates from the body.
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+            return "post", _build_markdown_post_payload(content, footer=footer)
+        if footer:
+            return "text", json.dumps(
+                {"text": f"{content}\n\n{footer}" if content else footer},
+                ensure_ascii=False,
+            )
         return "text", json.dumps({"text": content}, ensure_ascii=False)
 
     @staticmethod
@@ -4051,9 +4267,22 @@ class FeishuAdapter(BasePlatformAdapter):
         return _sdk_build(CreateFileRequest, request_body=request_body)
 
     def _build_media_post_payload(self, *, caption: str, media_tag: Dict[str, str]) -> str:
-        payload = json.loads(_build_markdown_post_payload(caption))
+        # Re-use the outbound footer so media captions get the same Agent /
+        # Model / Provider line as text / markdown messages (footer is opt-in:
+        # an empty template resolves to "").
+        footer = self._resolve_outbound_footer()
+        payload = json.loads(_build_markdown_post_payload(caption, footer=footer))
         content = payload.setdefault("zh_cn", {}).setdefault("content", [])
-        content.append([media_tag])
+        if footer:
+            # _build_markdown_post_payload already appended the footer as the last
+            # row; insert the media tag right BEFORE it so the visual order is
+            # [caption body][media][footer] instead of [caption][footer][media].
+            if content and len(content) >= 2:
+                content.insert(len(content) - 1, [media_tag])
+            else:
+                content.append([media_tag])
+        else:
+            content.append([media_tag])
         return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod

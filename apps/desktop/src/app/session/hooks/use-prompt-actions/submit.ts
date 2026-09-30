@@ -44,7 +44,7 @@ import {
   resolveActiveTranscriptSession
 } from '../../../contrib/hooks/use-background-sync'
 import type { ClientSessionState } from '../../../types'
-import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
+import { sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 import { resolveSessionProfile } from '../use-session-actions/utils'
 

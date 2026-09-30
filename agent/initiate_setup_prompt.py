@@ -4,6 +4,7 @@ import importlib.util
 import json
 import re
 import threading
+from functools import partial
 from pathlib import Path
 from typing import NamedTuple
 
@@ -71,7 +72,7 @@ def build_initiate_setup_prompt(surface: str, tools, primary_profile: str) -> st
     }
     host_facts = _host_facts_module(skill_dir)
     # Waits on the scan the setup profile started at creation instead of scanning a second time.
-    scanned = host_facts.scan_outcome(*start_user_scan())
+    scanned = partial(host_facts.scan_outcome, *start_user_scan())
     # Same bytes the hook prints when the skill loads through inline shell.
     host = json.dumps(host_facts.collect(scanned), ensure_ascii=False, separators=(",", ":"))
     skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig").strip()

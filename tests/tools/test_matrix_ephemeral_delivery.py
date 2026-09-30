@@ -150,7 +150,9 @@ def _finish_gateway_loop(
 
 
 @pytest.mark.parametrize("gateway_loop", [False, True])
-@pytest.mark.parametrize("phase", ["resolution", "send", "revalidation"])
+@pytest.mark.parametrize(
+    "phase", ["before_start", "resolution", "send", "revalidation"]
+)
 def test_native_send_keeps_an_accepted_receipt_through_cancellation(
     monkeypatch, phase, gateway_loop
 ):
@@ -161,6 +163,7 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(
 
     started = threading.Event()
     release = threading.Event()
+    unblock = threading.Event()
 
     async def wait_for(event):
         while not event.is_set():
@@ -195,13 +198,22 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(
         gateway.start()
     runner = SimpleNamespace(_gateway_loop=loop)
     monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (runner, adapter))
+    if phase == "before_start" and loop is not None:
+        loop.call_soon_threadsafe(unblock.wait)
 
     async def scenario():
         task = asyncio.ensure_future(
             _send_matrix_via_adapter(SimpleNamespace(), "!room:example.org", "hello")
         )
-        await wait_for(started)
+        if phase != "before_start":
+            await wait_for(started)
+        elif loop is not None:
+            # Let the dispatch queue up behind the blocked gateway loop.
+            await asyncio.sleep(0.1)
         task.cancel()
+        if phase == "before_start":
+            await asyncio.sleep(0.1)
+            unblock.set()
         # A cancelled resolution never needs releasing. Releasing it could let it finish before
         # the cancellation reaches the gateway loop.
         if phase != "resolution":
@@ -215,6 +227,7 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(
         result = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
     finally:
         release.set()
+        unblock.set()
         if loop is not None and gateway is not None:
             _finish_gateway_loop(loop, gateway)
     accepted = {
@@ -224,11 +237,13 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(
         "message_id": "$accepted",
         "chat_type": "group",
     }
-    assert (result, adapter.sent) == (
-        ("cancelled", [])
-        if phase == "resolution"
-        else (accepted, ["!room:example.org"])
-    )
+    expected = {
+        "before_start": ("cancelled", 0, []),
+        "resolution": ("cancelled", 1, []),
+        "send": (accepted, 2, ["!room:example.org"]),
+        "revalidation": (accepted, 2, ["!room:example.org"]),
+    }
+    assert (result, adapter.resolutions, adapter.sent) == expected[phase]
 
 
 @pytest.mark.parametrize("gateway_state", ["blocked", "stopped", "closed"])

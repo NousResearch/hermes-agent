@@ -801,32 +801,43 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
     has_common_ancestor = bool(
         merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
-    if pre_pull_sha:
-        from datetime import datetime as _dt, timezone
-        # SHA suffix so two updates in the same second get distinct refs.
-        kind = "diverged" if has_common_ancestor else "orphan"
-        rescue_ref = (
-            f"refs/hermes-update-backups/{kind}-{branch}-"
-            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
-        head = (
-            f"  ⚠ Local history has diverged from origin/{branch} — "
-            if has_common_ancestor else
-            f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — ")
-        if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
-            print(
-                f"{head}backed up current HEAD to {rescue_ref} before resetting. "
-                f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
-            if has_common_ancestor:
-                dropped = (_git_run(
-                    git_cmd, ["rev-list", "--count", f"origin/{branch}..{pre_pull_sha}"]).stdout or "").strip()
-                print(f"    {dropped or 'Some'} commit(s) not on origin/{branch} leave the branch; "
-                      f"list them with: git log origin/{branch}..{rescue_ref}")
-        else:
-            # update-ref failure is intentionally non-fatal, but never claim a backup exists.
-            print(
-                f"{head}attempted to back up current HEAD to {rescue_ref} before resetting, "
-                f"but the backup write failed (pre-reset SHA was {pre_pull_sha}).")
-        _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
+    if not pre_pull_sha:
+        print(
+            "✗ Fast-forward failed, but Hermes could not identify the current HEAD "
+            "to preserve it before reset.")
+        print("  Update stopped without resetting. Inspect the checkout, then retry.")
+        sys.exit(1)
+
+    from datetime import datetime as _dt, timezone
+    # SHA suffix so two updates in the same second get distinct refs.
+    kind = "diverged" if has_common_ancestor else "orphan"
+    rescue_ref = (
+        f"refs/hermes-update-backups/{kind}-{branch}-"
+        f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
+    head = (
+        f"  ⚠ Local history has diverged from origin/{branch} — "
+        if has_common_ancestor else
+        f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — ")
+    backup_result = _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha])
+    if backup_result.returncode != 0:
+        print(f"{head}could not back up current HEAD to {rescue_ref}.")
+        detail = (backup_result.stderr or backup_result.stdout or "").strip()
+        if detail:
+            print(f"    {detail.splitlines()[0]}")
+        print(
+            f"  Update stopped without resetting. Preserve the commit manually with: "
+            f"git -C {shlex.quote(str(_m().PROJECT_ROOT))} branch <name> {pre_pull_sha}")
+        sys.exit(1)
+
+    print(
+        f"{head}backed up current HEAD to {rescue_ref} before resetting. "
+        f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
+    if has_common_ancestor:
+        dropped = (_git_run(
+            git_cmd, ["rev-list", "--count", f"origin/{branch}..{pre_pull_sha}"]).stdout or "").strip()
+        print(f"    {dropped or 'Some'} commit(s) not on origin/{branch} leave the branch; "
+              f"list them with: git log origin/{branch}..{rescue_ref}")
+    _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
     print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
     reset_result = _git_run(git_cmd, ["reset", "--hard", merge_ref])
     if reset_result.returncode != 0:

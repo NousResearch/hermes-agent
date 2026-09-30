@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as hermes_main, update_cmd
+from hermes_cli._early_recovery import interrupted_pull_marker
 from tests.hermes_cli.test_update_target_identity import git, update_tree  # noqa: F401
 
 
@@ -51,26 +52,32 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
     monkeypatch.setattr(subprocess, 'run', fault)
     if failure == 'head':
         monkeypatch.setattr(update_cmd, '_capture_head_sha', lambda *_: None)
-    if failure == 'reset':
+    if failure in {'ref', 'head', 'reset'}:
         with pytest.raises(SystemExit) as error:
             hermes_main.cmd_update(t.args)
         assert error.value.code == 1
         assert not t.requests
         assert git(t.clone, 'rev-parse', 'HEAD') == before
         assert not (t.clone / 'untracked.txt').exists()
+        assert not interrupted_pull_marker(t.clone).exists()
     else:
         hermes_main.cmd_update(t.args)
         assert len(t.requests) == 1
         assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
         assert (t.clone / 'untracked.txt').exists() is (not keep)
-    assert len(resets) == 1
+    assert len(resets) == (failure not in {'ref', 'head'})
     stashes = git(t.clone, 'stash', 'list')
-    assert bool(stashes) is (keep or failure == 'reset')
+    assert bool(stashes) is (keep or failure in {'ref', 'head', 'reset'})
     if stashes:
         assert git(t.clone, 'show', 'stash@{0}^3:untracked.txt') == 'local edit'
     output = capsys.readouterr().out
     if failure == 'ref':
-        assert 'backup write failed' in output and 'backed up current HEAD' not in output
+        assert 'could not back up current HEAD' in output
+        assert 'Update stopped without resetting' in output
+        assert 'backed up current HEAD' not in output
+    if failure == 'head':
+        assert 'could not identify the current HEAD' in output
+        assert 'Update stopped without resetting' in output
     if failure == 'reset':
         assert 'preserved in stash' in output
     if failure not in {'ref', 'head'}:

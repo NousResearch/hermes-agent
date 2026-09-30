@@ -1,16 +1,23 @@
+import threading
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+
+# These handlers run on the RPC pool. Two overlapping kickoffs must not both find no setup
+# profile and create a second one, or both find an empty setup chat and seed it twice.
+_setup_profile_lock = threading.Lock()
 
 
 @method("onboarding.ensure_setup_profile")
 def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import ensure_setup_profile
     try:
-        setup = ensure_setup_profile()
-        if setup.created:
-            _mirror_launch_credentials(setup.path, {"share_auth": True})
+        with _setup_profile_lock:
+            setup = ensure_setup_profile()
+            if setup.created:
+                _mirror_launch_credentials(setup.path, {"share_auth": True})
     except Exception as e:
         return _err(rid, 5073, str(e))
     _start_setup_scan(setup.path)
@@ -22,19 +29,20 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import SETUP_CHAT_TITLE, ensure_setup_profile
     from hermes_state_registry import acquire, release_or_close
     try:
-        setup = ensure_setup_profile()
-        if setup.created:
-            _mirror_launch_credentials(setup.path, {"share_auth": True})
-        db = acquire(setup.path / "state.db")
-        try:
-            row = db.get_session_by_title(SETUP_CHAT_TITLE)
-            if row is None:
-                row = {"id": db.create_session(new_session_id(), "desktop"), "message_count": 0}
-                db.set_session_title(row["id"], SETUP_CHAT_TITLE)
-            if not row["message_count"]:
-                row["message_count"] = db.append_messages_batch(row["id"], _coerce_seed_history(params.get("messages")))
-        finally:
-            release_or_close(db)
+        with _setup_profile_lock:
+            setup = ensure_setup_profile()
+            if setup.created:
+                _mirror_launch_credentials(setup.path, {"share_auth": True})
+            db = acquire(setup.path / "state.db")
+            try:
+                row = db.get_session_by_title(SETUP_CHAT_TITLE)
+                if row is None:
+                    row = {"id": db.create_session(new_session_id(), "desktop"), "message_count": 0}
+                    db.set_session_title(row["id"], SETUP_CHAT_TITLE)
+                if not row["message_count"]:
+                    row["message_count"] = db.append_messages_batch(row["id"], _coerce_seed_history(params.get("messages")))
+            finally:
+                release_or_close(db)
     except Exception as e:
         return _err(rid, 5075, str(e))
     _start_setup_scan(setup.path)
@@ -62,14 +70,15 @@ def _(rid, params: dict) -> dict:
 @method("onboarding.reset_setup_profile")
 def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import find_setup_profile, reset_setup_profile
-    found = find_setup_profile()
-    if found is None:
-        return _err(rid, 4072, "no setup profile to reset")
-    _clear_setup_sessions(found[1])
-    try:
-        setup = reset_setup_profile()
-    except Exception as e:
-        return _err(rid, 5074, str(e))
+    with _setup_profile_lock:
+        found = find_setup_profile()
+        if found is None:
+            return _err(rid, 4072, "no setup profile to reset")
+        _clear_setup_sessions(found[1])
+        try:
+            setup = reset_setup_profile()
+        except Exception as e:
+            return _err(rid, 5074, str(e))
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "reset": True})
 
 

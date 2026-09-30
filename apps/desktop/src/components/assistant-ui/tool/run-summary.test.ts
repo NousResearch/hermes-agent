@@ -147,13 +147,19 @@ describe('summarizeToolRun', () => {
     expect(running([...recalls, saves[0]])).toBe('Checked memory 3 times, saving 1 memory')
   })
 
-  it('names agents launched, todos updated and questions asked', () => {
-    const batch = tool('delegate_task', { tasks: [{ goal: 'a' }, { goal: 'b' }, { goal: 'c' }] })
-
-    expect(settled([batch, tool('delegate_task', { goal: 'd' })])).toBe('Launched 4 agents')
+  it('names todos updated', () => {
     expect(settled([tool('todo', { todos: [] }), tool('todo', { todos: [] })])).toBe('Updated todos twice')
-    expect(settled([tool('clarify', { questions: [{ question: 'a' }, { question: 'b' }] })])).toBe('Asked 2 questions')
     expect(running([tool('todo')])).toBe('Updating todos')
+  })
+
+  // A server is memory by its own name, not because the word appears in it;
+  // the control is an ordinary server read the same way.
+  it('does not claim an MCP server as memory because its name mentions memory', () => {
+    expect(settled([tool('mcp__github__list_issues')])).toBe('Called GitHub')
+    expect(settled([tool('mcp__memory_server__list_databases')])).toBe('Called Memory Server')
+    expect(settled([tool('mcp__basic_memory__create_entities')])).toBe('Called Basic Memory')
+    expect(settled([tool('mcp__memory__create_entities', {})])).toBe('Saved 1 memory')
+    expect(settled([tool('mcp__memory__read_graph', {})])).toBe('Checked memory')
   })
 
   // The drafting status line speaks the same words the run header will.
@@ -163,5 +169,8 @@ describe('summarizeToolRun', () => {
     expect(toolPresentVerb('mnemosyne_recall')).toBe('Checking memory')
     expect(toolPresentVerb('read_file')).toBe('Reading')
     expect(toolPresentVerb('search_files')).toBe('Searching')
+    // Card tools never reach a run summary, but the drafting line still names them.
+    expect(toolPresentVerb('clarify')).toBe('Asking')
+    expect(toolPresentVerb('delegate_task')).toBe('Launching')
   })
 })

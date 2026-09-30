@@ -126,10 +126,24 @@ const TOOL_CATEGORY: Record<string, RunCategory> = {
 const MCP_TOOL_NAME = /^mcp__(.+?)__(.+)$/
 
 // Memory reads as memory whichever surface it came through — a plugin
-// (`mnemosyne_recall`) or an MCP server (`mcp__mnemosyne__store`). Only the
-// tool part decides recall versus write, never the server name.
+// (`mnemosyne_recall`) or an MCP server (`mcp__mnemosyne__store`). For an MCP
+// call the server decides whether it is memory at all, by exact name: a
+// substring would claim any server that merely mentions memory. Only the tool
+// part then decides recall versus write.
 const MEMORY_TOOL = /mnemosyne|memory/i
-const MEMORY_RECALL = /recall|search|get|list|stats/i
+const MEMORY_MCP_SERVER = /^(?:mnemosyne|memory)$/i
+const MEMORY_RECALL = /recall|search|read|open|get|list|stats/i
+
+function memoryCategory(toolName: string): 'recall' | 'save' | undefined {
+  const mcp = MCP_TOOL_NAME.exec(toolName)
+  const isMemory = mcp ? MEMORY_MCP_SERVER.test(mcp[1]) : MEMORY_TOOL.test(toolName)
+
+  if (!isMemory) {
+    return undefined
+  }
+
+  return MEMORY_RECALL.test(mcp ? mcp[2] : toolName) ? 'recall' : 'save'
+}
 
 // Servers whose brand casing a title-case guess would get wrong.
 const MCP_SERVER_NAME: Record<string, string> = {
@@ -157,13 +171,7 @@ function mcpServerName(server: string): string {
 const CATEGORY_RULES: readonly ((toolName: string) => CategoryKey | undefined)[] = [
   name => (isFileEditTool(name) ? 'edit' : undefined),
   name => TOOL_CATEGORY[name] as CategoryKey | undefined,
-  name => {
-    if (!MEMORY_TOOL.test(name)) {
-      return undefined
-    }
-
-    return MEMORY_RECALL.test(MCP_TOOL_NAME.exec(name)?.[2] ?? name) ? 'recall' : 'save'
-  },
+  memoryCategory,
   name => {
     const server = MCP_TOOL_NAME.exec(name)?.[1]
 
@@ -201,17 +209,16 @@ function categoryRank(category: CategoryKey): number {
 }
 
 // Tools that act on a batch in one call, and the argument holding the batch.
+// `clarify` and `delegate_task` batch too, but they render as cards and never
+// reach a run summary (`isCardTool`); their copy above serves the drafting line.
 const BATCH_FIELD: Record<string, string> = {
-  clarify: 'questions',
-  delegate_task: 'tasks',
   web_extract: 'urls'
 }
 
 /**
  * How many things one call acted on. One call is one thing except for the
- * batching tools: `web_extract` takes up to five URLs, `delegate_task` a list
- * of tasks and `clarify` a list of questions — counting their calls would
- * report five fetched pages as one.
+ * batching tools: `web_extract` takes up to five URLs — counting its calls
+ * would report five fetched pages as one.
  */
 function unitCount(tool: ToolCallLike): number {
   const field = BATCH_FIELD[tool.toolName]

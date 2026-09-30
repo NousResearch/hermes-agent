@@ -88,7 +88,8 @@ async def test_access_changes_during_io_refuse_results_and_mutations(action, wai
     args = {"question": "Which?", "answers": ["A", "B"]} if action == "create" else {
         "poll_id": "$poll", "answers": ["a"],
     }
-    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id="@alice:server", transport_adapter=adapter)
+    tokens = set_session_vars(platform="matrix", chat_id=ROOM, user_id="@alice:server", transport_adapter=adapter,
+                              transport_loop=asyncio.get_running_loop())
     try:
         pending = asyncio.create_task(asyncio.to_thread(_dispatch_in_worker, f"matrix_poll_{action}", args))
         await entered.wait()
@@ -160,6 +161,7 @@ async def test_registry_checks_the_owning_profile_policy_across_thread_and_loop_
         with _profile_runtime_scope(tmp_path / label):
             tokens = set_session_vars(
                 platform="matrix", chat_id=ROOM, user_id="@alice:server", transport_adapter=adapters[label],
+                transport_loop=asyncio.get_running_loop(),
             )
             try:
                 output = await asyncio.to_thread(_dispatch_in_worker, "matrix_poll_create", {

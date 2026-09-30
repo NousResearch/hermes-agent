@@ -294,9 +294,9 @@ async def test_encrypted_replacement_requires_consistent_plaintext_relation(rela
 
     assert state == (
         MatrixEffectiveEvent({"msgtype": "m.text", "body": "after"}, original["content"],
-                             edited=True, replacement_id="$edit")
+                             edited=True, replacement_id="$edit", event_type="m.room.message")
         if relation_kind in {"matching", "outer-only"} else
-        MatrixEffectiveEvent({"msgtype": "m.text", "body": "before"}, original["content"])
+        MatrixEffectiveEvent({"msgtype": "m.text", "body": "before"}, original["content"], event_type="m.room.message")
     )
 
 

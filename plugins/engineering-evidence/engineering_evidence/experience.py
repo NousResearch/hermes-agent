@@ -10,11 +10,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent.redact import redact_for_egress
+
 from .receipts import validate_receipt
 
 
-_SECRET_RE = re.compile(
-    r"(?i)(token|password|secret|api[_-]?key|private[_-]?key)\s*([:=])\s*([^\s,;]+)"
+# Learning records are persisted for sync: discard the complete labelled value,
+# including short opaque Bearer values outside the shared egress pattern's floor.
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(token|password|secret|api[_-]?key|private[_-]?key)\s*([:=])\s*([^\r\n,;]+)"
+)
+_SECRET_FIELD_RE = re.compile(
+    r"(?i)(?:.*[_-])?(?:token|password|secret|api[_-]?key|private[_-]?key)"
 )
 _SECRET_NAME_RE = re.compile(r"(?i)\b(?:HERMES|GITHUB|OPENAI|AWS)_[A-Z0-9_]*(?:TOKEN|KEY|SECRET)\b")
 _VALIDATOR_ROLE = "memory-validator"
@@ -22,12 +29,16 @@ _VALIDATOR_ROLE = "memory-validator"
 
 def _sanitize(value: Any) -> Any:
     if isinstance(value, dict):
-        return {str(key): _sanitize(item) for key, item in value.items()}
+        return {
+            _sanitize(str(key)): "<redacted>" if _SECRET_FIELD_RE.fullmatch(str(key)) else _sanitize(item)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [_sanitize(item) for item in value]
     if not isinstance(value, str):
         return value
-    value = _SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value)
+    value = redact_for_egress(value)
+    value = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value)
     return _SECRET_NAME_RE.sub("<secret-name>", value)
 
 

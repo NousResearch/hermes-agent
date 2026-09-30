@@ -138,16 +138,25 @@ def test_test_discovery_preserves_unavailable_runs_as_degraded() -> None:
     assert receipt["incomplete_reasons"] == ["pytest missing"]
 
 
-def test_experience_candidate_is_vault_compatible_and_secret_safe(tmp_path: Path) -> None:
+@pytest.mark.parametrize("credential", [
+    "token: Bearer syntheticopaque123456789012345",
+    "api_key: Bearer ghp_syntheticCredential1234567890",
+    "password: Bearer syntheticopaque123456789012345",
+    "token=Bearer syntheticopaque123456789012345",
+    "token=Bearer shortfake",
+    "private_key: arbitraryfake",
+    "api_key = sk-proj-syntheticCredential1234567890",
+])
+def test_experience_candidate_is_vault_compatible_and_secret_safe(tmp_path: Path, credential: str) -> None:
     candidate = {
         "repository": "example/repo",
         "head_sha": "c" * 40,
         "task_id": "task-1",
-        "problem": "login rejected valid tokens",
+        "problem": credential,
         "affected_files": ["auth.py"],
         "failure_mechanisms": ["stale cache"],
         "solution": "invalidate the cache on key rotation",
-        "tests": [{"argv": ["pytest", "-q"], "status": "passed"}],
+        "tests": [{"argv": ["pytest", "-q", credential], "status": "passed", "password": "nestedfakepassword"}],
         "outcome": "resolved",
     }
 
@@ -157,7 +166,9 @@ def test_experience_candidate_is_vault_compatible_and_secret_safe(tmp_path: Path
     assert "schema_name: agent_learning_record_v1" in metadata
     assert "classification: diagnostic-only" in metadata
     assert "sync_owned: true" in metadata
-    assert "HERMES_GITHUB_BOT_TOKEN" not in body
+    assert credential.split()[-1] not in body
+    assert "nestedfakepassword" not in body
+    assert "pytest" in body
     assert json.loads(body)["outcome"] == "resolved"
 
 
@@ -314,3 +325,29 @@ def test_kanban_workflow_creates_explicit_bounded_children(tmp_path: Path) -> No
         "review-verification-steward",
         "operations-steward",
     }
+
+
+def test_experience_cli_and_promotion_scrub_persisted_fields(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    credential = "token=Bearer shortfake"
+    tests_path = tmp_path / "tests.json"
+    tests_path.write_text(json.dumps([{"argv": [credential], "status": "passed"}]), encoding="utf-8")
+    args = argparse.Namespace(
+        engineering_evidence_action="experience", vault=tmp_path,
+        repository="example/repo", head_sha="a" * 40, task_id="task-1",
+        problem=credential, affected_file=[credential], failure=[credential],
+        solution=credential, test_json=tests_path, outcome=credential,
+    )
+    assert engineering_evidence_command(args) == 0
+    path = Path(json.loads(capsys.readouterr().out)["path"])
+    assert "shortfake" not in path.read_text(encoding="utf-8")
+    promote_experience_candidate(path, validator_role="memory-validator", rationale=credential)
+    assert "shortfake" not in path.with_name(path.name + ".promotion.json").read_text(encoding="utf-8")
+
+    def unavailable(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("synthetic redactor failure")
+
+    monkeypatch.setattr("agent.redact.redact_sensitive_text", unavailable)
+    existing = set(path.parent.iterdir())
+    assert engineering_evidence_command(args) == 1
+    assert json.loads(capsys.readouterr().out)["stored"] is False
+    assert set(path.parent.iterdir()) == existing

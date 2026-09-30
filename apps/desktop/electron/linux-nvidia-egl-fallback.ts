@@ -20,8 +20,18 @@
  * boots with hardware GL and a `booting` marker; if the GPU process dies
  * before the first window is revealed, the marker turns `fallback` (sticky
  * per app version + full driver version) and the app relaunches once with
- * `--use-angle=swiftshader`. A healthy boot marks `ok` and keeps full
- * acceleration. An app update re-probes once instead of degrading forever.
+ * `--use-angle=swiftshader`. An app update re-probes once instead of degrading
+ * forever.
+ *
+ * The `booting` witness now outlives first paint (#129174): field reports show
+ * the "GPU process isn't usable" FATAL abort landing 1–2.5 minutes into the
+ * run — long after the window is on screen. Marking `ok` at reveal erased the
+ * only witness the abort leaves behind, so every launch re-probed the broken
+ * driver and died in a crash loop. Instead, `ok` is only written once the GPU
+ * has survived a grace window (`NVIDIA_EGL_GPU_GRACE_MS`) past first paint, or
+ * on a clean quit (`nvidiaEglMarkerAfterCleanExit`) — a user-initiated exit
+ * proves the run ended without a GPU abort. Any unclean death inside the grace
+ * window leaves `booting` behind and the next launch engages the fallback.
  *
  * If Chromium's "GPU process isn't usable" FATAL abort wins the race and the
  * process dies before the handler runs, the leftover `booting` marker engages
@@ -47,6 +57,15 @@ const OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
 export const NVIDIA_EGL_FALLBACK_MARKER_FILENAME = 'nvidia-egl-fallback.json'
+
+/**
+ * How long the GPU must keep running past first paint before the probe counts
+ * as healthy. Sized past the observed "GPU process isn't usable" FATAL aborts
+ * (1–2.5 min into the run, #129174) with margin. Until it elapses — or a clean
+ * quit proves the run ended safely — the `booting` witness stays on disk so an
+ * unclean death is still attributable to the GPU probe on the next launch.
+ */
+export const NVIDIA_EGL_GPU_GRACE_MS = 5 * 60 * 1000
 
 /**
  * `child-process-gone` reasons that witness a broken GPU child. `killed` is
@@ -300,9 +319,9 @@ export function shouldRelaunchForNvidiaGpuDeath({
 }
 
 /**
- * After the first window is revealed: the GPU survived this boot. Keep a
- * sticky fallback when we launched with SwiftShader, otherwise mark a clean
- * boot so future launches trust the GPU again.
+ * After the GPU has survived the grace window past first paint: the probe
+ * passed. Keep a sticky fallback when we launched with SwiftShader, otherwise
+ * mark a clean boot so future launches trust the GPU again.
  */
 export function nvidiaEglMarkerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
@@ -314,4 +333,29 @@ export function nvidiaEglMarkerAfterSuccessfulBoot(options: {
   }
 
   return { state: 'ok' }
+}
+
+/**
+ * On a clean quit: the run ended without a GPU abort, so an unresolved `booting`
+ * witness is resolved to `ok`. Returns `null` when there is nothing to write —
+ * an on-disk `fallback` or `ok` marker is never rewritten here (the SwiftShader
+ * relaunch path exits through the same exit plumbing with a fresh `fallback`
+ * marker that must survive untouched). A fallback launch that exits cleanly
+ * keeps its sticky marker, matching the grace-timer write. (#129174)
+ */
+export function nvidiaEglMarkerAfterCleanExit(options: {
+  marker: NvidiaEglMarker | null
+  fallbackActive: boolean
+  appVersion?: string
+  driverVersion?: string | null
+}): NvidiaEglMarker | null {
+  if (options.fallbackActive) {
+    return nvidiaEglMarkerAfterSuccessfulBoot(options)
+  }
+
+  if (options.marker?.state === 'booting') {
+    return { state: 'ok' }
+  }
+
+  return null
 }

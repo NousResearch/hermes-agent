@@ -1217,12 +1217,29 @@ class SessionMessagesMixin:
         """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
         time (before the agent ran) and the turn prologue then rewrote the prompt it persists (@-file
         expansion, native image parts): the early row must show what the transcript will replay, not the
-        raw keystrokes, and the turn must not append a second row for the same input."""
+        raw keystrokes, and the turn must not append a second row for the same input.
+
+        The rewrite re-keys the display index: ``messages_display_identity_update`` nulls
+        ``display_identity``/``display_order`` the moment ``content`` changes (the identity IS the
+        content hash), and nothing rebuilt them on the write path, so image-bearing user rows — the
+        multimodal rewrite is their path — sat at ``display_order = NULL`` until some reader
+        backfilled them, dropping them from the indexed display projections in the meantime
+        (#128468). Re-fold the index in the same transaction: the row keeps a display slot
+        continuously, never mind which projection reads next."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        return self._write_rowcount(
-            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), row_id, session_id))
+
+        def _do(conn):
+            rowcount = conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+                (self._encode_content(content), row_id, session_id)).rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            if rowcount and {"display_order", "display_identity"} <= set(self._message_column_names(conn)):
+                self._reconcile_display_orders(conn, session_id)
+            return rowcount
+
+        return self._execute_write(_do)
 
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by

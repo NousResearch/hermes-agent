@@ -184,6 +184,22 @@ describe('ChatSidebar event socket', () => {
     expect(reloadMocks.maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401)
   })
 
+  it("ignores the synchronous sidecar state replay", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+    await vi.waitFor(() => expect(gatewayMocks.onState).toHaveBeenCalled());
+
+    const redialHandler = gatewayMocks.onState.mock.calls[1][0] as (s: string) => void;
+    // The mock invokes the initial replay synchronously during subscription.
+    // A later closed transition must still schedule a retry.
+    redialHandler("closed");
+    await vi.waitFor(
+      () => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2),
+      { timeout: 3000 },
+    );
+  });
+
   it("auto-redials the JSON-RPC sidecar after a transient close (#95951)", async () => {
     const { ChatSidebar } = await import("./ChatSidebar");
 

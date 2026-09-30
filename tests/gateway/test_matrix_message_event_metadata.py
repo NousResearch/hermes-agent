@@ -254,6 +254,18 @@ _REPLY_WITHOUT_QUOTE = {
             {**_REPLY_WITHOUT_QUOTE, "text": "because reasons", "reply_to_text": "original question"},
             id="html-fallback",
         ),
+        pytest.param(
+            False,
+            {"body": "> * <@carol:example.org> waves\n\nhello back"},
+            {
+                "text": "hello back",
+                "reply_to_message_id": "$target1",
+                "reply_to_text": "waves",
+                "reply_to_author_id": "@carol:example.org",
+                "reply_to_author_name": "carol",
+            },
+            id="emote-fallback",
+        ),
     ],
 )
 async def test_reply_strips_only_a_reply_fallback(monkeypatch, require_mention, content, expected):

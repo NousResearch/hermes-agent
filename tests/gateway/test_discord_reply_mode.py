@@ -141,6 +141,21 @@ class TestSendWithReplyToMode:
 
         assert channel.send.call_args.kwargs["content"] == "Mission Control response"
 
+    @pytest.mark.asyncio
+    async def test_streamed_profile_reply_edit_has_copy_safe_role_label(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+        msg = AsyncMock()
+        channel.get_partial_message = MagicMock(return_value=msg)
+
+        await adapter.edit_message(
+            "12345", "42", "Streamed result", finalize=True,
+            metadata={"hermes_profile": "strategic-industrial-intelligence"},
+        )
+
+        msg.edit.assert_awaited_once_with(
+            content="**[Strategic Industrial Intelligence]**\n\nStreamed result",
+        )
+
 
     @pytest.mark.asyncio
     async def test_first_mode_constructs_reference_without_fetch(self):

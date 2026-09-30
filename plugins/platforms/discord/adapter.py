@@ -3214,6 +3214,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             channel = await self._resolve_channel(chat_id)
             msg = channel.get_partial_message(int(message_id))
+            content = self._role_labeled_content(content, metadata)
             formatted = self.format_message(content)
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False

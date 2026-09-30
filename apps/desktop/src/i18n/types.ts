@@ -3646,6 +3646,17 @@ export interface Translations {
     stayTitle: string
     stayText: string
   }
+  /** The app's own tour, run when `gui_tour` starts with no steps. */
+  appTour: {
+    sessions: { title: string; text: string }
+    composer: { title: string; text: string }
+    newSession: { title: string; text: string }
+    model: { title: string; text: string }
+    modelLocal: string
+    capabilities: { title: string; text: string }
+    messaging: { title: string; text: string }
+    rightPane: { title: string; text: string }
+  }
   guidedGreeting: {
     line: string
     nameSuggestion: (name: string) => string

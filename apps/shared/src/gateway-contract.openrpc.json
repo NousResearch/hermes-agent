@@ -36652,6 +36652,18 @@
             ],
             "default": null,
             "title": "Step Index"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preset"
           }
         },
         "required": [

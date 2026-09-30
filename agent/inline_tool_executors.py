@@ -272,6 +272,7 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.tour_tool", "tour_tool", "tour_callback",
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
+        ("preset", "preset"),
     ),
     "setup_choose": _callback_tool(
         "tools.setup_choose_tool", "setup_choose_tool", "setup_choose_callback",

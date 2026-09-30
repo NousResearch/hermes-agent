@@ -236,6 +236,7 @@ class TourRequestParams(ServerRequestParams):
     side: str | None = None
     steps: list[TourStep] | None = None
     step_index: int | None = None
+    preset: str | None = None
 
 
 server_request("tour", params=TourRequestParams, result=ValueResult,

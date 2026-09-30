@@ -4450,6 +4450,7 @@ export interface TourRequestParams {
   side?: string | null
   steps?: TourStep[] | null
   step_index?: number | null
+  preset?: string | null
 }
 export interface TourStep {
   selector?: string | null

@@ -484,3 +484,399 @@ main[data-home='true'] .jarvis-tips-corner {
     transition: none;
   }
 }
+
+/* ── Premium pass: frames, icon tiles, choices, motion ──────────────────── */
+
+/* A card is told apart by a gradient hairline (lit top-left, faint bottom-right) and a soft lift. */
+.jarvis-panel {
+  position: relative;
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--glass-bg-strong) 86%, transparent),
+    color-mix(in srgb, var(--glass-bg-strong) 62%, transparent)
+  );
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 18px 38px -26px rgb(20 32 80 / 0.45),
+    0 2px 6px -3px rgb(20 32 80 / 0.12);
+}
+
+.jarvis-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--ui-accent) 38%, rgb(255 255 255 / 0.7)),
+    color-mix(in srgb, var(--ui-accent) 6%, transparent) 42%,
+    color-mix(in srgb, #8b5cf6 22%, transparent)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+.jarvis-well {
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.06), inset 0 0 0 1px color-mix(in srgb, var(--ui-text-primary) 5%, transparent);
+}
+
+.jarvis-field {
+  transition:
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+}
+
+.jarvis-field:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-accent) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 40%, transparent);
+}
+
+/* The little tinted tile behind a card's icon. */
+.jarvis-icon-chip {
+  color: var(--ui-accent);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--ui-accent) 24%, rgb(255 255 255 / 0.5)),
+    color-mix(in srgb, #8b5cf6 12%, transparent)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.6),
+    inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 24%, transparent);
+}
+
+/* Each model maker wears its own colour (set as --brand on the tile). */
+.model-brand-tile {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--brand) 26%, rgb(255 255 255 / 0.55)),
+    color-mix(in srgb, var(--brand) 9%, transparent)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.7),
+    inset 0 0 0 1px color-mix(in srgb, var(--brand) 30%, transparent),
+    0 6px 12px -8px color-mix(in srgb, var(--brand) 70%, transparent);
+}
+
+:root.dark .model-brand-tile {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--brand) 34%, rgb(255 255 255 / 0.08)),
+    color-mix(in srgb, var(--brand) 12%, transparent)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    inset 0 0 0 1px color-mix(in srgb, var(--brand) 40%, transparent),
+    0 6px 14px -8px color-mix(in srgb, var(--brand) 80%, transparent);
+}
+
+/* Selectable rows (model presets, agents). */
+.jarvis-choice {
+  transition:
+    background-color 160ms ease,
+    box-shadow 200ms ease,
+    transform 160ms ease;
+}
+
+.jarvis-choice:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-accent) 9%, transparent);
+  transform: translateX(2px);
+}
+
+.jarvis-choice:active:not(:disabled) {
+  transform: translateX(1px) scale(0.995);
+}
+
+.jarvis-choice-on {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ui-accent) 18%, transparent),
+    color-mix(in srgb, #8b5cf6 8%, transparent)
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 38%, transparent);
+}
+
+/* The work-mode segments: the lit one is a gradient pill, the others are quiet. */
+.jarvis-segment {
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 220ms ease,
+    transform 160ms ease;
+}
+
+.jarvis-segment:hover:not(:disabled):not(.jarvis-segment-on) {
+  background: color-mix(in srgb, var(--ui-accent) 10%, transparent);
+}
+
+.jarvis-segment:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.jarvis-segment-on {
+  background: var(--czesiek-grad);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 8px 18px -8px rgb(79 125 255 / 0.7);
+}
+
+/* Profile avatars: initial on a gradient disc, a live dot on the active one. */
+.jarvis-avatar {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--ui-accent) 30%, rgb(255 255 255 / 0.5)), color-mix(in srgb, #8b5cf6 26%, transparent));
+  color: var(--ui-accent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.6), inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 28%, transparent);
+}
+
+.jarvis-avatar-live::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow:
+    0 0 0 2px var(--glass-bg-strong),
+    0 0 10px #34d399;
+}
+
+/* Popover / dropdown surface. */
+.jarvis-menu {
+  border: 0;
+  background: color-mix(in srgb, var(--glass-bg) 98%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 0 0 1px color-mix(in srgb, var(--ui-accent) 18%, transparent),
+    0 24px 50px -20px rgb(20 32 80 / 0.55);
+  backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+}
+
+.jarvis-menu-item {
+  transition: background-color 140ms ease;
+}
+
+.jarvis-menu-item:hover {
+  background: color-mix(in srgb, var(--ui-accent) 12%, transparent);
+}
+
+/* Cards and rows rise in, one after the other. */
+@keyframes jarvis-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.jarvis-rise {
+  animation: jarvis-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.jarvis-dashboard__rail > .jarvis-rise:nth-child(2) { animation-delay: 40ms; }
+.jarvis-dashboard__rail > .jarvis-rise:nth-child(3) { animation-delay: 90ms; }
+.jarvis-dashboard__rail > .jarvis-rise:nth-child(4) { animation-delay: 140ms; }
+.jarvis-dashboard__rail > .jarvis-rise:nth-child(5) { animation-delay: 190ms; }
+.jarvis-dashboard__rail > .jarvis-rise:nth-child(6) { animation-delay: 240ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-rise {
+    animation: none;
+  }
+
+  .jarvis-choice,
+  .jarvis-segment,
+  .jarvis-glass-hover {
+    transition: none;
+  }
+
+  .jarvis-choice:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ── Chat composer: glass controls ──────────────────────────────────────── */
+
+.jarvis-ctl {
+  background: color-mix(in srgb, var(--glass-bg-strong) 55%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 0 0 1px color-mix(in srgb, var(--ui-text-primary) 8%, transparent);
+  transition:
+    background-color 160ms ease,
+    box-shadow 200ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.jarvis-ctl:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-accent) 14%, var(--glass-bg-strong));
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 38%, transparent),
+    0 8px 16px -10px color-mix(in srgb, var(--ui-accent) 60%, transparent);
+  transform: translateY(-1px);
+}
+
+.jarvis-ctl:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* A toggle that is on: lit from within. */
+.jarvis-ctl-on {
+  color: var(--ui-accent);
+  background: color-mix(in srgb, var(--ui-accent) 18%, var(--glass-bg-strong));
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 50%, transparent),
+    0 0 14px -2px color-mix(in srgb, var(--ui-accent) 55%, transparent);
+}
+
+/* Send / talk: the one gradient action of the composer. */
+.jarvis-ctl-primary {
+  background: var(--czesiek-grad);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.4),
+    0 10px 22px -8px rgb(79 125 255 / 0.75);
+  transition:
+    filter 160ms ease,
+    box-shadow 200ms ease,
+    transform 160ms ease;
+}
+
+.jarvis-ctl-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px) scale(1.04);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    0 14px 28px -8px rgb(79 125 255 / 0.85);
+}
+
+.jarvis-ctl-primary:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.jarvis-ctl-primary:disabled {
+  background: color-mix(in srgb, var(--ui-text-primary) 14%, transparent);
+  color: var(--ui-text-tertiary);
+  box-shadow: none;
+}
+
+/* The input surface: a lit gradient hairline, and a soft aura while it has focus. */
+[data-jarvis-shell] [data-slot='composer-surface'] {
+  border-color: color-mix(in srgb, var(--ui-accent) 22%, rgb(255 255 255 / 0.4));
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 18px 40px -24px rgb(30 41 110 / 0.5);
+  transition:
+    border-color 200ms ease,
+    box-shadow 260ms ease;
+}
+
+[data-jarvis-shell] [data-slot='composer-surface']:focus-within {
+  border-color: color-mix(in srgb, var(--ui-accent) 60%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 0 0 3px color-mix(in srgb, var(--ui-accent) 16%, transparent),
+    0 22px 44px -22px color-mix(in srgb, var(--ui-accent) 55%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-ctl,
+  .jarvis-ctl-primary,
+  [data-jarvis-shell] [data-slot='composer-surface'] {
+    transition: none;
+  }
+
+  .jarvis-ctl:hover:not(:disabled),
+  .jarvis-ctl-primary:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ── Every page: the same list + detail surfaces ────────────────────────── */
+
+[data-jarvis-shell] .jarvis-page-list,
+[data-jarvis-shell] .jarvis-page-detail {
+  margin-block: 0.5rem;
+  border-radius: 1rem;
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--glass-bg-strong) 84%, transparent),
+    color-mix(in srgb, var(--glass-bg-strong) 58%, transparent)
+  );
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 12%, transparent),
+    0 16px 34px -28px rgb(20 32 80 / 0.5);
+  animation: jarvis-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+[data-jarvis-shell] .jarvis-page-list {
+  margin-left: 0.5rem;
+}
+
+[data-jarvis-shell] .jarvis-page-detail {
+  margin-inline: 0.5rem;
+  animation-delay: 60ms;
+}
+
+/* List rows: a quiet tint on hover, a gradient bar on the chosen one. */
+[data-jarvis-shell] .jarvis-row {
+  transition:
+    background-color 150ms ease,
+    transform 150ms ease;
+}
+
+[data-jarvis-shell] .jarvis-row:hover {
+  background: color-mix(in srgb, var(--ui-accent) 9%, transparent);
+  transform: translateX(2px);
+}
+
+[data-jarvis-shell] .jarvis-row-on {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ui-accent) 18%, transparent),
+    color-mix(in srgb, #8b5cf6 6%, transparent)
+  ) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-accent) 28%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-jarvis-shell] .jarvis-page-list,
+  [data-jarvis-shell] .jarvis-page-detail {
+    animation: none;
+  }
+
+  [data-jarvis-shell] .jarvis-row:hover {
+    transform: none;
+  }
+}
+
+/* Supplied one-colour artwork (GPT knot, Nous portrait) drawn in the theme's text colour. */
+.model-brand-mask {
+  display: block;
+  background: #141a2e;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+:root.dark .model-brand-mask {
+  background: #e8edff;
+}

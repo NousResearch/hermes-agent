@@ -9,9 +9,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { ModelBrandIcon } from '@/components/model-brand-icon'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { ArrowUpRight, Brain, Check, ChevronDown, Cpu, Loader2, Users } from '@/lib/icons'
+import { ArrowUpRight, Brain, Check, ChevronDown, Cpu, Loader2, Sparkles, Users, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, profileLabel } from '@/store/profile'
@@ -62,7 +63,7 @@ export function RailCard({
   const folded = useStore($railCollapsed)[testId] ?? defaultCollapsed
 
   return (
-    <section aria-labelledby={headingId} className="jarvis-panel p-4" data-testid={`jarvis-rail-${testId}`}>
+    <section aria-labelledby={headingId} className="jarvis-panel jarvis-rise p-4" data-testid={`jarvis-rail-${testId}`}>
       <div className={cn('flex min-h-9 items-center gap-2', !folded && 'mb-3')}>
         <button
           aria-expanded={!folded}
@@ -73,7 +74,9 @@ export function RailCard({
           }}
           type="button"
         >
-          <Icon className="size-4 shrink-0 text-(--ui-accent)" />
+          <span className="jarvis-icon-chip grid size-7 shrink-0 place-items-center rounded-lg">
+            <Icon className="size-4" />
+          </span>
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-(--ui-text-primary)" id={headingId}>
             {title}
           </h2>
@@ -109,6 +112,8 @@ export interface JarvisModelCardProps {
   providers?: readonly ModelOptionProvider[]
   requestGateway?: GatewayRequest
 }
+
+const MODE_ICONS = { balanced: Sparkles, deep: Brain, fast: Zap } as const
 
 function shortModel(model: string): string {
   return model.includes('/') ? model.slice(model.indexOf('/') + 1) : model
@@ -178,7 +183,7 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
       <LiveModelPicker connected={connected} />
       <p className="mb-2 text-xs font-medium text-(--ui-text-secondary)">{t.jarvisShell.home.model.modeLabel} · Hermes</p>
       <div className="jarvis-well mb-3 flex min-w-0 items-center gap-3 px-3 py-2.5">
-        <Brain className="size-4 shrink-0 text-(--ui-accent)" />
+        <ModelBrandIcon hints={[currentProvider]} model={currentModel} />
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-(--ui-text-primary)" title={currentModel}>
             {currentModel ? shortModel(currentModel) : copy.noModel}
@@ -196,7 +201,7 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
           <button
             aria-checked={mode === item.id}
             className={cn(
-              'min-h-11 min-w-0 rounded-xl px-1 text-[0.7rem] leading-tight font-medium outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
+              'jarvis-segment flex min-h-11 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 text-[0.66rem] leading-tight font-medium tracking-tight outline-none focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
               mode === item.id ? 'jarvis-segment-on' : 'text-(--ui-text-secondary) hover:text-(--ui-text-primary)'
             )}
             disabled={!connected}
@@ -206,6 +211,11 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
             title={copy.modeHints[item.id]}
             type="button"
           >
+            {(() => {
+              const ModeIcon = MODE_ICONS[item.id]
+
+              return <ModeIcon className="size-3.5" />
+            })()}
             {copy.modes[item.id]}
           </button>
         ))}
@@ -225,14 +235,15 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
                   <button
                     aria-pressed={active}
                     className={cn(
-                      'flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 py-2 text-left text-xs outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
-                      active ? 'bg-(--ui-accent)/14 text-(--ui-text-primary)' : 'jarvis-well hover:bg-(--chrome-action-hover)'
+                      'jarvis-choice flex min-h-12 w-full min-w-0 items-center gap-3 rounded-xl px-2.5 py-2 text-left text-xs outline-none focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
+                      active ? 'jarvis-choice-on text-(--ui-text-primary)' : 'jarvis-well'
                     )}
                     disabled={!connected || !onSelectModel || pending !== null}
                     onClick={() => void pick(preset.model)}
                     title={preset.model}
                     type="button"
                   >
+                    <ModelBrandIcon hints={[preset.id]} model={preset.model} />
                     <span className="min-w-0 flex-1">
                       <span className="block whitespace-normal leading-snug font-medium">{presetLabel(preset.id)}</span>
                       <span className="block truncate text-xs text-(--ui-text-secondary)">
@@ -301,11 +312,16 @@ export function JarvisAgentsCard() {
             const active = profile.name === activeProfile
 
             return (
-              <li className="flex min-h-10 items-center gap-3 rounded-md px-1" key={profile.name}>
+              <li className="jarvis-choice flex min-h-12 items-center gap-3 rounded-xl px-1.5" key={profile.name}>
                 <span
                   aria-hidden="true"
-                  className={cn('size-2 shrink-0 rounded-full', active ? 'bg-emerald-400' : 'bg-(--ui-text-tertiary)')}
-                />
+                  className={cn(
+                    'jarvis-avatar relative grid size-8 shrink-0 place-items-center rounded-full text-xs font-semibold',
+                    active && 'jarvis-avatar-live'
+                  )}
+                >
+                  {profileLabel(profile).slice(0, 1).toUpperCase()}
+                </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm text-(--ui-text-primary)">{profileLabel(profile)}</span>
                   <span className="block truncate text-xs text-(--ui-text-tertiary)">

@@ -120,3 +120,8 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 
 - `agent/external_content.py` — `fence()` wraps text written by others in `<external-data source="…">` (tags inside are neutralised). Used by `vault_notes.create_note(external_source=…)` (news saved from the rail), `agent/drive_memory.py`; `read_note` reports `external`. The agent's standing rule is the second block in `AGENTS.md` (`electron/vault-seed.ts`, `AGENTS_EXTERNAL_MARKER`), appended to existing installs too.
 - `agent/secret_audit.py` + `web_routers/secrets_audit.py` — presence-only audit of credential files/folders and one-click owner-only permissions; UI `connections/secrets-audit-card.tsx` (Keys tab). OS keychain storage is not implemented yet.
+
+## Premium UI pass (dashboard rail, composer, pages)
+
+- `apps/desktop/src/components/model-brand-icon.tsx` — `ModelBrandIcon` / `resolveModelBrand`: one maker mark per model (simple-icons where they exist, drawn glyphs for GPT, DeepSeek, Hermes, free); used by the model card, the live-voice picker and preset rows.
+- `src/app/jarvis/glass.css` (bottom sections) — gradient-hairline `.jarvis-panel`, `.jarvis-icon-chip`, `.model-brand-tile`, `.jarvis-choice`, `.jarvis-segment`, `.jarvis-menu`, `.jarvis-rise` entrance animation; composer glass controls `.jarvis-ctl*` (classes set in `chat/composer/control-classes.ts`); list/detail surfaces `.jarvis-page-list|detail` and `.jarvis-row` (set in `master-detail.tsx`, `overlays/panel.tsx`). All motion respects `prefers-reduced-motion`.

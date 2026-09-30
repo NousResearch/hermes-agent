@@ -183,8 +183,8 @@ export function PanelListRow({
   const row = (
     <div
       className={cn(
-        'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
-        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
+        'group/row row-hover jarvis-row relative flex h-8 w-full items-center rounded-lg text-[0.78rem] hover:text-foreground',
+        active ? 'jarvis-row-on bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       data-panel-row={rowKey}
     >

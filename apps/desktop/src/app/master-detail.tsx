@@ -153,7 +153,7 @@ export function MasterDetail({
 
 export function ListColumn({ children, header }: { children: ReactNode; header?: ReactNode }) {
   return (
-    <aside className="flex min-h-0 flex-col p-2">
+    <aside className="jarvis-page-list flex min-h-0 flex-col p-2">
       {header}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">{children}</div>
     </aside>
@@ -173,7 +173,7 @@ export function DetailColumn({
   footer?: ReactNode
 }) {
   return (
-    <main className="flex min-h-0 flex-col overflow-hidden">
+    <main className="jarvis-page-detail flex min-h-0 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
         <div className="mx-auto max-w-2xl space-y-5 px-5 py-4">{children}</div>
       </div>

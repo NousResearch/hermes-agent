@@ -1428,6 +1428,9 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   if (queuedUser) {
     projected.push({
       id: `user-queued-${sessionId}`,
+      inputIds: projection.queued?.inputs?.slice(0, 256).flatMap(input =>
+        typeof input?.id === 'string' && input.id ? [input.id] : []
+      ),
       role: 'user',
       parts: [textPart(queuedUser)]
     })

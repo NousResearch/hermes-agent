@@ -42,7 +42,6 @@ function stripPowerShellNoise(stdout) {
 function powerShellStdinCommand() {
   return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
 }
-}
 
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
@@ -126,7 +125,10 @@ function windowsCheckoutRootsScript(python = '') {
   return `$checkoutRoots=@([IO.Path]::Combine($installRoot,"hermes-agent"),${runtimeRoot})`
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome, python = '') {
+// Marker-gate probe script: reads the install-wide update marker fail-closed
+// (missing -> CLEAR, unreadable/malformed -> UNCERTAIN) without following
+// symlinks on any path level, including the marker file itself.
+function windowsUpdateMarkerProbeScript(hermesHome, python = '') {
   const script = [
     '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
@@ -178,9 +180,16 @@ public static class HermesMarkerNoFollow {
     '}',
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
-  ].join(';')
+  ].join('\r\n')
 
-  return powerShellCommand(script)
+  return script
+}
+
+// The marker probe rides the same stdin transport as the platform probe
+// (powerShellStdinCommand): its script, with the C# no-follow reader, is far
+// over cmd.exe's 8191-char command-line limit.
+function windowsUpdateMarkerProbeStdinData(hermesHome, python = '') {
+  return `${encodedPowerShell(windowsUpdateMarkerProbeScript(hermesHome, python))}\r\n`
 }
 
 /**
@@ -195,7 +204,11 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome, python = '
     // Same stdout channel as the probe: a CLIXML progress block after the
     // final `Write-Output $result` would otherwise win the .pop() and turn a
     // CLEAR gate into a fail-closed 'update-in-progress' verdict.
-    observation = stripPowerShellNoise(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome, python))).pop() || ''
+    observation = stripPowerShellNoise(
+      await ssh.exec(powerShellStdinCommand(), {
+        stdinData: windowsUpdateMarkerProbeStdinData(hermesHome, python)
+      })
+    ).pop() || ''
   } catch (cause) {
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
     error.kind = 'update-in-progress'

@@ -28,7 +28,7 @@ Three pieces fit together:
    `text_to_speech` for audio, and so on.
 
 2. **The gateway scans agent responses for file paths.** Any absolute path
-   (`/tmp/...`) or home-relative path (`~/...`) ending in a supported
+   (`~/.hermes/cache/scratch/...`) or home-relative path (`~/...`) ending in a supported
    extension gets extracted. Paths inside code blocks and inline code are
    ignored so code samples are never mutilated.
 
@@ -71,7 +71,7 @@ persona in `~/.hermes/SOUL.md`, or as a named preset under
 via `/personality`).
 
 The mechanic the agent has to use is simple: render the file to an
-absolute path (e.g. `/tmp/q3-revenue.png`) and mention that path as
+absolute path (e.g. `~/.hermes/cache/scratch/q3-revenue.png`) and mention that path as
 plain text in the reply. The gateway does the rest. Paths inside
 fenced code blocks or backticks are ignored so code samples are never
 mutilated.
@@ -85,8 +85,8 @@ deliverable files to their `kanban_complete` call:
 kanban_complete(
     summary="rendered Q3 revenue chart and report",
     artifacts=[
-        "/tmp/q3-revenue.png",
-        "/tmp/q3-report.pdf",
+        "~/.hermes/cache/scratch/q3-revenue.png",
+        "~/.hermes/cache/scratch/q3-report.pdf",
     ],
 )
 ```

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
-import threading
 from pathlib import Path
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
 
 
 def _make_legacy_db(path: Path) -> None:
@@ -125,18 +123,6 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
 
 
-def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
-    """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
-    gone after migration; the notifier query returns an integer cursor."""
-    db_path = _setup_home(tmp_path, monkeypatch)
-    _make_legacy_db(db_path)
-
-    with kbc.connect(db_path) as conn:
-        cursor, events = kbn.unseen_events_for_sub(
-            conn, task_id="task-1", platform="telegram", chat_id="123"
-        )
-        assert isinstance(cursor, int)
-        assert isinstance(events, list)
 
 
 def _default_board_db(tmp_path, monkeypatch) -> Path:

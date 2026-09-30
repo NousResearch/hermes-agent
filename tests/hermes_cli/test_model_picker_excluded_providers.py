@@ -32,7 +32,7 @@ def config_home(tmp_path, monkeypatch):
 
 
 def _write_config(home, **top_level):
-    import yaml
+    import hermes_yaml as yaml
     cfg = {"model": "old-model", "custom_providers": []}
     cfg.update(top_level)
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))

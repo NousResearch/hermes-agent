@@ -14,21 +14,36 @@ import time
 
 from concurrent.futures.thread import _threads_queues
 
+import tools.daemon_pool as daemon_pool
 from tools.daemon_pool import DaemonThreadPoolExecutor
 
 
-def test_workers_are_daemon_threads():
-    pool = DaemonThreadPoolExecutor(max_workers=2)
-    try:
-        info = pool.submit(
-            lambda: (threading.current_thread().daemon, threading.current_thread())
-        ).result(timeout=10)
-        is_daemon, worker = info
-        assert is_daemon is True
-        # Not registered with concurrent.futures' atexit join hook.
-        assert worker not in _threads_queues
-    finally:
-        pool.shutdown(wait=True)
+def test_initializer_runs_on_each_worker_before_tasks():
+    local = threading.local()
+    ready = threading.Barrier(2, timeout=10)
+    initialized = []
+    lock = threading.Lock()
+    marker = object()
+
+    def initialize(value):
+        local.value = value
+        with lock:
+            initialized.append(threading.current_thread())
+
+    def task():
+        ready.wait()
+        return local.value, threading.current_thread()
+
+    with DaemonThreadPoolExecutor(max_workers=2, initializer=initialize, initargs=(marker,)) as pool:
+        futures = [pool.submit(task) for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+
+    workers = {worker for _, worker in results}
+    assert len(workers) == 2
+    assert set(initialized) == workers
+    assert len(initialized) == len(workers)
+    assert all(value is marker for value, _ in results)
+    assert all(worker.daemon and worker not in _threads_queues for worker in workers)
 
 
 def test_idle_worker_reuse():
@@ -70,27 +85,88 @@ def test_wedged_worker_does_not_block_interpreter_exit():
 
 
 def test_submit_propagates_caller_contextvars():
-    """Pool workers inherit contextvars set in the submitting context.
-
-    Stdlib ThreadPoolExecutor snapshots the caller's context with
-    ``copy_context()``; some bundled CPython runtime builds strip that, so
-    the daemon pool restores it explicitly.  Without the fix this returns
-    the default because the worker runs in a bare context.
-    """
+    """A reused worker must not mix profile scopes or leak task mutations."""
     from contextvars import ContextVar
 
     var = ContextVar("daemon_pool_test_var", default="unset")
 
+    def read_and_mutate():
+        seen = var.get()
+        var.set("worker mutation")
+        return seen, threading.current_thread()
+
+    with DaemonThreadPoolExecutor(max_workers=1) as pool:
+        futures = []
+        for profile in ("first", "second"):
+            token = var.set(profile)
+            try:
+                futures.append(pool.submit(read_and_mutate))
+            finally:
+                var.reset(token)
+        results = [future.result(timeout=10) for future in futures]
+        assert [seen for seen, _ in results] == ["first", "second"]
+        assert results[0][1] is results[1][1]
+        assert pool.submit(var.get).result(timeout=10) == "unset"
+        assert var.get() == "unset"
+
+
+def _capture_worker_args(monkeypatch, pool):
+    """Swap the stdlib worker for one that records its args and resolves one item.
+
+    The stdlib ``_worker`` signature differs between interpreters, so the fake
+    accepts anything and completes the work item's future directly — the test
+    then runs on 3.11 and 3.14 alike and asserts only on the arg shape chosen.
+    """
+    seen = []
+
+    def fake_worker(*args):
+        seen.append(args)
+        pool._work_queue.get().future.set_result("done")
+
+    monkeypatch.setattr(daemon_pool, "_worker", fake_worker)
+    return seen
+
+
+def test_worker_gets_context_when_executor_builds_worker_contexts(monkeypatch):
+    """3.14+ shape (#58596, #111813): the executor exposes ``_create_worker_context``
+    and no ``_initializer``/``_initargs``; the worker must receive
+    ``(executor_ref, ctx, work_queue)`` — reading the legacy fields raised
+    ``AttributeError`` on every pool spawn."""
     pool = DaemonThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(pool, "_create_worker_context", lambda: "worker-context", raising=False)
+    monkeypatch.delattr(pool, "_initializer", raising=False)
+    monkeypatch.delattr(pool, "_initargs", raising=False)
+    seen = _capture_worker_args(monkeypatch, pool)
     try:
-        token = var.set("hello")
-        try:
-            seen = pool.submit(var.get).result(timeout=10)
-        finally:
-            var.reset(token)
-        assert seen == "hello"
+        assert pool.submit(lambda: None).result(timeout=10) == "done"
     finally:
         pool.shutdown(wait=True)
+    ((executor_ref, ctx, work_queue),) = seen
+    assert executor_ref() is pool
+    assert ctx == "worker-context"
+    assert work_queue is pool._work_queue
+
+
+def test_worker_gets_initializer_when_executor_stores_initializer_fields(monkeypatch):
+    """3.11–3.13 shape: no ``_create_worker_context``; the worker must receive
+    ``(executor_ref, work_queue, initializer, initargs)``."""
+
+    def init(*_):
+        return None
+
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    monkeypatch.delattr(pool, "_create_worker_context", raising=False)
+    monkeypatch.setattr(pool, "_initializer", init, raising=False)
+    monkeypatch.setattr(pool, "_initargs", (1, 2), raising=False)
+    seen = _capture_worker_args(monkeypatch, pool)
+    try:
+        assert pool.submit(lambda: None).result(timeout=10) == "done"
+    finally:
+        pool.shutdown(wait=True)
+    ((executor_ref, work_queue, initializer, initargs),) = seen
+    assert executor_ref() is pool
+    assert work_queue is pool._work_queue
+    assert (initializer, initargs) == (init, (1, 2))
 
 
 def _repo_root():

@@ -10,6 +10,7 @@ channels_list. Client config: {"mcpServers": {"hermes": {"command": "hermes", "a
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import inspect
 import ipaddress
@@ -281,7 +282,10 @@ class EventBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        self._pending_approvals: Dict[str, dict] = {}  # populated from events
+        from mcp_serve_approvals import RegistryApprovals
+        self._approvals = RegistryApprovals(
+            lambda kind, key, data: self._enqueue(QueueEvent(0, kind, key, data))
+        )
         self._state_db_mtime: float = 0.0  # skip polling work when state.db is unchanged
         self._cached_sessions_index: dict = {}
 
@@ -302,6 +306,7 @@ class EventBridge:
 
     def stop(self):
         """Stop the background polling thread and wake any waiters."""
+        self._approvals.stop()
         self._running = False
         self._new_event.set()
         if self._thread:
@@ -333,19 +338,12 @@ class EventBridge:
         return None
 
     def list_pending_approvals(self) -> List[dict]:
-        """List approval requests observed during this bridge session."""
-        with self._lock:
-            return sorted(self._pending_approvals.values(), key=lambda a: a.get("created_at", ""))
+        """List unresolved approvals from this server's registry invocations."""
+        return self._approvals.pending()
 
     def respond_to_approval(self, approval_id: str, decision: str) -> dict:
-        """Resolve a pending approval (best-effort without gateway IPC)."""
-        with self._lock:
-            approval = self._pending_approvals.pop(approval_id, None)
-        if not approval:
-            return {"error": f"Approval not found: {approval_id}"}
-        self._enqueue(QueueEvent(0, "approval_resolved", approval.get("session_key", ""),  # cursor set by _enqueue
-                                 {"approval_id": approval_id, "decision": decision}))
-        return {"resolved": True, "approval_id": approval_id, "decision": decision}
+        """Resolve the exact request in Hermes' blocking approval queue."""
+        return self._approvals.respond(approval_id, decision)
 
     def _enqueue(self, event: QueueEvent) -> None:
         """Add an event to the queue (trimmed to QUEUE_LIMIT) and wake any waiters."""
@@ -667,11 +665,10 @@ class _ToolHandlers:
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
 
     def permissions_list_open(self) -> str:
-        """List pending approval requests observed during this bridge session.
+        """List unresolved approvals for tools invoked through this MCP server.
 
-        Returns exec and plugin approval requests that the bridge has seen
-        since it started. Approvals are live-session only — older approvals
-        from before the bridge connected are not included.
+        Approvals in a separate gateway process are not included. Requests
+        expire when the call times out or this server stops.
         """
         approvals = self.bridge.list_pending_approvals()
         return json.dumps({"count": len(approvals), "approvals": approvals}, indent=2)
@@ -725,7 +722,8 @@ def _safe_identifier(name: str) -> str:
 
 
 def _make_registry_tool_wrapper(
-    tool_name: str, *, omit_none_for: Optional[Set[str]] = None
+    tool_name: str, *, omit_none_for: Optional[Set[str]] = None,
+    event_bridge: Optional[EventBridge] = None,
 ):
     omitted_optional_names = set(omit_none_for or set())
 
@@ -742,7 +740,8 @@ def _make_registry_tool_wrapper(
             for key, value in kwargs.items()
             if value is not None or key not in omitted_optional_names
         }
-        return handle_function_call(
+        def dispatch():
+            return handle_function_call(
             function_name=tool_name,
             function_args=function_args,
             task_id=f"mcp-serve-{call_id}",
@@ -750,7 +749,18 @@ def _make_registry_tool_wrapper(
             session_id=f"mcp-serve-{call_id}",
             turn_id=f"mcp-turn-{call_id}",
             api_request_id=f"mcp-request-{call_id}",
-        )
+            )
+
+        if event_bridge is None:
+            return dispatch()
+
+        def guarded_dispatch():
+            with event_bridge._approvals.invocation(f"mcp-serve-{call_id}"):
+                return dispatch()
+
+        # A tool worker may inherit another caller's context. Keep all MCP
+        # session bindings inside a copy, without changing process env.
+        return contextvars.copy_context().run(guarded_dispatch)
 
     _tool.__name__ = f"_mcp_registry_tool_{_safe_identifier(tool_name)}"
     return _tool
@@ -816,6 +826,7 @@ def _schema_allows_null(prop: Any) -> bool:
 def _register_registry_tools_as_mcp(
     mcp,
     *,
+    event_bridge: Optional[EventBridge] = None,
     expose_toolsets: Optional[Sequence[str]] = None,
     expose_tools: Optional[Sequence[str]] = None,
     expose_plugin_tools: bool = False,
@@ -905,7 +916,8 @@ def _register_registry_tools_as_mcp(
             if property_name not in required
             and not _schema_allows_null(property_schema)
         }
-        wrapper = _make_registry_tool_wrapper(entry.name, omit_none_for=omit_none_for)
+        wrapper = _make_registry_tool_wrapper(entry.name, omit_none_for=omit_none_for,
+                                              event_bridge=event_bridge)
         wrapper = _apply_schema_signature(wrapper, schema)
         mcp.add_tool(
             wrapper,
@@ -964,7 +976,7 @@ def create_mcp_server(
     for name in _TOOL_NAMES:
         mcp.tool()(getattr(handlers, name))
     _register_registry_tools_as_mcp(
-        mcp, expose_toolsets=expose_toolsets, expose_tools=expose_tools,
+        mcp, event_bridge=handlers.bridge, expose_toolsets=expose_toolsets, expose_tools=expose_tools,
         expose_plugin_tools=expose_plugin_tools,
     )
     return mcp

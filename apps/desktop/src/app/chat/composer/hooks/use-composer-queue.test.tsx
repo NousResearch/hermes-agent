@@ -10,6 +10,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -58,6 +59,7 @@ describe('useComposerQueue park integration', () => {
     window.localStorage.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -65,6 +67,7 @@ describe('useComposerQueue park integration', () => {
     vi.restoreAllMocks()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(true)
   })
 
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {
@@ -252,5 +255,110 @@ describe('useComposerQueue park integration', () => {
 
     expect(isQueueParked(SESSION_KEY)).toBe(false)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('does not auto-drain restored queues while the session list is still loading', async () => {
+    setSessionsLoading(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'wait for session list' })
+
+    const { onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('auto-drains a restored queue once the session list finishes loading', async () => {
+    setSessionsLoading(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send after load' })
+
+    const { hook, onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    setSessionsLoading(false)
+    hook.rerender({ busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+  })
+
+  describe('deliverQueuedNow (double-Enter while busy)', () => {
+    it('steers a text entry into the live turn instead of interrupting it', async () => {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'fix the header too' })!
+      const onSteer = vi.fn(async () => true)
+      const { hook, onCancel, onSubmit } = renderQueueHook({ busy: true, onSteer })
+
+      await act(async () => {
+        expect(await hook.result.current.deliverQueuedNow(entry.id)).toBe(true)
+      })
+
+      expect(onSteer).toHaveBeenCalledWith('fix the header too')
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    })
+
+    it('falls back to send-now (interrupt) when the live turn refuses the steer', async () => {
+      const other = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'older' })!
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'refused' })!
+      const onSteer = vi.fn(async () => false)
+      const { hook, onCancel } = renderQueueHook({ busy: true, onSteer })
+
+      await act(async () => {
+        await hook.result.current.deliverQueuedNow(entry.id)
+      })
+
+      expect(onSteer).toHaveBeenCalledTimes(1)
+      expect(onCancel).toHaveBeenCalledTimes(1)
+      expect(getQueuedPrompts(SESSION_KEY).map(e => e.id)).toEqual([entry.id, other.id])
+    })
+
+    it('interrupts directly for a payload a steer cannot carry', async () => {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, {
+        attachments: [{ id: 'shot', kind: 'image', label: 'shot.png' }],
+        text: 'look at this'
+      })!
+
+      const onSteer = vi.fn(async () => true)
+      const { hook, onCancel } = renderQueueHook({ busy: true, onSteer })
+
+      await act(async () => {
+        await hook.result.current.deliverQueuedNow(entry.id)
+      })
+
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onCancel).toHaveBeenCalledTimes(1)
+    })
+
+    it('a repeat Enter while the steer is in flight never escalates to an interrupt', async () => {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'once' })!
+
+      let accept: (value: boolean) => void = () => {}
+
+      const onSteer = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
+      const { hook, onCancel } = renderQueueHook({ busy: true, onSteer })
+
+      let first: Promise<unknown> = Promise.resolve()
+
+      await act(async () => {
+        first = hook.result.current.deliverQueuedNow(entry.id)
+        expect(await hook.result.current.deliverQueuedNow(entry.id)).toBe(true)
+      })
+
+      await act(async () => {
+        accept(true)
+        await first
+      })
+
+      expect(onSteer).toHaveBeenCalledTimes(1)
+      expect(onCancel).not.toHaveBeenCalled()
+    })
   })
 })

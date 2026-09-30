@@ -6,12 +6,6 @@ import time
 
 import hermes_cli.auth as auth
 import hermes_cli.auth_nous as auth_nous
-from hermes_cli.auth import (
-    NOUS_SESSION_TERMINAL,
-    NOUS_SESSION_UNKNOWN,
-    NOUS_SESSION_VALID,
-    get_nous_session_validity,
-)
 
 
 def _invoke_jwt(*, seconds: int = 3600) -> str:

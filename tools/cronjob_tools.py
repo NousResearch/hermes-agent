@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import copy
+
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    trigger_job,
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
@@ -150,6 +153,60 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
             "This job targets a relay-fronted platform, which has no "
             "standalone sender. Start the gateway — its ticker will "
             "deliver the job on schedule via the live relay adapter."),
+    })
+
+
+def _primary_routed_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names this satellite profile reaches only through the primary gateway's
+    ``profile_routes``: routed here, with no credential of its own to send standalone."""
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+        from cron.scheduler_preflight import _delivery_platform_routed_from_primary_gateway
+        routed = {t["platform"] for t in _resolve_delivery_targets(job) or []
+                  if t.get("platform") and _delivery_platform_routed_from_primary_gateway(t["platform"])}
+        if not routed:
+            return set()
+        from gateway.config import load_gateway_config
+        return routed - {p.value for p in load_gateway_config().get_connected_platforms()}
+    except Exception:
+        return set()
+
+
+def _hand_off_primary_routed_run(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Optional[str]:
+    """Queue a manual run for the gateway ticker when the job delivers through the primary gateway's
+    profile route: only the gateway process holding the primary's bot can send it, so an in-process
+    run would spend the whole turn and then record ``delivery_failed`` (#120330). Returns a JSON
+    result string when the hand-off engages, else None (normal in-process run)."""
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    if callable(runner_ref) and runner_ref() is not None:
+        return None  # inside the gateway: its live adapter delivers (#89302)
+    if not is_job_runnable(job):
+        return None  # keep the normal paused refusal; trigger_job would resume the job
+    routed = _primary_routed_delivery_platforms(job)
+    if not routed:
+        return None
+    from hermes_cli.cron import _builtin_gateway_liveness
+    alive = _builtin_gateway_liveness()
+    if alive is not True:
+        # None = the probe could not tell; a run queued for a ticker that may not exist is worse
+        # than an honest refusal (nothing would ever pick it up).
+        cause = ("Start the gateway — its ticker will deliver the job on schedule." if alive is False
+                 else "Could not determine whether a gateway serves this profile; check "
+                      "`hermes cron status` and re-run.")
+        return _dumps({
+            "success": False,
+            "error": (
+                f"This job delivers to {', '.join(sorted(routed))} through the primary "
+                f"gateway's profile route, which has no standalone sender. {cause}"),
+        })
+    updated = trigger_job(job["id"], extra_prompt=extra_prompt)
+    _notify_provider_jobs_changed_safe()
+    return _dumps({
+        "success": True,
+        "job": _format_job(updated),
+        "note": (
+            "This job delivers through the primary gateway's profile route; it was "
+            "queued for that gateway's next scheduler tick, which runs and delivers it."),
     })
 
 
@@ -294,6 +351,22 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # task" and can break encrypted Matrix delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
         runner = runner_ref() if callable(runner_ref) else None
         adapters = getattr(runner, "adapters", None) if runner is not None else None
+        # ``runner.adapters`` is the LAUNCH profile's map; under multiplex the run executes with
+        # HERMES_HOME bound to the owning profile, so resolve that profile's adapters the way the
+        # ticker (``tick_adapters_for``) does — fail closed, never the default bot (#124248). A
+        # resolution error propagates to the ``except`` below and marks the run failed.
+        if runner is not None and hasattr(runner, "_adapters_for_profile"):
+            from hermes_constants import get_hermes_home, profile_name_for_home
+
+            profile = profile_name_for_home(get_hermes_home())
+            adapters = runner._adapters_for_profile(profile)
+            # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
+            # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
+            if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
+                from cron.scheduler_preflight import (
+                    SharedRouteAdapters, _primary_profile_routes_for_current_home)
+
+                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
@@ -337,13 +410,49 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": False, "error": str(e)}
 
 
+def execute_job_for_event(
+    job_ref: str, extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Fire an existing cron job in response to an external event.
+
+    Public entry point for event-driven triggers (the webhook adapter's
+    ``cron_job`` routes). Resolves ``job_ref`` (ID or name) and
+    fires it through the exact same claimed-run body a manual
+    ``cronjob(action='run')`` uses, so at-most-once claiming, in-flight
+    dedupe, delivery, and ``[SILENT]`` handling stay identical across the
+    scheduler / manual / event paths.
+
+    ``extra_prompt`` is injected as transient per-run context (the job's
+    stored prompt is never mutated), exactly like ``action='run'`` with a
+    ``prompt`` argument.
+
+    Returns the ``_execute_job_now`` result shape:
+    ``{"claimed": bool, "success": bool, "error": str|None}``.
+    """
+    try:
+        job = resolve_job_ref(job_ref)
+    except AmbiguousJobReference as e:
+        return {"claimed": False, "success": False, "error": str(e)}
+    if job is None:
+        return {
+            "claimed": False,
+            "success": False,
+            "error": f"Cron job '{job_ref}' not found.",
+        }
+    return _execute_job_now(job, extra_prompt=extra_prompt)
+
+
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
     """Excerpt of the job's most recent saved output file for the background completion
     block (parent sees what the job produced). Never raises."""
     try:
         from cron.jobs import get_cron_output_dir
-        files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
-        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+
+        out_dir = get_cron_output_dir() / job_id
+        files = sorted(out_dir.glob("*.md"))
+        if not files:
+            return None
+        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
         if not text:
             return None
         if len(text) > max_chars:
@@ -361,9 +470,9 @@ def _reap_stale_executions(job_name: str) -> None:
     try:
         # Reap any execution row this job (or any job) left stranded 'claimed'/ 'running' by a dead owner
         # process -- e.g. a PRIOR one-shot `hermes cron run` invocation whose dispatched runner died with
-        # the exiting process before writing a terminal status (issue #86721). Safe and cheap: only
-        # provably-dead owners (PID gone, or PID reused by a different process per its start time) are
-        # reaped; a genuinely live owner's row is left untouched.
+        # the exiting process before writing a terminal status (issue #86721). Safe and cheap: provably-dead
+        # owners (PID gone, or PID reused by a different process per its start time) are reaped, as is a
+        # live owner whose claim is older than the derived stale bound (the process itself is not killed).
         from cron.executions import recover_interrupted_executions
         _reclaimed = recover_interrupted_executions()
         if _reclaimed:
@@ -420,6 +529,12 @@ def _try_dispatch_background_run(
     Returns None when background delivery is unavailable (caller runs sync); ``{"claimed":
     False}`` on a lost claim; ``{"claimed": True, "dispatched": True, "delegation_id"}``; or
     ``{"claimed": True, "dispatched": False, ...}`` when the pool was full and it ran inline."""
+    job_id = job["id"]
+    job_name = str(job.get("name") or job_id)
+    # Reap BEFORE the async/sync branch: the one-shot `hermes cron run` path returns early
+    # below, and this is the only moment it heals a stale claim left by a killed prior run (#113923).
+    _reap_stale_executions(job_name)
+
     # Finite sessions cannot route a detached result back after the turn ends (delegate_task's gate).
     try:
         from gateway.session_context import async_delivery_supported
@@ -427,10 +542,6 @@ def _try_dispatch_background_run(
             return None
     except Exception:
         pass
-
-    job_id = job["id"]
-    job_name = str(job.get("name") or job_id)
-    _reap_stale_executions(job_name)
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).
@@ -442,10 +553,11 @@ def _try_dispatch_background_run(
         return None
 
     # Early dedupe so a mid-run job reports in THIS response, not as a delayed error completion
-    # (authoritative check: try_register_running_job).
+    # (authoritative check: try_register_running_job). Home-scoped: one process ticks every
+    # profile, so the bare-id union would report another profile's same-named job as running.
     try:
-        from cron.scheduler import get_running_job_ids
-        if job_id in get_running_job_ids():
+        from cron.scheduler import is_job_running
+        if is_job_running(job_id):
             return {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     except Exception:
         pass
@@ -564,7 +676,9 @@ def _action_create(a: Dict[str, Any]) -> str:
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            deliver=_resolve_cron_context_deliver(deliver), origin=_origin_from_env(), skills=canonical_skills,
+            deliver=_resolve_cron_context_deliver(deliver),
+            origin=_origin_from_env(a["schedule"]),
+            skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
             script=_normalize_optional_job_value(script), context_from=context_from,
@@ -573,7 +687,8 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
-            reasoning_effort=a["reasoning_effort"],
+            reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
+            pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
@@ -637,6 +752,10 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         scan_error = _scan_cron_prompt(extra_prompt)
         if scan_error:
             return tool_error(scan_error, success=False)
+    # Primary-routed satellite delivery has no sender outside the gateway: hand the run to its ticker.
+    handed_off = _hand_off_primary_routed_run(job, extra_prompt=extra_prompt)
+    if handed_off is not None:
+        return handed_off
     # A manual run must actually run even with no ticker active. Preferred: background
     # dispatch (handle now, outcome as a completion event); inline fallback otherwise.
     bg = _try_dispatch_background_run(job, session_id=a["session_id"], extra_prompt=extra_prompt)
@@ -721,11 +840,16 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
         updates["model"] = _normalize_optional_job_value(a["model"])
     if a["provider"] is not None:
         updates["provider"] = _normalize_optional_job_value(a["provider"])
+    if a["pinned"] is not None:
+        updates["pinned"] = bool(a["pinned"])
     if a["base_url"] is not None:
         updates["base_url"] = _normalize_optional_job_value(a["base_url"], strip_trailing_slash=True)
     if a["reasoning_effort"] is not None:
         # CLI-only lane; update_job validates, empty string clears the pin.
         updates["reasoning_effort"] = a["reasoning_effort"]
+    if a["interpreter"] is not None:
+        # CLI-only lane like reasoning_effort; update_job trims, empty string clears.
+        updates["interpreter"] = a["interpreter"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -821,7 +945,6 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         {"success": True, "job": _format_job(updated)}, updated, _normalize_deliver_param(a["deliver"])))
 
 
-# Actions that need no job_id, and job-bound actions (job resolved first).
 _JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
 _JOB_ACTIONS = {
     "remove": _action_remove, "update": _action_update,
@@ -880,7 +1003,9 @@ def cronjob(
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
-    paused_reason: Optional[str] = None) -> str:
+    paused_reason: Optional[str] = None,
+    pinned: Optional[bool] = None,
+    interpreter: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -904,11 +1029,28 @@ def cronjob(
         return tool_error(str(e), success=False)
 
 
+def _script_description(home: str) -> str:
+    return (f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True "
+            f"the script IS the job). Relative paths resolve under {home}/scripts/; .sh/.bash via bash, else Python. "
+            "On update, '' clears.")
+
+
+def _cronjob_schema_overrides() -> dict:
+    """Rebuild the ``script`` path hint from the ACTIVE profile at every get_definitions(): the
+    static schema is built once per process, but the multiplexed gateway serves every profile from
+    that process, so a path baked in at import would name the launch profile's home (#95685)."""
+    params = copy.deepcopy(CRONJOB_SCHEMA["parameters"])
+    params["properties"]["script"]["description"] = _script_description(display_hermes_home())
+    return {"parameters": params}
+
+
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
-Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
+Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless pinned.
+
+Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
         "type": "object",
         "properties": {
@@ -920,7 +1062,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for update/pause/resume/remove/run."
+            },
+            "pinned": {
+                "type": "boolean",
+                "description": "For create/update. ONLY set when the user explicitly asks to pin (or unpin) a job's model. pinned=true locks the CURRENT main agent model (and its provider) onto the job so later `hermes model` / `/model` changes never touch it; pinned=false releases the lock so the job follows the main agent model again. Never set it on your own initiative: by default jobs follow the main model."
             },
             "prompt": {
                 "type": "string",
@@ -954,7 +1100,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "script": {
                 "type": "string",
-                "description": f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under {display_hermes_home()}/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
+                "description": _script_description("the profile HERMES_HOME")
             },
             "monitor": {
                 "type": "string",
@@ -985,7 +1131,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
         },
         "required": ["action"]
@@ -994,13 +1140,17 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 
 
 def check_cronjob_requirements() -> bool:
-    """Available in interactive CLI mode and gateway/messaging platforms (the scheduler is
-    internal; no crontab needed). Flags must be explicitly truthy via ``env_var_enabled``."""
-    from utils import env_var_enabled
+    """Available in interactive CLI mode, gateway/messaging platforms, and cron runs (the
+    scheduler is internal; no crontab needed). Flags must be explicitly truthy via
+    ``env_var_enabled``. An external cron worker has the presence vars stripped from its env, so
+    the cron session marker keeps ``cron.allow_agent_scheduling`` meaningful there."""
+    from gateway.session_context import get_session_env
+    from utils import env_var_enabled, is_truthy_value
     return (
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
+        or is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
     )
 
 
@@ -1011,7 +1161,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason")
+    "paused_reason", "pinned")
 
 
 def _cronjob_handler(args, **kw):
@@ -1037,27 +1187,5 @@ registry.register(
     handler=_cronjob_handler,
     check_fn=check_cronjob_requirements,
     emoji="⏰",
+    dynamic_schema_overrides=_cronjob_schema_overrides,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'effective_job_state': ('cron.jobs', 'effective_job_state'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

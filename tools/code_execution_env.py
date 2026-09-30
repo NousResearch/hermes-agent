@@ -251,9 +251,13 @@ def _uses_hermes_python_environment(python_path: str) -> bool:
     return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
 
 
-def _resolve_child_python(mode: str) -> str:
-    """Child interpreter: ``sys.executable`` in strict mode; in project mode the active
-    VIRTUAL_ENV/CONDA_PREFIX python if it exists and passes the 3.8+ probe, else ``sys.executable``."""
+def _resolve_child_python(mode: str, cwd: str = "") -> str:
+    """Prefer explicit activation, then an operator-trusted cwd's venv; strict stays on Hermes.
+
+    Do not discover interpreters in arbitrary agent-selected directories: even the version
+    probe executes checkout code. Reuse the LSP operator-anchor boundary, not its opt-in list
+    (permission to run a language server is not permission to select a cell interpreter).
+    """
     if mode != "project":
         return sys.executable
     subdir, exe_names = ("Scripts", ("python.exe", "python3.exe")) if _IS_WINDOWS else ("bin", ("python", "python3"))
@@ -268,6 +272,14 @@ def _resolve_child_python(mode: str) -> str:
             logger.info("execute_code: skipping %s=%s (Python version < 3.8 or broken). "
                         "Using sys.executable instead.", var, candidate)
             return sys.executable
+    if cwd:
+        from agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
+        if is_trusted_workspace(cwd, (), operator_workspace_roots()):
+            for name in (".venv", "venv"):
+                for exe in exe_names:
+                    candidate = os.path.join(cwd, name, subdir, exe)
+                    if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and _is_usable_python(candidate):
+                        return candidate
     return sys.executable
 
 

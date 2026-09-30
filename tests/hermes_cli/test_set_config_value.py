@@ -738,18 +738,28 @@ class TestMappingGuard:
 class TestScalarModelSubKeyPreservation:
     """#75426: setting model.provider when model is a scalar must not lose the model id."""
 
-    def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home):
-        """Seed model: gpt-4o, then set model.provider → model.default must survive."""
+    @pytest.mark.parametrize("key,value,expected", [
+        ("provider", "openai", "openai"),
+        ("codex_permission_profile", "full-access", "full-access"),
+        ("codex_permission_profile", "null", None),
+    ])
+    def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home, capsys, key, value, expected):
+        """Native model subkey writes and reads preserve an existing scalar model id."""
         import hermes_yaml as yaml
 
         set_config_value("model", "gpt-4o")
-        set_config_value("model.provider", "openai")
+        set_config_value(f"model.{key}", value)
 
         raw = _read_config(_isolated_hermes_home)
         parsed = yaml.safe_load(raw)
         model = parsed["model"]
         assert model["default"] == "gpt-4o", f"model.default lost: {model}"
-        assert model["provider"] == "openai"
+        assert model[key] == expected
+        from hermes_cli.config import load_config
+        assert load_config()["model"][key] == expected
+        capsys.readouterr()
+        config_command(argparse.Namespace(config_command="get", key=f"model.{key}", json=True))
+        assert json.loads(capsys.readouterr().out) == expected
 
     def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
         """model.api_key must also preserve the existing scalar model id."""

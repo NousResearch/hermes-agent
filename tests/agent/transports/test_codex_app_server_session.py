@@ -179,15 +179,18 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_carries_hermes_prompt_and_disables_codex_personality(self):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_thread_start_carries_hermes_prompt_and_disables_codex_personality(self, monkeypatch, permission_profile):
         """thread/start carries cwd, Hermes' composed prompt as developerInstructions and
         personality "none" (#74712, #72104, #26035). We intentionally do NOT pass `permissions`
         (experimentalApi-gated + requires a matching config.toml [permissions] table)."""
         client = FakeClient()
-        s = make_session(client, permission_profile="workspace-write", developer_instructions="SOUL: be terse")
+        monkeypatch.setenv("HERMES_TERMINAL_SECURITY_MODE", "unrestricted")
+        s = make_session(client, permission_profile=permission_profile, developer_instructions="SOUL: be terse")
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
-        assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none"}
+        policy = {"approvalPolicy": "never", "sandbox": "danger-full-access"} if permission_profile else {}
+        assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none", **policy}
 
     def test_thread_start_omits_developer_instructions_when_prompt_empty(self):
         """No prompt (or a blank one) never sends an empty developerInstructions field."""
@@ -227,7 +230,8 @@ class TestLifecycle:
         assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == base
         assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == base
 
-    def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self, permission_profile):
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
         second ``thread/start``); when codex cannot hand it back the failure is typed and the NEXT
         ensure_started() starts a fresh thread on the same handshaken client."""
@@ -237,10 +241,11 @@ class TestLifecycle:
         client = FakeClient()
         client._request_handler = lambda method, params: (
             {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {"thread": {"id": "fresh-1"}})
-        s = make_session(client, resume_thread_id="stored-1", developer_instructions="SOUL")
+        policy = {"approvalPolicy": "never", "sandbox": "danger-full-access"} if permission_profile else {}
+        s = make_session(client, permission_profile=permission_profile, resume_thread_id="stored-1", developer_instructions="SOUL")
         assert s.ensure_started() == s.ensure_started() == "stored-1"
         assert [m for m, _ in client.requests] == ["thread/resume"]
-        assert client.requests[0][1] == {"threadId": "stored-1", "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL"}
+        assert client.requests[0][1] == {"threadId": "stored-1", "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL", **policy}
 
         def refuse(method, params):
             if method == "thread/resume":
@@ -248,12 +253,13 @@ class TestLifecycle:
             return {"thread": {"id": "fresh-2"}}
         client = FakeClient()
         client._request_handler = refuse
-        s = make_session(client, resume_thread_id="gone-1")
+        s = make_session(client, permission_profile=permission_profile, resume_thread_id="gone-1")
         with pytest.raises(CodexThreadResumeError) as exc_info:
             s.ensure_started()
         assert exc_info.value.thread_id == "gone-1"
         assert s.ensure_started() == "fresh-2"
         assert [m for m, _ in client.requests] == ["thread/resume", "thread/start"]
+        assert all({key: params[key] for key in policy} == policy for _, params in client.requests)
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -267,7 +273,8 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
-    def test_simple_text_turn_returns_final_message(self):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_simple_text_turn_returns_final_message(self, permission_profile):
         client = FakeClient()
         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
         client.queue_notification(
@@ -280,7 +287,7 @@ class TestRunTurn:
             threadId="t",
             turn={"id": "tu1", "status": "completed", "error": None},
         )
-        s = make_session(client)
+        s = make_session(client, permission_profile=permission_profile)
         r = s.run_turn("hi", turn_timeout=2.0)
         assert r.final_text == "hello world"
         assert r.interrupted is False
@@ -289,6 +296,14 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+        client.queue_notification("turn/completed", threadId="t", turn={"id": "tu1", "status": "completed"})
+        assert s.run_turn("continue", turn_timeout=2.0).error is None
+        starts = [params for method, params in client.requests if method == "turn/start"]
+        policy = {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}} if permission_profile else {}
+        assert starts == [
+            {"threadId": "thread-fake-001", "input": [{"type": "text", "text": text}], **policy}
+            for text in ("hi", "continue")
+        ]
 
 
 
@@ -406,7 +421,9 @@ class TestRunTurn:
         assert len(r.projected_messages) == 5
 
 
-    def test_turn_start_failure_attaches_redacted_stderr_tail(self):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    @pytest.mark.parametrize("operation", ["thread/start", "thread/resume", "turn/start"])
+    def test_turn_start_failure_attaches_redacted_stderr_tail(self, permission_profile, operation):
         """When codex stderr has content (non-OAuth), the tail gets attached
         to the user-facing error so config/provider problems are debuggable
         instead of just 'Internal error'. Credential-shaped values in stderr
@@ -421,12 +438,13 @@ class TestRunTurn:
         from agent.transports.codex_app_server import CodexAppServerError
 
         def boom(method, params):
-            if method == "turn/start":
+            if method == operation:
                 raise CodexAppServerError(code=-32603, message="Internal error")
             return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
 
         client._request_handler = boom
-        s = make_session(client)
+        s = make_session(client, permission_profile=permission_profile,
+                         resume_thread_id="stored-restricted" if operation == "thread/resume" else None)
         r = s.run_turn("hi", turn_timeout=2.0)
         assert r.error is not None
         assert "Internal error" in r.error
@@ -434,8 +452,14 @@ class TestRunTurn:
         assert "provider auth failed" in r.error
         # Credential-shaped values still redacted (sk- prefix + Bearer header)
         assert "sk-live-deadbeefdeadbeef" not in r.error
-        # Non-OAuth → should NOT retire (subprocess JSON-RPC is still healthy).
-        assert r.should_retire is False
+        # A failed startup retires; a non-OAuth turn error keeps the healthy transport.
+        assert r.should_retire is (operation != "turn/start")
+        rejected = [params for method, params in client.requests if method == operation]
+        assert len(rejected) == 1
+        if permission_profile:
+            assert rejected[0]["approvalPolicy"] == "never"
+            key, value = ("sandboxPolicy", {"type": "dangerFullAccess"}) if operation == "turn/start" else ("sandbox", "danger-full-access")
+            assert rejected[0][key] == value
 
     def test_turn_start_timeout_attaches_redacted_stderr_tail(self):
         """A non-OAuth TimeoutError on turn/start surfaces with codex stderr

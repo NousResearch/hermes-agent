@@ -216,7 +216,8 @@ class TestSpawnEnvIsolation:
     """
 
 
-    def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch):
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch, permission_profile):
         """CODEX_HOME isolation must still work — that's the whole point
         of the codex_home arg."""
         import subprocess
@@ -226,6 +227,7 @@ class TestSpawnEnvIsolation:
 
         class FakePopen:
             def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
                 captured["env"] = kwargs.get("env", {}).copy()
                 self.stdin = None
                 self.stdout = None
@@ -249,20 +251,22 @@ class TestSpawnEnvIsolation:
         monkeypatch.setenv("HOME", "/users/alice")
 
         client = cas.CodexAppServerClient(
-            codex_bin="codex", codex_home="/tmp/profile/codex"
+            codex_bin="codex", codex_home="/tmp/profile/codex", permission_profile=permission_profile
         )
         client._closed = True
 
         assert captured["env"].get("CODEX_HOME") == "/tmp/profile/codex"
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
+        expected = ["codex", "app-server"]
+        if permission_profile:
+            expected += ["-c", 'sandbox_mode="danger-full-access"']
+        assert captured["cmd"] == expected
 
-    def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
-        """Codex-runtime Kanban workers need to write board state outside
-        their scratch/worktree workspace, but should not fall back to
-        danger-full-access. Hermes passes a narrow app-server config override
-        for the Kanban root only.
-        """
+    @pytest.mark.parametrize("permission_profile", [None, "full-access"])
+    def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch, permission_profile):
+        """Keep the narrow Kanban sandbox unless full permission is explicitly selected;
+        either launcher scopes ownership only to the managed Hermes MCP endpoint."""
         import subprocess
         from agent.transports import codex_app_server as cas
 
@@ -299,11 +303,17 @@ class TestSpawnEnvIsolation:
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
         )
 
-        client = cas.CodexAppServerClient(codex_bin="codex")
+        client = cas.CodexAppServerClient(codex_bin="codex", permission_profile=permission_profile)
         client._closed = True
 
         cmd = captured["cmd"]
         assert cmd[:2] == ["codex", "app-server"]
+        if permission_profile:
+            assert 'sandbox_mode="danger-full-access"' in cmd
+            assert not any("sandbox_workspace_write" in part or 'sandbox_mode="workspace-write"' in part for part in cmd)
+            assert any(part.startswith("mcp_servers.hermes-tools.env.HERMES_KANBAN_TASK=") for part in cmd)
+            assert "HERMES_KANBAN_TASK" not in captured["env"]
+            return
         assert 'sandbox_mode="workspace-write"' in cmd
         assert (
             'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
@@ -387,4 +397,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

@@ -293,6 +293,19 @@ For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed 
 
 ## Permission profiles
 
+To explicitly give the Hermes Codex runtime full permission, select it in the active Hermes profile's `config.yaml`:
+
+```yaml
+model:
+  codex_permission_profile: full-access
+```
+
+You can also use `hermes config set model.codex_permission_profile full-access`. Omit the key or set it to YAML `null` to preserve the existing launcher and request behavior. Empty strings, booleans, containers, and unsupported names are rejected before Codex starts or receives a request.
+
+`full-access` selects `danger-full-access` for the launcher, fresh or resumed threads, and every turn, with `approvalPolicy: never`. Managed workers keep the Hermes MCP ownership boundary, while the ordinary workspace write and disabled network launcher overrides are omitted for this explicit choice. `--yolo`, `/yolo`, and approval settings continue to control approvals separately; they do not select this sandbox policy. The legacy terminal security environment setting does not enable this profile.
+
+Hermes reads the current profile's config before reusing a session. Changing this selection or the configured Codex binary retires the old session before the next turn. A server that rejects the requested policy reports the error; a retry does not remove the policy. This setting does not rewrite native Codex configuration.
+
 Codex has three built-in permission profiles:
 - `:read-only` — no writes; every shell command requires approval
 - `:workspace` — writes within the current workspace allowed without prompts (Hermes' default when you enable the runtime)

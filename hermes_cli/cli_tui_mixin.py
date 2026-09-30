@@ -27,6 +27,7 @@ from prompt_toolkit.layout import (
     Layout,
     Window,
     WindowAlign)
+from prompt_toolkit.layout.containers import Container, to_container
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import (
@@ -387,8 +388,35 @@ class CLITuiMixin:
         return True
 
     def _get_extra_tui_widgets(self) -> list:
-        """Extension hook: wrapper CLIs return widgets inserted between the spacer and status bar."""
-        return []
+        """Return plugin docks inserted between the spacer and status bar.
+
+        ``render_cli_dock`` runs once while the layout is assembled. A plugin may return one
+        prompt_toolkit ``Container`` (or an object implementing ``__pt_container__``); malformed
+        results are ignored independently so one plugin cannot remove another plugin's chrome.
+        Dynamic docks should use a callable ``FormattedTextControl`` and call the supplied
+        ``invalidate`` callback when their state changes.
+        """
+        from hermes_cli.lifecycle import invoke_hook
+
+        def invalidate() -> None:
+            repaint = getattr(self, "_invalidate", None)
+            if callable(repaint):
+                repaint()
+
+        try:
+            claimed = invoke_hook("render_cli_dock", platform="cli", invalidate=invalidate)
+        except (Exception, SystemExit):
+            return []
+
+        widgets: list[Container] = []
+        for candidate in claimed:
+            try:
+                container = to_container(candidate)
+            except (Exception, SystemExit):
+                continue
+            if isinstance(container, Container):
+                widgets.append(container)
+        return widgets
 
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Extension hook: wrapper CLIs add bindings to ``kb`` (``input_area`` is the main TextArea)."""

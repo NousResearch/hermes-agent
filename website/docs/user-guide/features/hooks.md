@@ -398,6 +398,41 @@ def register(ctx):
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
 
+### Persistent CLI dock chrome
+
+Python plugins can claim persistent prompt-toolkit chrome above the classic CLI composer with
+`render_cli_dock`. This is a layout hook, not transcript output: do not print the dock, return it
+through `transform_llm_output`, or wrap it in assistant-response markers.
+
+```python
+from prompt_toolkit.layout import FormattedTextControl, Window
+
+
+def register(ctx):
+    state = {"text": "syncing"}
+
+    def render_cli_dock(*, platform, invalidate, **_kwargs):
+        # The callable is evaluated by prompt_toolkit on repaint, so plugins can
+        # mutate state later and call invalidate() without rebuilding the layout.
+        control = FormattedTextControl(lambda: [("class:status", f" {state['text']} ")])
+        return Window(content=control, height=1, wrap_lines=False)
+
+    ctx.register_hook("render_cli_dock", render_cli_dock)
+```
+
+The hook runs once while the classic CLI layout is assembled. Each callback receives
+`platform="cli"` and a host `invalidate()` callback. Return one prompt-toolkit `Container` or an
+object implementing `__pt_container__`; `None`, strings, lists, and malformed providers are
+ignored. Valid docks are inserted in plugin registration order between the spacer and Hermes'
+status bar/composer chrome. Callback failures are isolated, so later plugins still get their dock.
+The hook is Python-plugin-only and cannot be registered as a shell hook.
+
+Hook invocation means that a dock was accepted into the layout, not that the terminal painted it.
+Do not count an impression in `render_cli_dock`. If first-content-render telemetry is sufficient,
+record it inside the callable passed to `FormattedTextControl` and guard it so it runs once;
+prompt-toolkit may evaluate that callable multiple times, and content evaluation is still not a
+terminal acknowledgement.
+
 ### Cache-safe system prompt sections
 
 Plugins that need durable, always-on guidance can register a bounded system
@@ -448,6 +483,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
+| `render_cli_dock` | UI contribution | Once while the classic prompt-toolkit layout is assembled; each valid returned container persists above the composer in registration order. Python plugins only. | `platform` (`"cli"`), `invalidate` (host repaint callback) | In-process UI code; no transcript or assistant response content is supplied. |
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |

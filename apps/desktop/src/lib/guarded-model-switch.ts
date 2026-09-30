@@ -1,5 +1,9 @@
 import { translateNow } from '@/i18n'
-import { confirm } from '@/store/confirm'
+import { confirmWithMeta } from '@/store/confirm'
+import {
+  isContextCacheWarningSilenced,
+  silenceContextCacheWarningForSession
+} from '@/store/context-cache-warning'
 import { notify, notifyError } from '@/store/notifications'
 
 /** The gateway's model-switch handshake shape — shared by `config.set model`
@@ -31,6 +35,8 @@ export interface SurfaceModelSwitchConfirmOptions<T extends GuardedModelSwitchRe
   requestConfirmed: () => Promise<T | undefined>
   /** Undo the optimistic repaint when the confirmed resend fails. */
   rollback?: () => void
+  /** Active session ID when the switch is session-bound. Enables session-level suppression. */
+  sessionId?: string
 }
 
 /**
@@ -54,8 +60,47 @@ export interface SurfaceModelSwitchConfirmOptions<T extends GuardedModelSwitchRe
 export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResult>(
   options: SurfaceModelSwitchConfirmOptions<T>
 ): Promise<boolean> {
-  const accepted = await confirm({
+  const isContextCache = Boolean(
+    options.confirmMessage && options.confirmMessage.includes('LARGE CONTEXT MODEL SWITCH')
+  )
+
+  const isSuppressible = isContextCache && Boolean(options.sessionId)
+
+  // If this session has already silenced large-context warnings, immediately
+  // auto-confirm without bothering the user.
+  if (isSuppressible && isContextCacheWarningSilenced(options.sessionId)) {
+    if (options.isStale?.()) {
+      return false
+    }
+
+    options.repaint?.()
+
+    try {
+      const result = await options.requestConfirmed()
+
+      if (result?.confirm_required) {
+        throw new Error(result.confirm_message?.trim() || options.failureMessage)
+      }
+
+      options.finish?.(result)
+
+      return true
+    } catch (err) {
+      options.rollback?.()
+      notifyError(err, options.failureMessage)
+
+      return false
+    }
+  }
+
+  const accepted = await confirmWithMeta({
     cancelLabel: translateNow('desktop.modelSwitchKeepLabel'),
+    checkbox: isSuppressible
+      ? {
+          defaultChecked: false,
+          label: translateNow('desktop.modelSwitchDontWarnAgainForSession')
+        }
+      : undefined,
     confirmLabel: translateNow('desktop.modelSwitchConfirmLabel'),
     description: options.confirmMessage?.trim() || translateNow('desktop.modelSwitchConfirmBody'),
     destructive: true,
@@ -64,8 +109,12 @@ export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResu
       : translateNow('desktop.modelSwitchConfirmTitleFallback')
   })
 
-  if (!accepted) {
+  if (!accepted.confirmed) {
     return false
+  }
+
+  if (isSuppressible && accepted.checkboxChecked && options.sessionId) {
+    silenceContextCacheWarningForSession(options.sessionId)
   }
 
   if (options.isStale?.()) {

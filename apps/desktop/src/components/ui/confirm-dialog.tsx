@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -13,12 +14,13 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import type { ConfirmCheckbox, ConfirmMeta } from '@/store/confirm'
 
 interface ConfirmDialogProps {
   open: boolean
   onClose: () => void
   // Does the work. Throw to surface an inline error and keep the dialog open.
-  onConfirm: () => Promise<void> | void
+  onConfirm: (meta?: ConfirmMeta) => Promise<void> | void
   title: ReactNode
   description?: ReactNode
   children?: ReactNode
@@ -27,6 +29,8 @@ interface ConfirmDialogProps {
   doneLabel?: string
   cancelLabel?: string
   destructive?: boolean
+  /** Optional checkbox to surface choices like "Don't warn again". */
+  checkbox?: ConfirmCheckbox
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
   /** A third, non-destructive way out, shown between Cancel and Confirm (e.g.
@@ -56,13 +60,15 @@ export function ConfirmDialog({
   cancelLabel,
   destructive = false,
   dismissOnConfirm = false,
-  secondaryAction
+  secondaryAction,
+  checkbox
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
+  const [checkboxChecked, setCheckboxChecked] = useState(checkbox?.defaultChecked ?? false)
   const busy = status === 'saving' || status === 'done'
   const resolvedConfirmLabel = confirmLabel ?? t.common.confirm
   const resolvedBusyLabel = busyLabel ?? t.common.loading
@@ -73,8 +79,9 @@ export function ConfirmDialog({
     if (open) {
       setStatus('idle')
       setError(null)
+      setCheckboxChecked(checkbox?.defaultChecked ?? false)
     }
-  }, [open])
+  }, [open, checkbox?.defaultChecked])
 
   // Cancel the pending close timer on unmount. The timer below holds the
   // "done" beat visible for 600ms, and an unmount inside that window used to
@@ -101,9 +108,11 @@ export function ConfirmDialog({
 
     setError(null)
 
+    const meta: ConfirmMeta = { checkboxChecked: checkbox ? checkboxChecked : undefined }
+
     if (dismissOnConfirm) {
       try {
-        await onConfirm()
+        await onConfirm(meta)
         onClose()
       } catch (err) {
         setError(err instanceof Error ? err.message : t.errors.genericFailure)
@@ -115,7 +124,7 @@ export function ConfirmDialog({
     setStatus('saving')
 
     try {
-      await onConfirm()
+      await onConfirm(meta)
       setStatus('done')
       closeTimerRef.current = window.setTimeout(() => {
         closeTimerRef.current = null
@@ -156,6 +165,16 @@ export function ConfirmDialog({
         </DialogHeader>
 
         {children}
+        {checkbox && (
+          <label className="flex cursor-pointer select-none items-center gap-2 pt-1 text-xs text-muted-foreground hover:text-foreground">
+            <Checkbox
+              checked={checkboxChecked}
+              disabled={busy}
+              onCheckedChange={checked => setCheckboxChecked(checked === true)}
+            />
+            <span>{checkbox.label}</span>
+          </label>
+        )}
         {error && (
           <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

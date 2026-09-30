@@ -1,5 +1,19 @@
 import { atom } from 'nanostores'
 
+export interface ConfirmCheckbox {
+  label: string
+  defaultChecked?: boolean
+}
+
+export interface ConfirmMeta {
+  checkboxChecked?: boolean
+}
+
+export interface ConfirmResult {
+  confirmed: boolean
+  checkboxChecked?: boolean
+}
+
 export interface ConfirmRequest {
   title: string
   description?: string
@@ -7,15 +21,17 @@ export interface ConfirmRequest {
   busyLabel?: string
   doneLabel?: string
   details?: { label: string; value: string }[]
-  onConfirm?: () => Promise<void>
+  checkbox?: ConfirmCheckbox
+  onConfirm?: (meta?: ConfirmMeta) => Promise<void> | void
   cancelLabel?: string
   destructive?: boolean
 }
 
 export interface PendingConfirm extends ConfirmRequest {
   id: number
-  resolve: (confirmed: boolean) => void
+  resolve: (result: boolean | ConfirmResult) => void
   phase?: 'running' | 'done'
+  checkboxChecked?: boolean
 }
 
 export const $confirmRequest = atom<null | PendingConfirm>(null)
@@ -34,14 +50,47 @@ export function confirm(request: ConfirmRequest): Promise<boolean> {
   settleConfirm(false)
 
   return new Promise<boolean>(resolve => {
-    $confirmRequest.set({ ...request, id: ++nextRequestId, resolve })
+    $confirmRequest.set({
+      ...request,
+      id: ++nextRequestId,
+      resolve: (res: boolean | ConfirmResult) => {
+        resolve(typeof res === 'boolean' ? res : res.confirmed)
+      }
+    })
+  })
+}
+
+/** Confirmation helper that also surfaces the state of the optional checkbox. */
+export function confirmWithMeta(request: ConfirmRequest): Promise<ConfirmResult> {
+  if ($confirmRequest.get()?.phase) {
+    return Promise.resolve({ confirmed: false })
+  }
+
+  settleConfirm(false)
+
+  return new Promise<ConfirmResult>(resolve => {
+    $confirmRequest.set({
+      ...request,
+      id: ++nextRequestId,
+      resolve: (res: boolean | ConfirmResult) => {
+        if (typeof res === 'boolean') {
+          resolve({ confirmed: res })
+        } else {
+          resolve(res)
+        }
+      }
+    })
   })
 }
 
 /** Run the captured request, not a replacement that arrived during I/O. */
-export async function runConfirm(pending: PendingConfirm): Promise<void> {
+export async function runConfirm(pending: PendingConfirm, meta?: ConfirmMeta): Promise<void> {
   if ($confirmRequest.get() !== pending || pending.phase) {
     return
+  }
+
+  if (meta?.checkboxChecked !== undefined) {
+    pending.checkboxChecked = meta.checkboxChecked
   }
 
   if (!pending.onConfirm) {
@@ -53,7 +102,7 @@ export async function runConfirm(pending: PendingConfirm): Promise<void> {
   pending.phase = 'running'
 
   try {
-    await pending.onConfirm()
+    await pending.onConfirm(meta)
     pending.phase = 'done'
   } catch (error) {
     delete pending.phase
@@ -70,5 +119,13 @@ export function settleConfirm(confirmed: boolean, expected?: PendingConfirm): vo
   }
 
   $confirmRequest.set(null)
-  pending.resolve(confirmed)
+
+  if (pending.checkbox) {
+    pending.resolve({
+      checkboxChecked: confirmed ? (pending.checkboxChecked ?? pending.checkbox.defaultChecked ?? false) : undefined,
+      confirmed
+    })
+  } else {
+    pending.resolve(confirmed)
+  }
 }

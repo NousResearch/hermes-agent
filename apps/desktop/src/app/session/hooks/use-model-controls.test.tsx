@@ -55,7 +55,16 @@ vi.mock('@/i18n', async importOriginal => ({
 }))
 
 vi.mock('@/store/confirm', () => ({
-  confirm: (...args: Parameters<typeof confirmMock>) => confirmMock(...args)
+  confirm: (...args: Parameters<typeof confirmMock>) => confirmMock(...args),
+  confirmWithMeta: async (...args: Parameters<typeof confirmMock>) => {
+    const res = await confirmMock(...args)
+
+    if (typeof res === 'object' && res !== null && 'confirmed' in res) {
+      return res
+    }
+
+    return { confirmed: Boolean(res) }
+  }
 }))
 
 vi.mock('@/store/notifications', () => ({

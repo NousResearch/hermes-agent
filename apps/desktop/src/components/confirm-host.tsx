@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { $confirmRequest, type PendingConfirm, runConfirm, settleConfirm } from '@/store/confirm'
+import { $confirmRequest, type ConfirmMeta, type PendingConfirm, runConfirm, settleConfirm } from '@/store/confirm'
 
 // The one mount point for `confirm()` from @/store/confirm. Mounted once at the
 // shell, the way NotificationStack backs notify().
@@ -26,6 +26,7 @@ export function ConfirmHost() {
     <ConfirmDialog
       busyLabel={shown.busyLabel}
       cancelLabel={shown.cancelLabel}
+      checkbox={shown.checkbox}
       confirmLabel={shown.confirmLabel}
       description={shown.description}
       destructive={shown.destructive}
@@ -33,7 +34,7 @@ export function ConfirmHost() {
       doneLabel={shown.doneLabel}
       key={shown.id}
       onClose={() => settleConfirm(shown.phase === 'done', shown)}
-      onConfirm={() => runConfirm(shown)}
+      onConfirm={(meta?: ConfirmMeta) => runConfirm(shown, meta)}
       open={request !== null}
       title={shown.title}
     >

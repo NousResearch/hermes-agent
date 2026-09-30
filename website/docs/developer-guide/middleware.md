@@ -61,8 +61,10 @@ platform adapter is invoked. The built-in egress redaction in
 `hermes_durability.egress` runs first and is fail-closed (a redaction failure
 blocks the send); plugin `outbound_message` middleware keeps the standard
 fail-open contract — only an explicit `{"action": "block"}` verdict stops
-delivery. `category` identifies the choke point (`gateway_reply`,
-`delivery_router`, `send_message_tool`).
+delivery. `category` identifies the choke point (`final_response` for gateway
+replies, `delivery_relay` for cron/`DeliveryRouter` relay sends,
+`send_message_tool` for the `send_message` tool; the adapter wrapper passes
+`adapter_<method>`).
 
 Request middleware can return optional trace fields:
 

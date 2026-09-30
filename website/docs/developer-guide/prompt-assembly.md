@@ -44,7 +44,8 @@ Sessions of one project running in different git worktrees then share a prompt p
 context block, instead of stopping at the first cwd-dependent line — that prefix is what a longest-prefix
 provider cache reuses. A session with no workspace snapshot keeps its trailing guidance in the stable
 tier; the runtime environment block always ends the volatile tier. Platform hints follow the
-shared skills and memory scaffold so sessions on different surfaces can reuse that prefix.
+shared skills and memory scaffold, so surfaces that resolve the same coding posture can reuse
+a prefix that includes both.
 The timestamp/identity paragraph remains immediately before the runtime block for stored-prompt
 validation.
 

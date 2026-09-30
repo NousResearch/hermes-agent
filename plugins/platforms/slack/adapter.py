@@ -4423,6 +4423,37 @@ class SlackAdapter(BasePlatformAdapter):
         self._reacting_message_ids.add(self._workspace_message_marker(team_id, ts))
         self._evict_oldest_by_ts(self._reacting_message_ids, self._REACTING_MESSAGE_IDS_MAX)
 
+    def _message_earns_reaction(
+        self, *, is_one_to_one_dm: bool, is_mentioned: bool, is_thread_reply: bool,
+        event_thread_ts, channel_id: str, user_id: str, team_id: str, is_dm: bool) -> bool:
+        """Whether this message is directly addressed to the bot and so earns the reaction
+        lifecycle. A 1:1 IM or an @mention always does. A thread reply that woke us through
+        thread engagement does too: the user is mid-conversation with us and a reply carries no
+        second mention, so gating on ``is_mentioned`` alone leaves every follow-up turn
+        unacknowledged.
+
+        Engagement is read from the in-memory markers only (bot-sent root, earlier @mention, live
+        session) — deliberately NOT ``_should_wake_on_unmentioned_message``, whose
+        ``_bot_authored_thread_root`` leg can hit ``conversations.replies``. An acknowledgement
+        emoji must never cost a Slack API round-trip, and on a free-response channel the wake
+        check is otherwise never reached at all. Passing the channel gate is not being addressed,
+        so a non-thread unmentioned channel message still earns nothing.
+        """
+        if is_one_to_one_dm or is_mentioned:
+            return True
+        if not is_thread_reply or not event_thread_ts:
+            return False
+        thread_marker = self._workspace_message_marker(team_id, event_thread_ts)
+        # Bare ts too: markers recorded before team_id was known are unscoped.
+        if (
+            thread_marker in self._bot_message_ts or event_thread_ts in self._bot_message_ts
+            or thread_marker in self._mentioned_threads
+            or event_thread_ts in self._mentioned_threads):
+            return True
+        return self._has_active_session_for_thread(
+            channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
+            chat_type="dm" if is_dm else "group")
+
     async def _handle_slack_message(self, event: dict, payload: Optional[dict] = None) -> None:
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
@@ -4673,9 +4704,12 @@ class SlackAdapter(BasePlatformAdapter):
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # React only when directly addressed: a 1:1 IM, an @mention, or a thread reply that woke
+        # us through thread engagement. MPIMs are shared, so they need a mention like any channel.
+        if self._reactions_enabled() and self._message_earns_reaction(
+            is_one_to_one_dm=is_one_to_one_dm, is_mentioned=is_mentioned,
+            is_thread_reply=is_thread_reply, event_thread_ts=event_thread_ts,
+            channel_id=channel_id, user_id=user_id, team_id=team_id, is_dm=is_dm):
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.

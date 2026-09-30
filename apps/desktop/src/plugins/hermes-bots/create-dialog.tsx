@@ -37,7 +37,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -46,7 +46,7 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import { $groupChats, GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
 import { setGroupMembership } from './group-chat-view-members'
@@ -1146,20 +1146,41 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
+  const interaction = useRef(0)
+  const creating = useRef<null | number>(null)
+  const [createPending, setCreatePending] = useState(false)
+
+  const retireInteraction = useCallback(() => {
+    interaction.current += 1
+    creating.current = null
+  }, [])
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
+    retireInteraction()
+    setCreatePending(false)
+
     if (open) {
       setQuery('')
       setChecked({})
       setName('')
       setImage(null)
     }
-  }, [open])
+
+    return retireInteraction
+  }, [open, connectionId, profile, retireInteraction])
+
+  const dismiss = () => {
+    retireInteraction()
+    setCreatePending(false)
+    onClose()
+  }
 
   // An outage placeholder preserves one selected owner's identity in the
   // sidebar, but it is not a routable room member. Never offer it here.
@@ -1174,7 +1195,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
-  const create = () => {
+  const create = async () => {
+    if (!open || creating.current !== null) {
+      return
+    }
+
     const base = (name.trim() || placeholder).slice(0, 64)
 
     if (selected.length < 2 || !base) {
@@ -1199,38 +1224,68 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
     const groupName = uniqueGroupChatName(base, taken)
     const roomId = mintGroupRoomId()
+    const generation = interaction.current
+    creating.current = generation
+    setCreatePending(true)
 
-    for (const bot of selected) {
-      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
+    const ownsRoom = () => {
+      const room = $groupChats.get()[groupName]
+
+      return room?.roomId === roomId && !room.tombstone &&
+        host.state.connectionId.get() === connectionId && host.state.profile.get() === profile
     }
 
-    // Persist every machine identity, including today's active source. That
-    // member becomes remote after a source switch and cannot rely on the new
-    // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
-    updateGroupChat(groupName, (room: GroupChatRoom) => {
-      room.members = roomMembers
-      room.roomId = roomId
+    try {
+      // Keep every captured machine identity; a foreground switch must not
+      // retarget legacy name-keyed metadata writes to the new connection.
+      const roomMembers = durableGroupChatMembers(selected)
+      updateGroupChat(groupName, (room: GroupChatRoom) => {
+        room.members = roomMembers
+        room.roomId = roomId
 
-      if (image) {
-        room.image = image
+        if (image) {room.image = image}
+
+        return room
+      })
+
+      // Metadata is secondary: warn on failure, keeping the usable room.
+      let metadataSyncFailed = false
+
+      for (const bot of selected) {
+        if (!ownsRoom()) {return}
+
+        try {
+          const result = await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, $botMeta.get()), groupName, true))
+
+          if (result.serverOutcome === 'failed') {metadataSyncFailed = true}
+        } catch {
+          metadataSyncFailed = true
+        }
+
+        if (!ownsRoom()) {return}
       }
 
-      return room
-    })
-    host.notify({
-      kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
-    })
-    onClose()
-    onCreated?.(groupName)
+      if (interaction.current !== generation) {return}
+      host.notify({
+        kind: metadataSyncFailed ? 'warning' : 'info',
+        message: `“${groupName}” created with ${selected.length} bots${metadataSyncFailed ? '. Some member details could not sync.' : ''}`
+      })
+      onClose()
+
+      if (ownsRoom() && interaction.current === generation) {onCreated?.(groupName)}
+    } finally {
+      if (creating.current === generation) {
+        creating.current = null
+        setCreatePending(false)
+      }
+    }
   }
 
   return (
     <Dialog
       onOpenChange={value => {
         if (!value) {
-          onClose()
+          dismiss()
         }
       }}
       open={open}
@@ -1356,11 +1411,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           </form>
         </div>
         <DialogFooter>
-          <Button onClick={onClose} variant="secondary">
+          <Button onClick={dismiss} variant="secondary">
             {t.common.cancel}
           </Button>
           <Button
-            disabled={!canCreate}
+            disabled={!canCreate || createPending}
             onClick={create}
           >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>

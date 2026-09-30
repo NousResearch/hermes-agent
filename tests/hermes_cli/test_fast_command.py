@@ -104,6 +104,9 @@ class TestPriorityProcessingModels(unittest.TestCase):
         assert model_supports_fast_mode("grok-4.5") is False
         assert resolve_fast_mode_overrides("grok-4.6") == {"service_tier": "priority"}
 
+
+
+
 class TestFastModeRouting(unittest.TestCase):
     def test_fast_command_exposed_for_model_even_when_provider_is_auto(self):
         cli_mod = _import_cli()
@@ -299,3 +302,6 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert kwargs.get("extra_body", {}).get("speed") is None
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
+
+
+

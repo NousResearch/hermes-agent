@@ -352,7 +352,16 @@ export async function launchHermesDesktop(): Promise<void> {
   const installRoot = $bootstrap.get().installRoot
 
   if (!installRoot) {throw new Error('no install root')}
-  await invoke('launch_hermes_desktop', { installRoot })
+
+  const launch = invoke('launch_hermes_desktop', { installRoot })
+  await Promise.race([
+    launch,
+    new Promise<never>((_, reject) => {
+      window.setTimeout(() => {
+        reject(new Error('The desktop launch request timed out. Please try Launch again.'))
+      }, 30_000)
+    })
+  ])
 }
 
 export async function openLogDir(): Promise<void> {

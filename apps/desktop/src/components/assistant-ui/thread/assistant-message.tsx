@@ -399,14 +399,22 @@ const AssistantStatusSlot: FC = () => {
       return 'none'
     }
 
-    return s.message.status?.type === 'running' && s.message.content.length === 0 ? 'placeholder' : 'activity'
+    if (s.message.status?.type !== 'running') {
+      return 'activity'
+    }
+
+    if (s.message.content.length === 0) {
+      return 'placeholder'
+    }
+
+    return s.message.content.every(part => part.type === 'reasoning') ? 'thinking' : 'activity'
   })
 
   if (slot === 'none') {
     return null
   }
 
-  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />
+  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator thinking={slot === 'thinking'} />
 }
 
 /**

@@ -8,6 +8,7 @@ import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
+import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
@@ -19,6 +20,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
+import { $showReasoning } from '@/store/reasoning-disclosure'
 import { $currentModel } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 import type { LocalModelLoadProgress } from '@/types/hermes'
@@ -305,9 +307,13 @@ export const BackgroundResumeNotice: FC = () => {
 // Subscribes to the activity signal ITSELF (rather than taking it as a prop)
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
-export const TurnActivityIndicator: FC = () => {
+export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = false }) => {
   const { t } = useI18n()
-  const activity = useAuiState(s => activitySignature(s.message.content))
+  // Same rule the reasoning disclosure renders by (message-parts.tsx).
+  const showReasoning = useStore($showReasoning)
+  const guidedChat = useOnboardingChatActive()
+  const reasoningShown = showReasoning && !guidedChat
+  const activity = useAuiState(s => activitySignature(s.message.content, reasoningShown))
 
   // Timestamp of the last visible progress, held from the moment the quiet
   // spell qualifies. Holding the timestamp (not a boolean) is what lets the
@@ -341,6 +347,23 @@ export const TurnActivityIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
+  // The user handing the turn back is progress too: a hidden setup prompt
+  // starts a fresh turn under the card it answers, and an answered question
+  // card resumes the turn it paused. Neither is a gap between two quick calls,
+  // so the wait after it shows at once, timed from that moment, the way a
+  // normal send's row does.
+  const [handBack, setHandBack] = useState({ awaitingInput, turnStartedAt })
+
+  if (handBack.awaitingInput !== awaitingInput || handBack.turnStartedAt !== turnStartedAt) {
+    setHandBack({ awaitingInput, turnStartedAt })
+
+    if (turnStartedAt !== undefined && turnStartedAt !== handBack.turnStartedAt) {
+      setQuietSince(turnStartedAt)
+    } else if (handBack.awaitingInput && !awaitingInput) {
+      setQuietSince(Date.now())
+    }
+  }
+
   // Every second the app claims to be working belongs to something. A named
   // wait says what it is straight away; an unnamed gap has to go quiet for
   // TURN_QUIET_S first, or a run of quick calls would strobe a row between
@@ -370,6 +393,12 @@ export const TurnActivityIndicator: FC = () => {
 
   if (active && !everActive) {
     setEverActive(true)
+  }
+
+  // A reply that has only thought so far, with the thinking not drawn, has
+  // still put nothing on screen: it keeps the pre-first-token row.
+  if (thinking && !reasoningShown) {
+    return <ResponseLoadingIndicator />
   }
 
   if (!active && !everActive) {

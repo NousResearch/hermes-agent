@@ -491,7 +491,9 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         registry = None
 
     targets = shared_loop_targets(registry)
-    authored = snapshot_authored_extra(platforms_data)
+    # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
+    # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
+    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)

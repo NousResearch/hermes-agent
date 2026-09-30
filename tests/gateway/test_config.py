@@ -1781,3 +1781,35 @@ class TestTopLevelBlockVsAuthoredExtra:
         assert config.platforms[Platform.SLACK].extra["strict_mention"] is True
         assert os.environ["SLACK_STRICT_MENTION"] == "true"
         assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+    @staticmethod
+    def _precedence_warnings(caplog):
+        return [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING and "took precedence" in r.getMessage()]
+
+    def test_legacy_gateway_json_extra_is_not_authored(self, tmp_path, monkeypatch, caplog):
+        """``gateway.json`` is the legacy base layer every config.yaml key overrides: its
+        ``platforms.<plat>.extra`` must not be promoted to "authored" and outrank the config.yaml
+        block, at either copy site or on the env rung."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            '{"platforms": {"slack": {"enabled": true, "extra": '
+            '{"require_mention": true, "strict_mention": true}}}}',
+            encoding="utf-8",
+        )
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n  require_mention: false\n  strict_mention: false\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for var in [k for k in os.environ if k.startswith("SLACK_")]:
+            monkeypatch.delenv(var, raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+
+        extra = config.platforms[Platform.SLACK].extra
+        assert extra["require_mention"] is False
+        assert extra["strict_mention"] is False
+        assert os.environ["SLACK_REQUIRE_MENTION"] == "false"
+        assert os.environ["SLACK_STRICT_MENTION"] == "false"
+        assert self._precedence_warnings(caplog) == []

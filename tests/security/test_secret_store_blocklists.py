@@ -14,6 +14,9 @@ def _written_secret_stores() -> list[Path]:
     from agent.vault_store import VaultStore
     from gateway.pairing import _default_pairing_dir
     from hermes_cli.web_server_messaging import _whatsapp_session_path
+    from gateway.platforms import weixin
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.google_chat import oauth as google_chat_oauth
 
     vault = VaultStore()
     return [
@@ -24,6 +27,10 @@ def _written_secret_stores() -> list[Path]:
         vault._vault_path,
         _default_pairing_dir() / "telegram-pending.json",
         _whatsapp_session_path() / "creds.json",
+        get_hermes_home() / "slack_tokens.json",
+        google_chat_oauth._token_path("user@example.com"),
+        google_chat_oauth._client_secret_path(),
+        weixin._account_dir(str(get_hermes_home())) / "fake-account.json",
     ]
 
 

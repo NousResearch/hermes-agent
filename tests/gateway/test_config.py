@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +23,32 @@ from gateway.config import (
     _apply_env_overrides,
     load_gateway_config,
 )
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_gateway_file_layers_preserve_unicode_and_fallback(tmp_path, monkeypatch, encoding):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    legacy = tmp_path / "gateway.json"
+    yaml_path = tmp_path / "config.yaml"
+    legacy.write_bytes(json.dumps({"reset_triggers": ["/départ"], "quick_commands": {
+        "salut": {"type": "prompt", "prompt": "héritage 世界"},
+    }}, ensure_ascii=False).encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "héritage 世界"
+
+    yaml_path.write_bytes("quick_commands:\n  salut:\n    type: prompt\n    prompt: bonjour 世界\n".encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "bonjour 世界"
+
+    yaml_path.write_bytes("quick_commands: [".encode(encoding))
+    assert load_gateway_config().quick_commands["salut"]["prompt"] == "héritage 世界"
+    legacy.write_bytes("{broken".encode(encoding))
+    assert load_gateway_config().quick_commands == {}
 
 
 class TestHomeChannelRoundtrip:
@@ -1316,7 +1343,7 @@ class TestHomeChannelEnvOverrides:
 
         for platform, platform_config, env, expected in cases:
             config = GatewayConfig(platforms={platform: platform_config})
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {**env, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
                 _apply_env_overrides(config)
 
             home = config.platforms[platform].home_channel
@@ -1452,7 +1479,7 @@ class TestApiServerEnvOverride:
         )
 
         api_server_key = "secret-key-at-least-16"
-        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
@@ -1538,6 +1565,7 @@ class TestWebhookEnvOverride:
         with patch.dict(
             os.environ,
             {
+                "HERMES_HOME": os.environ["HERMES_HOME"],
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",

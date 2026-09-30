@@ -96,10 +96,10 @@ def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
     def _load():
         if not path.is_file():
             return None
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
         if needle is not None and needle not in raw:
             return None
-        import yaml
+        import hermes_yaml as yaml
 
         data = yaml.safe_load(raw)
         return data if isinstance(data, dict) else None
@@ -371,6 +371,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
+        from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config_readonly
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -380,11 +381,16 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         finally:
             reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
-        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
-        surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
+        # The live selection is platform_toolsets.<platform> minus agent.disabled_toolsets;
+        # tools.enabled_toolsets is written by no surface, so watching it left Bot Chats
+        # blind to `hermes tools enable/disable` (#124211). Raw slices: an edit that leaves
+        # the effective selection unchanged costs one spurious rebuild at most.
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        surface["platform_toolsets"] = json.dumps(cfg.get("platform_toolsets") or {}, sort_keys=True, default=str)
+        surface["disabled_toolsets"] = sorted(parse_config_string_list(agent_cfg.get("disabled_toolsets")))
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
     except Exception:

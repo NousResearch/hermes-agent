@@ -419,7 +419,7 @@ function creditsPerMonthDisplay(
 ): string | undefined {
   const credits = Number((monthlyCredits ?? '').replace(/,/g, ''))
 
-  return Number.isFinite(credits) && credits > 0 ? b.creditsPerMonth(`$${credits.toLocaleString('en-US')}`) : undefined
+  return Number.isFinite(credits) && credits > 0 ? b.creditsPerMonth(formatMoney(credits)) : undefined
 }
 
 /**

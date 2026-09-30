@@ -48,7 +48,7 @@ def main() -> int:
     args = ap.parse_args()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not args.headed)
+        browser = p.chromium.launch(channel="chromium", headless=not args.headed)
         context = browser.new_context(
             record_har_path=args.har_path,
             record_har_content="embed",  # keep response bodies in the HAR

@@ -412,12 +412,14 @@ def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_mo
     ``non_blocking`` (GUI read path) reads the disk cache only — a provider that is slow or down
     contributes its curated list instead of stalling the whole picker (#114215)."""
     from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
+    from hermes_cli.chat_catalog import without_generation_models
+
     model_ids = cached_provider_model_ids(slug, non_blocking=non_blocking)
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(slug, model_ids)
-    return model_ids
+    return without_generation_models(model_ids)
 
 
 def _first_curated(curated: dict, keys) -> list:
@@ -519,6 +521,16 @@ def _absorb_entry_models(grp: dict, entry: dict, active_model: Any) -> None:
     if _models_config_is_allowlist(models_field, _entry_models_discovered(entry)):
         grp["has_explicit_models"] = True
     _extend_unique(grp["models"], _declared_model_ids(models_field))
+    _split_chain_entries(grp["models"])
+
+
+def _split_chain_entries(models: list) -> None:
+    """Split comma-separated fallback chains (``default_model: a,b,c`` — e.g. the volcengine
+    agent plans) into individually selectable ids. The raw chain stays first so the server-side
+    fallback behaviour itself remains the default pick; the split ids follow it. Fixes #50557."""
+    for model in list(models):
+        if isinstance(model, str) and "," in model:
+            _extend_unique(models, [part.strip() for part in model.split(",")])
 
 
 def _extend_unique(target: list, items) -> None:
@@ -1204,7 +1216,7 @@ def list_authenticated_providers(
         except Exception:
             pass
 
-    # PyYAML parses unquoted numeric names (`provider: 2070`) as int.
+    # YAML parses unquoted numeric names (`provider: 2070`) as int.
     # seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     current_provider = coerce_provider_id(current_provider)
     current_base_url = str(current_base_url or "").strip()

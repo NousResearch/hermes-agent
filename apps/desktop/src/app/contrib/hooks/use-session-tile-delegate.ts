@@ -1,6 +1,10 @@
 import { useEffect } from 'react'
 
-import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import {
+  extendRefreshPageToOverlap,
+  graftRefreshedTailOntoBackfill,
+  olderPageReader
+} from '@/app/chat/transcript-backfill'
 import {
   fetchStoredTranscriptAcrossBackends,
   getLatestSessionMessages,
@@ -9,6 +13,8 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -42,11 +48,9 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResult['messages'] | undefined,
+  prefetched: ChatMessage[],
   streamId?: null | string
 ): ChatMessage[] {
-  const prefetched = toChatMessages(prefetchMessages ?? [])
-
   if (!prefetched.length) {
     return previous
   }
@@ -204,8 +208,8 @@ export function useSessionTileDelegate({
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)
       },
-      executeSlash: async (rawCommand, sessionId) => {
-        await executeSlashCommand(rawCommand, { sessionId })
+      executeSlash: async (rawCommand, sessionId, options) => {
+        await executeSlashCommand(rawCommand, { sessionId, ...options })
       },
       // Gateway reconnect (sleep/wake, backend respawn): every stored→runtime
       // binding recorded pre-reconnect points at a runtime id the respawned
@@ -320,11 +324,25 @@ export function useSessionTileDelegate({
 
         if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
           const prefetch = await prefetchPromise
+
+          // A long turn can push every rendered row off the newest page; read
+          // older pages until they overlap so the graft keeps earlier history.
+          const prefetched = await extendRefreshPageToOverlap(
+            toChatMessages(prefetch?.messages ?? []),
+            cached.messages,
+            olderPageReader(storedSessionId, restScope, prefetch)
+          )
+
+          // The overlap reads await; drop the page if the tile was rebound.
+          if (sessionStateByRuntimeIdRef.current.get(existing)?.storedSessionId !== storedSessionId) {
+            return existing
+          }
+
           // Deltas and completion may land while REST is in flight.
           updateSessionState(
             existing,
             state => {
-              const merged = mergeTileTranscript(state.messages, prefetch?.messages, state.streamId ?? cached.streamId)
+              const merged = mergeTileTranscript(state.messages, prefetched, state.streamId ?? cached.streamId)
 
               return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
             },
@@ -436,10 +454,42 @@ export function useSessionTileDelegate({
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
+        if (storedSessionId) {
+          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+          const owner = await ownerForStoredSession(storedSessionId)
+
+          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
+            profile: profileScopeForSessionOwner(owner)
+          })
+
+          if (refreshed) {
+            updateSessionState(
+              runtimeId,
+              state => ({
+                ...state,
+                awaitingResponse: false,
+                busy: false,
+                messages: refreshed,
+                pendingBranchGroup: null
+              }),
+              storedSessionId
+            )
+            notify({
+              kind: 'warning',
+              message: translateNow('desktop.staleSessionBody'),
+              title: translateNow('desktop.staleSessionTitle')
+            })
+
+            return
+          }
+        }
+
         const routedRequest = storedSessionId
           ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
               requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
           : requestGateway
+
+        noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.workspaceMode ?? 'sessions')
 
         await withSessionNotFoundResume(
           runtimeId,

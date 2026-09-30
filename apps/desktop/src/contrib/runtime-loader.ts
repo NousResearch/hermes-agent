@@ -75,7 +75,101 @@ const importSpecifierRe = () => /(from\s*|import\s*\(\s*|import\s+)(['"])([^'"]+
  *  specifier regex is not syntax-aware, so this is what keeps a plugin's own
  *  copy and comments — `const label = 'Copy keys from'`, `// import 'x'` —
  *  from being read as import syntax (rejected as "unsupported import") or
- *  rewritten in place (a mapped specifier inside a string must stay verbatim). */
+ *  rewritten in place (a mapped specifier inside a string must stay verbatim).
+ *  Regex literals are excluded too: a quote or backtick inside a pattern
+ *  (#120208) must not open a string/template state. */
+
+/** Keywords after which a `/` opens a regex literal, never a division. */
+const regexKeywordRe = /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/
+
+/** True when the `/` at `slash` (already known not to start `//` or `/*`)
+ *  opens a regex literal: the previous significant char cannot end a value.
+ *  Standard division-vs-regex heuristic. */
+function isRegexStart(source: string, slash: number): boolean {
+  let j = slash - 1
+
+  while (j >= 0 && /\s/.test(source[j])) {
+    j -= 1
+  }
+
+  if (j < 0) {
+    return true
+  }
+
+  const prev = source[j]
+
+  // Postfix `++`/`--` ends a value (division); a lone `+`/`-` cannot.
+  if (prev === '+' || prev === '-') {
+    return source[j - 1] !== prev
+  }
+
+  // Identifier, number, string/template end, `)` or `]` end a value.
+  if (prev === ')' || prev === ']' || prev === "'" || prev === '"' || prev === '`') {
+    return false
+  }
+
+  // Block-end `}` resolves toward regex — `} /re/` (statement-start
+  // pattern) is real code, `} / 2` (dividing a block) is not. Revisit if a
+  // plugin ever divides a block result.
+  if (prev === '}') {
+    return true
+  }
+
+  if (/[A-Za-z0-9_$]/.test(prev)) {
+    let k = j
+
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(source[k])) {
+      k -= 1
+    }
+
+    // `x.return / 2` divides a property, it is not `return /re/`.
+    if (source[k] === '.') {
+      return false
+    }
+
+    return regexKeywordRe.test(source.slice(k + 1, j + 1))
+  }
+
+  return true
+}
+
+/** End offset (exclusive) of the regex literal opened at `slash`, or -1 when
+ *  the pattern never closes on this line (so the `/` was a division).
+ *  Escapes and `[...]` classes are honored so a quote or backtick inside the
+ *  pattern (#120208) cannot leak into the surrounding lex. */
+function regexEnd(source: string, slash: number): number {
+  let j = slash + 1
+  let inClass = false
+
+  while (j < source.length) {
+    const c = source[j]
+
+    if (c === '\\') {
+      j += 2
+    } else if (c === '\n') {
+      return -1
+    } else if (c === '[') {
+      inClass = true
+      j += 1
+    } else if (c === ']') {
+      inClass = false
+      j += 1
+    } else if (c === '/' && !inClass) {
+      j += 1
+
+      while (j < source.length && /[A-Za-z]/.test(source[j])) {
+        j += 1
+      }
+
+      return j
+    } else {
+      j += 1
+    }
+  }
+
+  return -1
+}
+
 function codeRanges(source: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = []
   const stack: Array<'expr' | 'template'> = []
@@ -115,6 +209,21 @@ function codeRanges(source: string): Array<[number, number]> {
         stack.push('template')
         state = 'template'
         i += 1
+      } else if (ch === '/') {
+        // A lone `/` (not `//` or `/*`, handled above) opens a regex literal
+        // when the previous significant token cannot end a value (#120208).
+        // Otherwise it is a division and stays plain code.
+        const end = isRegexStart(source, i) ? regexEnd(source, i) : -1
+
+        if (end > 0) {
+          // The pattern is not code: import-looking text inside it must
+          // neither match nor be rewritten in place.
+          closeCode(i)
+          i = end
+          codeStart = i
+        } else {
+          i += 1
+        }
       } else if (ch === '}' && stack[stack.length - 1] === 'expr') {
         closeCode(i)
         stack.pop()
@@ -248,8 +357,23 @@ function unsupportedImports(source: string): string[] {
 }
 
 export function unloadRuntimePlugin(id: string): void {
-  loaded.get(id)?.forEach(dispose => dispose())
+  const disposers = loaded.get(id)
+
+  // Released BEFORE the disposers run, and each disposer in its own
+  // try/catch: a disposer with its own bug must not wedge the registry
+  // (#126338). With a bare forEach the throw aborted the loop and stranded
+  // the delete, so every later reload re-ran the same broken disposers and
+  // died before the fresh register() — file edits looked inert until an
+  // app restart.
   loaded.delete(id)
+
+  disposers?.forEach(dispose => {
+    try {
+      dispose()
+    } catch (error) {
+      console.error(`[plugins] ${id}: disposer failed during unload`, error)
+    }
+  })
 }
 
 /** Evaluate + register one runtime plugin. Returns its id, or null on failure. */
@@ -341,13 +465,16 @@ export async function loadRuntimePlugin(
       packageOrigin: options.packageOrigin
     }
 
-    const failRegistration = (disposers: (() => void)[], error: unknown) => {
+    const failRegistration = (error: unknown) => {
       // Roll back everything register() managed before it failed — a
       // half-registered plugin must not leave live contributions/listeners
       // nobody can ever dispose — and land the failure on the plugin's OWN
       // row so Capabilities → Plugins shows it (the toggle stays usable).
-      disposers.forEach(dispose => dispose())
-      loaded.delete(plugin.id)
+      // unloadRuntimePlugin() tolerates a throwing disposer, so a cleanup
+      // bug in the rollback can neither strand the remaining disposers nor
+      // hold the registration — the #126338 wedge where every later reload
+      // re-ran the same broken disposers instead of the fixed file.
+      unloadRuntimePlugin(plugin.id)
       console.error(`[plugins] ${plugin.id} failed to register (${origin})`, error)
       notifyError(error, `Plugin "${record.name}" failed to register`)
       publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
@@ -368,7 +495,7 @@ export async function loadRuntimePlugin(
           () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
         )
       } catch (error) {
-        failRegistration(disposers, error)
+        failRegistration(error)
 
         return
       }
@@ -380,7 +507,7 @@ export async function loadRuntimePlugin(
       if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
         void Promise.resolve(result).catch((error: unknown) => {
           if (loaded.get(plugin.id) === disposers) {
-            failRegistration(disposers, error)
+            failRegistration(error)
           }
         })
       }

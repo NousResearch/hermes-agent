@@ -57,12 +57,32 @@ function extension(value: string) {
   return idx >= 0 ? clean.slice(idx).toLowerCase() : ''
 }
 
+// Collapses `.`/`..` so a note's `../other.md` lands on the sibling, not on a
+// path the fs bridge rejects. Never climbs above the root of `base`.
 function joinPath(base: string, rel: string) {
   if (!base) {
     return rel
   }
 
-  return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
+  const normalizedBase = base.replace(/\\/g, '/')
+  const root = normalizedBase.match(/^(?:\/\/|(?:[A-Za-z]:)?\/)/)?.[0] ?? ''
+  const parts = normalizedBase.slice(root.length).split('/').filter(Boolean)
+
+  for (const part of rel.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') {
+      continue
+    }
+
+    if (part === '..') {
+      parts.pop()
+
+      continue
+    }
+
+    parts.push(part)
+  }
+
+  return `${root}${parts.join('/')}`
 }
 
 function pathToFileUrl(path: string) {

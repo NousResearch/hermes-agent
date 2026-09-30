@@ -16,9 +16,10 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
@@ -32,11 +33,17 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
+import type { ChatMessage } from '@/lib/chat-messages'
+import type { ErrorSurface } from '@/lib/error-surface'
+import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
+import { registryConnectionKind } from './connection-registry-state'
+import { recordDislike } from './desktop-metrics'
+import { dialedGatewayModeFor } from './gateway'
 import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -59,7 +66,8 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
-  setSessions
+  setSessions,
+  setTileSessionFocusStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedTreePaneId } from './session-focus'
@@ -82,13 +90,14 @@ import { isBrowserWindow, isSecondaryWindow } from './windows'
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
 // ---------------------------------------------------------------------------
-// Event-source scopes: which registry connection's socket delivered a runtime
-// session's events. Working/attention membership alone is profile-blind — two
-// connected gateways can both expose a 'default' profile, so the gateway
-// keep-set (pruneSecondaryGateways) must key live work by the composite
-// (connectionId, profile) scope, not the bare profile name. Recorded at
-// event fan-in (use-gateway-boot); local/primary events carry no connectionId
-// and record nothing, so single-source behavior is untouched.
+// Event-source scopes: which registry connection's socket (or local secondary
+// gateway) delivered a runtime session's events. Working/attention membership
+// alone is profile-blind — two connected gateways can both expose a 'default'
+// profile, so the gateway keep-set (pruneSecondaryGateways) must key live work
+// by the composite (connectionId, profile) scope for remote connections, or
+// by the normalized profile name for local secondary gateways. Recorded at
+// event fan-in (use-gateway-boot); local primary events carry no connectionId
+// or secondary marker and record nothing, so single-source behavior is untouched.
 // ---------------------------------------------------------------------------
 
 const sessionScopeByRuntimeId = new Map<string, string>()
@@ -125,7 +134,9 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   const profile = secondaryProfileOwnerForEvent(event as GatewayEvent)
 
   if (profile) {
-    sessionOwnerByRuntimeId.set(event.session_id, profile)
+    const profileKey = normalizeProfileKey(profile)
+    sessionOwnerByRuntimeId.set(event.session_id, profileKey)
+    sessionScopeByRuntimeId.set(event.session_id, profileKey)
   }
 
   syncPreviewScope()
@@ -152,6 +163,7 @@ export function forgetProfileOnlyRuntimeOwners(profile: string): void {
   for (const [runtimeId, owner] of sessionOwnerByRuntimeId) {
     if (typeof owner === 'string' && normalizeProfileKey(owner) === retired) {
       sessionOwnerByRuntimeId.delete(runtimeId)
+      sessionScopeByRuntimeId.delete(runtimeId)
     }
   }
 }
@@ -274,14 +286,6 @@ export function _resetSessionOwnerHoldsForTests(): void {
 export function foregroundSessionScopes(): Set<string> {
   const scopes = new Set<string>()
 
-  const addRuntimeScope = (runtimeId: string | undefined) => {
-    const scope = runtimeId ? sessionScopeByRuntimeId.get(runtimeId) : undefined
-
-    if (scope) {
-      scopes.add(scope)
-    }
-  }
-
   const addRouteScope = (route: SessionOwnerRoute | undefined) => {
     const connectionId = route?.connectionId?.trim()
     const profile = route?.profile?.trim()
@@ -289,6 +293,37 @@ export function foregroundSessionScopes(): Set<string> {
     if (connectionId && profile) {
       scopes.add(registryBackendScopeKey(connectionId, profile))
     }
+  }
+
+  const addOwnerScope = (owner: SessionOwnerScope | undefined) => {
+    if (!owner) {
+      return
+    }
+
+    if (typeof owner === 'string') {
+      const key = normalizeProfileKey(owner)
+      if (key) {
+        scopes.add(key)
+      }
+      return
+    }
+
+    addRouteScope(owner)
+  }
+
+  const addRuntimeScope = (runtimeId: string | undefined) => {
+    if (!runtimeId) {
+      return
+    }
+
+    const scope = sessionScopeByRuntimeId.get(runtimeId)
+
+    if (scope) {
+      scopes.add(scope)
+      return
+    }
+
+    addOwnerScope(knownOwnerForSession(runtimeId))
   }
 
   addRuntimeScope($activeSessionId.get() ?? undefined)
@@ -357,6 +392,111 @@ export function setSessionStalled(storedSessionId: string | null | undefined, st
 // suspect. Eight minutes was the other failure — longer than a user is willing
 // to sit and wonder, so the hint arrived after they had already given up on it.
 export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
+// A live turn that stops producing events — including after a partial payload —
+// must not wait out the presentation hint above. The clock resets on every
+// session event and on a live-status poll that still reports the turn working,
+// so a quiet tool call is left alone. The window outlasts the 30s live-status
+// backstop: a dead backend stops both events and polls, and this settles it
+// instead of leaving the spinner up. Not keyed on a model name or an error string.
+export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
+const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearEventSilence(runtimeId: string) {
+  const timer = sessionEventSilenceTimers.get(runtimeId)
+
+  if (timer) {
+    clearTimeout(timer)
+    sessionEventSilenceTimers.delete(runtimeId)
+  }
+}
+
+function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
+  return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
+}
+
+const SILENT_TURN_RETRY: ErrorSurface = { code: 'stream_drop', layer: 'streaming', retryable: true }
+
+function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): ChatMessage[] {
+  const occurredAt = Date.now() / 1000
+  const error = 'The connection dropped before the reply finished.'
+
+  const targetId =
+    (streamId && messages.some(message => message.id === streamId) ? streamId : null) ??
+    [...messages].reverse().find(message => message.role === 'assistant' && message.pending)?.id ??
+    null
+
+  const unpended = messages
+    .filter(message => !(message.pending && message.parts.length === 0 && message.id !== targetId))
+    .map(message =>
+      message.pending || message.id === targetId ? { ...message, completedAt: occurredAt, pending: false } : message
+    )
+
+  if (targetId && unpended.some(message => message.id === targetId)) {
+    return unpended.map(message =>
+      message.id === targetId ? { ...message, error, errorSurface: SILENT_TURN_RETRY, pending: false } : message
+    )
+  }
+
+  return [
+    ...unpended,
+    {
+      completedAt: occurredAt,
+      error,
+      errorSurface: SILENT_TURN_RETRY,
+      id: `assistant-interrupted-${Date.now()}`,
+      parts: [],
+      pending: false,
+      role: 'assistant',
+      timestamp: occurredAt
+    }
+  ]
+}
+
+function settleSilentLiveTurn(runtimeId: string) {
+  const current = $sessionStates.get()[runtimeId]
+
+  if (!current || !isLiveTurnAwaitingEvents(current)) {
+    return
+  }
+
+  publishSessionState(runtimeId, {
+    ...current,
+    awaitingResponse: false,
+    busy: false,
+    interrupted: true,
+    messages: withSilentTurnRetry(current.messages, current.streamId),
+    pendingBranchGroup: null,
+    streamId: null,
+    turnLive: false,
+    turnStartedAt: null
+  })
+}
+
+/** Record that this session just produced an event. A live turn that then goes
+ *  silent is force-settled; a turn still receiving events, or waiting on the
+ *  user, is not. */
+export function noteSessionEvent(runtimeId: string) {
+  if (!runtimeId) {
+    return
+  }
+
+  const current = $sessionStates.get()[runtimeId]
+
+  clearEventSilence(runtimeId)
+
+  if (!isLiveTurnAwaitingEvents(current)) {
+    return
+  }
+
+  sessionEventSilenceTimers.set(
+    runtimeId,
+    setTimeout(() => {
+      sessionEventSilenceTimers.delete(runtimeId)
+      settleSilentLiveTurn(runtimeId)
+    }, LIVE_TURN_EVENT_SILENCE_MS)
+  )
+}
+
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armWatchdog(runtimeId: string) {
@@ -478,6 +618,12 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
       })
     }
 
+    // Re-home any open tile keyed on the pre-rotation id to the new tip so the
+    // conversation keeps ONE pane (#98622). Not gated on the active runtime:
+    // a background tile's conversation rotates too, and its pane would
+    // otherwise keep the stale id forever (duplicate/differently-titled tabs).
+    rekeySessionTile(previous.storedSessionId, next.storedSessionId, runtimeId)
+
     clearSettled(previous.storedSessionId)
     setSessionStalled(previous.storedSessionId, false)
   }
@@ -490,6 +636,11 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     armWatchdog(runtimeId)
   } else {
     clearWatchdog(runtimeId)
+
+    if (!isLiveTurnAwaitingEvents(next)) {
+      clearEventSilence(runtimeId)
+    }
+
     setSessionStalled(next.storedSessionId, false)
     setSessionStalled(previous?.storedSessionId, false)
   }
@@ -525,17 +676,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // producer and a turn that ended while the socket was down would never
     // earn its dot.
     if (deferringReconcileUnread) {
-      unconfirmedReconnectSettles.add(storedId)
+      unconfirmedReconnectSettles.set(storedId, runtimeId)
 
       return
     }
 
-    lightUnreadCompletion(storedId)
+    lightUnreadCompletion(storedId, runtimeId)
   }
 }
 
 /** Mark a completed turn unread unless the user is already looking at it. */
-function lightUnreadCompletion(storedId: string) {
+function lightUnreadCompletion(storedId: string, runtimeId?: string) {
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
   if (storedId === $focusedStoredSessionId.get()) {
@@ -550,17 +701,31 @@ function lightUnreadCompletion(storedId: string) {
 
   if (Date.now() > lastReadAt) {
     // Flags the transient atom AND persists a marker, so the green dot
-    // survives an app restart (see session-unread.ts).
-    markSessionUnreadFinished(storedId)
+    // survives an app restart (see session-unread.ts). The marker's profile
+    // bucket comes from the loaded row when there is one; with no row, the
+    // socket-proven owner profile keeps a background profile's finish out of
+    // the ACTIVE profile's bucket — the per-profile rail unread (#91710)
+    // would otherwise light the wrong square.
+    const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
+
+    const profileHint =
+      typeof owner === 'string'
+        ? owner
+        : typeof owner?.profile === 'string' && owner.profile.trim()
+          ? owner.profile
+          : undefined
+
+    markSessionUnreadFinished(storedId, profileHint)
   }
 }
 
 /** Stored ids whose busy claim a PRIMARY reconnect reconcile retired without
- *  any proof the turn ended. The authoritative post-reconnect snapshot settles
- *  each one: `confirmReconnectSettlesExcept` when the runtime is idle or gone,
- *  a busy re-assert (stream event or `working` row) when the turn is still
- *  live. */
-const unconfirmedReconnectSettles = new Set<string>()
+ *  any proof the turn ended — mapped to their runtime id so a later confirm
+ *  can still consult the socket-proven owner (the unread marker's profile
+ *  bucket). The authoritative post-reconnect snapshot settles each one:
+ *  `confirmReconnectSettlesExcept` when the runtime is idle or gone, a busy
+ *  re-assert (stream event or `working` row) when the turn is still live. */
+const unconfirmedReconnectSettles = new Map<string, string>()
 let deferringReconcileUnread = false
 
 /** A fresh authoritative snapshot arrived: every parked completion whose
@@ -571,10 +736,10 @@ let deferringReconcileUnread = false
  *  parked completion with no confirm producer must fall back to lighting
  *  rather than never lighting. No-op when nothing is parked. */
 export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<string>) {
-  for (const storedId of unconfirmedReconnectSettles) {
+  for (const [storedId, runtimeId] of unconfirmedReconnectSettles) {
     if (!workingStoredIds.has(storedId)) {
       unconfirmedReconnectSettles.delete(storedId)
-      lightUnreadCompletion(storedId)
+      lightUnreadCompletion(storedId, runtimeId)
     }
   }
 }
@@ -671,6 +836,7 @@ export function dropSessionState(runtimeId: string) {
   // a just-finished session's row survives merge eviction even if its tile or
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
+  clearEventSilence(runtimeId)
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
@@ -697,6 +863,12 @@ export function clearAllSessionStates() {
   }
 
   sessionWatchdogTimers.clear()
+
+  for (const timer of sessionEventSilenceTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  sessionEventSilenceTimers.clear()
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
@@ -716,10 +888,10 @@ export function clearAllSessionStates() {
  *  hours after the turn actually ended (#53902, #73082 — stale-flag half).
  *
  *  `scope` picks which socket's sessions to reconcile, keyed by the event-
- *  source scope recorded at fan-in: a SECONDARY (registry) reconnect passes
- *  its composite scope and touches only runtimes that arrived on that socket;
+ *  source scope recorded at fan-in: a SECONDARY (registry or local secondary)
+ *  reconnect passes its scope and touches only runtimes that arrived on that socket;
  *  the PRIMARY reconnect passes undefined and touches only scope-less
- *  runtimes (primary/local events record no scope). Neither can clear live
+ *  runtimes (primary events record no scope). Neither can clear live
  *  work riding a different, still-healthy connection.
  *
  *  Direction of failure is deliberate: a turn that IS still live (transient
@@ -922,12 +1094,9 @@ export interface SessionTileWorkspaceScope {
   workspaceTabTitle?: string
 }
 
-// Tiles are persisted PER PROFILE: a session belongs to one profile, and the
-// single live gateway is scoped to one profile at a time, so a tile only makes
-// sense while its profile is active. Switching profiles swaps the visible set
-// (and drops runtime bindings so each tile re-resumes against the now-current
-// gateway — which also settles the "tile resumes against the wrong backend" and
-// "stale runtime after respawn" bugs by construction).
+// Tiles are persisted per connection and profile: same-named profiles on two
+// backends own different sessions. Switching either scope swaps the visible
+// set, with runtime bindings dropped so tiles re-resume on their own gateway.
 const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
 const TILE_PANE_PREFIX = 'session-tile:'
@@ -969,7 +1138,16 @@ function parseTileList(value: unknown): StoredTile[] {
           const raw = t as SessionTile
 
           return {
-            anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
+            // #108679: a tile whose anchor is its OWN pane id is
+            // self-referential — the re-dock target can never exist (the
+            // pane is not in the tree at adoption time), so the dock falls
+            // through to an arbitrary same-placement neighbor instead of the
+            // recorded layout. Rewrite it to the workspace anchor at load,
+            // the same surface an anchorless tile re-docks against.
+            anchor:
+              typeof raw.anchor === 'string' && raw.anchor !== `${TILE_PANE_PREFIX}${raw.storedSessionId}`
+                ? raw.anchor
+                : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
             ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
@@ -999,20 +1177,38 @@ function parseTileList(value: unknown): StoredTile[] {
 }
 
 function loadTilesByProfile(): Record<string, StoredTile[]> {
-  const byProfile: Record<string, StoredTile[]> = {}
+  const byProfile: Record<string, StoredTile[]> = Object.create(null)
   const parsed = readJson<unknown>(TILES_KEY)
 
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     for (const [profile, list] of Object.entries(parsed as Record<string, unknown>)) {
       const tiles = parseTileList(list)
-      const key = profile === BOTS_TILE_BUCKET ? BOTS_TILE_BUCKET : normalizeProfileKey(profile)
+      // Existing profile-only buckets belong to the local connection. New
+      // remote buckets carry the same backend scope key as the socket pool;
+      // never collapse them back into a same-named local profile on reload.
+      const separator = profile.lastIndexOf('::')
+      const isScopedBucket = profile.startsWith('conn:') && separator > 'conn:'.length
+
+      const key =
+        profile === BOTS_TILE_BUCKET
+          ? BOTS_TILE_BUCKET
+          : isScopedBucket
+            ? backendScopeKey(
+                profile.slice('conn:'.length, separator),
+                normalizeProfileKey(profile.slice(separator + 2))
+              )
+            : normalizeProfileKey(profile)
 
       if (tiles.length > 0) {
         const sessionTiles = tiles.filter(tile => tile.workspaceMode !== 'bots')
         const botTiles = tiles.filter(tile => tile.workspaceMode === 'bots')
 
-        if (sessionTiles.length > 0) {
-          byProfile[key] = [...(byProfile[key] ?? []), ...sessionTiles]
+        for (const tile of sessionTiles) {
+          // Old profile-only buckets can contain remote tiles whose owner was
+          // already recorded. Preserve those tabs on upgrade; unknown owners
+          // stay local rather than being guessed onto another backend.
+          const scope = isScopedBucket ? key : backendScopeKey(tile.ownerRoute?.connectionId, key)
+          byProfile[scope] = [...(byProfile[scope] ?? []), tile]
         }
 
         if (botTiles.length > 0) {
@@ -1052,6 +1248,22 @@ const tilesByProfile = loadTilesByProfile()
 // it left the previous profile's tiles registered (phantom "Session" tabs).
 const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
 
+const tileConnectionScopeId = (connection: ReturnType<typeof $connection.get>) => {
+  const id = connection?.connectionId?.trim()
+
+  if (id) {
+    return id
+  }
+
+  // Older direct remotes have no registry id. Keep them separate from local
+  // and from each other instead of writing into the local profile bucket.
+  return connection?.mode === 'remote' ? `url:${connection.baseUrl || 'remote'}` : null
+}
+
+let tileConnectionId = tileConnectionScopeId($connection.get())
+const tileScopeKey = () => backendScopeKey(tileConnectionId, profileKey())
+let visibleTileScope = tileScopeKey()
+
 // Runtime ids are process-scoped — never trust a persisted one, so the live
 // atom hydrates from the stored (runtime-less) tiles for the active profile.
 // A secondary window (single-chat pop-out) shows ONLY its routed session — no
@@ -1087,7 +1299,7 @@ export function setZoneParkedTiles(zoneKey: string, storedSessionIds: readonly s
 export const $sessionTiles = atom<SessionTile[]>(
   isSecondaryWindow() || isBrowserWindow()
     ? []
-    : [...(tilesByProfile[profileKey()] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])]
+    : [...(tilesByProfile[visibleTileScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])]
 )
 
 function persistTiles() {
@@ -1106,9 +1318,9 @@ function saveTiles(tiles: SessionTile[]) {
   const botTiles = stored.filter(tile => tile.workspaceMode === 'bots')
 
   if (sessionTiles.length > 0) {
-    tilesByProfile[profileKey()] = sessionTiles
+    tilesByProfile[visibleTileScope] = sessionTiles
   } else {
-    delete tilesByProfile[profileKey()]
+    delete tilesByProfile[visibleTileScope]
   }
 
   if (botTiles.length > 0) {
@@ -1121,18 +1333,260 @@ function saveTiles(tiles: SessionTile[]) {
   $sessionTiles.set(tiles)
 }
 
-// Profile switch: surface the new profile's tiles with runtime ids cleared so
-// they re-resume against the now-current gateway. (Fires immediately on
-// subscribe; harmless — the init value already matches.) A secondary window
-// never carries tiles, so it stays out of this entirely.
+function saveTileBucket(bucket: string, tiles: SessionTile[]) {
+  const stored = tiles.map(toStored)
+
+  if (stored.length > 0) {
+    tilesByProfile[bucket] = stored
+  } else {
+    delete tilesByProfile[bucket]
+  }
+
+  persistTiles()
+}
+
+// Profile or connection switch: surface only this backend's stored tiles.
+// Null connection is a reconnect blip, not a switch; keep the last scope.
+// A secondary window never carries tiles, so it stays out entirely.
 if (!isSecondaryWindow() && !isBrowserWindow()) {
-  $activeGatewayProfile.subscribe(() => {
-    $sessionTiles.set([...(tilesByProfile[profileKey()] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+  const restoreVisibleTiles = () => {
+    const nextScope = tileScopeKey()
+
+    if (nextScope === visibleTileScope) {
+      return
+    }
+
+    visibleTileScope = nextScope
+    $sessionTiles.set([...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+  }
+
+  $activeGatewayProfile.subscribe(restoreVisibleTiles)
+  $connection.subscribe(connection => {
+    if (!connection) {
+      return
+    }
+
+    tileConnectionId = tileConnectionScopeId(connection)
+    restoreVisibleTiles()
   })
 }
 
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
+}
+
+function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
+  if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
+    return (
+      left.connectionId.trim() === right.connectionId.trim() &&
+      normalizeProfileKey(left.profile) === normalizeProfileKey(right.profile) &&
+      normalizeProfileKey(left.targetProfile ?? left.profile) ===
+        normalizeProfileKey(right.targetProfile ?? right.profile)
+    )
+  }
+
+  if (typeof left === 'string' && typeof right === 'string') {
+    return normalizeProfileKey(left) === normalizeProfileKey(right)
+  }
+
+  return false
+}
+
+function tileWorkspaceMode(tile: SessionTile): WorkspaceMode {
+  return tile.workspaceMode ?? 'sessions'
+}
+
+function tilesShareOwner(left: SessionTile, right: SessionTile): boolean {
+  if (left.workspaceMode && right.workspaceMode && left.workspaceMode !== right.workspaceMode) {
+    return false
+  }
+
+  const workspaceMode = left.workspaceMode ?? right.workspaceMode ?? 'sessions'
+
+  if (workspaceMode === 'bots') {
+    if (left.workspaceOwnerKey && right.workspaceOwnerKey) {
+      return left.workspaceOwnerKey === right.workspaceOwnerKey
+    }
+
+    if (left.ownerRoute && right.ownerRoute) {
+      return sameSessionOwner(left.ownerRoute, right.ownerRoute)
+    }
+
+    return true
+  }
+
+  if (left.ownerRoute && right.ownerRoute) {
+    return sameSessionOwner(left.ownerRoute, right.ownerRoute)
+  }
+
+  return true
+}
+
+function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, tileProfile = profileKey()): boolean {
+  if (tileWorkspaceMode(tile) === 'bots') {
+    return false
+  }
+
+  const mainOwner = knownSessionOwner(ownerLookupSessionRows(), selectedStoredSessionId) ?? profileKey()
+
+  if (tile.ownerRoute) {
+    return isSessionOwnerRoute(mainOwner) && sameSessionOwner(tile.ownerRoute, mainOwner)
+  }
+
+  return typeof mainOwner === 'string' && normalizeProfileKey(mainOwner) === normalizeProfileKey(tileProfile)
+}
+
+function mergeSessionTile(previous: SessionTile, next: SessionTile, storedSessionId: string): SessionTile {
+  const merged: SessionTile = { ...previous, storedSessionId }
+
+  if (next.anchor !== undefined) {
+    merged.anchor = next.anchor
+  }
+
+  if (next.before !== undefined) {
+    merged.before = next.before
+  }
+
+  if (next.dir !== undefined) {
+    merged.dir = next.dir
+  }
+
+  if (next.error !== undefined) {
+    merged.error = next.error
+  }
+
+  if (next.ownerRoute !== undefined) {
+    merged.ownerRoute = next.ownerRoute
+  }
+
+  if (next.runtimeId !== undefined) {
+    merged.runtimeId = next.runtimeId
+  }
+
+  if (next.workspaceMode !== undefined) {
+    merged.workspaceMode = next.workspaceMode
+  }
+
+  if (next.workspaceOwnerKey !== undefined) {
+    merged.workspaceOwnerKey = next.workspaceOwnerKey
+  }
+
+  if (next.workspaceTabTitle !== undefined) {
+    merged.workspaceTabTitle = next.workspaceTabTitle
+  }
+
+  return merged
+}
+
+function rekeyTileList(
+  tiles: SessionTile[],
+  tileProfile: string,
+  previousStoredSessionId: string,
+  nextStoredSessionId: string
+): SessionTile[] | null {
+  const stale = tiles.find(t => t.storedSessionId === previousStoredSessionId)
+
+  if (!stale) {
+    return null
+  }
+
+  const selectedStoredSessionId = $selectedStoredSessionId.get()
+
+  const mainOwnsRotation =
+    Boolean(selectedStoredSessionId) &&
+    (selectedStoredSessionId === previousStoredSessionId || selectedStoredSessionId === nextStoredSessionId) &&
+    tileBelongsToMain(stale, selectedStoredSessionId!, tileProfile)
+
+  const nextTile = tiles.find(t => t.storedSessionId === nextStoredSessionId && tilesShareOwner(stale, t))
+
+  if (mainOwnsRotation) {
+    return tiles.filter(t => t !== stale)
+  }
+
+  if (nextTile) {
+    return tiles
+      .map(t => (t === nextTile ? mergeSessionTile(stale, t, nextStoredSessionId) : t))
+      .filter(t => t !== stale)
+  }
+
+  return tiles.map(t => (t === stale ? { ...t, storedSessionId: nextStoredSessionId } : t))
+}
+
+function ownerProfileKey(owner: SessionOwnerScope): string | undefined {
+  if (isSessionOwnerRoute(owner)) {
+    return normalizeProfileKey(owner.profile)
+  }
+
+  return typeof owner === 'string' ? normalizeProfileKey(owner) : undefined
+}
+
+/**
+ * Re-home an open tile after auto-compression rotates the conversation's stored
+ * id (#98622). Without this, the tile stays keyed on the pre-rotation id while
+ * the rest of the app (selection, route, composer) moves to the new tip — the
+ * same conversation then renders as two tabs (identical or differently-titled,
+ * since each tip is titled independently).
+ *
+ * Placement fields (`dir`/`anchor`/`before`) are preserved so the pane mirror
+ * re-docks the re-keyed tile in the same slot; pane-mirror's wanted-set diff
+ * disposes the old pane and adopts the new one from this single change.
+ *
+ * Main-vs-tile reconciliation is scoped to the same Sessions workspace/owner.
+ * Bot tiles and tiles on distinct backend routes remain independent surfaces.
+ * When a rotation arrives for a background runtime, the persisted profile bucket
+ * owning that runtime is updated without replacing the active profile's atom.
+ */
+export function rekeySessionTile(
+  previousStoredSessionId: string,
+  nextStoredSessionId: string,
+  runtimeSessionId?: string
+) {
+  if (!previousStoredSessionId || !nextStoredSessionId || previousStoredSessionId === nextStoredSessionId) {
+    return
+  }
+
+  const visibleTiles = $sessionTiles.get()
+
+  if (visibleTiles.some(t => t.storedSessionId === previousStoredSessionId)) {
+    const nextTiles = rekeyTileList(visibleTiles, profileKey(), previousStoredSessionId, nextStoredSessionId)
+
+    if (nextTiles) {
+      saveTiles(nextTiles)
+    }
+
+    return
+  }
+
+  const candidateBuckets = Object.entries(tilesByProfile).filter(([, tiles]) =>
+    tiles.some(t => t.storedSessionId === previousStoredSessionId)
+  )
+
+  if (candidateBuckets.length === 0) {
+    return
+  }
+
+  const owner =
+    (runtimeSessionId ? knownOwnerForSession(runtimeSessionId) : undefined) ??
+    knownSessionOwner(ownerLookupSessionRows(), previousStoredSessionId)
+
+  const resolvedProfile = ownerProfileKey(owner)
+
+  const candidate = resolvedProfile
+    ? candidateBuckets.find(([bucket]) => bucket === resolvedProfile)
+    : candidateBuckets.length === 1
+      ? candidateBuckets[0]
+      : undefined
+
+  if (!candidate) {
+    return
+  }
+
+  const [bucket, storedTiles] = candidate
+  const nextTiles = rekeyTileList(storedTiles, bucket, previousStoredSessionId, nextStoredSessionId)
+
+  if (nextTiles) {
+    saveTileBucket(bucket, nextTiles)
+  }
 }
 
 export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRoute | undefined {
@@ -1230,6 +1684,10 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   return sessionOwnerByRuntimeId.get(sessionId) ?? durable
 }
 
+// Session-scoped REST reads (detail / messages / timeline) resolve their
+// connection pin through the SAME owner ladder as RPC dispatch (#125372).
+setSessionOwnerResolver(knownOwnerForSession)
+
 /** The profile whose chat is on screen — the rail's scope.
  *
  *  NOT `$activeGatewayProfile`: a focused tab does not swap the gateway socket,
@@ -1252,6 +1710,31 @@ function syncPreviewScope() {
 $activeSessionId.subscribe(syncPreviewScope)
 syncPreviewScope()
 
+/** The mode of the backend that serves `owner`: the route's own `mode`, else
+ *  its registry connection's kind, else the socket already dialed for it (a
+ *  bare profile rides the primary or its own pool secondary). Null = unknown. */
+function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | null {
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    return dialedGatewayModeFor(null, owner)
+  }
+
+  if (owner.mode) {
+    return owner.mode
+  }
+
+  const kind = registryConnectionKind(owner.connectionId)
+
+  if (kind) {
+    return kind === 'local' ? 'local' : 'remote'
+  }
+
+  return dialedGatewayModeFor(owner.connectionId, owner.profile)
+}
+
 /**
  * Whether the connection that OWNS `sessionId` is remote — never the ambient
  * `$connection`. A session tied to a registered secondary connection (Bot
@@ -1259,18 +1742,13 @@ syncPreviewScope()
  * window currently shows; its RPCs already route to their own owner via
  * `requestForSessionProfile`, but a caller that instead reads ambient mode to
  * decide image.attach vs image.attach_bytes ships a client-local path to a
- * remote backend that can't resolve it (#94640). A bare profile name (no
- * connectionId) is a pool profile of the ambient connection, so ambient mode
- * still applies there.
+ * remote backend that can't resolve it (#94640, #120730). Only an owner whose
+ * backend is still unknown falls back to ambient mode.
  */
 export function isSessionRemote(sessionId: null | string | undefined): boolean {
-  const owner = knownOwnerForSession(sessionId)
+  const mode = ownerConnectionMode(knownOwnerForSession(sessionId)) ?? $connection.get()?.mode
 
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'remote'
-  }
-
-  return $connection.get()?.mode === 'remote'
+  return mode === 'remote'
 }
 
 /**
@@ -1597,7 +2075,7 @@ export interface SessionTileDelegate {
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.
    *  branch/handoff — act on the main surface, as they should). */
-  executeSlash(rawCommand: string, sessionId: string): Promise<void>
+  executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
   /** Drop the wiring cache's stored→runtime bindings. Called on gateway
@@ -2023,7 +2501,7 @@ export function reuseBlankDraftTile(
 // tiles themselves, so ⌘⇧T after a profile switch never resurrects the other
 // profile's session. The tile's placement is remembered so it returns in place.
 const closedTilesByProfile: Record<string, SessionTile[]> = {}
-const closedStack = (): SessionTile[] => (closedTilesByProfile[profileKey()] ??= [])
+const closedStack = (): SessionTile[] => (closedTilesByProfile[visibleTileScope] ??= [])
 
 export function closeSessionTile(storedSessionId: string) {
   const tile = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)
@@ -2130,6 +2608,11 @@ export function dropTilesForProfile(
   const routeProfile = route?.profile ? normalizeProfileKey(route.profile) : ''
   const routeTarget = route?.targetProfile ? normalizeProfileKey(route.targetProfile) : ''
   const routeConnection = String(route?.connectionId ?? '').trim()
+  // A route-less deletion targets the active backend, including legacy direct
+  // remotes whose tile key uses the URL fallback. Reuse the writer's resolved
+  // connection scope so deletion cannot erase same-named local tabs instead.
+  const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
+  const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
     if (!owner) {
@@ -2154,20 +2637,18 @@ export function dropTilesForProfile(
       return !routeConnection || ownerConnection === routeConnection
     }
 
-    // Desktop-local delete: also require the tile's owner connection to be the
-    // LOCAL connection. A same-named bot on another connection is a different
-    // agent — the deleted local profile never owned it, and dropping its tile
-    // would orphan a live conversation (hermes-agent#94235). Tiles persisted
-    // before ownerRoute.connectionId existed carry no id; that empty string IS
-    // the local connection (the only source a pre-connectionId tile could have
-    // been opened on), so treat it as 'local' — otherwise those legacy tiles
-    // survive every local delete and resurrect the profile on relaunch.
-    return (ownerProfile === name || ownerTarget === name) && (ownerConnection || 'local') === 'local'
+    // Ambient delete: only the active connection owns this profile. Legacy
+    // owner routes without an id can be matched to local, but not guessed onto
+    // an id-less remote — that would delete a same-named local Bot tab.
+    return (
+      (ownerProfile === name || ownerTarget === name) && (ownerConnection || LOCAL_CONNECTION_ID) === ambientConnection
+    )
   }
 
   // The profile's own sessions bucket (Bot tiles live in the shared bucket
   // and are keyed by ownerRoute, not by bucket).
-  delete tilesByProfile[name]
+  delete tilesByProfile[removedScope]
+  delete closedTilesByProfile[removedScope]
 
   const botTiles = tilesByProfile[BOTS_TILE_BUCKET]
 
@@ -2193,7 +2674,7 @@ export function dropTilesForProfile(
       ? !ownerMatches(tile.ownerRoute)
       : // Session tiles map to the owning profile's own bucket: drop only when
         // the deleted profile IS the live gateway's profile.
-        profileKey() !== name
+        visibleTileScope !== removedScope
   )
 
   if (next.length !== live.length) {
@@ -2294,6 +2775,7 @@ export function reopenLastClosedTile(): void {
         ownerRoute: tile.ownerRoute
       })
       focusOpenSession(storedSessionId)
+      recordDislike('undo', 'closed_tab')
 
       return
     }
@@ -2352,6 +2834,17 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
   !(selected && tiles.some(t => t.storedSessionId === selected))
 
+// Statusbar timer: stamp "focused since" for non-primary tiles so they share
+// the primary's contract instead of the row's durable started_at (#103123).
+// Primary focus leaves the stamp alone; the next tile focus re-stamps.
+function stampTileSessionFocus(focused: null | string) {
+  const stamp = tileFocusStampOnFocusChange(focused, $selectedStoredSessionId.get(), Date.now())
+
+  if (stamp) {
+    setTileSessionFocusStartedAt(stamp)
+  }
+}
+
 // Bringing a finished session to the front clears its green dot. Keyed on the
 // FOCUSED session, not the selected one: a tile is never $selectedStoredSessionId,
 // and a tile tab click goes through activateTreePane rather than focusOpenSession,
@@ -2364,7 +2857,11 @@ $focusedStoredSessionId.listen(focused => {
     markSessionRead(focused)
     ackStoredSessionId(focused)
   }
+
+  stampTileSessionFocus(focused)
 })
+
+stampTileSessionFocus($focusedStoredSessionId.get())
 
 // Cold-start restore is the one selection change that is NOT a navigation: the
 // route already pointed at the primary session before the window loaded, and

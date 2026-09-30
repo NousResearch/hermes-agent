@@ -636,7 +636,7 @@ export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void)
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
 
 /** Toggle ONE composer's voice conversation — the `composer.voice` hotkey
- *  (Ctrl+B) reaches the composer that owns voice. Defaults to the active
+ *  reaches the composer that owns voice. Defaults to the active
  *  composer so N tiles don't all flip together. */
 export const requestVoiceToggle = (target: ComposerTarget | 'active' = 'active') =>
   dispatch<{ target: ComposerTarget }>(VOICE_TOGGLE_EVENT, { target: resolve(target) })

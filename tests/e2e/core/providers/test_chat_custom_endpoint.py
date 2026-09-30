@@ -31,7 +31,6 @@ from tests.e2e.core.providers._openai_helpers import (
     db_tool_calls,
     db_messages,
     bounded_turn,
-    known_marks,
     oneshot,
 )
 from tests.fakes.providers.chat_variants import CDropToolCall, CText, CTools, FakeChatVariantServer
@@ -40,13 +39,12 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="su
 
 STRICT_TURN_BUDGET = 60.0
 
-KNOWN: dict[str, str] = {
-    "unrepairable_args_surfaced": "#119389 unrepairable tool_call arguments silently dropped, turn reports success",
+KNOWN: dict[str, tuple[str, str]] = {
+    "unrepairable_args_surfaced": (
+        r"the unparseable write_file call vanished: the next request never told the model it did not run "
+        r"and the turn reported success",
+        "#119389 unrepairable tool_call arguments silently dropped, turn reports success"),
 }
-
-
-def known(name: str) -> list:
-    return known_marks(KNOWN, name)
 
 
 def test_ollama_strict_endpoint_always_receives_the_user_turn(tmp_path) -> None:
@@ -87,8 +85,7 @@ def test_ollama_strict_endpoint_always_receives_the_user_turn(tmp_path) -> None:
     assert persisted == [READ_TOOL] * 3, persisted
 
 
-@pytest.mark.parametrize("finish", [pytest.param("stop", marks=known("unrepairable_args_surfaced")),
-                                    pytest.param("tool_calls", marks=known("unrepairable_args_surfaced"))])
+@pytest.mark.parametrize("finish", ["stop", "tool_calls"])
 def test_unrepairable_tool_arguments_are_surfaced_not_dropped(tmp_path, finish) -> None:
     h = Home(tmp_path)
     broken = '{"path": "out.md", "content": "# Title\\n\\nsays "quoted" and then, '  # unterminated, bad quotes
@@ -103,7 +100,7 @@ def test_unrepairable_tool_arguments_are_surfaced_not_dropped(tmp_path, finish) 
         m.get("role") == "tool" or "write_file" in str(m.get("content") or "")
         for m in mains[1]["messages"][len(mains[0]["messages"]):])
     failed_visibly = run.proc.returncode != 0 or run.usage.get("failed")
-    with bug_assertions():
+    with bug_assertions(KNOWN, "unrepairable_args_surfaced"):
         assert told or failed_visibly, (
             "the unparseable write_file call vanished: the next request never told the model it did not run "
             f"and the turn reported success ({run.stdout.strip()!r}); out.md={(h.project / 'out.md').read_text()!r}")

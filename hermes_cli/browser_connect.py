@@ -357,7 +357,7 @@ def _last_used_profile(src: str) -> str:
     """Profile dir Chrome last used (``Local State`` → profile.last_used), else ``Default``. The
     signed-in session usually lives in the profile actually browsed (``Profile 6``), not Default."""
     try:
-        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+        with open(os.path.join(src, "Local State"), encoding="utf-8-sig", errors="replace") as fh:
             state = json.load(fh)
         last = ((state.get("profile") or {}).get("last_used")) or "Default"
     except (OSError, ValueError, AttributeError):
@@ -606,7 +606,7 @@ def _sync_local_state(src: str, dst: str, source_profile: str) -> None:
         except OSError as e:
             logger.debug("real-profile snapshot: skipped Local State: %s", e)
     try:
-        with open(ls_dst, encoding="utf-8") as fh:
+        with open(ls_dst, encoding="utf-8-sig") as fh:
             state = json.load(fh)
         prof = state.get("profile")
         if isinstance(prof, dict):
@@ -959,13 +959,3 @@ def launch_chrome_debug(
             candidate, attempt.returncode, port,
             f"; stderr tail: {attempt.stderr_tail}" if attempt.stderr_tail else "")
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
-    return launch_chrome_debug(port, system).launched
-# ---- END PLUGIN-COMPAT ----

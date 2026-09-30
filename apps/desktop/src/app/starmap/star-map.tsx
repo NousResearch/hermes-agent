@@ -229,7 +229,16 @@ export function StarMap({
 
   const memById = useMemo(() => {
     const m = new Map<string, MemoryCard>()
-    graph.memory.forEach((card, i) => m.set(`memory:${card.source}:${i}`, card))
+    // A node id carries the card's fingerprint (agent.learning_graph.memory_node_id) so an edit
+    // still names the card the user clicked after the list shifts. An imported or older graph
+    // has no fingerprint, so key both shapes or the tooltip/body lookup misses every card.
+    graph.memory.forEach((card, i) => {
+      m.set(`memory:${card.source}:${i}`, card)
+
+      if (card.fingerprint) {
+        m.set(`memory:${card.source}:${i}:${card.fingerprint}`, card)
+      }
+    })
 
     return m
   }, [graph.memory])

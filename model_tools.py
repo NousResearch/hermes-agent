@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
 
 logger = logging.getLogger(__name__)
@@ -614,7 +615,7 @@ _AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
 # Legacy tool-name aliases accepted at every dispatch seam (old sessions/saved
 # prompts keep working); schemas advertise only new names.
 _LEGACY_TOOL_ALIASES = {
-    "todo": "todo_list", "cronjob": "cronjob_manage", "process": "process_manage",
+    **dict.fromkeys(TODO_LEGACY_ALIASES, TODO_SCHEMA["name"]), "cronjob": "cronjob_manage", "process": "process_manage",
     "tour": "gui_tour", "tip": "show_tip",
 }
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}

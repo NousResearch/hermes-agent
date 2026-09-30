@@ -24,6 +24,7 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from tui_gateway import server as tui_server
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,17 @@ def _make_tool_defs(*names: str) -> list:
 def test_is_destructive_command_treats_cp_as_mutating():
     from agent.tool_dispatch_helpers import _is_destructive_command
     assert _is_destructive_command("cp .env.local .env") is True
+
+
+
+
+
+
+@pytest.fixture(autouse=True)
+def _mock_plugin_discovery(monkeypatch):
+    # Tool definitions are supplied by these unit fixtures. Scanning every
+    # bundled plugin again for each isolated test home adds no coverage.
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
 
 
 @pytest.fixture()
@@ -452,6 +464,21 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg(reasoning="thinking hard")
         assert agent._extract_reasoning(msg) == "thinking hard"
 
+    def test_thinking_block_string_payload_still_extracted(self, agent):
+        msg = _mock_assistant_msg(
+            content=[{"type": "thinking", "thinking": "  block reasoning  "}]
+        )
+        assert agent._extract_reasoning(msg) == "block reasoning"
+
+    def test_thinking_block_list_payload_flattened_not_crashed(self, agent):
+        # Non-strict OpenAI-compatible backends (Mistral via custom provider) can
+        # deliver the thinking value as a JSON array; .strip() on a list crashed
+        # the whole API call with AttributeError (#106006). Flatten instead.
+        msg = _mock_assistant_msg(
+            content=[{"type": "thinking", "thinking": ["list-shaped reasoning", "part two"]}]
+        )
+        assert agent._extract_reasoning(msg) == "list-shaped reasoningpart two"
+
 
 class TestSessionFilenameSafety:
     def test_safe_session_filename_component_contains_traversal(self):
@@ -694,7 +721,7 @@ class TestInit:
 
 class TestHydrateTodoStore:
     @staticmethod
-    def _assistant_todo_call(call_id="c1"):
+    def _assistant_todo_call(call_id="c1", name="todo", arguments="{}"):
         return {
             "role": "assistant",
             "content": None,
@@ -702,10 +729,33 @@ class TestHydrateTodoStore:
                 {
                     "id": call_id,
                     "type": "function",
-                    "function": {"name": "todo", "arguments": "{}"},
+                    "function": {"name": name, "arguments": arguments},
                 }
             ],
         }
+
+    @pytest.mark.parametrize(
+        "name,arguments",
+        [
+            ("todo_list", "{}"),
+            ("tool_call", json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]})),
+        ],
+        ids=["direct", "bridged"],
+    )
+    def test_todo_list_name_hydrates(self, agent, name, arguments):
+        """Regression for #124960: the current name and its tool_call-bridged form pair like legacy ``todo``."""
+        todos = [{"id": "t", "content": "Task", "status": "pending"}]
+        history = [
+            self._assistant_todo_call(name=name, arguments=arguments),
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"todos": todos, "revision": 3})},
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
+        # The TUI resume path (no AIAgent yet) must pair the same call via the same predicate.
+        assert tui_server._todo_state_from_history(history)["todos"] == todos
 
     def test_no_todo_in_history(self, agent):
         history = [
@@ -2425,6 +2475,116 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    @pytest.mark.parametrize("api_mode,platform", [
+        ("chat_completions", "cli"), ("chat_completions", "cron"),
+        ("anthropic_messages", "cli"),
+    ])
+    def test_summary_interrupt_aborts_only_its_request(self, agent, monkeypatch, api_mode, platform):
+        agent.api_mode = api_mode
+        agent.platform = platform
+        agent._cached_system_prompt = "You are helpful."
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        request_client = MagicMock()
+        aborted = []
+
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            raise OSError("fixture request stopped")
+
+        def abort(client, **kwargs):
+            aborted.append(client)
+            release.set()
+
+        agent.client.chat.completions.create.side_effect = blocked
+        request_client.chat.completions.create.side_effect = blocked
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_create_request_anthropic_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_abort_request_openai_client", abort)
+        monkeypatch.setattr(agent, "_abort_request_anthropic_client", abort)
+        monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **kw: None)
+        monkeypatch.setattr(agent, "_close_request_anthropic_client", lambda *a, **kw: None)
+        if api_mode == "anthropic_messages":
+            agent._is_anthropic_oauth = False
+            transport = SimpleNamespace(build_kwargs=lambda **kw: {"model": "fixture", "messages": kw["messages"]})
+            monkeypatch.setattr(agent, "_get_transport", lambda: transport)
+            monkeypatch.setattr(agent, "_anthropic_messages_create", blocked)
+
+        raised = []
+
+        def summarize():
+            try:
+                agent._handle_max_iterations([{"role": "user", "content": "work"}], 1)
+            except InterruptedError as exc:
+                raised.append(exc)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=summarize)
+        worker.start()
+        try:
+            assert entered.wait(5), "summary did not reach provider fixture"
+            agent.interrupt()
+            assert finished.wait(4), "summary ignored interrupt while provider was blocked"
+            assert aborted == [request_client]
+            assert len(raised) == 1, "summary cancellation must propagate, not become a fallback"
+            agent.client.close.assert_not_called()
+        finally:
+            release.set()
+            worker.join(12)
+
+    def test_interrupted_summary_ends_turn_interrupted_and_keeps_pending_message(self, agent, monkeypatch):
+        from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.max_iterations = 1
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        release = threading.Event()
+        calls = []
+
+        def provider(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return tool_resp
+            # The summary request: a new user message arrives while it is in flight.
+            agent.interrupt("follow-up message")
+            release.wait(10)
+            raise OSError("fixture request stopped")
+
+        request_client = MagicMock()
+        request_client.chat.completions.create.side_effect = provider
+        agent.client.chat.completions.create.side_effect = provider
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *a, **kw: release.set())
+        monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **kw: None)
+
+        try:
+            with (
+                patch("model_tools.handle_function_call", return_value="ok"),
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation("do the work")
+        finally:
+            release.set()
+
+        assert len(calls) == 2, "summary request never reached the provider fixture"
+        assert result["interrupted"] is True
+        assert result["completed"] is False
+        assert result["interrupt_message"] == "follow-up message"
+        assert result["turn_exit_reason"].startswith("interrupted_during_api_call")
+        assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        assert "couldn't produce a summary" not in result["final_response"]
+        assert all(m.get("content") != MAX_ITERATIONS_SUMMARY_REQUEST for m in result["messages"])
+
     def test_summary_notice_uses_safe_print(self, agent):
         agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
@@ -2662,6 +2822,86 @@ class TestHandleMaxIterations:
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
 
+    def test_codex_summary_uses_interruptible_request_path(self, agent):
+        """Max-iteration Codex summaries must retain request watchdogs.
+
+        A direct ``_run_codex_stream`` call bypasses the absolute stale timeout,
+        interrupt handling, and request-local client cleanup. In unattended cron
+        sessions that turns a wedged summary stream into a job that never returns
+        to cron's completion/error delivery lifecycle (#70943).
+        """
+        agent.api_mode = "codex_responses"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "api.x.ai"
+        agent.model = "grok-4.5"
+        agent.platform = "cron"
+        agent._cached_system_prompt = "You are helpful."
+        response = SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Summary")],
+                )
+            ],
+        )
+
+        with patch.object(
+            agent, "_interruptible_api_call", return_value=response
+        ) as guarded_call, patch.object(
+            agent,
+            "_run_codex_stream",
+            side_effect=AssertionError("summary bypassed request watchdogs"),
+        ):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 4
+            )
+
+        assert result == "Summary"
+        guarded_call.assert_called_once()
+
+    def test_codex_summary_retry_uses_interruptible_request_path(self, agent):
+        """The empty-summary retry must use the same bounded request seam."""
+        agent.api_mode = "codex_responses"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "api.x.ai"
+        agent.model = "grok-4.5"
+        agent.platform = "cron"
+        agent._cached_system_prompt = "You are helpful."
+
+        def codex_response(text):
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text)],
+                    )
+                ],
+            )
+
+        with patch.object(
+            agent,
+            "_interruptible_api_call",
+            side_effect=[codex_response(""), codex_response("Summary after retry")],
+        ) as guarded_call, patch.object(
+            agent,
+            "_run_codex_stream",
+            side_effect=AssertionError("summary retry bypassed request watchdogs"),
+        ):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 4
+            )
+
+        assert result == "Summary after retry"
+        assert guarded_call.call_count == 2
+
     def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"
@@ -2672,7 +2912,7 @@ class TestHandleMaxIterations:
         agent._cached_system_prompt = "You are helpful."
         captured = {}
 
-        def fake_run_codex_stream(kwargs):
+        def fake_run_codex_stream(kwargs, client=None, on_first_delta=None):
             captured.update(kwargs)
             return SimpleNamespace(
                 status="completed",
@@ -2737,7 +2977,7 @@ class TestHandleMaxIterations:
                 ],
             )
 
-        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_run_codex_stream):
             result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 90)
 
         assert result == "Summary"
@@ -4084,7 +4324,8 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
 
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
-        """Continuation retries must not shrink a higher provider default cap."""
+        """Continuation retries must not shrink a higher provider default cap — and must
+        raise it, since re-sending the same cap just truncates again (#72770)."""
         self._setup_agent(agent)
         agent.max_tokens = None
         requested_caps = []
@@ -4111,7 +4352,7 @@ class TestRunConversation:
 
         assert result["completed"] is True
         assert result["final_response"] == "Part 1 Part 2"
-        assert requested_caps == [65536, 65536]
+        assert requested_caps == [65536, 131072]
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Local Ollama-hosted GLM (no :cloud suffix) misreports truncated output as stop."""
@@ -4216,6 +4457,77 @@ class TestRunConversation:
         assert result["partial"] is True
         assert result["failure_reason"] == "truncated"
         mock_handle_function_call.assert_not_called()
+
+    def test_clean_eof_stub_gets_distinct_truncation_message(self, agent):
+        """#102766: a clean-EOF partial-stream stub (stream ended with no
+        transport exception and no finish_reason) must not print the same
+        'stream ended before completion' wording used for a genuine
+        network drop — that wording sends the user chasing a network
+        problem a stream_diag log with finish_reason_seen=False would
+        already have ruled out."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        resp.id = PARTIAL_STREAM_STUB_ID
+        resp._clean_eof = True
+        agent.client.chat.completions.create.return_value = resp
+
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        with (
+            patch("model_tools.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        text = " ".join(printed)
+        assert "server ended the stream without ever sending finish_reason" in text
+        assert "stream ended before completion" not in text
+        # Retries exhausted: the final copy/reason must not blame the network either.
+        assert "Check your network" not in result["final_response"]
+        assert "kept closing the stream" in result["final_response"]
+        assert result["failure_reason"] == "truncated"
+
+    def test_transport_drop_stub_keeps_original_truncation_message(self, agent):
+        """Companion to the clean-EOF test above: a stub NOT tagged
+        _clean_eof (the shape built after a real transport exception) must
+        keep printing the original 'stream ended before completion'
+        wording — issue #102766 asks that this case's existing wording
+        stay as-is, only the clean-EOF case gets new wording."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        resp.id = PARTIAL_STREAM_STUB_ID
+        agent.client.chat.completions.create.return_value = resp
+
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        with (
+            patch("model_tools.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("write the report")
+
+        text = " ".join(printed)
+        assert "stream ended before completion" in text
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
@@ -5652,6 +5964,7 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client = MagicMock()
         stream_cm = MagicMock()
         stream_cm.__enter__.return_value.get_final_message.return_value = response
+        stream_cm.__enter__.return_value.__iter__.return_value = iter([SimpleNamespace(type="message_stop")])
         agent._anthropic_client.messages.stream.return_value = stream_cm
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:
@@ -6116,6 +6429,28 @@ class TestStreamingApiCall:
         assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
         assert resp.choices[0].finish_reason == "length"
 
+    @pytest.mark.parametrize("finish_reason", [None, "tool_calls"])
+    def test_cut_tool_args_are_repaired_only_once_the_provider_finished(self, agent, finish_reason):
+        # Cut after the first digit of "timeout": 600. Every string is closed, so the
+        # prefix repairs to valid JSON that carries timeout=6. Without a finish_reason
+        # nothing says the model was done: retry, never run what happened to arrive.
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        raw = '{"command": "make deploy", "timeout": 6'
+        chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
+        if finish_reason:
+            chunks.append(_make_chunk(finish_reason=finish_reason))
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        if finish_reason is None:
+            assert resp.id == PARTIAL_STREAM_STUB_ID
+            assert resp.choices[0].message.tool_calls is None
+            assert resp._dropped_tool_names == ["terminal"]
+        else:
+            args = resp.choices[0].message.tool_calls[0].function.arguments
+            assert json.loads(args) == {"command": "make deploy", "timeout": 6}
+
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.
 
@@ -6258,7 +6593,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6269,18 +6604,8 @@ class TestAnthropicInterruptHandler:
         """
         import time
         from unittest.mock import MagicMock
-        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
 
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            provider="anthropic",
-            model="claude-test",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()

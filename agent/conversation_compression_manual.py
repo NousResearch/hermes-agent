@@ -112,7 +112,15 @@ def compress_now(
     for m in tail:
         row = _fresh_compaction_message_copy(m)
         if not m.get(_DB_PERSISTED_MARKER):
-            row.pop("_row_id", None)
+            # A rewritten row's id does not bound the archive, but it and any row a merge
+            # folded into it were still in the compressor's input. Keep them named so the
+            # commit archives those originals instead of cloning them beside the tail.
+            dropped = row.pop("_row_id", None)
+            if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0:
+                absorbed = [*(row.get("_absorbed_row_ids") or ())]
+                if dropped not in absorbed:
+                    absorbed.append(dropped)
+                row["_absorbed_row_ids"] = absorbed
         tail_rows.append(row)
     try:
         compressed, _ = agent._compress_context(

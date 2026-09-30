@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._anthropic_helpers import Rig, dump, normalised, start_rig, thinking_of
 from tests.fakes.providers.anthropic_messages import ApiError, DropStream, Reply, Text, Thinking
 
@@ -25,19 +26,12 @@ pytestmark = [pytest.mark.skipif(not sys.platform.startswith("linux"), reason="p
 class StreamDropAcceptedAsAnswer(AssertionError):
     """#121320's signature, raised ONLY where the user is handed the dropped stream's fragment.
 
-    Strict xfails below accept nothing else, so a harness failure (process death, timeout, a
+    It is the type ``known_gate`` accepts below, so a harness failure (process death, timeout, a
     later assertion once the bug is fixed) still fails the run."""
 
 
-# Red on current main for a tracked, open bug. Strict: the test FAILS the moment the bug is
-# fixed, so the entry is removed with the fix instead of masking a later regression.
-KNOWN: dict[str, str] = {
-    "stream_drop_retry": "#121320 stream closed before message_stop is accepted as a complete answer",
-}
-
-
-def known(key: str) -> pytest.MarkDecorator:
-    return pytest.mark.xfail(strict=True, raises=StreamDropAcceptedAsAnswer, reason=KNOWN[key])
+# Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {}
 
 
 def _answer_must_be(stdout: str, expected: str, fragment: str) -> None:
@@ -106,7 +100,6 @@ def test_400_invalid_request_is_surfaced_without_a_retry_storm(rig_factory) -> N
     assert vendor_message in surfaced, f"the vendor's invalid_request_error message never reached the user: {surfaced[-800:]}"
 
 
-@known("stream_drop_retry")
 def test_stream_drop_mid_thinking_retries_without_duplicate_persisted_content(rig_factory) -> None:
     """The socket dies after two thinking deltas (no signature, no message_stop). The retry must
     resend the same history (no half-streamed assistant turn leaks into it), the user sees the
@@ -118,7 +111,8 @@ def test_stream_drop_mid_thinking_retries_without_duplicate_persisted_content(ri
     ], config={"agent": {"api_max_retries": 2}})
     proc = rig.run("chat", "-q", "hello", "-Q")
     assert proc.returncode == 0, proc.stderr[-2000:]
-    _answer_must_be(proc.stdout, "RECOVERED-ANSWER", "PARTIAL-THOUGHT")
+    with known_gate(KNOWN, "stream_drop_retry", raises=StreamDropAcceptedAsAnswer):
+        _answer_must_be(proc.stdout, "RECOVERED-ANSWER", "PARTIAL-THOUGHT")
     assert "LOST-ANSWER" not in proc.stdout, proc.stdout[-800:]
     mains = [r["body"] for r in rig.srv.main_requests()]
     assert len(mains) == 2, [r.get("response") for r in rig.srv.requests]
@@ -134,7 +128,6 @@ def test_stream_drop_mid_thinking_retries_without_duplicate_persisted_content(ri
     assert persisted.count("Clean retry reasoning.") >= 1
 
 
-@known("stream_drop_retry")
 def test_stream_drop_then_next_turn_replays_only_the_completed_signature(rig_factory) -> None:
     """After a mid-thinking drop + successful retry, the NEXT user turn replays the retry's signed
     thinking byte-exact — never the dropped stream's unsigned fragment."""
@@ -145,7 +138,8 @@ def test_stream_drop_then_next_turn_replays_only_the_completed_signature(rig_fac
     ], config={"agent": {"api_max_retries": 2}})
     first = rig.run("chat", "-q", "one", "-Q")
     assert first.returncode == 0, first.stderr[-2000:]
-    _answer_must_be(first.stdout, "TURN-ONE", "FRAGMENT")
+    with known_gate(KNOWN, "stream_drop_retry", raises=StreamDropAcceptedAsAnswer):
+        _answer_must_be(first.stdout, "TURN-ONE", "FRAGMENT")
     (session_id,) = rig.session_ids()
     second = rig.run("chat", "--resume", session_id, "-q", "two", "-Q")
     assert second.returncode == 0 and "TURN-TWO" in second.stdout, second.stderr[-2000:]

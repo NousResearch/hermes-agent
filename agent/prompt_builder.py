@@ -49,7 +49,9 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
-def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+def _read_text_with_timeout(
+    path: Path, timeout: Optional[float] = None, encoding: str = "utf-8-sig"
+) -> Optional[str]:
     """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
 
     Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
@@ -63,7 +65,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding="utf-8")))
+            result.put((True, path.read_text(encoding=encoding)))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
@@ -253,9 +255,10 @@ SESSION_SEARCH_GUIDANCE = (
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.
+SKILL_SAFETY_HEADING = "## Skill Safety Rule"
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
-    "## Skill Safety Rule\n"
+    f"{SKILL_SAFETY_HEADING}\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
@@ -387,6 +390,15 @@ TASK_COMPLETION_GUIDANCE = (
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
     "produce. Reporting a blocker honestly is always better than inventing a result."
+)
+
+ASYNC_HANDOFF_GUIDANCE = (
+    "# Async handoff\n"
+    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
+    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
+    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
+    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
+    "completion before it is delivered."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
@@ -1171,7 +1183,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
-        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
+        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
@@ -1205,9 +1217,17 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     }
     if org_id:
         entry["org_id"] = org_id
-        try:  # author from the pull-time provenance sidecar; best-effort
-            prov = json.loads((skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE).read_text(encoding="utf-8"))
-            entry["org_author"] = str(prov.get("author_device") or "") or str(prov.get("author_user_id") or "")
+        # Author from the pull-time provenance sidecar (token-verified at
+        # push by the plane's author_mismatch guard). Best-effort.
+        try:
+            import json as _json
+
+            prov_path = (
+                skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE
+            )
+            prov = _json.loads(prov_path.read_text(encoding="utf-8-sig"))
+            device = str(prov.get("author_device") or "")
+            entry["org_author"] = device or str(prov.get("author_user_id") or "")
         except Exception:
             entry["org_author"] = ""
     return entry
@@ -1216,7 +1236,8 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
     try:
-        frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+        raw = skill_file.read_text(encoding="utf-8-sig")
+        frontmatter, _ = parse_frontmatter(raw)
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
             return False, frontmatter, extract_skill_description(frontmatter)
@@ -1299,7 +1320,7 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for desc_file in iter_skill_index_files(root, "DESCRIPTION.md"):
         try:
-            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8"))[0].get("description")
+            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8-sig"))[0].get("description")
             if cat_desc:
                 rel = desc_file.relative_to(root)
                 found["/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"] = str(cat_desc).strip().strip("'\"")
@@ -1757,26 +1778,3 @@ def build_context_files_prompt(
         return ""
     return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
             + "\n".join(sections))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'org_id_of_path': ('agent.skill_utils', 'org_id_of_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

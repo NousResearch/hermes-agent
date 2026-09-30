@@ -109,7 +109,9 @@ def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str
         # `remove` needs the dir; `prune` drops the admin entry when it is already gone.
         _git_quiet(["worktree", "prune"], repo_root, timeout=15,
                    stdin=subprocess.DEVNULL, env=noninteractive_git_env())
-        _git_quiet(["branch", "-D", branch_name], repo_root, timeout=15)
+        # A ref update runs the repository's reference-transaction hook (core.hooksPath).
+        _git_quiet(["branch", "-D", branch_name], repo_root, timeout=15,
+                   stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     except Exception as e:
         logger.debug("cleanup after failed worktree add: %s", e)
 
@@ -950,7 +952,9 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
             if branch and verdict == "reap-keep-branch":
                 kept_branches.add(branch)
             elif branch:
-                _git(["branch", "-D", branch], repo_root)
+                # Unattended sweep: the repository's reference-transaction hook must not run.
+                _git(["branch", "-D", branch], repo_root,
+                     stdin=subprocess.DEVNULL, env=noninteractive_git_env())
             logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)
@@ -1040,5 +1044,6 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> N
         return
     for i in range(0, len(orphaned), 50):
         _git_quiet(["branch", "-D"] + orphaned[i:i + 50], repo_root, timeout=30,
-                   log="Failed to prune orphaned branches")
+                   log="Failed to prune orphaned branches",
+                   stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     logger.debug("Pruned %d orphaned branches", len(orphaned))

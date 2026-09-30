@@ -102,10 +102,12 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
     marker = tmp / "MARKER"
     hooks = repo / "evil-hooks"
     hooks.mkdir()
-    hook = hooks / "post-checkout"
     marker_shell = marker.as_posix()
-    hook.write_text(f"#!/bin/sh\ntouch '{marker_shell}.hook'\n")
-    hook.chmod(0o755)
+    # post-checkout fires on `worktree add`; reference-transaction on every ref update, `branch -D` included.
+    for name in ("post-checkout", "reference-transaction"):
+        hook = hooks / name
+        hook.write_text(f"#!/bin/sh\ntouch '{marker_shell}.hook'\n")
+        hook.chmod(0o755)
     # Let git encode config values; raw Windows backslashes are escapes.
     settings = {
         "core.fsmonitor": f"touch '{marker_shell}.fsmonitor'",
@@ -192,8 +194,10 @@ def test_subagent_worktree_add_is_safe(malicious_repo, tmp_path):
 
 def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_path):
     """``status`` / ``ls-files`` / ``worktree add`` read the index, which runs ``core.fsmonitor``;
-    ``worktree add`` also runs the repository's hooks. Recovery hint, completion probe, kanban
-    worktree, worktree-gc ``status`` and the reclaimers' dirty probe (kanban teardown)."""
+    ``worktree add`` also runs the repository's hooks, and ``branch -D`` its reference-transaction
+    hook. Recovery hint, completion probe, kanban worktree, worktree-gc ``status``, the reclaimers'
+    dirty probe (kanban teardown), and the three unattended branch deletions: the reclaim sweep,
+    the orphaned-branch pass and the cleanup after a failed ``worktree add``."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc, worktree_ops
     from tools.async_delegation_recovery_hints import git_state_hint
@@ -207,6 +211,17 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     dirty = worktree_ops._worktree_is_dirty(str(tmp_path / "wt2"))
     assert _fired(marker) == []
     assert dirty is False  # the probe ran: a skipped one reads as dirty
+
+    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "branch", "pr-1"], check=True, env=clean)
+    kw._ensure_git_worktree(repo, tmp_path / "wt3", "safe3")
+    worktree_ops._reap_prune_verdicts(str(repo), [(tmp_path / "wt2", 0.0, False, "reap", None)], 0.0)
+    worktree_ops._prune_orphaned_branches(str(repo))
+    worktree_ops._cleanup_failed_worktree_add(str(repo), tmp_path / "wt3", "safe3")
+    assert _fired(marker) == []
+    branches = subprocess.run(["git", "-C", str(repo), "branch", "--format=%(refname:short)"],
+                              capture_output=True, text=True, env=clean).stdout.split()
+    assert not {"safe2", "pr-1", "safe3"} & set(branches)  # the deletions ran
 
 
 def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):

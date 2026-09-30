@@ -525,23 +525,54 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
     return {"success": True, "message_id": last_result.message_id, "media_delivered": True}
 
 
+class _GatewayRun:
+    """Runs ``make_coro()`` as a task on the gateway loop. ``cancel`` must also be called on
+    that loop; it cancels the task, or stops it from starting if it has not run yet."""
+
+    def __init__(self, make_coro):
+        self._make_coro = make_coro
+        self._task: asyncio.Task | None = None
+        self._cancelled = False
+
+    async def run(self):
+        if self._cancelled:
+            raise asyncio.CancelledError
+        self._task = asyncio.current_task()
+        return await self._make_coro()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if self._task is not None:
+            self._task.cancel()
+
+
 async def _dispatch_on_gateway_loop(runner, make_coro, log_message, *, cancel_on_caller_cancel=False):
     """Await ``make_coro()`` on the gateway's loop: adapter.send() uses queues/tasks bound to it,
-    so awaiting from another loop (the tool worker thread) deadlocks."""
+    so awaiting from another loop (the tool worker thread) deadlocks.
+
+    With ``cancel_on_caller_cancel``, a cancelled caller cancels the coroutine on the gateway
+    loop and then waits for its outcome, so a coroutine that finishes an accepted send despite
+    the cancellation still returns its receipt."""
     gateway_loop = getattr(runner, "_gateway_loop", None)
     if gateway_loop is None or asyncio.get_running_loop() is gateway_loop:
         return await make_coro()  # same loop / no gateway loop (CLI, tests)
     if not gateway_loop.is_running():
         return {"error": "Gateway loop is not running; cannot dispatch adapter send"}
     from agent.async_utils import safe_schedule_threadsafe
-    fut = safe_schedule_threadsafe(make_coro(), gateway_loop, logger=logger, log_message=log_message)
+    gateway_run = _GatewayRun(make_coro)
+    fut = safe_schedule_threadsafe(gateway_run.run(), gateway_loop, logger=logger, log_message=log_message)
     if fut is None:
         return {"error": "Gateway loop unavailable for send dispatch"}
-    if cancel_on_caller_cancel:
-        return await asyncio.wrap_future(fut)
     # shield: a cancelled caller must not cancel the enqueued send (a retry would duplicate it).
     # No timeout: the adapter and outer _run_async bound the wait.
-    return await asyncio.shield(asyncio.wrap_future(fut))
+    outcome = asyncio.wrap_future(fut)
+    try:
+        return await asyncio.shield(outcome)
+    except asyncio.CancelledError:
+        if not cancel_on_caller_cancel:
+            raise
+    gateway_loop.call_soon_threadsafe(gateway_run.cancel)
+    return await outcome
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,

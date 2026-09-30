@@ -1373,9 +1373,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:
-            closed_managed = _close_event_stream(event_stream)
+            managed_owns_close = callable(getattr(event_stream, "close", None))
+            _close_event_stream(event_stream)
             raw_stream = writer_token.get("raw_stream")
-            if not closed_managed and raw_stream is not None and raw_stream is not event_stream:
+            if not managed_owns_close and raw_stream is not None and raw_stream is not event_stream:
                 _close_event_stream(raw_stream)
 
 

@@ -2,9 +2,10 @@
 
 The session layer reaps a session whose client is gone (``ws_orphan_reap``, eviction) while a
 ``notify_on_complete`` process it started is still running, and ``resume`` brings the very same
-``session_key`` back. Whichever *foreign* poller drained the shared queue first used to discard that
-completion outright, so the wake the terminal tool promises never arrived. The event is parked
-(bounded) instead, and the owner's poller claims it on its first pass after it is live again.
+``session_key`` back. Both discard doors used to lose that completion: whichever *foreign* poller
+drained the shared queue first, and the reaped session's own shutdown drain (``_finalized``, so it no
+longer proves ownership). The event is parked (bounded, per owner too) instead, and the owner's
+poller claims it on its first pass after it is live again.
 """
 
 from __future__ import annotations
@@ -125,6 +126,34 @@ class _Batch:
 
     def display_text(self, registry):
         return "batch"
+
+
+def test_the_finalizing_owners_drain_parks_instead_of_dropping(monkeypatch):
+    """The reaped session's own shutdown drain runs with a non-null ``deferred`` list, and the session
+    is already ``_finalized`` — so it can no longer prove ownership of its own events. They must still
+    reach the resumed successor instead of being discarded on the way out."""
+    owner = _session(OWNER_KEY)
+    owner["_finalized"] = True
+    evt = _completion()
+    monkeypatch.setattr(server, "_sessions", {"owner-sid": owner})
+    registry = _registry()
+
+    server._notif_handle_ready("owner-sid", owner, [evt], set(), registry, lambda _evt: "text", [])
+
+    assert registry.completion_queue.empty(), "the shutdown drain must not requeue into a dying queue"
+    assert [parked for _deadline, parked in server._unowned_parked] == [evt]
+
+
+def test_one_absent_session_cannot_fill_the_park(monkeypatch):
+    """The budget is per owner as well as total: a session that never comes back must not spend the
+    whole park and refuse the next reaped session's first completion."""
+    monkeypatch.setattr(server, "_UNOWNED_RETAINED_PER_KEY_MAX", 1, raising=False)
+    assert server._park_unowned_notification(_completion("proc_first")) is True
+    assert server._park_unowned_notification(_completion("proc_second")) is False
+    other_owner = _completion("proc_other")
+    other_owner["session_key"] = "another-owner-key"
+    assert server._park_unowned_notification(other_owner) is True
+    assert [parked["session_id"] for _deadline, parked in server._unowned_parked] == ["proc_first", "proc_other"]
 
 
 def test_a_parked_event_past_its_ttl_is_dropped(monkeypatch):

@@ -169,19 +169,29 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 # ``completion_queue``: a foreign event parked in the queue would keep every live poller's queue
 # non-empty and spin that loop (see the back-off note in ``_notif_handle_event``). Delegations have
 # their own return path (``return_completion_offer``); this is the same idea for the other types.
+#
+# Both discard doors park: the foreign poller's drain AND the finalizing session's own shutdown
+# drain (the reaped owner is ``_finalized`` by then, so it no longer proves ownership of its own
+# events). The caps are total AND per owner, so a session that is gone for good cannot spend the
+# whole budget and refuse the next reaped session's first completion.
 _UNOWNED_RETENTION_SECONDS = 600.0
 _UNOWNED_RETAINED_MAX = 16
+_UNOWNED_RETAINED_PER_KEY_MAX = 4
 _unowned_parked: "list[tuple[float, dict]]" = []
 _unowned_park_lock = threading.Lock()
 
 
 def _park_unowned_notification(evt: dict) -> bool:
-    """Retain an addressed event whose owner session is not live (bounded TTL + cap). False when the
-    park list cannot take it -- the caller then drops the event exactly as it did before."""
+    """Retain an addressed event whose owner session is not live (bounded TTL + caps). False when the
+    park cannot take it -- the caller then drops the event exactly as it did before."""
     now = time.monotonic()
+    key = str(evt.get("session_key") or "")
     with _unowned_park_lock:
         _unowned_parked[:] = [(deadline, parked) for deadline, parked in _unowned_parked if deadline > now]
         if len(_unowned_parked) >= _UNOWNED_RETAINED_MAX:
+            return False
+        if key and sum(1 for _deadline, parked in _unowned_parked
+                       if str(parked.get("session_key") or "") == key) >= _UNOWNED_RETAINED_PER_KEY_MAX:
             return False
         _unowned_parked.append((now + _UNOWNED_RETENTION_SECONDS, evt))
         return True
@@ -584,6 +594,11 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
                     return_completion_offer(evt)
         elif is_delegation:
             deferred.append(evt)
+        elif _park_unowned_notification(evt):
+            # The draining session is not the owner (a reaped one is ``_finalized`` and no longer owns
+            # its events), and the owner's resume can still claim it -- park on the way out too.
+            logger.debug("Parked unowned %s notification (origin=%r key=%r) during shutdown drain",
+                         evt_type, origin, key)
         else:
             logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
         return True

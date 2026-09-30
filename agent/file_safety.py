@@ -58,15 +58,60 @@ def _resolve_each(paths) -> list[Path]:
     return out
 
 
-def _is_under(resolved: str | Path, base: str | Path) -> bool:
-    """True when ``resolved`` equals ``base`` or lies below it (both already resolved);
-    ``Path`` inputs use ``relative_to`` (platform semantics), ``str`` a realpath prefix test."""
+def _file_id(path: str | Path) -> Optional[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of what ``path`` names, or None when it cannot be stat'ed."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    # Some network / FAT volumes report inode 0 for every file: that is no identity at all.
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def _ignores_case(existing: Path) -> bool:
+    """Whether the volume holding ``existing`` looks names up case-insensitively (macOS's
+    default APFS, Windows): the same path with its case swapped names the same file."""
+    fid, flipped = _file_id(existing), str(existing).swapcase()
+    return fid is not None and flipped != str(existing) and _file_id(flipped) == fid
+
+
+def _spelled_under(resolved: str | Path, base: str | Path) -> bool:
+    """``Path`` inputs use ``relative_to`` (platform semantics), ``str`` a realpath prefix test."""
     if isinstance(resolved, Path):
         try:
             return resolved.relative_to(base) is not None
         except ValueError:
             return False
     return resolved == base or resolved.startswith(str(base) + os.sep)
+
+
+def _is_under(resolved: str | Path, base: str | Path) -> bool:
+    """True when ``resolved`` is ``base`` or lies below it (both already resolved).
+
+    Judged by the filesystem, not only the spelling: realpath keeps the case it was given, so on
+    a case-insensitive volume ``AUTH.JSON`` is ``auth.json``, and a hardlink or a second mount
+    reaches a file under another path. A ``base`` that exists is matched by file identity of
+    ``resolved`` or one of its parents; one not created yet by a case-folded spelling, when the
+    volume ignores case (a write to ``.ENV`` creates the ``.env`` the loader reads)."""
+    return _is_under_any(resolved, (base,))
+
+
+def _is_under_any(resolved: str | Path, bases) -> bool:
+    """``_is_under`` against every base in ``bases``, stat'ing ``resolved``'s ancestry once:
+    the dashboard asks this for each entry of a directory listing."""
+    bases = list(bases)
+    if any(_spelled_under(resolved, base) for base in bases):
+        return True
+    path = Path(resolved)
+    ids = {base: _file_id(base) for base in bases}
+    existing = {fid for fid in ids.values() if fid is not None}
+    if existing and existing.intersection(_file_id(p) for p in (path, *path.parents)):
+        return True
+    folded = str(resolved).casefold()
+    missing = [str(base).casefold() for base, fid in ids.items() if fid is None]
+    if not any(folded == b or folded.startswith(b + os.sep) for b in missing):
+        return False
+    return next((_ignores_case(p) for p in (path, *path.parents) if _file_id(p) is not None), False)
 
 
 def _resolve_target(path: str) -> Optional[Path]:
@@ -276,22 +321,20 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if any(resolved in build_write_approval_paths(home) for home in homes):
+    if _is_approval_path(homes, resolved):
         return None
 
+    # A denied prefix covers what lies strictly below it: the parent is at or under it.
     if any(
-        resolved in build_write_denied_paths(home)
-        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home))
+        _is_under_any(resolved, build_write_denied_paths(home))
+        or _is_under_any(os.path.dirname(resolved), (p.rstrip(os.sep) for p in build_write_denied_prefixes(home)))
         for home in homes
     ):
         return "credential"
 
-    for base in _hermes_dirs():
-        for sub in (*_HERMES_PROTECTED_SUBPATHS, *SECRET_STORE_DIRS):
-            with suppress(Exception):
-                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
-                    return "credential"
-    if any(_is_under(resolved, str(store)) for store in configured_secret_store_paths()):
+    protected = (os.path.realpath(os.path.join(str(base), sub))
+                 for base in _hermes_dirs() for sub in (*_HERMES_PROTECTED_SUBPATHS, *SECRET_STORE_DIRS))
+    if _is_under_any(resolved, [*protected, *map(str, configured_secret_store_paths())]):
         return "credential"
 
     safe_roots = get_safe_write_roots()
@@ -324,8 +367,11 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
 def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
-    homes, resolved = _homes_and_resolved(path)
-    return any(resolved in build_write_approval_paths(home) for home in homes)
+    return _is_approval_path(*_homes_and_resolved(path))
+
+
+def _is_approval_path(homes: set[str], resolved: str) -> bool:
+    return any(_is_under(resolved, gated) for home in homes for gated in build_write_approval_paths(home))
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.
@@ -438,8 +484,8 @@ def get_read_block_error(path: str) -> Optional[str]:
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif (any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in SECRET_STORE_FILES)
-          or any(_is_under(resolved, store) for store in configured_secret_store_paths())):
+    elif _is_under_any(resolved, [*_resolve_each(hd / name for hd in hermes_dirs for name in SECRET_STORE_FILES),
+                                  *configured_secret_store_paths()]):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX
@@ -458,6 +504,17 @@ def get_read_block_error(path: str) -> Optional[str]:
                 "leakage. If you need to check the file structure, read .env.example instead." + _DID_SUFFIX
             )
     return f"Access denied: {path} {reason}" if reason else None
+
+
+def is_secret_store_path(path: str | Path) -> bool:
+    """True when ``path`` is, or lies inside, one of the Hermes credential stores the read guard
+    refuses, located where the store actually is: a store reached through a symlinked or renamed
+    directory, a case variant or a hardlink counts, whatever its path components are called."""
+    resolved = _resolve_target(str(path))
+    if resolved is None:
+        return False
+    stores = _resolve_each(hd / name for hd in _hermes_dirs() for name in (*SECRET_STORE_FILES, *SECRET_STORE_DIRS))
+    return _is_under_any(resolved, [*stores, *configured_secret_store_paths()])
 
 
 def raise_if_read_blocked(path: str) -> None:

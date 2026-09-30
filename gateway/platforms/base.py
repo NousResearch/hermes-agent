@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
-from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES
+from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES, _is_under
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -945,10 +945,9 @@ def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
-    with contextlib.suppress(ValueError):
-        path.relative_to(root)
-        return True
-    return False
+    """Containment judged like the read guard's (``agent.file_safety._is_under``): by file
+    identity as well as spelling, so a case variant (macOS, Windows) or a hardlink counts."""
+    return _is_under(path, root)
 
 
 def _tenv(name: str, default: str = "") -> str:

@@ -6262,7 +6262,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect(await handle!.submitText('fresh enough')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'fresh enough' },
+      { session_id: RUNTIME_SESSION_ID, text: 'fresh enough', submission_ref: expect.any(String) },
       1_800_000
     )
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
@@ -6310,7 +6310,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect(await handle!.submitText('follow-up after tools')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools' },
+      { session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools', submission_ref: expect.any(String) },
       1_800_000
     )
   })
@@ -6333,7 +6333,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect(await handle!.submitText('send anyway')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
+      { session_id: RUNTIME_SESSION_ID, text: 'send anyway', submission_ref: expect.any(String) },
       1_800_000
     )
   })

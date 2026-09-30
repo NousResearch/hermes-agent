@@ -323,6 +323,17 @@ def _api_key_lines(show_keys: bool) -> list[str]:
     token = claude.get("accessToken") if claude else None
     if isinstance(token, str) and token.strip():
         lines.append(f"  {'claude-code-cli':<20} set (oauth; presence only)")
+    # A Codex login may exist only in the provider singleton, before pool seeding.
+    # Its explicit read-only mode avoids CLI adoption, refresh and auth.lock writes.
+    if "openai-codex" not in stored:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+        try:
+            codex = resolve_codex_runtime_credentials(read_only=True)
+        except Exception:
+            pass  # A broken source must not prevent the remaining diagnostics.
+        else:
+            if codex.get("api_key") and codex.get("source") == "hermes-auth-store":
+                lines.append(f"  {'auth:openai-codex':<20} set (oauth; presence only)")
     return lines
 
 

@@ -1,8 +1,14 @@
 import type { KeyboardEvent } from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { composerPlainText, RICH_INPUT_SLOT } from './rich-editor'
-import { chipTypedUrlOnSpace, linkifyUrls } from './url-refs'
+import { composerPlainText, refChipElement, RICH_INPUT_SLOT } from './rich-editor'
+import {
+  chipTypedUrlOnSpace,
+  linkifyUrls,
+  markdownLinkFor,
+  resolveExactLinkPaste,
+  selectionLinkLabel
+} from './url-refs'
 
 /** An editor holding `text` with a collapsed caret at `caret`, plus the space
  *  keydown the composer would hand `chipTypedUrlOnSpace`. */
@@ -46,8 +52,203 @@ describe('linkifyUrls', () => {
     expect(linkifyUrls('@url:`https://example.dev`')).toBe('@url:`https://example.dev`')
   })
 
+  // #74741: a URL inside a fenced block is verbatim payload (a stack trace, a
+  // log line, a command), not prose to chip.
+  it('preserves a URL inside a fenced code block verbatim', () => {
+    const text = [
+      '```',
+      'android.content.ActivityNotFoundException: No Activity found to handle Intent { act=android.intent.action.VIEW dat=https://google.com/... (has extras) }',
+      '```'
+    ].join('\n')
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves links inside fenced code while rewriting surrounding prose', () => {
+    const text = [
+      'before https://before.dev',
+      '```ini',
+      'endpoint=https://code.dev/api',
+      '```',
+      'after https://after.dev'
+    ].join('\n')
+
+    expect(linkifyUrls(text)).toBe(
+      [
+        'before @url:`https://before.dev`',
+        '```ini',
+        'endpoint=https://code.dev/api',
+        '```',
+        'after @url:`https://after.dev`'
+      ].join('\n')
+    )
+  })
+
+  it('preserves links inside tilde-fenced code', () => {
+    const text = ['~~~yaml', 'endpoint: https://code.dev/api', '~~~'].join('\n')
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves links inside inline code while rewriting surrounding prose', () => {
+    expect(linkifyUrls('see https://before.dev then `curl https://code.dev/api` and https://after.dev')).toBe(
+      'see @url:`https://before.dev` then `curl https://code.dev/api` and @url:`https://after.dev`'
+    )
+  })
+
+  it('supports arbitrary backtick runs around inline code', () => {
+    const text = 'run ``curl ` https://code.dev/api`` now'
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves links in unfinished code while the user is composing it', () => {
+    const unfinishedFence = ['```sh', 'curl https://code.dev/api'].join('\n')
+    const unfinishedInline = 'run `curl https://code.dev/api'
+
+    expect(linkifyUrls(unfinishedFence)).toBe(unfinishedFence)
+    expect(linkifyUrls(unfinishedInline)).toBe(unfinishedInline)
+  })
+
+  it('rewrites prose links after an escaped unmatched backtick', () => {
+    expect(linkifyUrls('show \\` literally, then visit https://example.dev/api')).toBe(
+      'show \\` literally, then visit @url:`https://example.dev/api`'
+    )
+  })
+
+  // #125886: a pasted [label](url) is link syntax, not prose — rewriting the
+  // destination into a reference marker leaves the link pointing at the
+  // marker instead of the href.
+  it('preserves the destination of a Markdown link', () => {
+    const text = 'Show this retained source without using tools: [Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)'
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves a Markdown link with parenthesized URL segments', () => {
+    expect(linkifyUrls('see [wiki](https://en.wikipedia.org/wiki/A_(b)) now')).toBe(
+      'see [wiki](https://en.wikipedia.org/wiki/A_(b)) now'
+    )
+  })
+
+  it('preserves a Markdown link being composed, before its closing paren', () => {
+    expect(linkifyUrls('[docs](https://example.dev/a')).toBe('[docs](https://example.dev/a')
+  })
+
+  it('still chips prose links around a Markdown link', () => {
+    expect(linkifyUrls('read https://before.dev then [docs](https://example.dev/a) and https://after.dev')).toBe(
+      'read @url:`https://before.dev` then [docs](https://example.dev/a) and @url:`https://after.dev`'
+    )
+  })
+
+  it('does not treat a bare `](` in prose as a link label end', () => {
+    expect(linkifyUrls('array indexing a](1) then https://example.dev')).toBe(
+      'array indexing a](1) then @url:`https://example.dev`'
+    )
+  })
+
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
+  })
+
+  // The paste handler runs resolveExactLinkPaste before linkifyUrls on the same
+  // payload; a match left in the shared regex's lastIndex made linkifyUrls skip
+  // the first link (a lone pasted URL landed as raw text) — see #112479.
+  it('still chips the first link after resolveExactLinkPaste saw the same payload', () => {
+    expect(resolveExactLinkPaste('https://example.dev/a/b')).toBe('https://example.dev/a/b')
+    expect(linkifyUrls('https://example.dev/a/b')).toBe('@url:`https://example.dev/a/b`')
+
+    resolveExactLinkPaste('https://a.dev and https://b.dev')
+    expect(linkifyUrls('https://a.dev and https://b.dev')).toBe('@url:`https://a.dev` and @url:`https://b.dev`')
+  })
+})
+
+describe('resolveExactLinkPaste', () => {
+  it('accepts a lone bare link', () => {
+    expect(resolveExactLinkPaste('https://example.dev/a/b')).toBe('https://example.dev/a/b')
+  })
+
+  it('accepts a wrapped <link> and surrounding whitespace', () => {
+    expect(resolveExactLinkPaste('  <https://example.dev/a>  ')).toBe('https://example.dev/a')
+  })
+
+  it('rejects prose around the link', () => {
+    expect(resolveExactLinkPaste('see https://example.dev')).toBeNull()
+    expect(resolveExactLinkPaste('https://example.dev is nice')).toBeNull()
+  })
+
+  it('rejects multiple links', () => {
+    expect(resolveExactLinkPaste('https://a.dev https://b.dev')).toBeNull()
+  })
+
+  it('rejects trailing sentence punctuation and hostless schemes', () => {
+    expect(resolveExactLinkPaste('https://example.dev.')).toBeNull()
+    expect(resolveExactLinkPaste('https://')).toBeNull()
+  })
+})
+
+describe('selectionLinkLabel', () => {
+  const selectAll = (build: (editor: HTMLElement) => void) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    build(editor)
+    document.body.append(editor)
+
+    const selection = window.getSelection()!
+    const range = document.createRange()
+
+    range.selectNodeContents(editor)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    return editor
+  }
+
+  it('returns the selected text', () => {
+    const editor = selectAll(node => {
+      node.textContent = 'the docs'
+    })
+
+    expect(selectionLinkLabel(editor)).toBe('the docs')
+    editor.remove()
+  })
+
+  it('rejects a collapsed selection', () => {
+    const editor = document.createElement('div')
+    editor.textContent = 'text'
+    document.body.append(editor)
+    window.getSelection()?.removeAllRanges()
+
+    expect(selectionLinkLabel(editor)).toBeNull()
+    editor.remove()
+  })
+
+  it('rejects a selection containing a chip', () => {
+    const editor = selectAll(node => {
+      node.append(document.createTextNode('see '), refChipElement('url', '`https://a.dev`'))
+    })
+
+    expect(selectionLinkLabel(editor)).toBeNull()
+    editor.remove()
+  })
+
+  it('rejects a multi-line selection', () => {
+    const editor = selectAll(node => {
+      node.append(document.createTextNode('one'), document.createElement('br'), document.createTextNode('two'))
+    })
+
+    expect(selectionLinkLabel(editor)).toBeNull()
+    editor.remove()
+  })
+})
+
+describe('markdownLinkFor', () => {
+  it('builds a markdown link', () => {
+    expect(markdownLinkFor('the docs', 'https://example.dev')).toBe('[the docs](https://example.dev)')
+  })
+
+  it('escapes square brackets in the label', () => {
+    expect(markdownLinkFor('a [b] c', 'https://example.dev')).toBe('[a \\[b\\] c](https://example.dev)')
   })
 })
 
@@ -92,6 +293,58 @@ describe('chipTypedUrlOnSpace', () => {
 
     expect(chipTypedUrlOnSpace({ ...event, altKey: true })).toBe(false)
     expect(composerPlainText(editor)).toBe('https://example.dev')
+
+    editor.remove()
+  })
+
+  it('does not chip a link typed inside an unfinished fenced code block', () => {
+    const text = ['```sh', 'curl https://code.dev/api'].join('\n')
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(false)
+    expect(composerPlainText(editor)).toBe(text)
+
+    editor.remove()
+  })
+
+  it('does not chip a link typed inside an unfinished inline code span', () => {
+    const text = 'run `curl https://code.dev/api'
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(false)
+    expect(composerPlainText(editor)).toBe(text)
+
+    editor.remove()
+  })
+
+  it('still chips a link typed after a completed code block', () => {
+    const text = ['```', 'https://code.dev/api', '```', 'see https://example.dev/api'].join('\n')
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(true)
+    expect(composerPlainText(editor)).toBe(
+      ['```', 'https://code.dev/api', '```', 'see @url:`https://example.dev/api` '].join('\n')
+    )
+
+    editor.remove()
+  })
+
+  it('chips a prose link typed after an escaped unmatched backtick', () => {
+    const text = 'show \\` literally, then visit https://example.dev/api'
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(true)
+    expect(composerPlainText(editor)).toBe('show \\` literally, then visit @url:`https://example.dev/api` ')
+
+    editor.remove()
+  })
+
+  it('does not chip a link typed into a Markdown link destination', () => {
+    const text = 'see [docs](  https://example.dev/a'
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(false)
+    expect(composerPlainText(editor)).toBe(text)
 
     editor.remove()
   })

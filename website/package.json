@@ -24,6 +24,7 @@
     "@docusaurus/preset-classic": "3.10.2",
     "@docusaurus/theme-mermaid": "3.10.2",
     "@mdx-js/react": "3.1.1",
+    "@mermaid-js/layout-elk": "0.1.9",
     "clsx": "2.1.1",
     "prism-react-renderer": "2.3.0",
     "react": "19.2.7",
@@ -39,7 +40,12 @@
     "serialize-javascript": "7.0.7",
     "uuid": "14.0.1",
     "minimatch": "10.2.6",
-    "nanoid": "3.3.17"
+    "nanoid": "3.3.17",
+    "js-yaml": "4.3.1",
+    "dompurify": "3.4.13",
+    "mermaid": "11.16.1",
+    "image-size": "npm:@nous-research/image-size@2.0.3",
+    "tar": "7.5.22"
   },
   "browserslist": {
     "production": [

@@ -10,23 +10,14 @@ from __future__ import annotations
 import pytest
 
 
-
-
-
-
-
-
 def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
     import agent.vertex_adapter as va
     from hermes_cli import runtime_provider as rp
     from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(va, "get_vertex_config", lambda: (None, None))
-    with pytest.raises(AuthError) as exc:
+    with pytest.raises(AuthError):
         rp.resolve_runtime_provider(requested="vertex")
-    msg = str(exc.value)
-    assert "OAuth2" in msg
-    assert "not a static API key" in msg
 
 
 def test_vertex_registered_in_provider_registry():

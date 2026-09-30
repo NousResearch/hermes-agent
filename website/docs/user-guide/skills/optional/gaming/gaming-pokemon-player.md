@@ -43,7 +43,7 @@ Play Pokemon games via headless emulation using the `pokemon-agent` package.
 The repo is NousResearch/pokemon-agent on GitHub. Clone it, then
 set up a Python 3.10+ virtual environment. Use uv (preferred for speed)
 to create the venv and install the package in editable mode with the
-pyboy extra. If uv is not available, fall back to python3 -m venv + pip.
+pyboy extra. If uv is not available, fall back to python -m venv + pip.
 
 If a checkout already exists (e.g. ~/pokemon-agent with a venv ready),
 just cd there and source .venv/bin/activate instead of recloning.
@@ -94,7 +94,7 @@ This is faster than loading via the API after startup.
 
 ### Step 1: OBSERVE — check state AND take a screenshot
 GET /state for position, HP, battle, dialog.
-GET /screenshot and save to /tmp/pokemon.png, then use vision_analyze.
+GET /screenshot and save to ~/.hermes/cache/scratch/pokemon.png, then use vision_analyze.
 Always do BOTH — RAM state gives numbers, vision gives spatial awareness.
 
 ### Step 2: ORIENT

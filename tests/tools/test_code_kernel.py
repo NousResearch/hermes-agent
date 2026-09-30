@@ -66,6 +66,21 @@ def _run(code, **kwargs):
 
 
 class TestSessionStatePersistence(unittest.TestCase):
+    def test_state_persists_when_session_cwd_changes(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as first_cwd, tempfile.TemporaryDirectory() as second_cwd:
+            with _kernel_config(mode="project"), patch(
+                "tools.code_execution_tool._resolve_child_cwd",
+                side_effect=[first_cwd, second_cwd],
+            ):
+                first = _run("x = 41")
+                second = _run("print(x + 1)\nprint(__import__('os').getcwd())")
+        self.assertEqual(first["kernel"]["reused"], False, first)
+        self.assertEqual(second["kernel"]["reused"], True, second)
+        self.assertIn("42", second["output"])
+        self.assertIn(second_cwd, second["output"])
+
     def test_state_persists_across_cells(self):
         with _kernel_config():
             first = _run("x = 41")

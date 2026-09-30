@@ -310,18 +310,21 @@ def slot_supervision_state(scandir: Path, name: str) -> Literal["LIVE", "DOWN", 
     """Three-state, read-only probe of one slot's supervision, for pre-deletion guards.
 
     Verdicts:
-    - LIVE:    ``s6-svstat`` rc==0 and output starts with ``up`` — an s6-supervise is
-      attached and a gateway may be running; deleting the slot would orphan it.
-    - DOWN:    rc==0 and output starts with ``down`` — no live supervision; the
+    - LIVE:    ``s6-svstat`` rc==0 and the first output token is exactly ``up`` — an
+      s6-supervise is attached and a gateway may be running; deleting the slot would
+      orphan it.
+    - DOWN:    rc==0 and the first token is exactly ``down`` — no live supervision; the
       boot-time rebuild (rmtree + atomic republish) may proceed.
     - UNKNOWN: everything else — ``s6-svstat`` missing, subprocess/OSError/timeout,
-      non-zero rc, or output that is neither ``up`` nor ``down``. Callers MUST treat
-      UNKNOWN as fail-closed (refuse to rmtree): an unverifiable state is exactly the
-      online-reconcile orphaning failure mode this guard exists for, and there is no
+      non-zero rc, or a first token that is neither ``up`` nor ``down``. Token equality,
+      not a prefix test: ``upstream``-style renders must not read as up, nor
+      ``downstream``-style as down, and any unknown format stays UNKNOWN. Callers MUST
+      treat UNKNOWN as fail-closed (refuse to rmtree): an unverifiable state is exactly
+      the online-reconcile orphaning failure mode this guard exists for, and there is no
       environment where guessing is safe.
 
-    Only the output prefix is interpreted; the pid inside ``up (pid N pgid N) ...`` is
-    never parsed (the render of that line changed across s6 versions).
+    Only the first token is interpreted; the pid inside ``up (pid N pgid N) ...`` is never
+    parsed (the render of that line changed across s6 versions).
     """
     try:
         result = _s6_run("s6-svstat", str(Path(scandir) / name))
@@ -329,10 +332,12 @@ def slot_supervision_state(scandir: Path, name: str) -> Literal["LIVE", "DOWN", 
         return "UNKNOWN"
     if result.returncode != 0:
         return "UNKNOWN"
-    out = (result.stdout or "").strip().lower()
-    if out.startswith("up"):
+    tokens = (result.stdout or "").strip().lower().split()
+    if not tokens:
+        return "UNKNOWN"
+    if tokens[0] == "up":
         return "LIVE"
-    if out.startswith("down"):
+    if tokens[0] == "down":
         return "DOWN"
     return "UNKNOWN"
 

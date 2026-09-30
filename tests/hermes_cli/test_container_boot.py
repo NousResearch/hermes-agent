@@ -197,9 +197,13 @@ def test_register_service_overwrites_existing_slot(
     The pre-deletion supervision guard is explicitly told the slot is DOWN:
     a dev host has no s6-svstat, and the guard is fail-closed on UNKNOWN by
     design — the rebuild contract is only valid when no supervision is live.
+
+    The patch targets ``hermes_cli.service_manager``: ``_register_service`` imports the
+    helper from there at call time, so patching it on ``container_boot`` (where no such
+    attribute exists) would AttributeError on Linux before the overwrite contract runs.
     """
     monkeypatch.setattr(
-        "hermes_cli.container_boot.slot_supervision_state",
+        "hermes_cli.service_manager.slot_supervision_state",
         lambda scandir, name: "DOWN",
     )
     scandir = tmp_path / "run-service"; scandir.mkdir()

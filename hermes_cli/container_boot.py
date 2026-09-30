@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,7 +184,139 @@ def _cmdline_argv(cmdline: Path) -> tuple[str, ...]:
     return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
 
 
-def _pid_is_hermes_gateway(pid: int) -> Literal["MATCH", "STALE", "UNKNOWN"]:
+# The payload launcher ``scripts.build.launchers.posix_launcher`` execs an interpreter with an
+# inline bootstrap, and the gateway runs under exactly this source (P1-B: the /proc command
+# line is ``<python> -P -c <source> <hermes argv…>``, never ``hermes …``). Anchored FULL match
+# on the exact statement sequence that renderer emits — a program merely CARRYING bootstrap
+# fragments in an arbitrary ``python -c`` is never accepted (#107002 rule). Module and function
+# are pinned to the pyproject ``hermes = "hermes_cli.main:main"`` entry, the only one that can
+# run a gateway; the launcher command name (rewritten into sys.argv, invisible to /proc) is the
+# validated command-name alphabet.
+_PAYLOAD_LAUNCHER_BOOTSTRAP_RE = re.compile(
+    r"import os, site, sys; sys\.argv\[0\]=[\"'][A-Za-z0-9][A-Za-z0-9_.-]*[\"']; "
+    r"site\.addsitedir\(os\.environ\['HERMES_SITE'\]\); "
+    r"from hermes_cli\.main import main; sys\.exit\(main\(\)\)"
+)
+
+
+def _pid_in_os_range(pid: int) -> bool:
+    """True when ``pid`` is a probeable single-process pid.
+
+    0 targets the whole process group and negatives target a specific group, so neither is a
+    valid gateway record; values past the kernel's pid range (or past C ``pid_t`` when the
+    limit is unknown) would raise ``OverflowError`` inside ``os.kill`` — a malformed persisted
+    record must never crash boot (P2), so those are rejected before any probe.
+    """
+    if pid <= 0:
+        return False
+    try:
+        pid_max = os.sysconf("SC_PID_MAX")
+    except (OSError, ValueError):
+        pid_max = 2**31 - 1  # C int ceiling: os.kill rejects anything above anyway
+    return pid <= pid_max
+
+
+def _gateway_pid_record(pid_file: Path) -> tuple[int | None, dict | None]:
+    """Validated ``(pid, record)`` persisted in a ``gateway.pid``, or ``(None, None)``.
+
+    Reads through the production record reader (``gateway.status._read_pid_record``) — the
+    same reader every other consumer uses, so this cannot drift from the JSON schema
+    ``gateway.status.write_pid_file`` writes (``pid``/``kind``/``argv``/``start_time``/
+    ``hermes_home``; P1-A). Legacy bare-integer pid files are accepted as ``{"pid": N}`` on
+    the production reader's own evidence (its ``bare_pid_ok`` contract). A missing, empty,
+    unreadable or malformed file, and any pid that is not a positive int within the OS pid
+    range, is "no evidence" — never a crash, never a probe.
+    """
+    from gateway.status import _pid_from_record, _read_pid_record
+
+    record = _read_pid_record(pid_file)
+    if not isinstance(record, dict):
+        return None, None
+    pid = _pid_from_record(record)
+    if pid is None or not _pid_in_os_range(pid):
+        return None, None
+    return pid, record
+
+
+def _hermes_cli_argv(argv: Sequence[str]) -> tuple[str, ...] | None:
+    """The Hermes CLI argument vector a command line ran, or None when it is not one.
+
+    Strict structural recognition of the entry forms this repository ships (P1-B); the argv
+    must BE one of these shapes, nothing is inferred from substrings (#107002 rule):
+
+    - the console script ``…/bin/hermes`` (pyproject ``[project.scripts]``);
+    - ``python -m hermes_cli.main`` and the script-path form ``python …/hermes_cli/main.py``;
+    - the payload launcher's ``python -P -c <bootstrap>`` (``scripts/build/launchers.py``),
+      accepted only when the source FULL-matches ``_PAYLOAD_LAUNCHER_BOOTSTRAP_RE``;
+    - any other inline source ``gateway.status.inline_bootstrap_argv`` certifies as a Hermes
+      in-process entry point (published launcher, store launcher, venv_sync re-entry) whose
+      entry is ``hermes_cli.main``.
+
+    An arbitrary ``python -c`` that matches no known bootstrap is None — never trusted.
+    """
+    if not argv:
+        return None
+    exe = Path(argv[0]).name.lower()
+    if exe in ("hermes", "hermes.exe"):
+        return tuple(argv[1:])
+    if not exe.startswith("python"):
+        # The main.py script itself exec'd via shebang (argv[0] is the script): still a
+        # Hermes entry shape — the production matcher accepts the hermes_cli/main.py token.
+        if Path(argv[0]).as_posix().lower().endswith("hermes_cli/main.py"):
+            return tuple(argv[1:])
+        return None
+    if len(argv) >= 3 and argv[1] == "-m" and argv[2] in ("hermes_cli.main", "hermes_cli/main.py"):
+        return tuple(argv[3:])
+    if len(argv) >= 2 and Path(argv[1]).as_posix().lower().endswith("hermes_cli/main.py"):
+        return tuple(argv[2:])
+    if len(argv) >= 4 and argv[1] == "-P" and argv[2] == "-c":
+        if _PAYLOAD_LAUNCHER_BOOTSTRAP_RE.fullmatch(argv[3]) is not None:
+            return tuple(argv[4:])
+    from gateway.status import inline_bootstrap_argv
+
+    entry = inline_bootstrap_argv(list(argv))
+    if entry is not None and len(entry) >= 3 and entry[1] == "-m" and entry[2] == "hermes_cli.main":
+        return tuple(entry[3:])
+    return None
+
+
+def _is_gateway_run_invocation(cli: Sequence[str]) -> bool:
+    """True for the CLI shapes that run the long-lived gateway: optional flags, then
+    ``gateway [run]``.
+
+    A command-structure parse, not a token search (P1-B): the FIRST positional decides the
+    subcommand, and ``-p/--profile`` value tokens are consumed even when they spell
+    ``gateway`` — so ``-p gateway run`` (profile "gateway", command "run"), ``chat gateway
+    run`` (the trailing pair belongs to chat's argparse) and ``gateway start gateway run``
+    (a dispatcher whose argument re-mentions the pair) are all NOT the gateway runtime,
+    while ``gateway run``/``gateway`` (bare defaults to run) are.
+    """
+    index = 0
+    while index < len(cli):
+        token = cli[index]
+        if token == "--":
+            return False  # everything after -- is positional data, never a subcommand
+        if token in ("-p", "--profile"):
+            index += 2  # the value is consumed even when it spells "gateway"
+            continue
+        if token.startswith(("--profile=", "-p=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1  # valueless top-level flags; the first positional still decides
+            continue
+        if token != "gateway":
+            return False
+        following = cli[index + 1] if index + 1 < len(cli) else None
+        # Bare `hermes gateway` defaults to `run` (the gateway subparser's default), so only
+        # an explicit other subcommand — `gateway start`, a short-lived dispatcher — refuses.
+        return following is None or following == "run"
+    return False
+
+
+def _pid_is_hermes_gateway(
+    pid: int, record: dict | None = None
+) -> Literal["MATCH", "STALE", "UNKNOWN"]:
     """Read-only identity check for a recorded ``gateway.pid`` pid (anti PID-reuse).
 
     ``os.kill(pid, 0)`` only proves *some* process exists: ``gateway.pid`` lives on the
@@ -192,10 +325,13 @@ def _pid_is_hermes_gateway(pid: int) -> Literal["MATCH", "STALE", "UNKNOWN"]:
     "a gateway is running" would misclassify every fresh boot whose kernel happened to
     reuse the number (boot-only reconcile refused → the container never comes up).
 
-    Identity is therefore verified against the argv the real gateways run with —
-    ``S6ServiceManager._render_run_script`` execs
-    ``hermes gateway run --replace`` (root slot) / ``hermes -p <p> gateway run --replace``
-    (named slot), and a stray manual ``hermes gateway run`` is an equally live gateway:
+    Identity is therefore bound to the LIVE process's real command line (``/proc/<pid>/cmdline``),
+    structurally parsed by ``_hermes_cli_argv`` + ``_is_gateway_run_invocation`` — the shapes the
+    shipped launchers actually exec (payload ``python -P -c`` bootstrap, console script,
+    ``python -m hermes_cli.main``). The persisted record's ``argv`` is auxiliary cross-validation
+    only: when it is present and demonstrably NOT a gateway record, the live match is vetoed (a
+    record contradicting the process it names is not evidence); a stale file alone can never
+    prove or invent identity.
 
     - MATCH:   the pid is a live Hermes gateway (boot must not reconcile);
     - STALE:   no such process, or the process is demonstrably NOT a Hermes gateway
@@ -206,12 +342,16 @@ def _pid_is_hermes_gateway(pid: int) -> Literal["MATCH", "STALE", "UNKNOWN"]:
     Callers must never treat UNKNOWN as MATCH, and never treat a bare "pid exists" as
     evidence either — STALE and UNKNOWN both let boot proceed.
     """
+    if pid <= 0:
+        return "STALE"  # 0/negative target process groups — never a single gateway pid
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return "STALE"
     except PermissionError:
         pass  # exists, but not signallable by us — the /proc argv below still decides
+    except (OverflowError, ValueError):
+        return "UNKNOWN"  # unreachable via the range-validated record reader; kept fail-closed
     except OSError:
         return "UNKNOWN"
     try:
@@ -220,38 +360,37 @@ def _pid_is_hermes_gateway(pid: int) -> Literal["MATCH", "STALE", "UNKNOWN"]:
         return "UNKNOWN"
     if not argv:
         return "UNKNOWN"
-    if Path(argv[0]).name != "hermes":
+    cli_argv = _hermes_cli_argv(argv)
+    if cli_argv is None or not _is_gateway_run_invocation(cli_argv):
         return "STALE"
-    # `... gateway run ...` — the long-running gateway process. `gateway start` is a
-    # short-lived dispatcher and never a live gateway; --replace is optional (a stray
-    # manual `hermes gateway run` is equally alive and equally protected).
-    for i in range(1, len(argv) - 1):
-        if argv[i] == "gateway" and argv[i + 1] == "run":
-            return "MATCH"
-    return "STALE"
+    if isinstance(record, dict) and record.get("argv"):
+        from gateway.status import _record_looks_like_gateway
+
+        if not _record_looks_like_gateway(record):
+            return "STALE"  # the record's own argv contradicts a gateway identity
+    return "MATCH"
 
 
 def _confirmed_live_gateway_pid(hermes_home: Path) -> int | None:
     """A recorded gateway pid that is *confirmed* to be a live Hermes gateway, if any.
 
     Mirrors the directory set ``reconcile_profile_gateways`` cleans runtime files for:
-    the root HERMES_HOME plus every named profile. A missing or garbage pid file, a dead
-    pid, or a pid reused by an unrelated process is STALE (fresh boot proceeds); only a
-    positive identity match counts. Unverifiable pids are logged and deliberately NOT
-    treated as live — at boot time the reconcile runs before any gateway could have
-    started in this PID namespace, so an unreadable cmdline belongs to an unrelated
-    process, and the deeper P0-2 guard (live-supervise refuse-rmtree) backstops the
-    pathological online case.
+    the root HERMES_HOME plus every named profile. A missing or garbage pid file, a pid
+    outside the OS range, a dead pid, or a pid reused by an unrelated process is STALE
+    (fresh boot proceeds); only a positive identity match counts. Unverifiable pids are
+    logged and deliberately NOT treated as live — at boot time the reconcile runs before
+    any gateway could have started in this PID namespace, so an unreadable cmdline belongs
+    to an unrelated process, and the deeper P0-2 guard (live-supervise refuse-rmtree)
+    backstops the pathological online case.
     """
     profile_dirs: list[Path] = [hermes_home]
     profile_dirs.extend(entry for _, entry in _named_profile_dirs(hermes_home))
     for profile_dir in profile_dirs:
         pid_file = profile_dir / "gateway.pid"
-        try:
-            pid = int(pid_file.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            continue  # missing / unreadable / garbage pid file → nothing to verify
-        state = _pid_is_hermes_gateway(pid)
+        pid, record = _gateway_pid_record(pid_file)
+        if pid is None:
+            continue  # missing / unreadable / malformed / out-of-range → nothing to verify
+        state = _pid_is_hermes_gateway(pid, record)
         if state == "MATCH":
             return pid
         if state == "UNKNOWN":

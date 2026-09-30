@@ -94,7 +94,7 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
     session = _session(agent=agent, running=True)
 
     with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-        server._run_prompt_submit("rid", "ui-sid", session, SECRETISH_PROMPT)
+        server._run_prompt_submit("rid", "ui-sid", session, SECRETISH_PROMPT, turn_claim=server._claim_session_turn(session))
 
     accepted = _records(caplog, "tui prompt accepted")
     finished = _records(caplog, "tui turn finished")
@@ -114,8 +114,9 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
 def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, settle_info_raises):
     """A blocked post-turn trim must not hold the session running or its bookend (#131740);
     turn audio still ends BEFORE settlement, so a next turn admitted during the trim keeps its own."""
-    from hermes_cli import mem_trim
-    from tools import voice_mode
+    from agent import memory_provider
+    import hermes_cli.mem_trim as mem_trim
+    import tools.voice_mode as voice_mode
 
     entered, release = threading.Event(), threading.Event()
 
@@ -124,8 +125,13 @@ def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, set
         release.wait(timeout=10)
 
     monkeypatch.setattr(mem_trim, "trim_memory", blocking_trim)
+    settle_error = ZeroDivisionError("division by zero")
+
+    def fail_settle_info(*args):
+        raise settle_error
+
     if settle_info_raises:  # a raising settle step must not skip the post-turn trim
-        monkeypatch.setattr(server, "_emit_settled_session_info", lambda *a: 1 / 0)
+        monkeypatch.setattr(server, "_emit_settled_session_info", fail_settle_info)
     audio_end = []  # (event, session running at that moment)
     tts = types.SimpleNamespace(put=lambda x: x is None and audio_end.append(("tts", session["running"])))
     monkeypatch.setattr(server, "_start_turn_voice", lambda: (tts, True))
@@ -133,15 +139,45 @@ def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, set
     agent = types.SimpleNamespace(
         session_id="agent-sid-1", run_conversation=lambda *a, **k: {"final_response": "done"},
         clear_interrupt=lambda: None)
-    session = _session(agent=agent, running=True)
+    session = _session(agent=agent)
     monkeypatch.setattr(server, "_sessions", {"ui-sid": session})
+    spawn_context_thread = memory_provider.spawn_context_thread
+    run_thread: threading.Thread | None = None
+    turn_errors: list[ZeroDivisionError] = []
+
+    def spawn_work(target, *, name, **kwargs):
+        nonlocal run_thread
+        if name != "prompt-turn-ui-sid":
+            return spawn_context_thread(target, name=name, **kwargs)
+
+        def run():
+            try:
+                target()
+            except ZeroDivisionError as error:
+                if error is not settle_error:
+                    raise
+                turn_errors.append(error)
+
+        run_thread = spawn_context_thread(run, name=name, **kwargs)
+        return run_thread
+
+    monkeypatch.setattr(memory_provider, "spawn_context_thread", spawn_work)
+    with session["history_lock"]:
+        turn_claim = getattr(server, "_claim_session_turn")(session)
+
     try:
         with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-            assert server._run_prompt_submit("rid", "ui-sid", session, "hi")
+            assert server._run_prompt_submit(
+                "rid", "ui-sid", session, "hi", turn_claim=turn_claim
+            )
             assert entered.wait(timeout=5)
             assert session["running"] is False
             assert len(_records(caplog, "tui turn finished")) == 1
             assert audio_end == [("thinking", True), ("tts", True)]
     finally:
         release.set()
-        session["_run_thread"].join(timeout=5)
+        if run_thread is not None:
+            run_thread.join(timeout=5)
+            assert not run_thread.is_alive()
+
+    assert turn_errors == ([settle_error] if settle_info_raises else [])

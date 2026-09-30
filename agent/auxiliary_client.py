@@ -6163,9 +6163,14 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
-def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
+def _get_auxiliary_task_config(
+    task: str, _seen: Optional[frozenset] = None,
+) -> Dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
-    declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG."""
+    declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG.
+    A task registered with ``inherit_from`` also inherits the base task's effective config, resolved
+    here at read time so it tracks the base's current settings; precedence is base, then plugin
+    defaults, then user config. ``_seen`` is the recursion guard for hand-edited inheritance cycles."""
     if not task:
         return {}
     try:
@@ -6177,13 +6182,24 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
+    seen = _seen or frozenset()
+    # A cycle here means a hand-edited or otherwise malformed registry; fall back to this task's
+    # own defaults instead of recursing until the stack blows.
+    cyclic = task in seen
+    if cyclic:
+        logger.warning("Auxiliary task %r has a circular inherit_from chain — ignoring inheritance",
+                       task)
     try:
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
             if _entry.get("key") == task:
                 _defaults = _entry.get("defaults") or {}
                 if isinstance(_defaults, dict):
-                    return {**_defaults, **task_config}
+                    _inherit = _entry.get("inherit_from")
+                    if cyclic or not _inherit:
+                        return {**_defaults, **task_config}
+                    base = _get_auxiliary_task_config(_inherit, seen | {task})
+                    return {**base, **_defaults, **task_config}
                 break
     except Exception:
         pass  # plugin discovery failure must not break aux task config reads

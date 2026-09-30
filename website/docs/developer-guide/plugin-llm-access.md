@@ -324,6 +324,24 @@ invocation. `allow_task_override: true` is an explicit operator grant for
 using Hermes built-in auxiliary tasks; it does not permit another plugin's
 tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
+`inherit_from` names a built-in or already-registered auxiliary task
+whose effective configuration becomes the base for your task, resolved at
+read time so the task tracks the base's current settings:
+
+```python
+def register(ctx):
+    ctx.register_auxiliary_task(
+        "classifier",
+        display_name="Classifier",
+        description="Classify input.",
+        inherit_from="mcp",                 # start from the mcp aux block
+        defaults={"timeout": 90},           # ...but give slow classifiers more room
+    )
+```
+
+Precedence is the inherited base, then the plugin's `defaults`, then
+operator configuration in `auxiliary.<task>`.
+
 ### Result attributes
 
 ```python

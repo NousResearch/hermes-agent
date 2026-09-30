@@ -129,6 +129,13 @@ class _ProcessingState:
         self.absorbed = kept
         return released
 
+    def resume_absorbed(self) -> bool:
+        """Let an absorbed input complete. Returns False when it is not absorbed."""
+        if self.phase is not _ProcessingPhase.ABSORBED:
+            return False
+        self.phase = _ProcessingPhase.RUNNING
+        return True
+
     def take_absorbed(self) -> List[_ProcessingCompletion]:
         absorbed, self.absorbed = self.absorbed, []
         for completion in absorbed:
@@ -156,10 +163,14 @@ class _ProcessingState:
         self.receipt_message_id = self.consumed_receipt_message_id
         return pending_inputs
 
-    def start(self) -> bool:
-        """Begin processing the input. Returns False when its start was already reported, so a
-        re-run of the same input keeps a single lifecycle."""
+    def start(self, event: "MessageEvent") -> bool:
+        """Begin processing the input through *event*. Returns False when its start was already
+        reported, so a re-run keeps a single lifecycle. The event that re-runs a started input owns
+        it: a completion through another copy, such as the original handler that is still sending
+        a /steer acknowledgement, must not end it."""
         first = not self.start_notified
+        if not first:
+            self.owner = event
         self.phase = _ProcessingPhase.RUNNING
         self.outcome = None
         self.consumed_receipt_message_id = self.receipt_message_id

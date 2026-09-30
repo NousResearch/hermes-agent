@@ -146,6 +146,19 @@ def _shutdown_cached_aux_clients() -> None:
     shutdown_cached_clients()
 
 
+def _shutdown_local_runtime() -> None:
+    """Stop the managed llama-server this process started, as the desktop backend does on exit.
+
+    Left running, it outlives the CLI with no idle sweep (that thread lives here), and the next
+    Hermes process adopts it as the managed endpoint, so a loaded model stays resident until
+    someone kills it. Only this process's own supervisor is stopped; a router adopted from another
+    process is left alone. Import-light: a session that never touched the local runtime never
+    imported the bootstrap module."""
+    bootstrap = sys.modules.get("hermes_cli.local_runtime.bootstrap")
+    if bootstrap is not None:
+        bootstrap.shutdown_local_runtime()
+
+
 # Ordered teardown steps (attribute names, resolved at call time so tests can patch them)
 # and the exception class each swallows.
 _CLEANUP_STEPS = (

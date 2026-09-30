@@ -63,6 +63,7 @@ from hermes_cli.cli_shutdown import (  # noqa: F401,E402
     _should_emit_cleanup_session_finalize,
     _shutdown_agent_memory_provider,
     _shutdown_cached_aux_clients,
+    _shutdown_local_runtime,
     _shutdown_mcp_servers,
     _stop_cli_wake_word,
     _sync_process_session_id,
@@ -525,6 +526,11 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
             logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
+        # Last: session finalize and memory shutdown above may still call a local model.
+        try:
+            _shutdown_local_runtime()
+        except Exception as e:
+            logger.warning("CLI cleanup local runtime shutdown failed: %s", e, exc_info=True)
     finally:
         _cleanup_in_progress = False
 

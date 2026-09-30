@@ -1,0 +1,8 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+case "${1:-status}" in
+ status) if [ -r /sys/class/thermal/thermal_zone0/temp ]; then raw=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0); awk "BEGIN {printf \"zone0: %.1f C\\n\", $raw/1000}"; else echo unavailable; fi ;;
+ cool) export TENSOR_THERMAL_MODE=cool; echo 'Thermal mode: COOL (session only)' ;;
+ balanced) export TENSOR_THERMAL_MODE=balanced; echo 'Thermal mode: BALANCED (session only)' ;;
+ *) echo 'Usage: tensor thermal status|cool|balanced'; exit 2 ;;
+esac

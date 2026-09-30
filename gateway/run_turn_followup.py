@@ -49,9 +49,10 @@ class GatewayQueuedFollowupMixin:
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``).
 
-        A leftover steer that the drain handed to this follow-up has no other completion: its own
-        handler skipped it, and the running turn no longer lists it. Every exit before the follow-up
-        starts therefore completes it here."""
+        A started message that waits for this follow-up (a queued message, or a leftover steer that
+        the drain handed to it) has no other completion: its own handler skipped it. Every exit
+        before the follow-up starts therefore completes it here, except at the recursion cap, where
+        the follow-up returns to the pending slot."""
         from gateway.run_turn_followup_ack import _followup_cancel_outcome
 
         try:
@@ -74,14 +75,9 @@ class GatewayQueuedFollowupMixin:
         return self._intake_adapter_for(source) if source is not None else None
 
     async def _complete_unstarted_followup(self: "GatewayRunner", pending_event: Any, outcome: ProcessingOutcome) -> None:
-        """Complete a handed-over follow-up, and the messages attached to it, that never started."""
-        from gateway.run_turn_followup_ack import _run_followup_processing_hook
-
-        state = getattr(pending_event, "_processing_state", None)
-        if state is None or not state.resume_absorbed():
-            return
-        await _run_followup_processing_hook(
-            self._followup_hook_adapter(pending_event), pending_event, "on_processing_complete", outcome)
+        """Complete a started follow-up, and the messages attached to it, that this lane took from
+        the queue but never started."""
+        await self._complete_discarded_event(pending_event, outcome)
 
     async def _run_agent_queued_followup_turn(
         self: "GatewayRunner", turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
@@ -116,7 +112,7 @@ class GatewayQueuedFollowupMixin:
                 )
                 adapter = self._delivery_adapter_for(source)
                 if adapter and pending_event:
-                    self._restore_pending_dispatch(session_key, pending_event, adapter)
+                    await self._park_followup_at_recursion_cap(adapter, session_key, pending_event)
                 elif adapter and hasattr(adapter, 'queue_message'):
                     adapter.queue_message(session_key, pending)
                 return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
@@ -310,6 +306,7 @@ class GatewayQueuedFollowupMixin:
                 raise
             followup_outcome = _turn_result_outcome(followup_result)
             if (completed_event is not None and _hook_adapter is not None
+                    and (completed_event.message_id or completed_event.raw_message)
                     and _followup_processing_hooks_apply(_hook_adapter, pending_event)
                     and followup_outcome == ProcessingOutcome.SUCCESS and not followup_result.get("already_sent")):
                 completed_event._processing_state.pending_completion = _ProcessingCompletion(_hook_adapter, pending_event)
@@ -337,3 +334,21 @@ class GatewayQueuedFollowupMixin:
         finally:
             if reservation is not None and turn_ctx.session_key:
                 release_pending_dispatch_record(adapter, turn_ctx.session_key, reservation)
+
+
+    async def _park_followup_at_recursion_cap(self: "GatewayRunner", adapter: Any, session_key: str, pending_event: Any) -> None:
+        """Put the follow-up back in the pending slot. A started message keeps one lifecycle: an event
+        that the follow-up replaces in the slot is discarded, and a follow-up merged into the event
+        already there completes with that event."""
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
+
+        existing = adapter._pending_messages.get(session_key)
+        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+        held = adapter._pending_messages.get(session_key)
+        state = getattr(pending_event, "_processing_state", None)
+        if existing is None or existing is pending_event or state is None:
+            return
+        if held is pending_event:
+            await self._complete_discarded_event(existing)
+        elif state.start_notified and state.awaiting_start:
+            existing._processing_state.attach(_ProcessingCompletion(self._followup_hook_adapter(pending_event), pending_event))

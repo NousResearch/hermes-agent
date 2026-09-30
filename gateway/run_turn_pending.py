@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.session import SessionSource
-from gateway.platforms.event import MessageEvent, MessageType, _ProcessingPhase
+from gateway.platforms.event import MessageEvent, MessageType, _ProcessingPhase, _ProcessingCompletion
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch, release_pending_dispatch_record, pending_dispatch_withdrawn
 
 if TYPE_CHECKING:
@@ -36,14 +36,15 @@ class GatewayPendingDrainMixin:
         pending_event = None
         pending = None
         pending_steer = result.get("pending_steer") if result else None
-        pending_input = None
+        pending_inputs = []
         if result and processing_event is not None:
             pending_inputs = processing_event._processing_state.take_pending_inputs(pending_steer or "")
         # The steer runs as a copy of its latest message. An input whose lifecycle already completed
         # runs as plain text, as its hooks have fired.
-        pending_input = pending_inputs[-1] if pending_inputs else None
-        if pending_input is not None and pending_input._processing_state.phase is _ProcessingPhase.COMPLETED:
-            pending_inputs = []
+        pending_input = next((
+            incoming for incoming in reversed(pending_inputs)
+            if incoming._processing_state.phase is not _ProcessingPhase.COMPLETED
+        ), None)
         steer_event = None
         steer_enqueued = False
         if result and adapter and session_key:
@@ -147,6 +148,7 @@ class GatewayPendingDrainMixin:
                             "Discarding command '/%s' from pending queue — "
                             "commands must not be passed as agent input", _pending_cmd_word,
                         )
+                        await self._complete_discarded_event(pending_event)
                         if pending_event is not None and session_key:
                             release_pending_dispatch(adapter, session_key, pending_event)
                         pending_event = None
@@ -232,5 +234,13 @@ class GatewayPendingDrainMixin:
         running_state, steer_state = processing_event._processing_state, steer_event._processing_state
         for incoming in pending_inputs:
             completion = running_state.release(incoming)
-            if completion is not None and incoming._processing_state is not steer_state:
-                steer_state.absorbed.append(completion)
+            state = incoming._processing_state
+            if state is steer_state:
+                continue
+            # A started message that the running turn did not absorb still has its handler running.
+            if completion is None and state.start_notified and state.phase is _ProcessingPhase.RUNNING:
+                completion = _ProcessingCompletion(self._intake_adapter_for(incoming.source), incoming)
+            if completion is not None:
+                steer_state.attach(completion)
+        if steer_state.start_notified and steer_state.phase in {_ProcessingPhase.ABSORBED, _ProcessingPhase.RUNNING}:
+            steer_state.hand_over(steer_event)

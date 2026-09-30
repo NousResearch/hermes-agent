@@ -148,7 +148,7 @@ class GatewayBusySessionMixin:
             overflow.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
-        queued_event._processing_state.defer()
+        self._park_event_lifecycle(queued_event)
         queued_event._gateway_accepted = True
         return True
 
@@ -160,6 +160,36 @@ class GatewayBusySessionMixin:
         buffered.cancel_timer(unless=asyncio.current_task())
         for event in (*buffered.earlier_events, buffered.event):
             self._queue_or_replace_pending_event(session_key, event)
+
+    def _park_event_lifecycle(self: "GatewayRunner", event: "MessageEvent") -> None:
+        """The event waits for a later turn, which completes it. The queued lane runs hooks only where
+        the follow-up hooks apply, so elsewhere a started event keeps its handler's completion."""
+        from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
+
+        state = event._processing_state
+        if state.start_notified and not _followup_processing_hooks_apply(self._intake_adapter_for(event.source), event):
+            return
+        state.defer()
+
+    def _parked_event_adapter(self: "GatewayRunner", event: Any) -> Optional["BasePlatformAdapter"]:
+        from gateway.platforms.base import BasePlatformAdapter
+
+        source = getattr(event, "source", None)
+        adapter = self._intake_adapter_for(source) if source is not None else None
+        return adapter if isinstance(adapter, BasePlatformAdapter) else None
+
+    def _discard_parked_event(self: "GatewayRunner", event: Any) -> None:
+        """A parked event is dropped: complete it as CANCELLED if its start was reported."""
+        adapter = self._parked_event_adapter(event)
+        if adapter is not None:
+            adapter._discard_parked(event)
+
+    async def _complete_discarded_event(
+        self: "GatewayRunner", event: Any, outcome: Optional[ProcessingOutcome] = None,
+    ) -> None:
+        adapter = self._parked_event_adapter(event)
+        if adapter is not None:
+            await adapter._complete_discarded(event, outcome or ProcessingOutcome.CANCELLED)
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional[MessageEvent]

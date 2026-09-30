@@ -119,6 +119,10 @@ def _archive_answer(archive: str) -> str | None:
             return None
         answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
     elif "## Response" not in archive:
+        # Failed agent runs have an error document but no reusable response.
+        # Keep headingless script-mode archives whole-document for continuity.
+        if "## Error" in archive:
+            return None
         return archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()

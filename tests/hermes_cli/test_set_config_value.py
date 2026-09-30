@@ -10,6 +10,7 @@ import pytest
 from hermes_cli.config import (
     config_command,
     cron_model_drift_guard_enabled,
+    get_config_value,
     set_config_value,
     unset_config_value,
 )
@@ -352,6 +353,17 @@ class TestBracketIndexRejection:
         assert reloaded["hooks"]["pre_llm_call"][0]["timeout"] == 3
         assert "pre_llm_call[1]" not in reloaded["hooks"]
 
+    def test_bracket_index_get_is_rejected(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home)
+
+        with pytest.raises(SystemExit) as exc:
+            get_config_value("hooks.pre_llm_call[1].command")
+        assert exc.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "bracket index syntax" in err
+        assert "hooks.pre_llm_call[1].command" in err
+
     def test_bracket_index_unset_is_rejected(self, _isolated_hermes_home, capsys):
         self._write_config(_isolated_hermes_home)
 
@@ -364,8 +376,8 @@ class TestBracketIndexRejection:
         assert "hooks.pre_llm_call[1].command" in err
 
     def test_nested_helper_rejects_bracket_segments(self):
-        """_set_nested/_unset_nested raise for programmatic callers too."""
-        from hermes_cli.config import _set_nested, _unset_nested
+        """_set_nested/_unset_nested/_get_nested raise for programmatic callers too."""
+        from hermes_cli.config import _get_nested, _set_nested, _unset_nested
 
         cfg = {
             "hooks": {
@@ -376,6 +388,8 @@ class TestBracketIndexRejection:
             _set_nested(cfg, "hooks.pre_llm_call[1].command", "new.py")
         with pytest.raises(ValueError, match="bracket index syntax"):
             _unset_nested(cfg, "hooks.pre_llm_call[1].command")
+        with pytest.raises(ValueError, match="bracket index syntax"):
+            _get_nested(cfg, "hooks.pre_llm_call[1].command")
         # No junk key was created by the failed calls.
         assert "pre_llm_call[1]" not in cfg["hooks"]
 

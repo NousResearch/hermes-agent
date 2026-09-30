@@ -991,6 +991,19 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+def _contains_bracket_index(key: str) -> bool:
+    """Return True if a configuration key uses bracket index syntax like name[N]."""
+    return "[" in key or "]" in key
+
+
+def _bracket_index_error_message(dotted_key: str, verb: str = "access") -> str:
+    """Return the canonical error message for unsupported bracket index syntax."""
+    return (
+        f"bracket index syntax ('name[N]') is not supported. Use numeric dotted segments "
+        f"(e.g. 'custom_providers.0.api_key') or edit config.yaml directly."
+    )
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1019,11 +1032,9 @@ def _set_nested(config, dotted_key: str, value):
     literal junk key next to the real list (#87689).  The failure must be
     explicit, not a confident no-op.
     """
-    if "[" in dotted_key or "]" in dotted_key:
+    if _contains_bracket_index(dotted_key):
         raise ValueError(
-            f"Cannot set key {dotted_key!r}: bracket index syntax ('name[N]') "
-            f"is not supported. Use numeric dotted segments "
-            f"(e.g. 'custom_providers.0.api_key') or edit config.yaml directly."
+            f"Cannot set key {dotted_key!r}: {_bracket_index_error_message(dotted_key, 'set')}"
         )
     parts = dotted_key.split(".")
     current = config
@@ -1086,6 +1097,10 @@ _MISSING = object()
 
 def _get_nested(config, dotted_key: str):
     """Return a dotted-path value from nested dict/list config data."""
+    if _contains_bracket_index(dotted_key):
+        raise ValueError(
+            f"Cannot get key {dotted_key!r}: {_bracket_index_error_message(dotted_key, 'get')}"
+        )
     current = config
     for part in dotted_key.split("."):
         if isinstance(current, list):
@@ -1107,11 +1122,9 @@ def _unset_nested(config, dotted_key: str) -> bool:
     # Symmetric with _set_nested (#87689): bracket index syntax can never
     # resolve here, so reject it instead of treating ``name[N]`` as a
     # literal dict key.
-    if "[" in dotted_key or "]" in dotted_key:
+    if _contains_bracket_index(dotted_key):
         raise ValueError(
-            f"Cannot unset key {dotted_key!r}: bracket index syntax ('name[N]') "
-            f"is not supported. Use numeric dotted segments "
-            f"(e.g. 'custom_providers.0.api_key') or edit config.yaml directly."
+            f"Cannot unset key {dotted_key!r}: {_bracket_index_error_message(dotted_key, 'unset')}"
         )
     parts = dotted_key.split(".")
     if not parts:
@@ -5224,7 +5237,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
 
 
 def _reject_bracket_index_syntax(key: str, verb: str) -> None:
-    """Reject bracket index syntax (``name[N]``) in config set/unset keys.
+    """Reject bracket index syntax (``name[N]``) in config get/set/unset keys.
 
     Before #87689, ``hermes config set hooks.pre_llm_call[1].command ...``
     reported ``✓ Set`` and wrote a literal ``pre_llm_call[1]`` dict key next
@@ -5232,9 +5245,9 @@ def _reject_bracket_index_syntax(key: str, verb: str) -> None:
     hook never fired.  Bracket segments can never resolve: the nested
     navigators split on ``.`` only, so the bracketed segment falls through
     to plain dict assignment.  Reject up front with an explicit error
-    instead of writing a junk key.
+    instead of writing a junk key or silently reporting 'not found'.
     """
-    if "[" in key or "]" in key:
+    if _contains_bracket_index(key):
         print(
             f"✗ Cannot {verb} '{key}': bracket index syntax ('name[N]') is not "
             f"supported by 'hermes config {verb}'.\n"
@@ -5475,6 +5488,8 @@ def set_config_value(key: str, value: str, force: bool = False):
 
 def get_config_value(key: str, *, as_json: bool = False):
     """Print a resolved configuration value."""
+    # Reject bracket index syntax before attempting to read (#87689).
+    _reject_bracket_index_syntax(key, "get")
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value

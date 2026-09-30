@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -102,3 +102,36 @@ async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkey
 
     assert r._profile_adapters["sec"][Platform.TELEGRAM].handled == ["tick"]
     assert r.adapters[Platform.TELEGRAM].handled == []
+
+
+def _home_config(platform: Platform, chat_id: str, *, notify: bool = True) -> GatewayConfig:
+    return GatewayConfig(platforms={platform: PlatformConfig(
+        enabled=True, token="t", gateway_restart_notification=notify,
+        home_channel=HomeChannel(platform=platform, chat_id=chat_id, name=chat_id))})
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notice_reaches_every_served_profiles_home_channel(monkeypatch):
+    """The home-channel shutdown broadcast covers EVERY served profile, through its own bot.
+
+    ``self.adapters``/``self.config`` are the launch profile's alone, so a served profile's home
+    channel never heard the gateway was going down (#118233). Two bots with the same positive
+    Telegram id are two private conversations: both are owed a notice. A served profile's own
+    ``gateway_restart_notification=false`` opt-out is honoured from ITS config.
+    """
+    monkeypatch.setattr("gateway.drain_control.drain_notification_suppressed", lambda: False)
+    r = _runner()
+    r.config = _home_config(Platform.TELEGRAM, "8776018003")
+    r._profile_configs = {
+        "sec": _home_config(Platform.TELEGRAM, "8776018003"),
+        "quiet": _home_config(Platform.DISCORD, "-quiet", notify=False),
+    }
+    r._profile_adapters = {"sec": {Platform.TELEGRAM: _Adapter()}, "quiet": {Platform.DISCORD: _Adapter()}}
+    r._served_profile_homes = {}
+    r._snapshot_running_agents = lambda: []
+
+    await r._notify_active_sessions_of_shutdown()
+
+    assert r.adapters[Platform.TELEGRAM].sent == ["8776018003"]
+    assert r._profile_adapters["sec"][Platform.TELEGRAM].sent == ["8776018003"], "own bot, own conversation"
+    assert r._profile_adapters["quiet"][Platform.DISCORD].sent == [], "served profile's opt-out is its own"

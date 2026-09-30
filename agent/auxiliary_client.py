@@ -620,7 +620,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-luna"))
+        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"))
 
 
 def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
@@ -1171,6 +1171,10 @@ def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
                 logger.debug("Codex auxiliary: %s", failure_note, exc_info=True)
 
 
+# The context compressor keys its retry-ladder classification on this text (#124077).
+CODEX_STREAM_STALL_MARKER = "stream stalled"
+
+
 class _CodexStreamGuard:
     """Progress-aware deadline + FD-safe timeout watchdog for one Codex aux stream attempt.
 
@@ -1272,7 +1276,7 @@ class _CodexStreamGuard:
                 "Codex auxiliary Responses stream produced no output "
                 f"within {float(self.no_progress_timeout):.1f}s (no-progress timeout, {elapsed:.1f}s elapsed)")
         return (
-            "Codex auxiliary Responses stream stalled: no new output "
+            f"Codex auxiliary Responses {CODEX_STREAM_STALL_MARKER}: no new output "
             f"for {float(self.no_progress_timeout):.1f}s ({elapsed:.1f}s elapsed)")
 
     def _close_client_on_timeout(self) -> None:
@@ -6291,6 +6295,34 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" else effective
 
 
+def _with_custom_endpoint_extra_body(
+    extra_body: Optional[dict], provider: str, model: Optional[str], base_url: Optional[str],
+) -> Optional[dict]:
+    """Layer the destination custom provider's ``extra_body`` UNDER the task/caller body.
+
+    The main agent merges a ``custom_providers`` / ``providers:`` entry's ``extra_body`` into every
+    request to that endpoint (``agent_init._merge_custom_provider_extra_body``); an aux request routed
+    to the same entry must carry it too, or a proxy that 400s without e.g. a ``user`` field breaks
+    smart approval, titles and compression (#103738). Resolved per destination with the agent's own
+    matcher, so a fallback to another provider never inherits it; ``auxiliary.<task>.extra_body`` and
+    caller keys win on conflict, as request_overrides win over the entry on the main path."""
+    if not base_url:
+        return extra_body
+    try:
+        from agent.agent_init import _custom_provider_extra_body_for_agent
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        inherited = _custom_provider_extra_body_for_agent(
+            provider=provider or "", model=model or "", base_url=str(base_url),
+            custom_providers=get_compatible_custom_providers(load_config_readonly()),
+        )
+    except Exception:
+        logger.debug("custom provider extra_body lookup failed for aux request", exc_info=True)
+        return extra_body
+    if not inherited:
+        return extra_body
+    return {**inherited, **(extra_body or {})}
+
+
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
     """Shallow copy of ``auxiliary.<task>.extra_body`` with ``reasoning_effort`` folded into
     ``reasoning`` unless one is configured (more specific wins). MoA tasks are excluded: their
@@ -6642,6 +6674,7 @@ def _build_call_kwargs(
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout
     effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
+    extra_body = _with_custom_endpoint_extra_body(extra_body, provider, model, effective_base)
     # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
     # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
     fixed_temperature = _fixed_temperature_for_model(model, effective_base, provider)
@@ -8220,32 +8253,3 @@ async def _async_call_llm_impl(
         return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import copy  # noqa: F401,E402
-
-NOUS_EXTRA_BODY = _nous_extra_body()
-
-def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None):
-    """Return (async_client, model_slug) for async consumers.
-
-    For standard providers returns (AsyncOpenAI, model). For Codex returns
-    (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
-    Returns (None, None) when no provider is available.
-    """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
-    return resolve_provider_client(
-        provider,
-        model=model,
-        async_mode=True,
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-        api_mode=api_mode,
-        main_runtime=main_runtime,
-    )
-# ---- END PLUGIN-COMPAT ----

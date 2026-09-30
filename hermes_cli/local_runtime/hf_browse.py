@@ -132,11 +132,3 @@ def rough_fit(total_bytes: int, budget) -> str:
 
 def priced_repo_files(repo: str, budget) -> list[HFFileGroup]:
     return [replace(g, fit=rough_fit(g.total_bytes, budget)) for g in repo_files(repo)]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import field  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

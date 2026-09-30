@@ -238,7 +238,8 @@ def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, mon
 
 
 @pytest.mark.platforms("posix")
-def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_hermes", ["venv-python", "venv-console-script"])
+def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch, legacy_hermes):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
@@ -246,11 +247,16 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     out = home / ".local" / "bin"
     out.mkdir(parents=True)
     # Old venv and sibling-ACP wrappers, with an unrelated command sharing bin.
-    (out / "hermes").write_text(f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n', encoding="utf-8")
+    old_wrapper = (f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n'
+                   if legacy_hermes == "venv-python" else
+                   f'#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\n'
+                   f'exec "{repo}/venv/bin/hermes" "$@"\n')
+    (out / "hermes").write_text(old_wrapper, encoding="utf-8")
     (out / "hermes-acp").write_text(
         '#!/usr/bin/env bash\n# Hermes Agent — ACP launcher (written by `hermes update`).\n'
         f'exec "{out}/hermes" acp "$@"\n', encoding="utf-8")
-    foreign = f'#!/bin/sh\n# user note about {repo}\nexit 19\n'
+    # Mentions this install only in a comment and runs another checkout's venv.
+    foreign = f'#!/bin/sh\n# user note about {repo}/venv/bin/hermes\nexec "{tmp_path}/other/venv/bin/hermes" "$@"\n'
     (out / "hermes-agent").write_text(foreign, encoding="utf-8")
 
     result = _launchers.expose_cli()
@@ -317,8 +323,12 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     assert collect_generations(repo, min_age_seconds=0) == [selected.parent.parent / "old"]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
-    assert json.loads(result.stdout)["value"] == "new"
-    assert json.loads(result.stdout)["argv"] == args
+    receipt = result.stdout
+    if surface == "launchd":
+        # stderr_timestamp stamps the child's stdout lines ("YYYY-MM-DD HH:MM:SS,mmm ").
+        receipt = receipt.split(" ", 2)[2]
+    assert json.loads(receipt)["value"] == "new"
+    assert json.loads(receipt)["argv"] == args
 
 
 @pytest.mark.parametrize("surface", ["published", "systemd", "launchd", "ssh", "legacy"])

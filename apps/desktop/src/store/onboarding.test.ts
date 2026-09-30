@@ -7,10 +7,12 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  completeDesktopOnboarding,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  resetBootRaceWindowForTests,
   saveOnboardingLocalEndpoint,
   setOnboardingModel,
   submitOnboardingCode
@@ -171,6 +173,7 @@ describe('refreshOnboarding', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -246,31 +249,118 @@ describe('refreshOnboarding', () => {
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
-  it('shows a non-blocking notification when preserving configured on fallback', async () => {
+  it('keeps an unknown readiness notice temporary and clears it on recovery (#124545)', async () => {
+    vi.useFakeTimers()
+    notifications.clearNotifications()
+    installApiMock(vi.fn())
+    $desktopOnboarding.set(baseState({ configured: true }))
+
+    try {
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      expect(notifications.$notifications.get()).toEqual([
+        expect.objectContaining({ id: 'runtime-not-ready', kind: 'info' })
+      ])
+      expect($desktopOnboarding.get().configured).toBe(true)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(notifications.$notifications.get()).toEqual([])
+
+      // A later outage can show a fresh notice; an authoritative ready clears it
+      // without waiting for its timer, and must not dismiss unrelated errors.
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      notifications.notify({ id: 'unrelated', kind: 'error', message: 'Keep me' })
+      await refreshOnboarding(onboardingContext(keylessCustomGateway()))
+      expect(notifications.$notifications.get().map(item => item.id)).toEqual(['unrelated'])
+    } finally {
+      notifications.clearNotifications()
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves configured unknown on a boot fallback instead of erasing the cache', async () => {
     const notifySpy = vi.spyOn(notifications, 'notify')
 
     installApiMock(vi.fn())
-    $desktopOnboarding.set(
-      baseState({
-        configured: true,
-        providers: [makeOAuthProvider('cached')],
-        reason: null,
-        requested: false
-      })
-    )
+    // Cold launch, no onboarded cache yet: `configured` is UNKNOWN, not false.
+    // A round that loses the race to a cold/queued backend answers neither
+    // probe, and recording that as "no provider" deleted the cache — which
+    // re-armed the blocking first-run picker on every launch afterwards.
+    $desktopOnboarding.set(baseState({ configured: null, providers: null, requested: false }))
 
-    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
 
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'runtime-not-ready',
-        kind: 'error'
-      })
-    )
+    expect(ready).toBe(false)
+    expect($desktopOnboarding.get().configured).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    // Nothing was ever verified, so there is no outage worth a toast.
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('does not downgrade a configured install when the boot race answers ok:false', async () => {
+    const { notifySetupReady } = await import('@/store/live-sync')
+
+    installApiMock(vi.fn())
+    // Fully configured install (durable cache present), backend just booted:
+    // setup.ready bumped the boot generation moments ago. The runtime_check
+    // answers ok:false because the external secret source (BWS) has not
+    // hydrated yet — a hydration race, not a credential verdict (#124939).
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null, requested: false }))
+
+    notifySetupReady()
+
+    const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+    expect(ready).toBe(false)
     expect($desktopOnboarding.get().configured).toBe(true)
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+  })
+
+  it('still downgrades when the same ok:false arrives long after boot', async () => {
+    const { notifySetupReady } = await import('@/store/live-sync')
+
+    installApiMock(vi.fn())
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null, requested: false }))
+
+    // Boot happened, then the grace window elapsed: an ok:false now is a real
+    // verdict (the secret source had its chance), so onboarding must surface.
+    notifySetupReady()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+
+    try {
+      const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+      expect(ready).toBe(false)
+      expect($desktopOnboarding.get().configured).toBe(false)
+      expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('keeps a persisted "choose later" when a passive round completes onboarding', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding()
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBe('1')
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(true)
+  })
+
+  it('clears the skip only when the user actually connected a provider', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding(true)
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBeNull()
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(false)
   })
 
   it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {
+    // Outside the boot window: no setup.ready bump precedes the round, so an
+    // answered ok:false is a real verdict, not a hydration race.
     installApiMock(vi.fn())
     window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(
@@ -395,6 +485,7 @@ describe('OAuth onboarding', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -563,6 +654,7 @@ describe('saveOnboardingLocalEndpoint', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -953,6 +1045,7 @@ describe('setOnboardingModel', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 

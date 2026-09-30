@@ -167,6 +167,14 @@ jobs:
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
+  install-update-e2e:
+    # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
+    # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
+    # interpreter selection, non-ASCII profile paths and tool ACLs, partial-clone fetch and
+    # venv holders. Its own workflow so wine2e-install/** pushes can run it alone.
+    name: Windows install + update E2E
+    uses: ./.github/workflows/windows-install-update-e2e.yml
+
   e2e-windows:
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
     # `hermes serve`, `hermes gateway run/stop`, the tui_gateway stdio process, cron script

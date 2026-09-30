@@ -21,15 +21,19 @@ import { makeSessionInfo } from '../test/session-info'
 import {
   $activeSessionId,
   $connection,
+  $cronSessions,
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $freshDraftKey,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
+  applySessionTitle,
   carryForwardFailedProfileSessions,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
@@ -49,17 +53,20 @@ import {
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
   setConnection,
+  setCronSessions,
   setCurrentCwd,
   setCurrentCwdTransient,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
+  setMessagingSessions,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -324,6 +331,19 @@ describe('knownSessionOwner', () => {
   })
 })
 
+describe('fresh draft identity', () => {
+  it('rotates for each new-chat lifecycle and persists the current key', () => {
+    const previous = $freshDraftKey.get()
+    const first = rotateFreshDraftKey()
+    const second = rotateFreshDraftKey()
+
+    expect(first).not.toBe(previous)
+    expect(second).not.toBe(first)
+    expect($freshDraftKey.get()).toBe(second)
+    expect(window.localStorage.getItem('hermes.desktop.freshDraftKey')).toBe(second)
+  })
+})
+
 describe('computed $attentionSessionIds', () => {
   beforeEach(() => {
     clearAllSessionStates()
@@ -584,6 +604,30 @@ describe('mergeSessionPage', () => {
     }
   })
 
+  it('matches a tombstone by any intermediate lineage segment (#123685)', () => {
+    // archiveSession arms the tombstone on the ids the row carried when it was
+    // clicked — which, mid-compression, can be a MIDDLE segment id rather than
+    // the root. The survivor filter matched only tip + root, so a doomed row
+    // whose tombstone names a segment came back through the keep set.
+    tombstoneSessions(['segment'])
+
+    try {
+      // The doomed conversation sits in `previous`; its tombstone names the
+      // middle segment, not its root. The incoming page omits it, but the keep
+      // set names the live tip — the survivor path must not carry it back.
+      const previous = [
+        session({ id: 'mine' }),
+        session({ id: 'tip', _lineage_ids: ['root', 'segment', 'tip'], _lineage_root_id: 'root' })
+      ]
+
+      const incoming = [session({ id: 'mine' })]
+
+      expect(mergeSessionPage(previous, incoming, ['tip']).map(s => s.id)).toEqual(['mine'])
+    } finally {
+      untombstoneSessions(['segment'])
+    }
+  })
+
   it('keeps a pinned session that has aged off the recent page', () => {
     // Repro of "loses pins until you refresh": a pinned chat falls off the
     // most-recent page, so the server stops returning it. A hard replace would
@@ -820,6 +864,40 @@ describe('mergeSessionPage', () => {
 
     expect(merged.map(s => s.id)).toEqual(['bumped', 'survivor'])
     expect(merged[0]?.last_active).toBe(300)
+  })
+})
+
+describe('applySessionTitle', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('patches the title across every sidebar slice, matching by lineage (#123337)', () => {
+    // The rename flow used to patch only $sessions by bare id. A compressed
+    // row matched by its root, a cron row, and a messaging row all kept the
+    // stale title until a profile switch forced a refetch.
+    setSessions([session({ id: 'tip', _lineage_ids: ['root', 'tip'], _lineage_root_id: 'root', title: 'Old' })])
+    setCronSessions([session({ id: 'cron-1', source: 'cron', title: 'Old' })])
+    setMessagingSessions([session({ id: 'tg-1', source: 'telegram', title: 'Old' })])
+
+    applySessionTitle('root', 'Fresh')
+    applySessionTitle('cron-1', 'Fresh')
+    applySessionTitle('tg-1', 'Fresh')
+
+    expect($sessions.get()[0].title).toBe('Fresh')
+    expect($cronSessions.get()[0].title).toBe('Fresh')
+    expect($messagingSessions.get()[0].title).toBe('Fresh')
+  })
+
+  it('keeps the slice reference when no row matches or the title is current', () => {
+    const before = [session({ id: 'mine', title: 'Same' })]
+    setSessions(before)
+
+    applySessionTitle('absent', 'Whatever')
+    expect($sessions.get()).toBe(before)
+
+    applySessionTitle('mine', 'Same')
+    expect($sessions.get()).toBe(before)
   })
 })
 

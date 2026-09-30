@@ -8,7 +8,14 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+/** The locales compiled into the app (`TRANSLATIONS`). */
+export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+
+/** Any language id the app can render: a bundled locale, or one a plugin /
+ *  the backend registered at runtime (`registerAppLocale`). Lowercase
+ *  BCP-47-ish (`pl`, `pt-br`). Resolve strings through the registry, never
+ *  by indexing `TRANSLATIONS` directly. */
+export type Locale = string
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -59,11 +66,45 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
+  sharedMetrics: {
+    consentTitle: string
+    consentBody: string
+    whatIsCollected: string
+    collectedIntro: string
+    collectedActivity: string
+    collectedModels: string
+    collectedNames: string
+    collectedMilestones: string
+    collectedReliability: string
+    collectedUsage: string
+    collectedMachine: string
+    installId: string
+    consentWindow: string
+    readDocs: string
+    share: string
+    local: string
+    off: string
+    changeLater: string
+    saveFailed: string
+    collectLabel: string
+    collectDesc: string
+    sendLabel: string
+    sendDesc: string
+    unavailable: string
+    stripBody: string
+    stripChoices: { share: string; local: string; off: string }
+    stripDetails: string
+  }
   externalOpenFailed: {
     title: string
     message: string
     copyUrl: string
     close: string
+    missing: {
+      title: string
+      message: string
+    }
   }
   intro: {
     stock: Record<string, string[]>
@@ -988,6 +1029,8 @@ export interface Translations {
       textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
+      modelPricingTitle: string
+      modelPricingDesc: string
       reactionsTitle: string
       reactionsDesc: string
       tipsTitle: string
@@ -1510,6 +1553,8 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      mainAppliedTitle: string
+      mainAppliedMessage: (model: string) => string
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
@@ -1521,6 +1566,7 @@ export interface Translations {
       restartFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxDismiss: string
       auxiliaryDesc: string
       setToMain: string
       change: string
@@ -2117,6 +2163,7 @@ export interface Translations {
       serverStates: {
         connected: string
         app_not_running: string
+        hermes_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string
@@ -2366,7 +2413,6 @@ export interface Translations {
     mcpServers: string
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -2384,6 +2430,7 @@ export interface Translations {
     hermesActiveSessions: (version: string, count: number) => string
     restartGateway: string
     openBrowser: string
+    toggleBrowser: string
     gatewayRestartFailed: string
     sharedGatewayRestartTitle: string
     sharedGatewayRestartDescription: (bots: string) => string
@@ -2467,6 +2514,7 @@ export interface Translations {
 
   messaging: {
     search: string
+    statusFilter: Record<'all' | 'bad' | 'good' | 'muted' | 'warn', string>
     loading: string
     loadFailed: string
     states: Record<string, string>
@@ -2722,6 +2770,7 @@ export interface Translations {
     skillsLabel: string
     notSet: string
     soulDesc: string
+    soulMissing: string
     soulOptional: string
     soulPlaceholder: (mode: string) => string
     soulPlaceholderCloned: string
@@ -3216,6 +3265,8 @@ export interface Translations {
     restoredDraftNotice: string
     restoredDraftUndo: string
     queueEdit: string
+    queueExpand: string
+    queueCollapse: string
     queueSendNext: string
     queueSend: string
     queueSteer: string
@@ -3303,6 +3354,7 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    previousTodos: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string
@@ -3472,6 +3524,7 @@ export interface Translations {
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
+    copyFullLog: string
     manualTitle: string
     manualUnavailableTitle: string
     manualBody: string
@@ -3828,6 +3881,10 @@ export interface Translations {
     addProvider: string
     addCustomModel: string
     removeCustomModel: string
+    resetToDefaults: string
+    resetConfirm: string
+    resetDescription: string
+    resetAction: string
   }
 
   shell: {
@@ -3841,6 +3898,9 @@ export interface Translations {
       followDefault: string
       refreshModels: string
       fast: string
+      free: string
+      cacheRead: string
+      priceTitle: (input: string, output: string, cache: string) => string
     }
     modelOptions: {
       noOptions: string
@@ -3949,6 +4009,7 @@ export interface Translations {
       openStarmap: string
       turnRunning: string
       contextUsage: string
+      compressions: (count: number) => string
       systemResources: {
         title: string
         loading: string
@@ -4028,6 +4089,9 @@ export interface Translations {
     terminalHide: string
     terminalsAria: string
     terminalNew: string
+    terminalReadOnly: string
+    terminalReadOnlyHelp: string
+    terminalOpenInteractive: string
     terminalCloseOthers: string
     terminalCloseAll: string
     addToChat: string
@@ -4038,6 +4102,7 @@ export interface Translations {
     closePane: string
     loading: string
     unavailable: string
+    missingTarget: string
     opening: string
     hide: string
     openPreview: string
@@ -4153,6 +4218,7 @@ export interface Translations {
     hideTabStrip: string
     showStripTab: (title: string) => string
     hideStripTab: (title: string) => string
+    zoneMenuLabel: (title: string) => string
     lastTabKeptTitle: string
     lastTabKeptBody: string
     toggleStripTab: (title: string) => string
@@ -4315,6 +4381,8 @@ export interface Translations {
       preparingAudio: string
       stopReading: string
       readAloud: string
+      copyFullResponse: string
+      readAloudFullResponseHint: string
       editMessage: string
       expandMessage: string
       scrollToBottom: string
@@ -4357,13 +4425,9 @@ export interface Translations {
       placeholder: string
       skip: string
       skipped: string
-      continueLabel: string
+      noAnswer: string
       confirmAndContinueLabel: string
-      answeredBadge: string
       questionProgress: (answered: number, total: number) => string
-      lateAnswer: (question: string, choice: string) => string
-      lateAnswerTip: string
-      lateAnswerHint: string
       notDelivered: string
     }
     catalogInstall: {
@@ -4625,6 +4689,11 @@ export interface Translations {
   ui: {
     search: {
       clear: string
+    }
+    logs: {
+      bottom: string
+      search: string
+      top: string
     }
     pagination: {
       label: string

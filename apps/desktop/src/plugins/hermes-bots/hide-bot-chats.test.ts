@@ -287,6 +287,50 @@ describe('the title half: each roster bot’s own profile listing', () => {
     expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['old-inbox'])
   })
 
+  it('hides a qualifying plumbing row past 500 created sessions without hiding ordinary chats', async () => {
+    lastRoster.value = [{ name: 'alpha' }] as RosterRow[]
+
+    const rows = Array.from({ length: 620 }, (_, index) => ({
+      id: `row-${index}`,
+      started_at: 600 - index,
+      title: index === 550 ? 'Agent Inbox' : 'User conversation'
+    }))
+
+    hostMock.listPersistedSessions.mockImplementation(async (_route, options) => ({
+      sessions: rows.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit),
+      total: rows.length
+    }))
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['row-550'])
+    expect(hostMock.listPersistedSessions.mock.calls.map(([, options]) => options.offset ?? 0)).toEqual([0, 200, 400, 600])
+  })
+
+  it('does not skip later pages when hiding removes earlier visible rows', async () => {
+    lastRoster.value = [{ name: 'alpha' }] as RosterRow[]
+
+    const rows = Array.from({ length: 220 }, (_, index) => ({
+      id: `row-${index}`,
+      started_at: 500 - index,
+      title: index === 0 || index === 200 ? 'Agent Inbox' : 'User conversation'
+    }))
+
+    hostMock.listPersistedSessions.mockImplementation(async (_route, options) => {
+      const visible = rows.filter(row => !hiddenCalls().some(([, hidden]) => hidden.sessionId === row.id))
+
+      return {
+        sessions: visible.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit),
+        total: visible.length
+      }
+    })
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId).sort()).toEqual(['row-0', 'row-200'])
+    expect(hostMock.listPersistedSessions.mock.calls.map(([, options]) => options.offset ?? 0)).toEqual([0, 200])
+  })
+
   it('runs beside the id half, and a throwing title sweep never breaks it', async () => {
     // The load/reconnect entrypoint runs BOTH halves; the title sweep is
     // best-effort, so an unreachable source must not cost the known ids.

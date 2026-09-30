@@ -992,7 +992,9 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
-def _live_gateway_pids(all_profiles: bool = False, home: Path | None = None) -> list[int]:
+def _live_gateway_pids(
+    all_profiles: bool = False, home: Path | None = None, pid_filter=None
+) -> list[int]:
     """Live gateway PIDs for the readiness poll. ``home`` scopes the probe to ONE profile's identity
     files (a still-running sibling must not vouch for a per-profile spawn, #110959); otherwise the
     process-table discovery for the active profile or the whole fleet."""
@@ -1000,14 +1002,16 @@ def _live_gateway_pids(all_profiles: bool = False, home: Path | None = None) -> 
         from gateway.status import get_running_pid
 
         pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
-        return [pid] if pid else []
-    from hermes_cli.gateway import find_gateway_pids
-
-    return list(find_gateway_pids(all_profiles=all_profiles))
+        pids = [pid] if pid else []
+    else:
+        from hermes_cli.gateway import find_gateway_pids
+        pids = list(find_gateway_pids(all_profiles=all_profiles))
+    return list(pid_filter(pids)) if pid_filter is not None else pids
 
 
 def _confirm_gateway_stable(
-    initial_pids: list[int], confirm_s: float, interval_s: float, all_profiles: bool = False, home: Path | None = None,
+    initial_pids: list[int], confirm_s: float, interval_s: float, all_profiles: bool = False,
+    home: Path | None = None, pid_filter=None,
 ) -> list[int]:
     """Re-check a freshly detected gateway for ``confirm_s`` seconds: one process-table hit proves
     the child was *created*, not that it survived startup (or a parent Job Object teardown).
@@ -1024,7 +1028,7 @@ def _confirm_gateway_stable(
     confirm_deadline = time.monotonic() + confirm_s
     while time.monotonic() < confirm_deadline:
         time.sleep(interval_s)
-        pids = _live_gateway_pids(all_profiles, home)
+        pids = _live_gateway_pids(all_profiles, home, pid_filter)
         if not pids:
             return []
     return pids
@@ -1032,15 +1036,17 @@ def _confirm_gateway_stable(
 
 def _wait_for_gateway_ready(
     timeout_s: float = 6.0, interval_s: float = 0.4, confirm_s: float = 2.0, all_profiles: bool = False,
-    home: Path | None = None,
+    home: Path | None = None, pid_filter=None,
 ) -> list[int]:
     """Poll for a live gateway for up to ``timeout_s``; a first hit is provisional until the gateway
     stays visible for ``confirm_s`` more seconds (a child that dies right after spawn earns no ✓)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        pids = _live_gateway_pids(all_profiles, home)
+        pids = _live_gateway_pids(all_profiles, home, pid_filter)
         if pids:
-            confirmed = _confirm_gateway_stable(pids, confirm_s, interval_s, all_profiles=all_profiles, home=home)
+            confirmed = _confirm_gateway_stable(
+                pids, confirm_s, interval_s, all_profiles=all_profiles, home=home, pid_filter=pid_filter
+            )
             if confirmed:
                 return confirmed
             continue  # died during confirmation — keep polling until deadline

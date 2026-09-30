@@ -16,7 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { $removedSessionIds, isSessionRemovalPending } from './session-removal'
+import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -169,7 +169,9 @@ export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfil
   for (const [key, entry] of [...sessionOwnerHints]) {
     const { route } = entry
 
-    if (route.profile !== from && route.targetProfile !== from) {
+    // Local-connection hints only, like every other rename family: a same-named
+    // profile on another connection was not renamed.
+    if (route.connectionId !== 'local' || (route.profile !== from && route.targetProfile !== from)) {
       continue
     }
 
@@ -710,14 +712,14 @@ export function mergeSessionPage(
   // user archived or deleted must not survive through the keep set — the
   // settle grace keeps a just-archived chat "recently settled" for 30s, which
   // is exactly the window the survivor path used to resurrect it (#118156).
-  // Same bare-id + lineage-root match as dropTombstoned applies to incoming
+  // A tombstone matches ANY id the row has answered to (tip, root, and every
+  // intermediate lineage segment), same as dropTombstoned applies to incoming
   // rows; a failed RPC untombstones immediately, so the filter is only ever
   // as sticky as the removal itself.
   const tombstones = $removedSessionIds.get()
 
   const tombstoned = (session: SessionInfo): boolean =>
-    tombstones.size > 0 &&
-    (tombstones.has(session.id) || (session._lineage_root_id != null && tombstones.has(session._lineage_root_id)))
+    tombstones.size > 0 && tombstoneRowIds(session).some(id => tombstones.has(id))
 
   const survivors = previous.filter(
     session =>
@@ -897,6 +899,44 @@ export function touchSessionActivity(
 
     return changed ? next : prev
   })
+}
+
+/** Patch a session's title across EVERY sidebar slice, matching the row by
+ *  any id the conversation has answered to (`sessionMatchesStoredId`) — a
+ *  compression tip, its root, and a middle segment all name the same chat.
+ *  A rename writes one title; every surface that renders the row (recents,
+ *  cron, messaging) must show it without waiting for a profile switch to
+ *  force a refetch (#123337). Reference-stable per slice when nothing
+ *  matched or the title is already current. */
+export function applySessionTitle(storedSessionId: string | null | undefined, title: string | null): void {
+  const id = storedSessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const next = title?.trim() || null
+
+  const patch = (rows: SessionInfo[]): SessionInfo[] => {
+    let changed = false
+
+    const mapped = rows.map(session => {
+      if (!sessionMatchesStoredId(session, id) || session.title === next) {
+        return session
+      }
+
+      changed = true
+
+      return { ...session, title: next }
+    })
+
+    return changed ? mapped : rows
+  }
+
+  setSessions(patch)
+  setCronSessions(patch)
+  setMessagingSessions(patch)
+  setUnlistedSessionOwnerRows(patch)
 }
 
 export const $connection = atom<HermesConnection | null>(null)
@@ -1543,6 +1583,12 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
+
+// The fresh-draft identity lives in store/composer.ts with the draft stash it
+// keys; re-exported here because session.ts is where new-chat lifecycles rotate
+// it (startFreshSessionDraft) and where most call sites already import from.
+export { $freshDraftKey, rotateFreshDraftKey } from './composer'
+
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
 export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {

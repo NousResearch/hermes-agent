@@ -333,20 +333,40 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
         const route = botConnectionRoute(bot)
         const profile = backendTargetProfile(route, name)
 
-        // Preserve the sweep's creation-order window; the bot conversation
-        // browser instead requests the recently active window. Neither is a
-        // full-history scan: the source endpoint caps each request at 500.
-        const res = await host.listPersistedSessions(route, {
-          profile,
-          limit: PROFILE_SESSION_LIST_LIMIT,
-          order: 'created'
-        })
+        // The backend pages one concrete profile directly. Collect IDs before
+        // hiding anything: hidden rows vanish from later offset-based pages.
+        const candidates = new Set<string>()
+        let offset = 0
 
-        const rows = Array.isArray(res?.sessions) ? res.sessions : []
+        while (true) {
+          const res = await host.listPersistedSessions(route, {
+            profile,
+            limit: PROFILE_SESSION_LIST_LIMIT,
+            order: 'created',
+            ...(offset ? { offset } : {})
+          })
+
+          const rows = Array.isArray(res?.sessions) ? res.sessions : []
+
+          for (const row of rows) {
+            if (isBotModeSweepCandidate(row, nowSeconds)) {
+              candidates.add(row.id)
+            }
+          }
+
+          offset += PROFILE_SESSION_LIST_LIMIT
+          const total = Number(res?.total)
+
+          // Pinned sessions can be appended outside the page; advance by the
+          // requested size, not rows.length, and dedupe their IDs above.
+          if (!rows.length || (Number.isFinite(total) && offset >= total) ||
+              (!Number.isFinite(total) && rows.length < PROFILE_SESSION_LIST_LIMIT)) {
+            break
+          }
+        }
+
         await Promise.all(
-          rows
-            .filter(row => isBotModeSweepCandidate(row, nowSeconds))
-            .map(row => Promise.resolve(hidePersistedBotSession(bot, row.id, profile)).catch(() => undefined))
+          [...candidates].map(id => Promise.resolve(hidePersistedBotSession(bot, id, profile)).catch(() => undefined))
         )
       } catch {
         /* older gateway / unreachable source — leave this profile alone */

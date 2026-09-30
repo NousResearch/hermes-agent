@@ -714,6 +714,23 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     assert payload["reason"] == "target_busy"
 
 
+def test_run_delivery_does_not_clone_an_open_unadvertised_bot_chat(tmp_path, monkeypatch, capsys):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setattr(bot_mode_dm, "_local_delivery_home", lambda argv: home)
+    monkeypatch.setattr(
+        "tools.bot_live_delivery.find_canonical_owner",
+        lambda profile_home: {"profile_home": str(home), "session_id": "s", "lease_id": "l"},
+    )
+    monkeypatch.setattr(bot_mode_dm, "_run_local_turn", lambda *args, **kwargs: pytest.fail("CLI clone spawned"))
+
+    assert bot_mode_dm._run_delivery(["hermes", "-p", "researcher"], str(dm_file), stdin_file=False) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason"] == "target_pending_live_consumer"
+
+
 def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
     """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
     silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""

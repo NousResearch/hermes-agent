@@ -242,6 +242,17 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_forwards_level_monitor_settings(self):
+        created = json.loads(cronjob(
+            action="create", prompt="Check", schedule="every 1h",
+            monitor_url="https://example.com/status", monitor_mode="level", monitor_repeat_every_s=45,
+        ))
+        assert created["success"] is True
+        from cron.jobs import get_job
+        stored = get_job(created["job_id"])
+        assert stored["monitor_mode"] == "level"
+        assert stored["monitor_repeat_every_s"] == 45
+
     def test_create_with_natural_weekday_schedule(self):
         # The documented "every monday 9am" form must create a real cron job
         # through the tool path, not error out (issue: parser rejected it).

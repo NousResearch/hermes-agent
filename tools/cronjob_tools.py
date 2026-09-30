@@ -652,6 +652,14 @@ def _action_create(a: Dict[str, Any]) -> str:
                 success=False)
     elif not prompt and not canonical_skills:
         return tool_error("create requires either prompt or at least one skill", success=False)
+    if a["monitor_mode"] is not None and str(a["monitor_mode"]).strip().lower() not in {"change", "level"}:
+        return tool_error("monitor_mode must be 'change' or 'level'.", success=False)
+    if a["monitor_repeat_every_s"] is not None:
+        try:
+            if float(a["monitor_repeat_every_s"]) <= 0:
+                return tool_error("monitor_repeat_every_s must be a positive number.", success=False)
+        except (TypeError, ValueError):
+            return tool_error("monitor_repeat_every_s must be a positive number.", success=False)
     error = (
         (prompt and _scan_cron_prompt(prompt))
         or (script and _validate_cron_script_path(script))
@@ -686,6 +694,8 @@ def _action_create(a: Dict[str, Any]) -> str:
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
+            monitor_mode=(str(a["monitor_mode"]).strip().lower() if a["monitor_mode"] is not None else None),
+            monitor_repeat_every_s=a["monitor_repeat_every_s"],
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
             pinned=bool(a["pinned"]),
@@ -874,6 +884,24 @@ def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[
     return None
 
 
+def _update_monitor_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
+    """Validate and apply level-monitor settings."""
+    if a["monitor_mode"] is not None:
+        mode = str(a["monitor_mode"]).strip().lower()
+        if mode not in {"change", "level"}:
+            return "monitor_mode must be 'change' or 'level'."
+        updates["monitor_mode"] = mode
+    if a["monitor_repeat_every_s"] is not None:
+        try:
+            repeat = float(a["monitor_repeat_every_s"])
+        except (TypeError, ValueError):
+            return "monitor_repeat_every_s must be a positive number."
+        if repeat <= 0:
+            return "monitor_repeat_every_s must be a positive number."
+        updates["monitor_repeat_every_s"] = repeat
+    return None
+
+
 def _update_context_from(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
     """context_from / continuity: empty string / list clears; otherwise every ref must
     exist. Stored as a list (or None) to match create_job()."""
@@ -927,7 +955,7 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
 
 
 # Validation order is behavior (first failing field wins): keep this sequence.
-_UPDATE_STEPS = (_update_core_fields, _update_script_fields, _update_context_from, _update_run_fields)
+_UPDATE_STEPS = (_update_core_fields, _update_script_fields, _update_monitor_fields, _update_context_from, _update_run_fields)
 
 
 def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
@@ -998,6 +1026,8 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    monitor_mode: Optional[str] = None,
+    monitor_repeat_every_s: Optional[float] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
@@ -1106,6 +1136,16 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
             },
+            "monitor_mode": {
+                "type": "string",
+                "enum": ["change", "level"],
+                "description": "Monitor trigger mode. 'change' runs only when output changes (default); 'level' re-alerts identical non-empty output after monitor_repeat_every_s."
+            },
+            "monitor_repeat_every_s": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "For level monitors, minimum seconds between alerts for identical non-empty output. Defaults to 300."
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -1161,7 +1201,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "monitor_mode", "monitor_repeat_every_s", "paused_reason", "pinned")
 
 
 def _cronjob_handler(args, **kw):

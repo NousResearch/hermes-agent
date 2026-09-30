@@ -556,6 +556,13 @@ def _submit_row_target_key(session: dict) -> str:
     queue merge, the drain deactivation — reads the same key instead of re-deriving one that a rotation
     can invalidate mid-turn.
     """
+    # The dashboard keeps a separate JSON-RPC sidecar session for sidebar status.  During
+    # the PTY TUI's first turn, the live agent can still expose the sidecar's durable
+    # identity while the submitted prompt belongs to the PTY session.  Prefer the
+    # transport-owned key for that first TUI submit; rotated turns continue to follow
+    # the live agent identity below.
+    if session.get("source") == "tui" and not session.get("_submit_user_row"):
+        return str(session.get("session_key") or "")
     return str(getattr(session.get("agent"), "session_id", None) or "") or str(session.get("session_key") or "")
 
 

@@ -101,7 +101,10 @@ def cmd_tools(args):
         from hermes_cli.tools_config import run_post_setup_command
         sys.exit(run_post_setup_command(args))
     else:
-        _require_tty("tools")
+        # --summary is a non-interactive report (usable from pipes, cron and
+        # remote runners); only the configuration UI needs a terminal.
+        if not getattr(args, "summary", False):
+            _require_tty("tools")
         from hermes_cli.tools_config import tools_command
         tools_command(args)
 

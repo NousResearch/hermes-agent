@@ -25,22 +25,26 @@ _personalities_memo: Optional[
 
 
 def _personalities_from_cli_config() -> dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+signature:
-    load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
-    Falls back to a fresh load when the file cannot be stat'ed."""
+    """``available_personalities(load_config_readonly())`` memoised on config path+signature, because
+    the completer runs per keystroke. Falls back to a fresh load when the file cannot be stat'ed.
+
+    Never load through ``cli``. The first import of ``cli`` sets ``cli._hermes_home`` for the rest of
+    the process from the profile scope bound at that moment, and copies that profile's config into the
+    shared ``os.environ``."""
     global _personalities_memo
-    from cli import load_cli_config
     from utils import file_signature
+    from hermes_cli.config import get_config_path, load_config_readonly
     from hermes_cli.personality import available_personalities
+    if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        return available_personalities({})
     try:
-        from hermes_cli.config import get_config_path
         cfg_path = get_config_path()
         st = cfg_path.stat()
         sig = (str(cfg_path), *file_signature(st))
     except Exception:
         sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:
-        _personalities_memo = (sig, available_personalities(load_cli_config()))
+        _personalities_memo = (sig, available_personalities(load_config_readonly()))
     return _personalities_memo[1]
 
 

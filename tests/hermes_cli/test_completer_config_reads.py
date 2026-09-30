@@ -27,13 +27,13 @@ class TestPersonalityCompletionsMemo:
         # regardless of filesystem timestamp granularity.
         os.utime(cfg_path, (1_700_000_000, 1_700_000_000))
 
-        def load_cli_config_from_disk():
+        def load_config_from_disk():
             return yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
         def names():
             return {c.text for c in commands_mod.SlashCommandCompleter._personality_completions("zz", "zz")}
 
-        with patch("cli.load_cli_config", load_cli_config_from_disk), \
+        with patch("hermes_cli.config.load_config_readonly", load_config_from_disk), \
              patch("hermes_cli.config.get_config_path", lambda: cfg_path):
             assert "zzfirst" in names()
 
@@ -42,3 +42,14 @@ class TestPersonalityCompletionsMemo:
             after = names()
             assert "zzsecond" in after
             assert "zzfirst" not in after
+
+    def test_ignore_user_config_offers_only_builtin_personalities(self, tmp_path, monkeypatch):
+        from hermes_cli.personality import BUILTIN_PERSONALITIES
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("agent:\n  personalities:\n    zzuser: v1\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: cfg_path)
+
+        names = {c.text for c in commands_mod.SlashCommandCompleter._personality_completions("", "")}
+        assert names == {"none", *BUILTIN_PERSONALITIES}

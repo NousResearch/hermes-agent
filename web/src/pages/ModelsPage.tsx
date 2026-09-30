@@ -670,7 +670,7 @@ function AuxiliaryTasksModal({
                 <Button
                   size="sm"
                   outlined
-                  onClick={() => setPicker({ kind: "aux", task: task.key })}
+                  onClick={() => setPicker({ kind: "aux", task: key })}
                   className="h-6 text-xs uppercase"
                 >
                   {t.models.change}

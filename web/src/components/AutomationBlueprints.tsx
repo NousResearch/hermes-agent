@@ -174,6 +174,7 @@ function BlueprintCard({
  */
 export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprintsProps) {
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
   const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 

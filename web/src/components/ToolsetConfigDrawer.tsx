@@ -75,7 +75,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
         }
         setIsSet(seed);
       })
-      .catch(() => showToast(t.toolsetLoadFailed, "error"))
+      .catch(() => showToast(t.cron.toolsetLoadFailed, "error"))
       .finally(() => setLoading(false));
   }, [toolset.name, profile, showToast]);
 
@@ -111,7 +111,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       } catch {
         if (!cancelled) {
           setPostSetupRunning(false);
-          showToast(t.toolsetPostSetupLost, "error");
+          showToast(t.cron.toolsetPostSetupLost, "error");
         }
       }
     };
@@ -134,7 +134,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       );
       onChanged();
     } catch {
-      showToast(t.toolsetToggleFailed, "error");
+      showToast(t.cron.toolsetToggleFailed, "error");
     } finally {
       setToggling(false);
     }
@@ -145,7 +145,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
     try {
       await api.selectToolsetProvider(toolset.name, provider.name, profile);
       setActiveProvider(provider.name);
-      showToast(t.toolsetProviderSet.replace("{name}", provider.name), "success");
+      showToast(t.cron.toolsetProviderSet.replace("{name}", provider.name), "success");
       onChanged();
     } catch (e) {
       showToast(
@@ -164,7 +164,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       if (v && v.trim()) env[e.key] = v.trim();
     }
     if (Object.keys(env).length === 0) {
-      showToast(t.toolsetEnterValue, "error");
+      showToast(t.cron.toolsetEnterValue, "error");
       return;
     }
     setSavingProvider(provider.name);
@@ -256,7 +256,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
               checked={enabled}
               onCheckedChange={(v) => void handleToggle(v)}
               disabled={toggling}
-              aria-label={t.toolsetEnableFor.replace("{platform}", platformText)}
+              aria-label={t.cron.toolsetEnableFor.replace("{platform}", platformText)}
             />
             <span className="text-xs text-muted-foreground">
               {enabled
@@ -279,7 +279,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
             </p>
           ) : config.providers.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">
-              {t.toolsetNoProviders}
+              {t.cron.toolsetNoProviders}
             </p>
           ) : (
             config.providers.map((provider) => {
@@ -304,7 +304,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                       )}
                       {provider.requires_nous_auth && (
                         <Badge tone="outline" className="text-xs">
-                          {t.toolsetNousPortal}
+                          {t.cron.toolsetNousPortal}
                         </Badge>
                       )}
                     </div>
@@ -398,7 +398,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                   {provider.post_setup && (
                     <div className="mt-3 border-t border-border pt-3">
                       <p className="text-xs text-muted-foreground mb-1.5">
-                        {t.toolsetNeedsInstall.replace(
+                        {t.cron.toolsetNeedsInstall.replace(
                           "{command}",
                           `(${provider.post_setup})`,
                         )}

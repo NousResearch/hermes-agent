@@ -619,10 +619,10 @@ export default function PluginsPage() {
                         </Badge>
                       )}
                       {selectedMemoryName && selectedMemoryName === providers.memory_provider && (
-                        <Badge tone="outline">active</Badge>
+                        <Badge tone="outline">{t.pluginsPage.memoryStatusActive}</Badge>
                       )}
                       {!selectedMemoryName && !providers.memory_provider && (
-                        <Badge tone="success">active</Badge>
+                        <Badge tone="success">{t.pluginsPage.memoryStatusActive}</Badge>
                       )}
                     </div>
 

@@ -35,6 +35,7 @@ export interface Translations {
     search: string;
     loading: string;
     reloadPage: string;
+    required: string;
     create: string;
     creating: string;
     set: string;
@@ -337,8 +338,8 @@ export interface Translations {
   models: {
     modelsUsed: string;
     /** Optional until all locales translate; deep-merge falls back to English. */
-    expensiveWarningTitle?: string;
-    resetAuxiliaryModels?: string;
+    expensiveWarningTitle: string;
+    resetAuxiliaryModels: string;
     newPresetNamePlaceholder?: string;
     selectMoaModel?: string;
     setAssignmentProviderMissing: string;
@@ -493,6 +494,7 @@ export interface Translations {
     };
     jobsTab: string;
     blueprintsTab: string;
+    advancedFields: string;
     scheduleIt: string;
     baseUrlOverride: string;
     noBlueprints: string;
@@ -553,6 +555,7 @@ export interface Translations {
     statusInstalled: string;
     statusVerified: string;
     memoryStatusReady: string;
+    memoryStatusActive: string;
     memoryStatusNeedsConfig: string;
     memoryStatusUnavailable: string;
     memoryStatusMissing: string;

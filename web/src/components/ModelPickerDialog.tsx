@@ -509,6 +509,7 @@ function ProviderColumn({
   /** The links below navigate away; the full-screen dialog must close or it keeps covering the target page. */
   onClose(): void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="border-e border-border overflow-y-auto">
       {loading && (

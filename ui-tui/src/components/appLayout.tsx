@@ -569,6 +569,7 @@ const StatusRulePane = memo(function StatusRulePane({
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
+        repoUrl={status.repoUrl}
         modelFast={ui.info?.fast}
         modelReasoningEffort={ui.info?.reasoning_effort}
         modelReasoningEffortWire={ui.info?.reasoning_effort_wire}

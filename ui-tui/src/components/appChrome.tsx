@@ -1,4 +1,4 @@
-import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
+import { Box, Link, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { compactNumber } from '@hermes/shared/format'
 import type { Usage } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
@@ -580,6 +580,7 @@ export function StatusRule({
   personality = '',
   cols,
   busy,
+  repoUrl = '',
   compacting = false,
   status,
   statusBarFields = null,
@@ -835,6 +836,7 @@ export function StatusRule({
         gitStatus: showGit ? gitStatus : null,
         model: modelText,
         path: showPath ? pathLabel : '',
+        repoUrl,
         pct: ok('context_pct') ? pct : undefined,
         contextMax: ok('context_detail') || ok('context_pct') ? usage.context_max ?? undefined : undefined,
         personality: showPersonality ? personalityText : '',
@@ -852,6 +854,7 @@ function OmpStatusBand({
   path,
   pct,
   personality,
+  repoUrl,
   t
 }: {
   cols: number
@@ -861,6 +864,7 @@ function OmpStatusBand({
   path: string
   pct?: number
   personality: string
+  repoUrl?: string
   t: Theme
 }) {
   const dirty = !!gitStatus &&
@@ -893,7 +897,17 @@ function OmpStatusBand({
       <Box backgroundColor={t.color.statusBg} flexShrink={0}>
         <Text color={t.color.muted}>{brand}</Text>
         <Text bold color={t.color.accent}>{modelSegment}</Text>
-        {pathSegment ? <Text color={t.color.primary}>{pathSegment}</Text> : null}
+        {pathSegment ? (
+          repoUrl ? (
+            // OSC 8 keeps the same glyphs but makes the workspace segment open
+            // the repo (at the checked-out branch) — matching the zsh prompt.
+            <Link url={repoUrl}>
+              <Text color={t.color.primary}>{pathSegment}</Text>
+            </Link>
+          ) : (
+            <Text color={t.color.primary}>{pathSegment}</Text>
+          )
+        ) : null}
         {gitSegment ? <Text color={dirty ? t.color.statusWarn : t.color.statusGood}>{gitSegment}</Text> : null}
       </Box>
       <Text color={t.color.border} wrap="truncate-end">
@@ -1018,6 +1032,9 @@ interface StatusRuleProps {
   // separate from `cwdLabel` so each can be coloured and budgeted on its own.
   pathLabel?: string
   gitStatus?: GitStatus | null
+  // Browse URL for the checked-out repo; empty when the workspace has no
+  // recognized forge remote, which keeps the path segment plain text.
+  repoUrl?: string
   // Active personality — Hermes's equivalent of Claude's output_style.
   personality?: string
   model: string

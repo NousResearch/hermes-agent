@@ -19,7 +19,13 @@ import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { composeTabTitle, fmtProjectCwdBranch, formatStatusPath, shortCwd } from '../domain/paths.js'
+import {
+  composeTabTitle,
+  fmtProjectCwdBranch,
+  forgeUrlFromRemote,
+  formatStatusPath,
+  shortCwd
+} from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
@@ -32,7 +38,7 @@ import type {
   SharedControlRespondResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
-import { useGitStatus } from '../hooks/useGitBranch.js'
+import { useGitRemote, useGitStatus } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
@@ -1600,6 +1606,22 @@ export function useMainApp(gw: GatewayClient) {
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitStatus = useGitStatus(cwd)
   const gitBranch = gitStatus.branch
+  const gitRemote = useGitRemote(cwd)
+
+  // Link the workspace path segment to the repo on its forge, at the branch
+  // that is actually checked out. Unknown/absent remotes yield '' so the
+  // segment stays plain text.
+  const repoUrl = useMemo(() => {
+    const forge = forgeUrlFromRemote(gitRemote)
+
+    if (!forge) {
+      return ''
+    }
+
+    return gitBranch && gitBranch !== 'detached'
+      ? `${forge.repo}${forge.tree}${gitBranch}`
+      : forge.repo
+  }, [gitBranch, gitRemote])
 
   const appStatus = useMemo(
     () => ({
@@ -1610,6 +1632,7 @@ export function useMainApp(gw: GatewayClient) {
       gitStatus,
       pathLabel: formatStatusPath(cwd),
       personality: ui.info?.personality ?? '',
+      repoUrl,
       goodVibesTick,
       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
@@ -1633,6 +1656,7 @@ export function useMainApp(gw: GatewayClient) {
       goodVibesTick,
       i18n,
       lastTurnEndedAt,
+      repoUrl,
       sessionStartedAt,
       stickyPrompt,
       turnStartedAt,

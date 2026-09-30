@@ -1,5 +1,81 @@
 import type { GitStatus } from '../hooks/useGitBranch.js'
 
+export interface ForgeUrl {
+  // Base browse URL for the repository, with no trailing slash or `.git`.
+  repo: string
+  // Path segment this forge uses before a ref: GitHub `/tree/`, GitLab `/-/tree/`.
+  tree: string
+}
+
+// Only forges whose browse-path shape we actually know are linked; anything
+// else (self-hosted, bare paths, unknown hosts) stays plain text rather than
+// guessing a URL that 404s.
+const FORGE_TREE_PATHS: Record<string, string> = {
+  'github.com': '/tree/',
+  'gitlab.com': '/-/tree/'
+}
+
+/**
+ * Resolve a git remote to its https browse URL.
+ *
+ * Mirrors `~/.config/zsh/bin/starship-git-url`, the resolver the zsh prompt
+ * already uses, so the TUI status bar and the shell prompt agree on the link
+ * target: scp-style (`git@host:owner/repo`), `ssh://`, `git://`, `https://`
+ * and `http://` all collapse to the same canonical URL.
+ */
+export const forgeUrlFromRemote = (remote: string): ForgeUrl | null => {
+  const url = remote.trim()
+
+  if (!url) {
+    return null
+  }
+
+  let host: string
+  let path: string
+
+  const scp = /^[^/@\s]+@([^:/\s]+):(.+)$/.exec(url)
+
+  if (scp) {
+    host = scp[1] ?? ''
+    path = scp[2] ?? ''
+  } else if (/^(?:ssh|git|https?):\/\//i.test(url)) {
+    const rest = url.replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]*@/, '')
+    const slash = rest.indexOf('/')
+
+    if (slash === -1) {
+      return null
+    }
+
+    host = rest.slice(0, slash).split(':')[0] ?? ''
+    path = rest.slice(slash + 1)
+  } else {
+    return null
+  }
+
+  const repoPath = path.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '')
+  const tree = FORGE_TREE_PATHS[host.toLowerCase()]
+
+  if (!repoPath || !tree) {
+    return null
+  }
+
+  return { repo: `https://${host.toLowerCase()}/${repoPath}`, tree }
+}
+
+/**
+ * Which remote a branch's browse URL should point at.
+ *
+ * A branch pushed to a fork does not exist on `origin`, so linking it against
+ * origin produces a 404. Git records the real publish target in
+ * `branch.<name>.remote`; `.` means "local-only" (no remote), so that and an
+ * absent value both fall back to origin.
+ */
+export const gitRemoteNameForBranch = (branchRemote: null | string | undefined): string => {
+  const name = (branchRemote ?? '').trim()
+
+  return !name || name === '.' ? 'origin' : name
+}
+
 export const shortCwd = (cwd: string, max = 28) => {
   const h = process.env.HOME
   const p = h && cwd.startsWith(h) ? `~${cwd.slice(h.length)}` : cwd

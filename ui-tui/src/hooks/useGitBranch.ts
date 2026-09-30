@@ -3,6 +3,8 @@ import { promisify } from 'node:util'
 
 import { useEffect, useState } from 'react'
 
+import { gitRemoteNameForBranch } from '../domain/paths.js'
+
 const TTL_MS = 5_000
 const TIMEOUT_MS = 750
 
@@ -135,4 +137,93 @@ export function useGitStatus(cwd: string): GitStatus {
 
 export function useGitBranch(cwd: string): null | string {
   return useGitStatus(cwd).branch
+}
+
+const remoteCache = new Map<string, { at: number; remote: string }>()
+const remoteInflight = new Map<string, Promise<string>>()
+
+// `remote.origin.url` changes far less often than working-tree state, so this
+// is cached on its own longer TTL rather than riding the 5s status poll.
+const REMOTE_TTL_MS = 60_000
+
+const resolveRemote = async (cwd: string): Promise<string> => {
+  try {
+    // Follow the checked-out branch's publish target, not origin: a branch
+    // pushed to a fork does not exist on origin and would link to a 404.
+    const { stdout: head } = await pexec('git', ['-C', cwd, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      timeout: TIMEOUT_MS
+    }).catch(() => ({ stdout: '' }))
+
+    let name = 'origin'
+
+    if (head.trim()) {
+      const { stdout: branchRemote } = await pexec(
+        'git',
+        ['-C', cwd, 'config', '--get', `branch.${head.trim()}.remote`],
+        { timeout: TIMEOUT_MS }
+      ).catch(() => ({ stdout: '' }))
+
+      name = gitRemoteNameForBranch(branchRemote)
+    }
+
+    const { stdout } = await pexec('git', ['-C', cwd, 'config', '--get', `remote.${name}.url`], {
+      timeout: TIMEOUT_MS
+    }).catch(() => ({ stdout: '' }))
+
+    if (!stdout.trim() && name !== 'origin') {
+      const { stdout: fallback } = await pexec('git', ['-C', cwd, 'config', '--get', 'remote.origin.url'], {
+        timeout: TIMEOUT_MS
+      }).catch(() => ({ stdout: '' }))
+
+      return fallback.trim()
+    }
+
+    return stdout.trim()
+  } catch {
+    return ''
+  }
+}
+
+export function useGitRemote(cwd: string): string {
+  const [remote, setRemote] = useState<string>(() => remoteCache.get(cwd)?.remote ?? '')
+
+  useEffect(() => {
+    let cancelled = false
+
+    const tick = async () => {
+      const hit = remoteCache.get(cwd)
+
+      if (hit && Date.now() - hit.at < REMOTE_TTL_MS) {
+        if (!cancelled) {
+          setRemote(hit.remote)
+        }
+
+        return
+      }
+
+      const pending = remoteInflight.get(cwd)
+      const request = pending ?? resolveRemote(cwd).finally(() => remoteInflight.delete(cwd))
+
+      if (!pending) {
+        remoteInflight.set(cwd, request)
+      }
+
+      const next = await request
+      remoteCache.set(cwd, { at: Date.now(), remote: next })
+
+      if (!cancelled) {
+        setRemote(next)
+      }
+    }
+
+    void tick()
+    const id = setInterval(() => void tick(), REMOTE_TTL_MS)
+
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [cwd])
+
+  return remote
 }

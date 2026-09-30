@@ -3,7 +3,8 @@
 A crash between turn start and the reply leaves a durable ``user;user`` pair. The alternation repair
 hands the compressor one dict for both rows, so the commit has to account for two originals behind it.
 A turn killed later leaves a tool call with no result, or a result the repair cannot pair. The repair
-drops those rows, and they are still behind the dict before them.
+drops those rows, and they are still behind the dict before them. Two assistant rows in a row are
+folded into one turn the same way.
 """
 
 from types import SimpleNamespace
@@ -12,18 +13,24 @@ import pytest
 
 from tests.agent.test_in_place_preflight_rewind import _replies_displayed, _turn, session  # noqa: F401
 
+
+def _call(call_id):
+    return ("assistant", "", {"tool_calls": [
+        {"id": call_id, "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]})
+
+
 _UNANSWERED = ("user", "U12x this prompt never got a reply", {})
 _RETRIED = ("user", "U12y the same request again", {})
-_CALL = ("assistant", "", {"tool_calls": [
-    {"id": "call_killed", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]})
 _RESULT = ("tool", "partial output", {"tool_call_id": "call_killed"})
 KILLED_TURN_LEFT = {
     "prompt": [_UNANSWERED],
     "two_prompts": [_UNANSWERED, _RETRIED],
-    "tool_call": [_UNANSWERED, _CALL],
+    "tool_call": [_UNANSWERED, _call("call_killed")],
     "tool_result": [_UNANSWERED, _RESULT],
-    "two_prompts_tool_call": [_UNANSWERED, _RETRIED, _CALL],
+    "two_prompts_tool_call": [_UNANSWERED, _RETRIED, _call("call_killed")],
+    "two_tool_calls": [_UNANSWERED, _call("call_killed"), _call("call_killed_again")],
     "result_after_a_reply": [_RESULT],
+    "two_replies": [("assistant", "A12b a second reply to the same prompt", {})],
 }
 
 
@@ -60,3 +67,4 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
     assert db._conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = 'sid' AND active = 1"
         " AND (role = 'tool' OR tool_calls IS NOT NULL)").fetchone()[0] == 0
+    assert [c.split(" ")[0] for c in live[-2:]] == ["U15", "A15"]

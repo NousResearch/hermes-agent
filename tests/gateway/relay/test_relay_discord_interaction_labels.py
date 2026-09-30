@@ -14,7 +14,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.relay.ws_transport import _event_from_wire
-from gateway.session import SessionStore, build_session_context
+from gateway.session import SessionStore, build_session_context, build_session_key
 from tests.gateway.relay.test_relay_interactive import _adapter
 
 
@@ -36,15 +36,21 @@ def _pinned_prompt(source):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("restart, nick", [(False, "Benny"), (True, "Ben D")], ids=["warm", "restart"])
-async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, restart, nick):
+@pytest.mark.parametrize("restart, nick, thread", [
+    (False, "Benny", False), (True, "Ben D", False), (False, "Benny", True),
+], ids=["warm", "restart", "thread"])
+async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, restart, nick, thread):
     """``restart``: the gateway restarted after the message, so the slash command is the first
-    event the new process sees in that chat; the chat labels come from the persisted session origin."""
+    event the new process sees in that chat; the chat labels come from the persisted session origin.
+    ``thread``: both events happen inside a thread, which the text lane keys on chat_type "thread" +
+    thread_id; the slash command must land in that session, not in a per-user "group" one."""
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
     adapter, _stub = _adapter(platform="discord")
     adapter.handle_message = AsyncMock()
+    chat = ({"chat_id": "th1", "chat_type": "thread", "thread_id": "th1", "parent_chat_id": "ch1"}
+            if thread else {"chat_id": "ch1", "chat_type": "group"})
     message = _event_from_wire({"text": "hi", "message_type": "text", "source": {
-        "platform": "discord", "chat_id": "ch1", "chat_type": "group", "scope_id": "g1",
+        "platform": "discord", **chat, "scope_id": "g1",
         "user_id": "u1", "user_name": "ben", "user_display_name": "Ben D",
         "chat_name": "Hermes Server / #ops", "chat_topic": "Incident triage", "message_id": "m1"}})
     await adapter._on_inbound(message)
@@ -52,9 +58,12 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, restart,
     if restart:
         adapter, _stub = _adapter(platform="discord")
         adapter.set_session_store(SessionStore(tmp_path, config))
-    slash = adapter._discord_interaction_to_event(
-        _forward(member={"nick": nick, "user": {"id": "u1", "username": "ben"}}))
+    interaction = {"member": {"nick": nick, "user": {"id": "u1", "username": "ben"}}}
+    if thread:
+        interaction.update(channel_id="th1", channel={"id": "th1", "type": 11, "parent_id": "ch1"})
+    slash = adapter._discord_interaction_to_event(_forward(**interaction))
 
+    assert build_session_key(slash.source) == build_session_key(message.source)
     prompts = {_pinned_prompt(event.source) for event in (message, slash, message)}
     assert len(prompts) == 1
 

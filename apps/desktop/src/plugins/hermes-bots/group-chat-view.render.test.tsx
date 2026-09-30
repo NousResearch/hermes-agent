@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { translateBots } from './i18n-test-helper'
 
 // Room bodies go through the shell's message renderer (the 1:1 chat's code
-// card + `MEDIA:` transform) when the SDK exports it. The stub records what the
+// card + delivered-file cards) when the SDK exports it. The stub records what the
 // room handed it so the test asserts the wiring, not the renderer's output.
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
@@ -32,8 +32,20 @@ vi.mock('@hermes/plugin-sdk', async () => {
     DialogHeader: () => null,
     DialogTitle: () => null,
     Input: () => null,
-    MessageTextContent: ({ media = true, text }: { media?: boolean; text: string }) => (
-      <span data-media={String(media)} data-testid="message-text-content">
+    MessageTextContent: ({
+      attachments,
+      media = true,
+      text
+    }: {
+      attachments?: { path: string }[]
+      media?: boolean
+      text: string
+    }) => (
+      <span
+        data-files={(attachments ?? []).map(file => file.path).join(',')}
+        data-media={String(media)}
+        data-testid="message-text-content"
+      >
         {text}
       </span>
     ),
@@ -59,12 +71,20 @@ it('renders member replies through the shell message renderer, resolving media o
 
   const log = [
     { id: 'u1', thread: 'a', from: { kind: 'user' as const, name: 'You' }, text: 'Show me', at: 1 },
-    { id: 'm1', thread: 'a', from: { kind: 'member' as const, name: 'builder' }, text: 'MEDIA:/tmp/local.png', at: 2 },
+    {
+      id: 'm1',
+      thread: 'a',
+      from: { kind: 'member' as const, name: 'builder' },
+      text: 'Here it is',
+      attachments: [{ path: '/tmp/local.png' }],
+      at: 2
+    },
     {
       id: 'm2',
       thread: 'a',
       from: { kind: 'member' as const, name: 'builder', source: 'mini' },
-      text: 'MEDIA:/tmp/remote.png',
+      text: '',
+      attachments: [{ path: '/tmp/remote.html' }],
       at: 3
     }
   ]
@@ -76,12 +96,12 @@ it('renders member replies through the shell message renderer, resolving media o
 
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
   const { getAllByTestId } = render(<GroupChatWorkspace group="Room" members={members} />)
-  const bodies = getAllByTestId('message-text-content').map(el => [el.textContent, el.dataset.media])
+  const bodies = getAllByTestId('message-text-content').map(el => [el.textContent, el.dataset.media, el.dataset.files])
 
   expect(bodies).toEqual([
-    ['Show me', 'true'],
-    ['MEDIA:/tmp/local.png', 'true'],
-    ['MEDIA:/tmp/remote.png', 'false']
+    ['Show me', 'true', ''],
+    ['Here it is', 'true', '/tmp/local.png'],
+    ['', 'false', '/tmp/remote.html']
   ])
 })
 

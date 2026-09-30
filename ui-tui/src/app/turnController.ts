@@ -797,9 +797,11 @@ class TurnController {
       return
     }
 
+    const known = this.pendingAttachments.length
     this.addAttachments(attachments)
+    const fileLanded = this.pendingAttachments.length > known
 
-    if (!text) {
+    if (!text && !fileLanded) {
       return
     }
 
@@ -811,7 +813,15 @@ class TurnController {
     // fragment), which on every tick discarded everything streamed so far
     // — visible as overlapping coloured text and lost prose under
     // `display.final_response_markdown: render`.
-    this.bufRef += text
+    this.bufRef += text ?? ''
+
+    // A MEDIA: line just completed: seal the text so far with its file row
+    // now, not at the next tool boundary or message.complete.
+    if (fileLanded) {
+      this.flushStreamingSegment()
+
+      return
+    }
 
     if (getUiState().streaming) {
       this.scheduleStreaming()

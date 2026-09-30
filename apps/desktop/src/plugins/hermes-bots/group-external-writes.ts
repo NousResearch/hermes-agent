@@ -27,6 +27,8 @@
  *    the old length) starts the next slice mid-exchange.
  */
 
+import type { MediaAttachment } from '@hermes/plugin-sdk'
+
 import { $groupChats, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionKey, groupSessionMemberKey, groupSessionThread } from './group-membership'
@@ -37,6 +39,8 @@ import type { GroupMember } from './types'
 /** A transcript row as `session.resume` reports it; `content` is a plain string
  *  on most providers and a part array on the rest. */
 export interface GroupTranscriptRow {
+  /** Files the row's `MEDIA:` tags delivered (`text` arrives without them). */
+  attachments?: MediaAttachment[] | null
   content?: string | Array<string | { text?: string }>
   /** The gateway's display type for scaffolding rows it persists typed
    *  (`persist_user_display_kind`); absent on real user words. */
@@ -95,21 +99,33 @@ export function syntheticGroupUserRow(row: GroupTranscriptRow, text = groupTrans
   return SYNTHETIC_USER_ROW_PREFIXES.some(prefix => text.startsWith(prefix))
 }
 
+/** One mirrored row: its words and the files it delivered. */
+export interface ExternalGroupRow {
+  attachments: MediaAttachment[]
+  text: string
+}
+
 /** The rows in `rows` the room engine did not write itself. A user row that
  *  does not open with the room prompt header is external; an assistant row
  *  answers whichever user row preceded it, so it inherits that row's origin.
  *  Synthetic user rows are plumbing: neither they nor the assistant row
  *  reacting to them (a compaction handoff, a cron report, a finished
  *  delegation) is a member speaking to anyone, so they close the exchange
- *  instead of continuing it. Tool rows and empty rows are never mirrored. */
-export function externalGroupTranscriptRows(rows: GroupTranscriptRow[]): string[] {
-  const external: string[] = []
+ *  instead of continuing it. Tool rows and empty rows are never mirrored; a row
+ *  that only delivered a file is not empty. */
+export function externalGroupTranscriptRows(rows: GroupTranscriptRow[]): ExternalGroupRow[] {
+  const external: ExternalGroupRow[] = []
   let answeringExternal = false
 
   for (const row of rows) {
     const text = groupTranscriptRowText(row)
+    const attachments = row.attachments ?? []
 
-    if (!text || (row.role !== 'user' && row.role !== 'assistant') || failedTurnBoundaryRow(row)) {
+    if (
+      (!text && !attachments.length) ||
+      (row.role !== 'user' && row.role !== 'assistant') ||
+      failedTurnBoundaryRow(row)
+    ) {
       continue
     }
 
@@ -122,7 +138,7 @@ export function externalGroupTranscriptRows(rows: GroupTranscriptRow[]): string[
     }
 
     if (answeringExternal) {
-      external.push(text)
+      external.push({ attachments, text })
     }
   }
 
@@ -159,7 +175,7 @@ export function mirrorExternalGroupWrites(
   const markKey = `${thread}::${groupMemberKey(member)}`
   const logLengthBefore = (room.log || []).length
 
-  const mirrored = externalGroupTranscriptRows(rows.slice(seen)).map(text =>
+  const mirrored = externalGroupTranscriptRows(rows.slice(seen)).map(({ attachments, text }) =>
     appendGroupChatEntry(
       group,
       {
@@ -168,7 +184,9 @@ export function mirrorExternalGroupWrites(
         ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {})
       },
       text,
-      thread
+      thread,
+      undefined,
+      attachments
     )
   )
 

@@ -124,10 +124,22 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         from hermes_cli.main_desktop import _refresh_installed_desktop_apps, build_prepared_desktop
 
         publish_stage("Building the desktop app")
-        build_prepared_desktop(
-            project_root / "apps/desktop", source_mode=False,
-            npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
-        )
+        # The desktop build mutates checkout-scoped node_modules and
+        # apps/desktop/release; serialize it against a concurrent manual
+        # `hermes desktop` (#93940). The update path waits rather than exits:
+        # the in-flight build it queues behind produces the same fresh tree
+        # this update needs.
+        from hermes_cli.desktop_build_lock import DesktopBuildLock
+
+        build_lock = DesktopBuildLock(project_root)
+        build_lock.acquire(wait=True)
+        try:
+            build_prepared_desktop(
+                project_root / "apps/desktop", source_mode=False,
+                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+            )
+        finally:
+            build_lock.release()
         # A current release/ can still sit beside a stale installed copy (an earlier
         # update rebuilt but never installed); healing must not wait for the next build.
         _refresh_installed_desktop_apps(project_root / "apps/desktop")

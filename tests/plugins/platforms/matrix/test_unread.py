@@ -52,6 +52,13 @@ async def _sync(adapter: MatrixAdapter, room: dict, *, left: bool = False) -> No
     })
 
 
+def _platform_tools(config: dict, platform: str) -> set[str]:
+    from hermes_cli.tools_config import _get_platform_tools
+    from toolsets import resolve_toolset
+
+    return {tool for toolset in _get_platform_tools(config, platform) for tool in resolve_toolset(toolset)}
+
+
 async def _tool(adapter: MatrixAdapter, name: str, args: dict) -> dict:
     importlib.import_module("tools.matrix_unread_tool")
     tokens = set_session_vars(
@@ -75,13 +82,10 @@ async def test_sync_counts_are_observations_of_the_current_owner(monkeypatch, tm
     clock = [100.0]
     adapter._unread = MatrixUnreadState(clock=lambda: clock[0])
     if delta == "gates":
-        from hermes_cli.tools_config import _get_platform_tools
-        from toolsets import resolve_multiple_toolsets
-
         expected = {"matrix_unread", "matrix_mark_read"}
-        assert expected.issubset(resolve_multiple_toolsets(list(_get_platform_tools({}, "matrix"))))
-        assert expected.isdisjoint(resolve_multiple_toolsets(list(_get_platform_tools({}, "telegram"))))
-        assert expected.isdisjoint(resolve_multiple_toolsets(list(_get_platform_tools({"agent": {"disabled_toolsets": ["matrix_unread"]}}, "matrix"))))
+        assert expected.issubset(_platform_tools({}, "matrix"))
+        assert expected.isdisjoint(_platform_tools({}, "telegram"))
+        assert expected.isdisjoint(_platform_tools({"agent": {"disabled_toolsets": ["matrix_unread"]}}, "matrix"))
         tokens = set_session_vars(platform="cli", chat_id=ROOM, user_id=ALICE)
         try:
             importlib.import_module("tools.matrix_unread_tool")
@@ -304,15 +308,14 @@ def test_hermes_tools_toggles_the_toolset_only_on_matrix(capsys):
     from argparse import Namespace
 
     from hermes_cli.config import load_config
-    from hermes_cli.tools_config import _checklist_toolset_keys, _get_platform_tools, tools_disable_enable_command
-    from toolsets import resolve_multiple_toolsets
+    from hermes_cli.tools_config import _checklist_toolset_keys, tools_disable_enable_command
 
     unread_tools = {"matrix_unread", "matrix_mark_read"}
 
     def matrix_state() -> tuple[object, bool]:
         config = load_config()
         saved = (config.get("platform_toolsets") or {}).get("matrix")
-        enabled = unread_tools <= set(resolve_multiple_toolsets(list(_get_platform_tools(config, "matrix"))))
+        enabled = unread_tools <= _platform_tools(config, "matrix")
         return "matrix_unread" in saved if isinstance(saved, list) else saved, enabled
 
     observed = {"default": matrix_state()}

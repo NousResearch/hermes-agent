@@ -1916,7 +1916,7 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 ```yaml
 hooks:
   <event_name>:                  # Must be in VALID_HOOKS
-    - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
+    - matcher: "<regex>"         # Optional; used for pre/post_tool_call and transform_tool_result only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
       fail_closed: <bool>        # Optional; default false. pre_tool_call only.
@@ -1984,6 +1984,9 @@ The same field is included by the shared outbound-webhook payload builder.
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}
+
+// Replace the tool result (transform_tool_result); any string, "" included. {} keeps it:
+{"result": "[tool output withheld by policy]"}
 
 // Silent no-op — any empty / non-matching output is fine:
 ```

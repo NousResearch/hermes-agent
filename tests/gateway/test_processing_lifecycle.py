@@ -223,7 +223,9 @@ class _Walk:
     turn: str = "tracked"          # tracked | untracked (no platform message) | hooks-done (completed early)
     ack: str = "returned"          # returned | in-flight (/steer, acknowledgement held until after the drain) |
     #                                late (held until the copy's own model call has started)
-    placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits
+    placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits |
+    #                                orphan: /stop leaves the message in the overflow FIFO, and the next
+    #                                message rescues it (exit success | stop-orphan)
     exit: str = "success"          # success | stop | new | reset (before the copy starts) | stop-turn |
     #                                stop-queued | new-queued | reset-queued (during a turn) | refused | exception |
     #                                teardown-turn | teardown-queued (adapter shutdown during a turn)
@@ -241,7 +243,7 @@ class _WalkRun:
 
 
 _OPENING = "opening-1"
-_C1, _C2, _Q1, _Q2, _P1 = "corr-1", "corr-2", "queued-1", "queued-2", "photo-1"
+_C1, _C2, _Q1, _Q2, _P1, _N1 = "corr-1", "corr-2", "queued-1", "queued-2", "photo-1", "next-1"
 _S_OPEN = _started(_OPENING)
 
 
@@ -323,6 +325,11 @@ _WALKS = {
     # Gateway shutdown or profile teardown cancels the running message and completes the parked one.
     "queue-teardown-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)),
                                  verb="queue", exit="teardown-turn"),
+    # /stop leaves a started message in the overflow FIFO; the next message's turn rescues it first.
+    "orphan": _Walk((*_CONSUMED, _completed(_OPENING, _CANCELLED), _started(_N1), _completed(_C1, _OK),
+                     _completed(_N1, _OK)), verb="queue", placement="orphan"),
+    "orphan-stop": _Walk((*_CONSUMED, _completed(_OPENING, _CANCELLED), _started(_N1), _completed(_N1, _CANCELLED),
+                          _completed(_C1, _CANCELLED)), verb="queue", placement="orphan", exit="stop-orphan"),
     "queue-stop-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="queue",
                              exit="stop-turn"),
     **_leftover_rows(),
@@ -379,7 +386,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
     key = runner._session_key_for_source(source)
     if walk.placement == "cap":
         runner._MAX_INTERRUPT_DEPTH = 0
-    queued_ids = {"fifo": [_Q1], "overflow": [_Q1, _Q2]}.get(walk.placement, [])
+    queued_ids = {"fifo": [_Q1], "overflow": [_Q1, _Q2], "orphan": [_Q1]}.get(walk.placement, [])
     copy_call = len(queued_ids) + 1
     if walk.exit == "exception":
         run.failing_call = 0 if not walk.leftovers and walk.verb != "interrupt" else copy_call
@@ -453,7 +460,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
         runner._session_state(key).turn.started_ts = time.time()
         if walk.turn == "hooks-done":
             await adapter._run_processing_hook("on_processing_complete", opening, _OK)
-        if walk.verb == "photo":
+        if walk.verb == "photo" or walk.placement == "orphan":
             for queued_id in queued_ids:
                 runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
             queued_ids = []
@@ -471,7 +478,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
                 await asyncio.wait_for(correction_task, 30)
         for queued_id in queued_ids:
             runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
-        if walk.exit == "stop-turn":
+        if walk.exit == "stop-turn" or walk.placement == "orphan":
             await command("stop", chain)
         elif walk.exit == "teardown-turn":
             await teardown(chain)
@@ -493,6 +500,8 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
             await command(walk.exit, chain)
         copy_release.set()
         for index, release in enumerate(run.model_release[1:], 1):
+            if walk.placement == "orphan":
+                break
             if walk.ack == "late" and index == copy_call:
                 await asyncio.wait_for(run.model_started[copy_call].wait(), 30)
                 adapter.ack_release.set()
@@ -500,6 +509,16 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
             release.set()
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(chain, 30)
+        if walk.placement == "orphan":
+            await adapter.handle_message(MessageEvent(text="next", source=source, message_id=_N1))
+            next_task = adapter._session_tasks[key]
+            await asyncio.wait_for(run.model_started[1].wait(), 30)
+            if walk.exit == "stop-orphan":
+                await command("stop", next_task)
+            for release in run.model_release[1:]:
+                release.set()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(next_task, 30)
         if walk.placement == "cap":
             if walk.exit in {"stop", "new", "reset"}:
                 await command(walk.exit, chain)

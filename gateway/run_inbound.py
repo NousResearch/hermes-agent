@@ -23,7 +23,7 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, _ProcessingPhase
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
@@ -1121,6 +1121,11 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             # Into the slot when the chain was a single orphan (post-turn drain picks it up),
             # otherwise into overflow behind the already-staged next orphan.
             self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+            # This turn now runs the orphan. A started orphan was parked for a turn; take over its
+            # lifecycle (its start was reported, so no second start is reported).
+            _rescued_state = getattr(_rescued, "_processing_state", None)
+            if _rescued_state is not None and _rescued_state.start_notified and _rescued_state.awaiting_start:
+                _rescued_state.start()
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)
@@ -1129,6 +1134,18 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
         except Exception:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
+
+    async def _complete_rescued_event(
+        self: "GatewayRunner", event: "MessageEvent", outcome: Optional[ProcessingOutcome],
+    ) -> None:
+        """Complete a rescued orphan that its turn left open: the turn failed, was cancelled or ran
+        no follow-up, so the queued lane did not complete it."""
+        state = event._processing_state
+        adapter = self._parked_event_adapter(event)
+        if adapter is None or not state.start_notified or state.phase is not _ProcessingPhase.RUNNING:
+            return
+        await adapter._run_processing_hook(
+            "on_processing_complete", event, outcome or state.outcome or ProcessingOutcome.SUCCESS)
 
     async def _handle_message(self: "GatewayRunner", event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
@@ -1219,7 +1236,11 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
             return _limit_message
 
+        _incoming_event = event
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+        # The adapter completes the incoming event; the rescued orphan that this turn runs completes here.
+        _rescued_event = event if event is not _incoming_event else None
+        _rescued_outcome = None
 
         from gateway.platforms.base_pending import release_pending_dispatch
         release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
@@ -1246,6 +1267,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
                     "the user must resend",
                     _quick_key, exc.session_id,
                 )
+                _rescued_outcome = ProcessingOutcome.FAILURE
                 return t("gateway.busy.another_turn_running")
             try:
                 await self._run_post_turn_hooks(
@@ -1254,7 +1276,16 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             except Exception as _goal_exc:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
             return _agent_result
+        except asyncio.CancelledError:
+            from gateway.run_turn_followup_ack import _followup_cancel_outcome
+            _rescued_outcome = _followup_cancel_outcome(self._parked_event_adapter(_rescued_event))
+            raise
+        except BaseException:
+            _rescued_outcome = ProcessingOutcome.FAILURE
+            raise
         finally:
+            if _rescued_event is not None:
+                await self._complete_rescued_event(_rescued_event, _rescued_outcome)
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)

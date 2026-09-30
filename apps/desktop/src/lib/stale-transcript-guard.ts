@@ -21,14 +21,67 @@ export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileSc
 }
 
 /**
+ * Transcript content a view actually authored. Backend-written notices
+ * (`ChatMessage.systemNotice`) render on the timeline but belong to no view, so
+ * counting them reports a second window that does not exist: an in-place model
+ * switch alone refused every send with "this window was behind another view of
+ * the same chat".
+ */
+function authoredMessageCount(messages: ChatMessage[]): number {
+  return messages.reduce((count, message) => (message.systemNotice ? count : count + 1), 0)
+}
+
+/**
+ * Highest durable row address a bubble carries: its own `rowId` plus any text
+ * part's `sourceRowId`. A folded tool-turn bubble spans many stored rows, and
+ * the two paths that build it bind different ends — live settle stamps the
+ * turn's final row (use-message-stream's withPersistedIdentity) while
+ * hydration keeps the folded bubble's first row — so the tip must read every
+ * address the bubble owns (#125975).
+ */
+function bubbleTipRowId(message: ChatMessage): number | undefined {
+  let tip = message.rowId
+
+  for (const part of message.parts) {
+    if (part.type === 'text' && typeof part.sourceRowId === 'number') {
+      tip = tip === undefined ? part.sourceRowId : Math.max(tip, part.sourceRowId)
+    }
+  }
+
+  return tip
+}
+
+/**
+ * Latest persisted backend row the view carries. Retention only ever releases
+ * the head (rows older than the window plus its budget — see
+ * app/chat/transcript-retention.ts), so the last durable row is always the
+ * live tail; unpersisted rows (optimistic prompts, live streams) sit past it.
+ */
+function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const rowId = bubbleTipRowId(messages[index])
+
+    if (typeof rowId === 'number') {
+      return rowId
+    }
+  }
+
+  return undefined
+}
+
+/**
  * Chat messages to install when the authoritative latest page is ahead of the
  * local view. Null when the local view is current.
  *
- * Length is compared after `toChatMessages`, so tool rows folded into an
- * assistant bubble are not "ahead". A backfilled prefix is kept when the
- * refreshed tail anchors inside it. Live stream ids that do not anchor still
- * use length, so the window that just finished the turn is not blocked when
- * the counts match.
+ * Tips are compared before counts: a view ending on the page's own last
+ * durable row is current however much head retention has paged out — counts
+ * never converge there (#123909), while a peer window's newer row still
+ * changes the tip. Authored content is compared after `toChatMessages`, so
+ * tool rows folded into an assistant bubble are not "ahead", and neither is a
+ * backend-authored notice. A backfilled prefix is kept when the refreshed tail
+ * anchors inside it. Live stream ids that do not anchor still use the count,
+ * so the window that just finished the turn is not blocked when the counts
+ * match.
  */
 export function messagesIfTranscriptBehind(
   localMessages: ChatMessage[],
@@ -42,13 +95,21 @@ export function messagesIfTranscriptBehind(
     return remoteChat
   }
 
-  const grafted = graftRefreshedTailOntoBackfill(remoteChat, localMessages)
+  const localTip = lastDurableRowId(localMessages)
+  const remoteTip = lastDurableRowId(remoteChat)
 
-  if (grafted === remoteChat) {
-    return remoteChat.length > localMessages.length ? remoteChat : null
+  if (localTip !== undefined && localTip === remoteTip) {
+    return null
   }
 
-  return grafted.length > localMessages.length ? grafted : null
+  const grafted = graftRefreshedTailOntoBackfill(remoteChat, localMessages)
+  const localAuthored = authoredMessageCount(localMessages)
+
+  if (grafted === remoteChat) {
+    return authoredMessageCount(remoteChat) > localAuthored ? remoteChat : null
+  }
+
+  return authoredMessageCount(grafted) > localAuthored ? grafted : null
 }
 
 /**

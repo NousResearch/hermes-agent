@@ -168,7 +168,7 @@ While delegated workers are live, a **Subagents** frame appears above the compos
 For sessions running inside a Git repository, the app has a built-in source-control surface:
 
 - **Review pane** — **Cmd/Ctrl+G** toggles the working-tree review pane: branch and ahead/behind status, changed files (list or tree view), and diffs scoped to **Uncommitted**, **Branch**, or **Last turn** (just what the agent changed in its most recent turn). Stage/unstage files, revert changes, write a commit message (or **Generate commit message**), then **Commit** or **Commit & Push** — and **Create PR** via the GitHub CLI (`gh`), or hand the whole thing to the agent with **Ask Hermes to open PR**. You can also create and switch branches from here.
-- **Worktrees** — **Cmd/Ctrl+Shift+B** (or **New worktree** on a project in the sidebar) creates a Git worktree on a new branch so an agent can work on a parallel copy of the repo without touching your checkout. Worktrees show up as their own lanes under the project; removing one offers to delete the worktree directory (the branch stays) or just hide the lane and leave it on disk, with a force option when it has uncommitted changes.
+- **Worktrees** — **Cmd/Ctrl+Shift+B** (or **New worktree** on a project in the sidebar) creates a Git worktree on a new branch so an agent can work on a parallel copy of the repo without touching your checkout. Worktrees show up as their own lanes under the project; removing one offers to delete the worktree directory (the branch stays) or just hide the lane and leave it on disk, with a force option when it has uncommitted changes. A chat also **follows the agent**: when you ask it to make a worktree and work in it, the chat moves to that lane at the end of the turn and the sidebar re-scopes with it. Only a workspace you deliberately switched the chat to (the folder picker, or a project switch) stays put.
 
 ### Memory Graph
 
@@ -195,7 +195,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 #### Linux / Wayland
 
-Electron 20+ already runs as a native Wayland client on a Wayland session. Drag, click-through, and resize work on that path.
+On a local Wayland session (`XDG_SESSION_TYPE=wayland`, or `WAYLAND_DISPLAY` set) Hermes launches with `--ozone-platform=wayland` so Electron does not fall back to XWayland. The platform has to be on the process command line before application JavaScript loads. An explicit `--ozone-platform`, `desktop.ozone_platform_hint: x11`, or an ozone platform in `desktop.electron_flags` still wins. Drag, click-through, and resize work on the native Wayland path.
 
 On **Hyprland** (including Omarchy) the HUD is floated and pinned through the compositor's IPC after it maps — otherwise Hyprland tiles it like any other window, `always-on-top` is ignored, and compositor drag does nothing. No extra window rule is required.
 
@@ -271,12 +271,38 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
+- **Skills** — open **Capabilities → Skills** to manage [skills](./features/skills.md). **Installed** shows the selected profile's actual skills and enable/disable state. **Browse** searches the same full published catalog as the public Skills Hub, with native cards and details.
+- **Plugins** — **Capabilities → Plugins** uses the same **Installed / Browse** layout. Installed combines actual app-level desktop plugins with agent plugins from the selected profile; Browse shows the public [Plugin Catalog](./features/plugin-catalog.md). Search stays at the top, and the tab switch and actions share one row on both pages.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
 - **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
+
+#### Where Browse gets its data
+
+These are native Desktop views, **not embedded website pages**. Desktop and
+the public website consume the same generated CDN snapshots:
+
+| Catalog | Public docs alias | Desktop fetch URL |
+|---|---|---|
+| Skills | [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json) | `https://nousresearch.github.io/hermes-agent/docs/api/skills.json` |
+| Plugins | [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json) | `https://nousresearch.github.io/hermes-agent/docs/api/plugins.json` |
+
+The skills snapshot combines `skills/`, `optional-skills/`, and the centralized
+skills index. The plugin snapshot comes from `plugin-catalog/*.yaml` and cached star
+counts; the same publish supplies the installer's removed-entry list. Browsing does not make live
+GitHub API calls or fetch plugin/skill source repositories. **Installed** is
+separate: its state comes from the selected profile's backend and the app's
+desktop-plugin registry, not those public snapshots.
+
+The public hubs' install buttons open `hermes://skill/install?identifier=...`
+or `hermes://plugin/install?catalog=...` links and require confirmation in Desktop.
+Use an updated Desktop build for these routes; the cards retain copyable CLI
+commands if the app is missing or too old. See
+[skill links](./features/skills.md#install-from-the-website) and
+[plugin links](./features/plugins.md#one-click-install-links-desktop) for the
+parameters and review flow.
 
 ### Bot Mode (built in)
 
@@ -337,7 +363,7 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 ### Keyboard & navigation
 
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.
-- **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch profiles, **Shift+X** toggle light/dark.
+- **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch to the Nth tab of the pane under the pointer (or the focused pane) and switch profiles when no pane has a tab strip, **Shift+X** toggle light/dark.
 - **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
 - **UI language switcher** — change the app's interface language in-app: English, Simplified Chinese (zh-Hans), Traditional Chinese (zh-Hant), Japanese, Arabic (RTL), and Russian.
 
@@ -413,7 +439,7 @@ When you start Hermes from the application grid or menu (the launcher sets `DESK
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
-| `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
+| `--ignore-existing`  | Skip the installed Hermes runtime so no local backend starts; offer connect or install    |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
 
 ## How it works
@@ -539,25 +565,25 @@ SHA-pinned) plus an import allowlist — not isolation. A plugin whose
 row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
 including one an installer replaced in place.
 
-**Capabilities → Plugins** is the one place for everything that extends
-Hermes: **one row per plugin**, with two switch columns.
+**Capabilities → Plugins → Installed** shows the actual installed state:
+**one list entry per plugin**, with Desktop and Agent controls in its detail pane.
 
 - A plugin can extend **this app**, **the agent**, or **both** — the badge on
   each row says which, inferred from what the package contains (`plugin.yaml`
   → agent half, `plugin.js` → desktop half). A plugin with both halves is one
   row, never two.
-- **Desktop column** — the half loaded into this app. It is app-level: the
+- **Desktop control** — the half loaded into this app. It is app-level: the
   same switch, the same value, whichever profile, gateway, or remote machine
   the window is looking at. Desktop code loads from exactly one place,
   `~/.hermes/desktop-plugins/`; the desktop half of a unified agent+desktop
   package is copied there by the app when the package is installed (and
   follows its updates and uninstall), so switching profiles never loads,
   unloads, or re-scopes a pane. Toggles apply live.
-- **Agent column** — the half installed in the selected profile's backend
+- **Agent control** — the half installed in the selected profile's backend
   ([agent plugins](./features/plugins.md): user, git, project, pip and
   portable installs), with an **Update** chip when a catalog pin moved. The
-  profile selector lives in this column's header because it governs only
-  this column; with a single profile there is no selector at all.
+  profile selector governs only the agent half; with a single profile there
+  is no selector at all.
   Repo-bundled built-ins (platform adapters, provider plugins) are not
   listed: they ship enabled and are configured from their own surfaces. The
   exceptions are the bundled lifecycle plugins with no surface of their own
@@ -582,13 +608,14 @@ Hermes: **one row per plugin**, with two switch columns.
   button; confirming deletes that folder on this computer and unloads the
   plugin immediately, no gateway involved.
 
-Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
-picker installs reviewed entries at their pinned commit into the selected
-profile, and **Install from Git** takes any other repository through the same
-review-then-install dialog; its optional **Pin to commit** field installs one
-exact 40-character commit SHA (private repos included), and pinned plugins
-carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
-redirect here.
+Switch to **Browse** for the native [Plugin Catalog](./features/plugin-catalog.md).
+Both Browse and **Install from Git** open the review-then-install dialog. For
+an agent-plugin catalog install, the backend resolves the catalog name to its
+reviewed pin. Website links carry only that name; Desktop looks up the reviewed
+repository and commit rather than trusting metadata supplied by a link.
+**Install from Git** also offers **Pin to commit** for agent-plugin installs
+(a full 40-character SHA, including private repositories); pinned agent plugins
+show a `pinned @ <sha8>` badge. Old `Settings → Plugins` links redirect here.
 
 ## Troubleshooting
 
@@ -667,6 +694,17 @@ damaged application files, repair through the
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+### Windows: the SSH client is missing or broken
+
+On Windows the app runs SSH through the built-in OpenSSH client (`%SystemRoot%\System32\OpenSSH\ssh.exe`). If that client is not installed, it falls back to Git for Windows' bundled `usr\bin\ssh.exe` and then to whatever `ssh` is on `PATH`. If the built-in client is installed but broken (for example, every `ssh.exe` exits with code 255 after a Windows update), boot stops on an error naming the client instead of retrying. To use a different client, set it in `config.yaml` and restart the app:
+
+```yaml
+desktop:
+  ssh_path: 'C:\Program Files\Git\usr\bin\ssh.exe'
+```
+
+Use single quotes or no quotes so the backslashes stay literal. The key goes two spaces under `desktop:`, like the launch keys above. It has no effect on macOS or Linux.
 
 ### "The host key has CHANGED since you last connected" (SSH remote)
 

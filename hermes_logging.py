@@ -540,7 +540,22 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
+        # The stdlib rollover opens a fresh baseFilename owned by whichever process crossed
+        # maxBytes. With one rotating handler per profile that is usually the long-lived root
+        # gateway, and a worker on another uid can never reopen its own agent.log (#120151).
+        # Only root can hand the file back; an unprivileged process never changed the owner.
+        try:
+            previous = os.stat(self.baseFilename)
+        except OSError:
+            previous = None
         super().doRollover()
+        if previous is not None:
+            try:
+                if getattr(os, "geteuid", lambda: -1)() == 0:
+                    os.chown(self.baseFilename, previous.st_uid, previous.st_gid)
+                os.chmod(self.baseFilename, previous.st_mode & 0o7777)
+            except OSError:
+                pass  # a log that cannot be chowned is still a working log
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot so
         # the next emit doesn't mistake it for external rotation.
@@ -903,18 +918,3 @@ def _read_logging_config():
     except Exception:
         pass
     return (None, None, None)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def rotating_file_handlers() -> list:
-    """Return the live rotating file handlers.
-
-    They are attached to the async ``QueueListener`` rather than the root
-    logger, so callers/tests must use this instead of scanning
-    ``logging.getLogger().handlers``."""
-    return list(_queued_file_handlers)
-# ---- END PLUGIN-COMPAT ----

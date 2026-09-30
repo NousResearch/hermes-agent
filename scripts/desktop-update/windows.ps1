@@ -83,6 +83,44 @@ try {
 '@ -ErrorAction Stop
     $script:Win32 = $true
 } catch { $script:Win32 = $false }
+# Console selection must never hold the hand-off (#103222). The console is
+# hidden by design (wrapHandoffForDetachedConsole), but an older Desktop or a
+# manual run can leave it visible, and conhost blocks every write to it while a
+# selection is active: the child output replayed after `hermes update` exited
+# stalled on Write-Host until the user pressed Esc, and the result, marker
+# cleanup and relaunch waited behind it. QuickEdit goes off for the run (so a
+# stray click cannot start a selection) and the console echo is skipped while
+# one is active; the log file keeps every line either way.
+try {
+    Add-Type -Namespace HermesHandoff -Name ConsoleInput -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct SelectionInfo { public uint Flags; public uint Anchor; public ulong Window; }
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr attributes, uint disposition, uint flags, IntPtr template);
+[DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+[DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+[DllImport("kernel32.dll")] static extern bool SetConsoleMode(IntPtr handle, uint mode);
+[DllImport("kernel32.dll")] static extern bool GetConsoleSelectionInfo(out SelectionInfo info);
+
+// stdin is NUL under the Desktop spawn, so open the console input buffer itself.
+static uint? Swap(Func<uint, uint> change) {
+    IntPtr input = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    if (input == new IntPtr(-1)) return null;
+    try {
+        uint mode;
+        if (!GetConsoleMode(input, out mode) || !SetConsoleMode(input, change(mode))) return null;
+        return mode;
+    } finally { CloseHandle(input); }
+}
+// ENABLE_EXTENDED_FLAGS (0x80) makes conhost honour the cleared ENABLE_QUICK_EDIT_MODE (0x40).
+public static uint? DisableQuickEdit() { return Swap(mode => (mode & ~0x40u) | 0x80u); }
+public static void Restore(uint mode) { Swap(_ => mode); }
+public static bool Selecting() {
+    SelectionInfo info;
+    return GetConsoleSelectionInfo(out info) && (info.Flags & 1u) != 0; // CONSOLE_SELECTION_IN_PROGRESS
+}
+'@ -ErrorAction Stop
+    $script:ConsoleInput = $true
+} catch { $script:ConsoleInput = $false }
 # Render UTF-8 glyphs (checkmarks, arrows) correctly in our own console echo
 # too; the legacy conhost default OEM codepage shows them as mojibake.
 try {
@@ -103,6 +141,7 @@ $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
 }
 
@@ -899,6 +938,12 @@ public static class HermesUpdateJob {
     private static extern bool SetHandleInformation(IntPtr handle, int mask, int flags);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateFile(
+        string fileName, uint desiredAccess, uint shareMode, ref SecurityAttributes attributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcess(
         string applicationName, StringBuilder commandLine,
         IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
@@ -911,9 +956,6 @@ public static class HermesUpdateJob {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(IntPtr process, uint exitCode);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetStdHandle(int standardHandle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
@@ -934,6 +976,7 @@ public static class HermesUpdateJob {
         IntPtr job = IntPtr.Zero;
         IntPtr outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr errRead = IntPtr.Zero, errWrite = IntPtr.Zero;
+        IntPtr nullInput = new IntPtr(-1);
         ProcessInformation pi = new ProcessInformation();
         try {
             job = CreateJobObject(IntPtr.Zero, null);
@@ -946,11 +989,17 @@ public static class HermesUpdateJob {
                 throw new InvalidOperationException("CreatePipe failed");
             if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
                 throw new InvalidOperationException("SetHandleInformation failed");
+            // Steps read NUL, never the hand-off console. A step that sees a
+            // console asks its question into the captured stdout, where the
+            // user cannot see it, and waits for an answer that never comes.
+            nullInput = CreateFile("NUL", 0x80000000, 0x00000003, ref sa, 3, 0, IntPtr.Zero);
+            if (nullInput == new IntPtr(-1))
+                throw new InvalidOperationException("CreateFile(NUL) failed");
 
             StartupInfo si = new StartupInfo();
             si.Size = Marshal.SizeOf(typeof(StartupInfo));
             si.Flags = 0x00000100; // STARTF_USESTDHANDLES
-            si.StdInput = GetStdHandle(-10);
+            si.StdInput = nullInput;
             si.StdOutput = outWrite;
             si.StdError = errWrite;
             StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
@@ -989,6 +1038,7 @@ public static class HermesUpdateJob {
             if (outWrite != IntPtr.Zero) CloseHandle(outWrite);
             if (errRead != IntPtr.Zero) CloseHandle(errRead);
             if (errWrite != IntPtr.Zero) CloseHandle(errWrite);
+            if (nullInput != new IntPtr(-1)) CloseHandle(nullInput);
         }
     }
 
@@ -1454,6 +1504,7 @@ exit 3
     exit 0
 }
 
+$savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
@@ -1500,10 +1551,16 @@ try {
     if ($SelfTestWorkingDirectory) {
         $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
         $probeExe = Join-Path $PSHOME "powershell.exe"
-        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
-        $observed = $probe.Output.Trim()
+        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory; [Console]::IsInputRedirected") "cwd"
+        $observed, $stdinRedirected = @($probe.Output.Trim() -split "`r?`n" | ForEach-Object { $_.Trim() })
         if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
             $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
+            Write-Host $finalMsg
+            exit 1
+        }
+        # A step that can read the hand-off console can block on a prompt nobody sees.
+        if ($stdinRedirected -ne "True") {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL step stdin is an interactive console"
             Write-Host $finalMsg
             exit 1
         }
@@ -1616,7 +1673,7 @@ try {
         $verify = Invoke-HermesStep $verifyCommand[0] $verifyArgs 'verify'
         if ($verify.Code -ne 0) {
             $finalCode = 8
-            $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
+            $finalMsg = "Hermes was updated, but the new Desktop build could not be verified. Nothing was removed. If Hermes does not start normally, run 'hermes desktop --force-build' in a terminal to rebuild it."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1703,4 +1760,5 @@ try {
             Close-ProgressWindow
         }
     }
+    if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
 }

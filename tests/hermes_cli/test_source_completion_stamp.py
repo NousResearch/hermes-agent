@@ -108,3 +108,41 @@ def test_shallow_checkout_publishes_its_release_after_fetching_the_commit_graph(
     assert stamp is not None
     assert (stamp["baseVersion"], stamp["distance"]) == ("0.21.4", 3)
     assert not fetch_full_commit_graph(checkout)
+
+
+def test_full_checkout_refreshes_release_tags_before_publishing_identity(tmp_path):
+    from hermes_cli.gitlock import fetch_full_commit_graph
+
+    server = _repo(tmp_path)
+    env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+
+    def git(root: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git(server, "config", "uploadpack.allowFilter", "true")
+    git(server, "tag", "-d", "v0.21.4")
+    versions = (("v2026.9.7", "0.21.1"), ("v2026.9.24", "0.21.5"))
+    for tag, version in versions:
+        (server / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n', encoding="utf-8")
+        git(server, "add", "pyproject.toml")
+        git(server, "commit", "-qm", "release")
+        git(server, "tag", tag)
+    git(server, "commit", "-q", "--allow-empty", "-m", "after release")
+    checkout = tmp_path / "checkout"
+    git(server, "clone", "-q", "--no-tags", server.as_uri(), str(checkout))
+    old_tag, old_version = versions[0]
+    git(checkout, "fetch", "-q", "origin", f"refs/tags/{old_tag}:refs/tags/{old_tag}")
+    commit = git(checkout, "rev-parse", "HEAD")
+    assert git(checkout, "rev-parse", "--is-shallow-repository") == "false"
+    before = write_source_stamp(checkout)
+    assert before is not None
+    assert before["baseVersion"] == old_version
+
+    fetch_full_commit_graph(checkout)
+    stamp = write_source_stamp(checkout)
+
+    assert stamp is not None
+    assert (stamp["baseVersion"], stamp["distance"]) == (versions[1][1], 1)
+    assert stamp["commit"] == commit == git(checkout, "rev-parse", "HEAD")

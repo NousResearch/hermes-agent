@@ -880,7 +880,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           aria-expanded={activityOpen}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
           onClick={() => setActivityOpen(prev => !prev)}
-          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>

@@ -255,9 +255,10 @@ SESSION_SEARCH_GUIDANCE = (
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.
+SKILL_SAFETY_HEADING = "## Skill Safety Rule"
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
-    "## Skill Safety Rule\n"
+    f"{SKILL_SAFETY_HEADING}\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
@@ -389,6 +390,15 @@ TASK_COMPLETION_GUIDANCE = (
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
     "produce. Reporting a blocker honestly is always better than inventing a result."
+)
+
+ASYNC_HANDOFF_GUIDANCE = (
+    "# Async handoff\n"
+    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
+    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
+    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
+    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
+    "completion before it is delivered."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
@@ -586,14 +596,20 @@ STEER_CHANNEL_NOTE = (
 )
 
 
-def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
+def hud_surface_note(valid_tool_names: "set[str] | None" = None,
+                     deferred_tool_names: "frozenset[str] | set[str]" = frozenset()) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD ("this"/"here" = the app behind it).
 
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
     model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
     unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
+    ``deferred_tool_names`` are tools this session reaches only through the tool_call bridge (the default
+    tool_search defer list holds the desktop tools): they count as available, and the note says to invoke
+    them via tool_call, since a direct call to a deferred name is rejected as an unknown tool.
     """
-    names = valid_tool_names or set()
+    direct = valid_tool_names or set()
+    deferred = set(deferred_tool_names) - direct
+    names = direct | deferred
     if "read_window_below" not in names:
         return ""
     gated = (
@@ -612,9 +628,14 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         ("computer_use" in names and "browser_navigate" in names,
          "When the app underneath is a browser, that means driving the "
          "user's browser rather than opening yours with browser_navigate."),
-        (True, "This is a prior, not a rule: when the request names its own target, follow the request.]"),
+        (True, "This is a prior, not a rule: when the request names its own target, follow the request."),
     )
-    return " ".join(text for ok, text in gated if ok)
+    note = " ".join(text for ok, text in gated if ok)
+    named = ("read_window_below", "computer_use") if "computer_use" in names else ("read_window_below",)
+    bridged = [name for name in named if name in deferred]
+    if bridged:
+        note += f" Call {' and '.join(bridged)} through the tool_call bridge (deferred behind tool search)."
+    return note + "]"
 
 
 # Models whose system prompt is sent as the 'developer' role (stronger instruction-following weight);
@@ -1017,6 +1038,42 @@ def _local_host_hints() -> list[str]:
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
 
+def bot_screen_note(running: bool, display: "str | None", holder: str) -> str:
+    """The one-line Bot Screen status the model sees — the prompt's ``_bot_screen_hint`` body,
+    parameterised so the display watcher can stage the same sentence as a per-turn note when a
+    screen starts or stops mid-session (#125830; the byte-stable prompt only converges at
+    compaction). ``holder`` is ``lease.AGENT``/``lease.HUMAN``; "" when there is nothing to say
+    (a stop with no display known, or an unknown holder on a running screen)."""
+    if running:
+        if not display:
+            return ""
+        held = ("a human holds it — do not drive the screen; ask them or wait" if holder == "human"
+                else "you hold it" if holder == "agent" else "")
+        if not held:
+            return ""
+        return (f"Bot Screen: this profile's own headless desktop is RUNNING on display {display} "
+                f"({held}). 'screen N' / ':N' / 'the bot screen' / 'your screen' means THIS screen: "
+                f"GUI apps you launch from the terminal already open there (their DISPLAY is routed "
+                f"to it), and display introspection (xrandr/xdotool/wmctrl) targets it. It is NOT "
+                f"the user's own display.")
+    return ("Bot Screen: this profile's own headless desktop is no longer running. Do not refer to "
+            "'the bot screen' or route GUI launches at it; GUI apps from the terminal open on the "
+            "user's own display again.")
+
+
+def _bot_screen_hint() -> str:
+    """One line naming this profile's running Bot Screen (#125830): the display, and who holds it.
+
+    Pure reads (``published_env`` + the lease file); never raises — a missing/unimportable
+    bot_desktop module or an unreadable lease must not break prompt construction. ``""`` when
+    no screen is running, so the block simply drops out of the environment hints."""
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
+    except Exception:
+        return ""
+
+
 def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
@@ -1065,6 +1122,10 @@ def build_environment_hints() -> str:
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
     hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
+    # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
+    if not is_remote_backend:
+        hints.append(_bot_screen_hint())
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
@@ -1768,26 +1829,3 @@ def build_context_files_prompt(
         return ""
     return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
             + "\n".join(sections))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'org_id_of_path': ('agent.skill_utils', 'org_id_of_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

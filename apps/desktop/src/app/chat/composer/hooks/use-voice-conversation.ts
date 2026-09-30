@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
+import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
@@ -9,12 +10,14 @@ import {
   playSpeechText,
   type SpeechStreamSession,
   startSpeechStream,
-  stopVoicePlayback
+  stopVoicePlayback,
+  takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
+import { isTtsEcho } from '@/lib/voice-tts-echo'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $bargeInThresholdMultiplier } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $bargeInEnabled, $bargeInThresholdMultiplier, $voiceSilenceMs } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -49,6 +52,14 @@ interface VoiceConversationOptions {
  *  the captured utterance anyway. */
 const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
 
+/** A take whose level meter died is sent to STT (the meter can't say whether
+ *  it heard speech) unless it is shorter than this. */
+const METER_FAILURE_MIN_CLIP_MS = 750
+
+/** Back-to-back takes with a dead meter mean the device isn't recovering;
+ *  stop and say so rather than re-arm forever. */
+const METER_FAILURE_LIMIT = 2
+
 export function useVoiceConversation({
   busy,
   enabled,
@@ -75,6 +86,7 @@ export function useVoiceConversation({
   const turnTimeoutRef = useRef<number | null>(null)
   const pendingStartRef = useRef(false)
   const turnClosingRef = useRef(false)
+  const meterFailuresRef = useRef(0)
   const awaitingSpokenResponseRef = useRef(false)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
@@ -82,6 +94,9 @@ export function useVoiceConversation({
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
+  // Reply text that was playing when the barge tripped ('' for a
+  // generation-phase trip: nothing audible, so nothing to echo).
+  const bargeEchoTextRef = useRef('')
   const speechStartSequenceRef = useRef(0)
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
@@ -133,7 +148,6 @@ export function useVoiceConversation({
   // a torn-down window).
   const cancelFallbackPollRef = useRef<(() => void) | null>(null)
 
-   
   useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
   const clearTurnTimeout = () => {
@@ -149,6 +163,7 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
     bargedRef.current = false
+    bargeEchoTextRef.current = ''
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
@@ -166,8 +181,29 @@ export function useVoiceConversation({
 
       try {
         const result = await handle.stop()
+        const meterFailed = Boolean(result?.meterFailed)
 
-        if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
+        meterFailuresRef.current = meterFailed ? meterFailuresRef.current + 1 : 0
+
+        if (meterFailuresRef.current >= METER_FAILURE_LIMIT) {
+          meterFailuresRef.current = 0
+          notifyError(new Error(voiceCopy.recordingFailed), voiceCopy.microphoneFailed)
+          pendingStartRef.current = false
+          setStatus('idle')
+          onFatalError?.()
+
+          return
+        }
+
+        // `heardSpeech` comes from the level meter alone. When the meter died
+        // (AudioContext device error) it is unknown, not false — let STT judge
+        // the clip instead of silently dropping the turn (#75329).
+        const transcribable =
+          result?.heardSpeech ||
+          forceTranscribe ||
+          (meterFailed && (result?.durationMs ?? 0) >= METER_FAILURE_MIN_CLIP_MS)
+
+        if (!result || !transcribable || !onTranscribeAudio) {
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
             pendingStartRef.current = true
           }
@@ -204,6 +240,13 @@ export function useVoiceConversation({
 
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
+          // The reply we just finished playing is stale the moment a new turn
+          // is submitted. Mark it spoken BEFORE submit (barge path parity):
+          // otherwise the turn-drive effect sees `awaiting` + an "unspoken"
+          // previous reply and re-speaks it via the whole-text fallback while
+          // the model is still thinking — the old answer plays until the new
+          // one arrives and barges in.
+          consumePendingResponse()
           await onSubmit(transcript)
           setStatus('thinking')
         } catch (error) {
@@ -219,7 +262,16 @@ export function useVoiceConversation({
         turnClosingRef.current = false
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [
+      consumePendingResponse,
+      handle,
+      onFatalError,
+      onSubmit,
+      onTranscribeAudio,
+      voiceCopy.microphoneFailed,
+      voiceCopy.recordingFailed,
+      voiceCopy.transcriptionFailed
+    ]
   )
 
   const startListening = useCallback(async () => {
@@ -253,18 +305,26 @@ export function useVoiceConversation({
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
+      // `silenceMs` honours `voice.silence_duration` (seeded by useHermesConfig): only a
+      // user-set value overrides the desktop's tuned 1.25 s hold, which every turn sits
+      // through as dead air.
       await handle.start({
         silenceLevel: 0.075,
-        silenceMs: 1_250,
+        silenceMs: $voiceSilenceMs.get(),
         idleSilenceMs: 12_000,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)
           pendingStartRef.current = false
           onFatalError?.()
         },
+        onMeterFailure: () => void handleTurn(),
         onSilence: () => void handleTurn()
       })
       setStatus('listening')
+      // Same warm-up as push-to-talk dictation: a cold local model loads while
+      // the user speaks instead of inside the transcription timeout (#105955).
+      // Deduped with the recorder's lease — one warm-up per renderer.
+      void syncSttLease(VOICE_INPUT_LEASE, true)
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
       // timer from an earlier cycle survives and later fires handleTurn() in
@@ -326,6 +386,10 @@ export function useVoiceConversation({
    */
   const submitCapturedUtterance = useCallback(
     async (audio: Blob | null) => {
+      const echoSource = bargeEchoTextRef.current
+
+      bargeEchoTextRef.current = ''
+
       const resumeListening = () => {
         if (enabledRef.current && !mutedRef.current) {
           pendingStartRef.current = true
@@ -358,6 +422,18 @@ export function useVoiceConversation({
           dropSpeechSession()
           setStatus('idle')
           onStopWordRef.current?.()
+
+          return
+        }
+
+        // Fail-closed echo guard (tools/voice_mode_transcript.is_tts_echo):
+        // over speakers the reply bleeds into the mic and trips the playback-
+        // phase trigger. A transcript matching what was being spoken is
+        // Hermes hearing itself — treat it as silence: no submit, and clear
+        // the interruption latch so a later real turn isn't annotated.
+        if (echoSource && isTtsEcho(transcript, echoSource)) {
+          takeVoicePlaybackInterrupted()
+          resumeListening()
 
           return
         }
@@ -398,6 +474,12 @@ export function useVoiceConversation({
    * all call this).
    */
   const ensureBargeMonitor = useCallback(() => {
+    // `voice.barge_in: false` disarms the listener entirely, mirroring the
+    // gateway's `_arm_barge_listener_if_enabled` gate.
+    if (!$bargeInEnabled.get()) {
+      return
+    }
+
     if (stopBargeMonitorRef.current) {
       return
     }
@@ -406,6 +488,9 @@ export function useVoiceConversation({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       thresholdMultiplier: $bargeInThresholdMultiplier.get(),
       onSpeech: () => {
+        // Snapshot before playback is cut: the reply may be consumed by the
+        // time the capture is transcribed.
+        bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -423,7 +508,7 @@ export function useVoiceConversation({
         void submitCapturedUtterance(audio)
       }
     })
-  }, [submitCapturedUtterance])
+  }, [pendingResponse, submitCapturedUtterance])
 
   /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
@@ -733,6 +818,10 @@ export function useVoiceConversation({
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
+    // Conversation over: drop the STT lease. One lease is shared per renderer,
+    // so a concurrent dictation session re-acquires on its next start; the
+    // backend keeps the model resident regardless of the count.
+    void syncSttLease(VOICE_INPUT_LEASE, false)
     setMuted(false)
     setStatus('idle')
   }, [consumePendingResponse, handle])
@@ -816,6 +905,19 @@ export function useVoiceConversation({
       }
 
       const response = pendingResponse()
+
+      // "Read replies aloud" off (#44263): Voice Chat is STT-only — the reply
+      // stays text on screen, the loop consumes it and re-arms the mic for
+      // the next turn without ever starting TTS.
+      if (response && !$autoSpeakReplies.get()) {
+        awaitingSpokenResponseRef.current = false
+        dropSpeechSession()
+        consumePendingResponse()
+        pendingStartRef.current = true
+        setStatus('idle')
+
+        return
+      }
 
       if (response) {
         openLiveSpeech(response.id)

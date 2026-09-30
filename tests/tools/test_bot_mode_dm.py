@@ -485,12 +485,16 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     """A background delivery must not rely on PATH: the runner's service context
     lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system
     install whose shebang picks the wrong interpreter and dies on import (#108628).
-    Both transports must invoke the entrypoint beside this interpreter instead."""
+    With no published install launcher, both transports invoke the entrypoint beside
+    this interpreter instead; a published launcher outranks that sibling (#124868)."""
     venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
     venv_bin.mkdir(parents=True)
     hermes_entry = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
     hermes_entry.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
+    # An install without a published launcher keeps the sibling fallback; keep this
+    # checkout's own published launcher out of the resolution (#124868).
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))

@@ -57,6 +57,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from hermes_cli.observability.shared_metrics_efficiency import note_tool_result, record_tool_batch
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
 # The commit only flags it: the string is still referenced by the publish frames here, so the
@@ -1072,6 +1073,9 @@ def _commit_tool_result(
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
+    from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
+
+    observe_tool_outcome(agent, function_name, is_error)
     if observed:
         if not blocked:
             function_result = agent._append_guardrail_observation(
@@ -1111,6 +1115,7 @@ def _commit_tool_result(
             config=budget,
         )
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
+    note_tool_result(agent, function_name, tool_call_id, function_result, persisted_result)
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
     if subdir_hints:
@@ -1184,7 +1189,10 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     steer marker is never truncated/discarded when enforcement replaces a result."""
     if num_tools <= 0:
         return
-    enforce_turn_budget(messages[-num_tools:], env=get_active_env(effective_task_id), config=budget)
+    batch = messages[-num_tools:]
+    contents_before = [message.get("content") for message in batch]
+    enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
+    record_tool_batch(agent, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
 
@@ -1800,6 +1808,13 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     if committed is None:
         return False
     function_result, display_function_result, risk_metadata = committed
+
+    # Terminal approval batching (#113158): once this slot's failure is
+    # published, the informed consent collected for later slots describes a
+    # batch state that no longer holds — flag it so consume_prepared_guard
+    # drops their pre-made decisions and the live guard flow re-runs.
+    from agent.terminal_approval_batch import mark_batch_outcome
+    mark_batch_outcome(_is_error_result or bool(managed.blocked))
 
     _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, managed.blocked)
     if _tool_progress_enabled(agent):

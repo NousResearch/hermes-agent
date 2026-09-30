@@ -84,7 +84,7 @@ jobs:
           # the verified Git pin once, before per-file parallelism; otherwise
           # each isolated PowerShell stage races to download/extract the archive.
           packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -167,6 +167,14 @@ jobs:
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
+  install-update-e2e:
+    # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
+    # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
+    # interpreter selection, non-ASCII profile paths and tool ACLs, partial-clone fetch and
+    # venv holders. Its own workflow so wine2e-install/** pushes can run it alone.
+    name: Windows install + update E2E
+    uses: ./.github/workflows/windows-install-update-e2e.yml
+
   e2e-windows:
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
     # `hermes serve`, `hermes gateway run/stop`, the tui_gateway stdio process, cron script
@@ -194,7 +202,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           packages: git,ripgrep
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 

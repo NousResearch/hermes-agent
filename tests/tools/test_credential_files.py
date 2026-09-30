@@ -443,6 +443,30 @@ class TestCacheDirectoryMounts:
         for mount in mounts:
             assert Path(mount["host_path"]).is_dir()
 
+    def test_composer_pastes_mounts_and_syncs(self, tmp_path, monkeypatch):
+        """``composer-pastes/`` joins the staging dirs (#110174).
+
+        Desktop stages a large paste there and attaches it as ``@file:``; on a
+        remote execution backend (ssh/daytona/vercel_sandbox) the bytes only
+        reach the agent through the file-sync enumeration, and the agent-visible
+        path translation only covers mounted dirs — so the dir must appear in
+        BOTH the mounts and the sync list, or a fresh paste dangles on the
+        remote host."""
+        from tools.environments.file_sync import iter_sync_files
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        paste = hermes_home / "composer-pastes" / "pasted_content_20260924_x.txt"
+        paste.parent.mkdir()
+        paste.write_text("pasted body", encoding="utf-8")
+
+        mounts = get_cache_directory_mounts()
+        assert "/root/.hermes/composer-pastes" in {m["container_path"] for m in mounts}
+
+        synced = {Path(host) for host, _ in iter_sync_files("~/.hermes")}
+        assert paste in synced
+
 
     def test_images_upload_file_maps_into_container(self, tmp_path, monkeypatch):
         """A concrete upload under ``images/`` maps to its container path.
@@ -527,6 +551,24 @@ class TestToAgentVisiblePathPerBackend:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         from tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
+
+    def test_symlinked_home_maps_resolved_path(self, tmp_path, monkeypatch):
+        """#103147: ``@file:`` expansion resolves the staged path, but the mount roots
+        keep HERMES_HOME's symlinked spelling; the resolved path must still map."""
+        real_home = tmp_path / "real-hermes"
+        (real_home / "attachments").mkdir(parents=True)
+        link_home = tmp_path / ".hermes"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        monkeypatch.setenv("HERMES_HOME", str(link_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        staged = link_home / "attachments" / "paste.txt"
+        staged.write_text("x", encoding="utf-8")
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path(str(staged.resolve())) == "/root/.hermes/attachments/paste.txt"
+        assert to_agent_visible_cache_path(str(staged)) == "/root/.hermes/attachments/paste.txt"
+        # A sibling outside the mounted dirs still passes through.
+        outside = real_home / "notes.txt"
+        assert to_agent_visible_cache_path(str(outside)) == str(outside)
 
 
 class TestIterCacheFiles:

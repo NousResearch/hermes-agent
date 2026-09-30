@@ -348,6 +348,14 @@ class PlatformRegistry:
             entries, deferred = self._scope_maps(self.current_scope_key())
             return entries.keys() | deferred.keys() | self._entries.keys() | self._deferred.keys()
 
+    def required_env_names(self) -> set[str]:
+        """``required_env`` of every loaded entry (current profile scope AND process-global) without
+        loading deferred adapters; the child-env scrub reads this on every spawn."""
+        with self._lock:
+            entries, _deferred = self._scope_maps(self.current_scope_key())
+            return {n for e in (*self._entries.values(), *entries.values())
+                    for n in e.required_env if isinstance(n, str)}
+
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered so cheap membership
         # checks (toolset resolution, webhook deliver-target checks) never trigger a heavy import.

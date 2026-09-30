@@ -421,7 +421,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 # IS the default package, so a launcher that pinned the plain
                 # default would look correct while it shipped a second
                 # runtime to anyone who customises theirs.
-                extraDependencyGroups = [ "hindsight" ];
+                extraDependencyGroups = [ "honcho" ];
                 backend = {
                   mode = "serve";
                   port = 9231;
@@ -1360,6 +1360,39 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           mkdir -p $out
           echo "ok" > $out/result
         '';
+
+        # A fresh declarative install must be current to the Hermes it ships
+        # with. Hermes cannot stamp config.yaml in managed mode, so an
+        # unstamped file reads as version 0 and trips the support-floor
+        # warning at every boot.
+        generated-config-version =
+          let
+            common = import ./moduleCommon.nix { inherit lib; };
+            configFiles = common.mkConfigFiles {
+              inherit pkgs;
+              cfg = {
+                package = hermes-agent;
+                extraPythonPackages = [ ];
+                extraDependencyGroups = [ ];
+                configFile = null;
+                settings.model.default = "test/nix-model";
+              };
+              workingDirectory = "/var/lib/hermes/workspace";
+            };
+          in
+          pkgs.runCommand "hermes-generated-config-version" { } ''
+            set -e
+            export HOME=$(mktemp -d) HERMES_HOME=$(mktemp -d)
+            ${configMergeScript} ${configFiles.generated} "$HERMES_HOME/config.yaml"
+            ${hermesVenv}/bin/python3 -c '
+            from hermes_cli.config import check_config_version
+            current, latest = check_config_version(raise_on_parse_error=True)
+            assert current == latest, f"generated config.yaml reads as v{current}, package is v{latest}"
+            print(f"PASS: generated config.yaml is at v{current}")
+            '
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
 
         # ── Config merge + round-trip test ────────────────────────────────
         # Tests the merge script (Nix activation behavior) across 7

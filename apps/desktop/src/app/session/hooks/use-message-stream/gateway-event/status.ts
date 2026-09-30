@@ -1,13 +1,12 @@
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
-import { translateNow, TRANSLATIONS } from '@/i18n'
-import { getRuntimeI18nLocale } from '@/i18n/runtime'
+import { runtimeTranslations, translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
-import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { isProviderSetupErrorCode, isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
-import { clearClarifyRequest } from '@/store/clarify'
+import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
@@ -20,6 +19,15 @@ import { setTurnStartedAt } from '@/store/session'
 import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
+
+/** Lifecycle text that announces the session left its selected model for a fallback. */
+export function isFallbackSwitchStatus(kind: string | undefined, text: string): boolean {
+  if (kind === 'fallback') {
+    return Boolean(text.trim())
+  }
+
+  return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
+}
 
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
@@ -111,6 +119,25 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
+      // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
+      // used to swallow every non-compaction status.update, so the reply came from a different
+      // model with no indication.
+      const text = coerceGatewayText(payload?.text).trim()
+
+      flushQueuedDeltas(sessionId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `fallback-switch-${occurredAt}`,
+            role: 'system',
+            parts: [textPart(text, occurredAt)],
+            timestamp: occurredAt
+          }
+        ]
+      }))
     }
 
     return true
@@ -182,6 +209,36 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'background.complete') {
+    // prompt.background RPC (the TUI's /background path) reports the finished
+    // background turn here; the event carries the originating session id, so
+    // the result lands in the conversation that started the task. Persistent
+    // transcript line (not a toast), mirroring the TUI's `[bg <task_id>]`
+    // system line — without it the completion was indistinguishable from a
+    // lost task (#97635).
+    const text = coerceGatewayText(payload?.text).trim()
+
+    if (text && sessionId) {
+      const taskId = String(payload?.task_id ?? '').trim()
+
+      flushQueuedDeltas(sessionId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `background-complete-${taskId || Date.now()}`,
+            role: 'system',
+            parts: [textPart(taskId ? `[bg ${taskId}]\n${text}` : text, occurredAt)],
+            timestamp: occurredAt
+          }
+        ]
+      }))
+    }
+
+    return true
+  }
+
   if (event.type === 'notification.show') {
     // Driver-agnostic agent notice (credits usage/grant/depleted/restored
     // from `agent/credits_tracker.py`). The Ink TUI renders these in its
@@ -223,7 +280,11 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'error') {
     const errorMessage = payload?.message || 'Hermes reported an error'
-    const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
+
+    // The gateway's own verdict when it sent one (agent init with no usable provider), else the
+    // sentence: a blank install must reach onboarding, not a toast it cannot act on.
+    const looksLikeProviderSetup =
+      isProviderSetupErrorCode(payload?.code) || isProviderSetupErrorMessage(errorMessage)
 
     // The gateway's `error` event carries no error_surface (prompt_turn.py
     // emits it for pre-turn refusals). Recover the two codes it CAN mean from
@@ -243,7 +304,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // pre-turn failures — agent init, resume, cancelled-before-ready), and
     // burying it under a generic "couldn't finish" gloss would hide the one
     // instruction the user needs.
-    const card = surface ? errorCardText(TRANSLATIONS[getRuntimeI18nLocale()].assistant.thread, surface) : null
+    const card = surface ? errorCardText(runtimeTranslations().assistant.thread, surface) : null
     const toastMessage = card ? `${card.title}. ${card.body}` : errorMessage
 
     // A turn that errors out has also ended — drop any open blocking prompt
@@ -251,7 +312,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // the failed turn (same intent as the message.complete clear).
     if (sessionId) {
       clearAllPrompts(sessionId)
-      clearClarifyRequest(undefined, sessionId)
+      clearSettledClarifyRequest(sessionId)
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)

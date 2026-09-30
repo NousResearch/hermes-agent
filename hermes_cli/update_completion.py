@@ -140,7 +140,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
     root = Path(request["source"])
     update_id = request["receipt"]["update_id"]
-    from hermes_cli.venv_sync import arm_completion, refuse_foreign_owned_venv
+    from hermes_cli.venv_sync import (
+        arm_completion, collect_superseded_generations, refuse_foreign_owned_venv,
+    )
 
     refuse_foreign_owned_venv(root)
     arm_completion(root)
@@ -149,7 +151,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
-            pm.sync_venv(explicit=True, project_root=root)
+            # An update never fails because of a plugin: misfits are disabled and reported.
+            pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)
@@ -185,6 +189,8 @@ def _complete_selected(request: dict) -> None:
         pre_update_version=request["pre_update_version"],
         completion_message=request.get("completion_message"),
         announce=None if request.get("completion_message") else "\n✓ Code updated!")
+    from hermes_cli.update_receipt import record_stage
+    record_stage("build", "success" if complete else "failed")
     if complete:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)
@@ -196,6 +202,7 @@ def _complete_selected(request: dict) -> None:
         from hermes_cli.update_receipt import record_skip
 
         record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+        record_stage("restart", "skipped")
         print("→ Gateway restart deferred (--no-gateway-restart); restart gateways separately.")
         if not complete:
             raise SystemExit(1)
@@ -205,6 +212,7 @@ def _complete_selected(request: dict) -> None:
         from hermes_cli.update_receipt import record_skip
 
         record_skip("gateway_restart", skip)
+        record_stage("restart", "skipped")
         print(f"  ✓ Gateway restart skipped: {skip}.")
         # Discharges the obligation this run armed when the live fleet vouches for it; a
         # fleet still owing the restart fails closed exactly like a stale matrix would.
@@ -215,6 +223,7 @@ def _complete_selected(request: dict) -> None:
             raise SystemExit(1)
         return
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
+    record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
     update_cmd._verify_fleet_after_update(
         restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=complete)
@@ -239,6 +248,7 @@ def _finish(request: dict, result_path: Path) -> int:
 
     _resume_receipt(request["receipt"])
     accept_worker_receipt(request.get("pm_receipt"), request["receipt"]["update_id"])
+    update_receipt.record_stage("deps", "success")  # only a completed PM preparation reaches --prepared
     code, reason = 0, "source update completion"
     try:
         _complete_selected(request)

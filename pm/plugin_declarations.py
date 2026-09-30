@@ -57,6 +57,7 @@ class PythonDeclaration:
     pyproject: Path | None
     requirements: tuple[str, ...]
     manifest: dict
+    requires_python: str | None = None
 
     @property
     def external(self) -> bool:
@@ -69,6 +70,17 @@ class PythonDeclaration:
     @property
     def is_member(self) -> bool:
         return not self.external and (self.pyproject is not None or bool(self.install_requirements))
+
+    def python_error(self, version: str) -> str | None:
+        """Why this member cannot join a workspace built for *version*; uv intersects every
+        member's requires-python, so one excluding member fails the whole lock."""
+        from packaging.specifiers import SpecifierSet
+
+        if not self.is_member or not self.requires_python:
+            return None
+        if SpecifierSet(self.requires_python).contains(version, prereleases=True):
+            return None
+        return f"requires Python {self.requires_python}, but Hermes runs on Python {version}"
 
     def __post_init__(self) -> None:
         if not self.external:
@@ -129,7 +141,10 @@ def read_python_declaration(plugin_dir: Path) -> PythonDeclaration:
             specs = document.get("project", {}).get("dependencies", [])
             if not isinstance(specs, list) or any(not isinstance(v, str) for v in specs):
                 raise ValueError(f"invalid project.dependencies: {project}")
-            return PythonDeclaration(tuple(files), project, tuple(specs), manifest)
+            requires_python = document.get("project", {}).get("requires-python")
+            if requires_python is not None and not isinstance(requires_python, str):
+                raise ValueError(f"invalid project.requires-python: {project}")
+            return PythonDeclaration(tuple(files), project, tuple(specs), manifest, requires_python)
     specs = []
     for key in ("pip_dependencies", "python_dependencies"):
         values = manifest.get(key, [])

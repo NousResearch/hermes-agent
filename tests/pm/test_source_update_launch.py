@@ -269,6 +269,31 @@ def test_launch_without_marker_publishes_then_skips_and_rebuilds_on_lock_change(
 
 
 @pytest.mark.platforms("posix")
+def test_process_spawned_by_the_update_commits_dependencies_but_not_the_tail(source_launch, tmp_path):
+    """A process an update spawns before its dependencies are current (its restarted gateway)
+    must not boot on a tree built for another interpreter; it syncs, but leaves the tail alone."""
+    import time
+    from hermes_cli.update_lock import update_marker_path
+    from pm.environments import committed_venv
+
+    root, store_python, _ = source_launch
+    marker = update_marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")  # the updater is our ancestor
+    assert committed_venv(root) is None
+
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert committed_venv(root) == Path(_fact(root)["environment"])
+    assert not (tmp_path / "completion-calls").exists(), "the tail is the updater's, not its child's"
+    assert not venv_sync.completion_pending_path(root).exists()
+
+    facts_bytes, receipts = runtime_facts_path(root).read_bytes(), _receipts(tmp_path)
+    venv_sync.prepare_launch(root, [])
+    assert runtime_facts_path(root).read_bytes() == facts_bytes
+    assert _receipts(tmp_path) == receipts, "a committed child synced again under the updater's claim"
+
+
+@pytest.mark.platforms("posix")
 def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch, tmp_path):
     root, store_python, _ = source_launch
     # Established PM installs must retain their selection, not gain legacy [all].
@@ -302,6 +327,38 @@ def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch
     assert rebuilt["extras"] == ["launch-extra"]
     assert pm.venv_is_current(project_root=root)
     assert not any(marker.exists() for marker in markers)
+
+
+@pytest.mark.platforms("posix")
+def test_source_update_that_removes_a_recorded_extra_still_syncs(source_launch):
+    """A dropped extra (hindsight, 73c598e319) must not brick every later sync."""
+    root, store_python, _ = source_launch
+    pm.sync_venv(["all", "launch-extra"], explicit=True, project_root=root)
+    assert _fact(root)["extras"] == ["all", "launch-extra"]
+
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text(encoding="utf-8").replace("launch-extra = []\n", ""),
+                         encoding="utf-8")
+    pm.lock_project(root, offline=True, explicit=True)
+    assert not pm.venv_is_current(project_root=root)
+
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert _fact(root)["extras"] == ["all"]
+    assert pm.venv_is_current(project_root=root)
+
+
+@pytest.mark.platforms("posix")
+def test_recorded_extra_spelled_differently_from_its_declaration_survives(source_launch):
+    """uv matches extras by PEP 685 name; `launch_extra` is the declared `launch-extra`."""
+    root, store_python, _ = source_launch
+    pm.sync_venv(["all", "launch_extra"], explicit=True, project_root=root)
+    assert _fact(root)["extras"] == ["all", "launch_extra"]
+
+    lock = root / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# source update changes the committed lock\n")
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert _fact(root)["extras"] == ["all", "launch_extra"]
+    assert pm.venv_is_current(project_root=root)
 
 
 @pytest.mark.platforms("posix")
@@ -440,4 +497,97 @@ def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path,
     else:
         assert "source-update completion failed" in result.stderr
         assert "hermes update" in result.stderr
+
+
+@pytest.mark.platforms("posix")
+def test_completion_retry_backoff_and_cap(tmp_path, monkeypatch):
+    """Consecutive completion-tail failures back off and finally stop self-starting (#122206:
+    an environment where every launch re-runs a doomed ~4-minute tail)."""
+    from hermes_cli import venv_sync
+
+    monkeypatch.setattr(venv_sync, "completion_pending_path",
+                        lambda root: tmp_path / "source-completion-pending")
+    record = tmp_path / "source-completion-attempts"
+
+    # No record yet: the first retry is immediate (historical behavior).
+    assert venv_sync.completion_retry_state(tmp_path) == (True, 0, 0)
+
+    # One recorded failure: the historical flaky case — retry immediately.
+    record.write_text("1\n", encoding="utf-8")
+    assert venv_sync.completion_retry_state(tmp_path) == (True, 1, 0)
+
+    # Two consecutive failures: the next retry must wait out the backoff window.
+    record.write_text("2\n", encoding="utf-8")
+    may_retry, attempts, _backoff = venv_sync.completion_retry_state(tmp_path)
+    assert (may_retry, attempts) == (False, 2)
+    # After the backoff window the tail may run again.
+    past = 12345.0
+    old_mtime = past - venv_sync.COMPLETION_RETRY_BACKOFF_SECONDS - 1
+    os.utime(record, (old_mtime, old_mtime))
+    may_retry, attempts, _backoff = venv_sync.completion_retry_state(tmp_path, now=lambda: past)
+    assert (may_retry, attempts) == (True, 2)
+
+    # At the cap the tail never self-starts, regardless of age.
+    record.write_text(f"{venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS}\n", encoding="utf-8")
+    for now_value in (past, past + 10 * venv_sync.COMPLETION_RETRY_BACKOFF_SECONDS):
+        may_retry, attempts, _backoff = venv_sync.completion_retry_state(tmp_path, now=now_value)
+        assert (may_retry, attempts) == (False, venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS)
+
+    # A corrupt record degrades to the historical unbounded behavior.
+    record.write_text("not a number\n", encoding="utf-8")
+    assert venv_sync.completion_retry_state(tmp_path) == (True, 0, 0)
+
+
+@pytest.mark.platforms("posix")
+def test_capped_completion_attempts_leave_marker_for_explicit_update(source_launch, tmp_path, capsys):
+    """Past the retry cap a launch must NOT re-run the tail; it keeps the pending marker
+    and points the operator at `hermes update` instead of burning another doomed attempt."""
+    root, store_python, _ = source_launch
+    from hermes_cli.venv_sync import (  # noqa: F401 — import for the paths under test
+        _completion_attempts_path,
+        arm_completion,
+        completion_pending_path,
+    )
+
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    arm_completion(root)
+    attempts = _completion_attempts_path(root)
+    attempts.write_text("99\n", encoding="utf-8")
+    os.utime(attempts, (1.0, 1.0))  # ancient: age cannot rescue a capped record
+
+    # The supervised-child carve-out does not apply: an unsupervised launch
+    # would have re-run the tail here; capped, it must not. The launch itself
+    # still resolves normally (the store python), only the tail is skipped.
+    assert venv_sync.prepare_launch(root, []) == store_python
+    out = capsys.readouterr().err
+    assert "could not be finished automatically" in out
+    assert "hermes update" in out
+    assert completion_pending_path(root).is_file(), "the owed completion is still recorded"
+    assert not (tmp_path / "completion-calls").exists(), "a capped launch re-ran the tail"
+
+
+@pytest.mark.platforms("posix")
+def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp_path, monkeypatch, capsys):
+    """A failing completion tail records the attempt; the successful retry clears the record."""
+    root, store_python, _ = source_launch
+    from hermes_cli.venv_sync import _completion_attempts_path, arm_completion, completion_pending_path
+
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    arm_completion(root)
+    # The tail script the fixture records calls with — make it fail, then succeed.
+    calls = (root / "hermes_cli" / "source_completion.py")
+    original = calls.read_text(encoding="utf-8")
+    calls.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="source update completion failed"):
+        venv_sync.prepare_launch(root, [])
+    assert _completion_attempts_path(root).read_text(encoding="utf-8").strip() == "1"
+    assert completion_pending_path(root).is_file(), "a failed attempt must keep the obligation"
+
+    calls.write_text(original, encoding="utf-8")
+    old = 1.0
+    os.utime(_completion_attempts_path(root), (old, old))
+    # A successful retry still launches normally and clears the obligation.
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert not completion_pending_path(root).exists()
+    assert not _completion_attempts_path(root).exists(), "success cleared the attempt record"
 

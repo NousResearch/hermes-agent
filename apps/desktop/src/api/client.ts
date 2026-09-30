@@ -225,3 +225,57 @@ export function profileScopeKey(scope?: ProfileScope): string {
 export function getApiRequestConnection(): null | string {
   return $apiRequestScope.get().connectionId
 }
+
+// ── Session-owner pin for session-scoped REST reads (#125372) ──────────────
+//
+// A read of /api/sessions/{id}[/messages|/timeline|/messages/around] only
+// means anything on the backend that OWNS the row. The store already resolves
+// that owner (knownOwnerForSession: tile route → persisted hint → tagged row)
+// and pushes the resolver here — same no-store-import seam as
+// setApiRequestProfile — so read helpers stop riding the WINDOW's ambient
+// connection onto a host that answers 404 "Session not found".
+
+export interface SessionReadOwnerRoute {
+  connectionId?: null | string
+  profile?: null | string
+  targetProfile?: null | string
+}
+
+export type SessionOwnerResolver = (sessionId: string) => SessionReadOwnerRoute | null | string | undefined
+
+let _sessionOwnerResolver: SessionOwnerResolver | null = null
+
+export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): void {
+  _sessionOwnerResolver = resolver
+}
+
+/** The connection pin a session-scoped READ must carry for `id`, or {} when
+ *  the caller already pinned a connection, no exact owner is known, or the
+ *  owner is the ambient connection. Pins 'local' too (the only way back to
+ *  this device when the primary is a remote registry source). When the caller
+ *  named no profile, the owner's backend-facing profile rides along: the
+ *  answering host resolves ?profile= against ITS OWN profiles. */
+export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
+  if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
+    return {}
+  }
+
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner || typeof owner === 'string') {
+    return {}
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
+    return {}
+  }
+
+  const ownerProfile = String(owner.targetProfile || owner.profile || '').trim()
+
+  return {
+    connectionId,
+    ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
+  }
+}

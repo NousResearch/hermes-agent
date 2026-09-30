@@ -1,6 +1,6 @@
 // Checkout update policy and handoff execution. The shell supplies process and UI dependencies.
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { updateHandoffConflict, writeUpdateMarker } from '../update-marker'
@@ -67,6 +67,22 @@ export function buildManualUpdateCommand(currentBranch: string | null | undefine
 }
 
 /**
+ * The commit this checkout was installed at, from the install stamp the
+ * updater already trusts (written by the CLI's completion tail next to the
+ * checkout it attests). Read-only display data for `currentSha`; never a
+ * git spawn and never an update input. Null when absent or malformed.
+ */
+export function readStampedCommit(root: string): string | null {
+  try {
+    const stamp = JSON.parse(readFileSync(path.join(root, 'install-stamp.json'), 'utf8')) as { commit?: unknown }
+
+    return typeof stamp.commit === 'string' && stamp.commit ? stamp.commit : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * The checkout strategy: windows-handoff on win32, posix-handoff elsewhere.
  * The bodies are the production update flow; the mechanism stamp rides on
  * every result the way the wire contract expects.
@@ -88,6 +104,18 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     }
 
     status.mechanism = mechanism
+
+    // Display data only (#122727): the statusbar and command palette read
+    // currentSha, but a probe-less checkout never supplied it. The install
+    // stamp names the checkout's commit without a git spawn; never let it
+    // override the probe and never let it influence the update decision.
+    if (!status.currentSha) {
+      const stamped: string | null = readStampedCommit(root)
+
+      if (stamped) {
+        status.currentSha = stamped
+      }
+    }
 
     return status
   }
@@ -240,9 +268,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
+      // wrapHandoffForDetachedConsole). Spawn the cmd wrapper non-detached
+      // so windowsHide gives it a hidden console that `start /b` shares with
+      // PowerShell; the script still outlives us. The wrapper cmd.exe exits
+      // immediately, so child.pid is NOT the script's
       // pid — the script claims the update marker itself with its own $PID
       // as its first action, and a relaunched Desktop parks on that.
       const wrappedArgs: string[] = [
@@ -269,7 +298,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
           ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
-        detached: true,
+        // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
+        // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
+        // selection can freeze the hand-off before relaunch (#103222).
+        detached: wrapped.detached,
         stdio: 'ignore'
       })
 

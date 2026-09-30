@@ -288,9 +288,13 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # keeps existing exact-folder precedence: a genuine live profile that exactly matches
     # `raw_target` is never blocked by history pointing at the ORIGINAL renamed-away
     # profile (#123133).
-    from tools.bot_mode_probe import _is_bot_managed, renamed_to
+    from tools.bot_mode_probe import RENAMED_TO_AMBIGUOUS, _is_bot_managed, renamed_to
     if resolved is not None and not _is_bot_managed(roster_homes[resolved]):
         new_name = renamed_to(raw_target.lower(), root)
+        if new_name is RENAMED_TO_AMBIGUOUS:
+            return _roster_err(f"'{raw_target}' was renamed away by more than one profile's history "
+                               "and the roster can't tell which one inherited it. Pick the exact "
+                               "current teammate name instead.")
         if new_name is not None and new_name != resolved:
             return _roster_err(f"'{raw_target}' was renamed to '{new_name}' — use that name instead. "
                                "Do not retry with the old name.")

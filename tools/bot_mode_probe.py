@@ -118,27 +118,35 @@ def _is_bot_managed(profile_dir: Path) -> bool:
     return _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) is not None
 
 
+RENAMED_TO_AMBIGUOUS = "\0ambiguous\0"
+"""Sentinel returned by ``renamed_to`` when >1 live profile claims the same previous name.
+Distinguishable from ``None`` (no rename history at all) so callers can reject the ambiguous
+case outright instead of silently falling through as if there were no history to act on."""
+
+
 def renamed_to(want: str, root: Path) -> str | None:
     """The live roster name whose ``profile.yaml`` ``previous_names`` lists ``want`` (already
-    lower-cased), or None. ``hermes profile rename`` clears the old directory's tombstone right
+    lower-cased), ``RENAMED_TO_AMBIGUOUS`` on more than one hit, or None when no live profile's
+    history mentions it. ``hermes profile rename`` clears the old directory's tombstone right
     after a successful move (so a FUTURE profile may reuse the old name) — that also means the
     old name resolves live again the moment anything later re-creates an identity marker there
     (a cron heartbeat, a log write, a stray delivery), with nothing to say it was retired. This
     lets ``_resolve_local_name`` catch that case and point at the new name instead of silently
-    delivering into the dead profile (#123133). None on more than one hit — a multi-hit alias
-    means the roster can't tell which profile inherited the name (recreate-then-rename, a
-    restored home), and guessing the first alphabetically would train the sender onto the wrong
-    profile, exactly what ``_resolve_local_name``'s own ambiguity check exists to prevent
-    (#100671)."""
+    delivering into the dead profile (#123133). A multi-hit alias means the roster can't tell
+    which profile inherited the name (recreate-then-rename, a restored home), and guessing the
+    first alphabetically would train the sender onto the wrong profile, exactly what
+    ``_resolve_local_name``'s own ambiguity check exists to prevent (#100671) — callers must
+    treat ``RENAMED_TO_AMBIGUOUS`` as its own reject case, not as "no history found"."""
     hit: str | None = None
+    ambiguous = False
     for name, profile_dir in _roster(root):
         data = _read_yaml_dict(profile_dir / "profile.yaml", "previous_names")
         previous = data.get("previous_names") if data else None
         if isinstance(previous, list) and any(str(p).strip().lower() == want for p in previous):
             if hit is not None:
-                return None
+                ambiguous = True
             hit = name
-    return hit
+    return RENAMED_TO_AMBIGUOUS if ambiguous else hit
 
 
 def _any_managed(root: Path) -> bool:

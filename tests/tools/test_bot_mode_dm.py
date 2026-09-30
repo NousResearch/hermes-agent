@@ -320,12 +320,13 @@ def test_renamed_away_name_with_no_local_stub_still_falls_through_to_relay(tmp_p
     assert result["status"] == "queued"
 
 
-def test_renamed_to_returns_none_on_a_multi_hit_alias(tmp_path):
+def test_renamed_to_returns_ambiguous_sentinel_on_a_multi_hit_alias(tmp_path):
     """Worth-a-look from Copilot's review of #123138: `renamed_to` scanned the roster and
     returned the FIRST profile claiming `want`, with no ambiguity check — the opposite of
     `_resolve_local_name`'s own rule that a multi-hit alias must never silently pick a winner
     (#100671). Two profiles both listing the same old name in `previous_names` (recreate-then-
-    rename, or a restored home) must resolve to None, not whichever sorts first."""
+    rename, or a restored home) must resolve to the distinguishable RENAMED_TO_AMBIGUOUS
+    sentinel, not None (which means "no history at all") and not whichever sorts first."""
     home = _managed_home(tmp_path, teammates=("alpha", "beta"))
     for folder in ("alpha", "beta"):
         (home / "profiles" / folder / "profile.yaml").write_text(
@@ -341,7 +342,41 @@ def test_renamed_to_returns_none_on_a_multi_hit_alias(tmp_path):
             ),
             encoding="utf-8",
         )
-    assert bot_mode_probe.renamed_to("velero-agent", home) is None
+    assert bot_mode_probe.renamed_to("velero-agent", home) is bot_mode_probe.RENAMED_TO_AMBIGUOUS
+
+
+def test_message_agent_rejects_ambiguous_rename_claimants_via_stale_directory(tmp_path):
+    """Entrypoint-level regression (CodeRabbit review of #123138): a stale directory left behind
+    by a renamed-away profile still resolves by exact folder match, and when TWO live profiles
+    both claim that old name in their `previous_names` history, `message_agent_tool` must reject
+    outright instead of silently picking a replacement or falling through to deliver into the
+    dead stub."""
+    home = _managed_home(tmp_path, teammates=("alpha", "beta"))
+    for folder in ("alpha", "beta"):
+        (home / "profiles" / folder / "profile.yaml").write_text(
+            textwrap.dedent(
+                """\
+                description: teammate for tests
+                previous_names:
+                  - velero-agent
+                ui_meta:
+                  hermes-bots:
+                    shape: cloud
+                """
+            ),
+            encoding="utf-8",
+        )
+    # Stale directory: an unmanaged stub resurrected under the old name (#123574-style), with
+    # no ui_meta.hermes-bots of its own.
+    stale_dir = home / "profiles" / "velero-agent"
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    (stale_dir / "profile.yaml").write_text("description: stray stub\n", encoding="utf-8")
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="velero-agent", message="hi", agent=agent)
+    )
+    assert "error" in result
+    assert "more than one profile" in result["error"]
 
 
 def test_cannot_message_self(tmp_path):

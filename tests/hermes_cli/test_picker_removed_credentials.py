@@ -231,6 +231,9 @@ def test_keyless_local_endpoints_survive_builtin_and_custom_names(picker_home, n
     {"X-Api-Key": "test-header-only"},
     # HTTP auth semantics are case-insensitive on the scheme word.
     {"Authorization": "bearer test-header-only"},
+    {"aUtHoRiZaTiOn": "  BeArEr\t test-header-only  "},
+    # Other already-supported schemes must keep their existing admission behaviour.
+    {"Authorization": "Basic dGVzdDpzeW50aGV0aWM="},
 ])
 def test_builtin_named_override_with_header_auth_is_kept(picker_home, headers):
     """An explicit ``providers.<built-in>`` endpoint override that authenticates through
@@ -398,7 +401,7 @@ def test_cooldown_and_dead_entries_coexist_without_hiding_the_provider(picker_ho
 @pytest.mark.parametrize("expires_in,refresh,authenticated", [
     (-3600, "", False),                       # known-expired, no refresh material
     (-3600, "test-refresh-material", True),   # expired but recoverable via refresh
-    (3600, "", True),                         # not yet expired — the refresh window is not expiry
+    (60, "", True),                           # inside the proactive-refresh window, not yet expired
     (None, "", True),                         # unknown expiry is not expiry
 ])
 def test_oauth_expiry_gates_recoverability(picker_home, expires_in, refresh, authenticated):
@@ -444,6 +447,46 @@ def test_expired_husk_does_not_hide_a_live_pool_credential(picker_home):
     _add_pool_entry(_PROVIDER, id="live", access_token="test-live-material")
     row = _row(_options(explicit_only=True), _PROVIDER)
     assert row is not None and row["authenticated"] is True, row
+
+
+@pytest.mark.parametrize("provider", ["openai-codex", "xai-oauth"])
+@pytest.mark.parametrize("expires_in,refresh,authenticated", [
+    (-3600, "", False),
+    (-3600, "test-refresh-material", True),
+    (60, "", True),
+    (None, "", True),
+])
+def test_singleton_jwt_expiry_uses_the_real_seeded_token_shape(
+        picker_home, provider, expires_in, refresh, authenticated):
+    """Codex/xAI singleton loading stores JWT expiry in the token, not expires_at_ms.
+
+    Drive the real auth-store seeder as well as both options surfaces. An unknown exp or
+    a not-yet-expired token remains configured; expired tokens need refresh material.
+    """
+    import base64
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import _save_auth_store
+
+    def segment(payload):
+        return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+    claims = {} if expires_in is None else {"exp": time.time() + expires_in}
+    token = f"{segment({'alg': 'none'})}.{segment(claims)}.synthetic"
+    _save_auth_store({"version": 1, "providers": {provider: {"tokens": {
+        "access_token": token, "refresh_token": refresh,
+    }}}})
+    entries = load_pool(provider).entries()
+    assert entries and entries[0].source == "device_code"
+    assert entries[0].expires_at_ms is None, "fixture must exercise JWT expiry, not a fabricated field"
+    if expires_in is not None and expires_in < 0:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+        assert _decode_jwt_claims(entries[0].access_token)["exp"] < time.time()
+    for kwargs in ({"explicit_only": True}, {"include_unconfigured": True}):
+        row = _row(_options(**kwargs), provider)
+        if authenticated:
+            assert row is not None and row["authenticated"] is True, (provider, kwargs, row)
+        else:
+            assert row is None or row.get("authenticated") is False, (provider, kwargs, row)
 
 
 @pytest.mark.parametrize("state,authenticated", [

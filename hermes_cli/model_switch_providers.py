@@ -384,11 +384,20 @@ def _pool_has_rows(slug: str) -> bool:
 def _oauth_access_token_known_expired(entry: Any) -> bool:
     """True only when the entry itself records a definite past expiry.
 
-    Unknown expiry (None/0/unparseable) is not expiry — a token must not be condemned on
-    absence of data. The proactive-refresh window is not expiry either: a short-lived token
-    that has not yet reached its recorded expiry still authenticates. No network refresh is
-    attempted here; this only reads the pool's own expiry data.
+    Unknown expiry is not expiry — a token must not be condemned on absence of data.
+    The proactive-refresh window is not expiry either: a short-lived token that has not
+    reached its recorded expiry still authenticates. Codex/xAI singleton rows store expiry
+    in their JWT rather than ``expires_at_ms``; reuse their runtime readers with zero skew.
+    No network refresh is attempted here.
     """
+    if entry.provider == "openai-codex":
+        from hermes_cli.auth_codex import _codex_access_token_is_expiring
+        if _codex_access_token_is_expiring(entry.access_token, 0):
+            return True
+    elif entry.provider == "xai-oauth":
+        from hermes_cli.auth_xai import _xai_access_token_is_expiring
+        if _xai_access_token_is_expiring(entry.access_token, 0):
+            return True
     expires = getattr(entry, "expires_at_ms", None)
     if not expires:
         return False

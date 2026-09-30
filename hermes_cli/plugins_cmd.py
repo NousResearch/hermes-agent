@@ -11,10 +11,11 @@ import logging
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
@@ -585,19 +586,32 @@ def _forget_plugin_config(aliases: set) -> dict[str, Any]:
     return result
 
 
+# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
+# thread; without it every thread read the same config version and all but the first commit were
+# refused as stale. The version check in PM stays: it still catches an edit from another process.
+_SELECTION_LOCKS: dict[str, threading.Lock] = {}
+_SELECTION_LOCKS_GUARD = threading.Lock()
+
+
+def _selection_lock() -> threading.Lock:
+    with _SELECTION_LOCKS_GUARD:
+        return _SELECTION_LOCKS.setdefault(hermes_home_key(), threading.Lock())
+
+
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
     """Submit the command's delta with the version of the selection it read."""
     from pm.plugins_state import read_home_selection
 
-    expected_config = _plugin_selection_version()
-    config = read_home_selection(get_hermes_home()) or {}
-    plugins = config.get("plugins") or {}
-    enabled = set(plugins.get("enabled") or ())
-    disabled = set(plugins.get("disabled") or ())
-    _apply_activation(enabled, disabled, name, aliases, enable=enable)
-    _admit_and_save_plugin_sets(enabled, disabled, console=console,
-                               action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                               expected_config=expected_config, plugin=name if enable else None)
+    with _selection_lock():
+        expected_config = _plugin_selection_version()
+        config = read_home_selection(get_hermes_home()) or {}
+        plugins = config.get("plugins") or {}
+        enabled = set(plugins.get("enabled") or ())
+        disabled = set(plugins.get("disabled") or ())
+        _apply_activation(enabled, disabled, name, aliases, enable=enable)
+        _admit_and_save_plugin_sets(enabled, disabled, console=console,
+                                   action=f"{'Enable' if enable else 'Disable'} '{name}'",
+                                   expected_config=expected_config, plugin=name if enable else None)
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:

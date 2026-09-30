@@ -90,6 +90,7 @@ class CLIChatTurnMixin:
             from agent.message_sanitization import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
+        self._chat_stage_first_contact_note(agent, message if isinstance(message, str) else "")
         self._chat_stage_user_message(agent, message)
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
@@ -218,6 +219,39 @@ class CLIChatTurnMixin:
             except Exception as _img_exc:
                 logging.warning("native image attach failed, falling back to text: %s", _img_exc)
         return self._preprocess_images_with_vision(text, images)
+
+    def _handle_initiate_setup_command(self, cmd: str):
+        from agent.initiate_setup_prompt import build_initiate_setup_prompt
+        from cli import get_tool_definitions
+        from hermes_constants import get_hermes_home, profile_name_for_home
+        print("\n" + t("cli.commands.initiate_setup.starting"))
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                                     quiet_mode=True, skip_tool_search_assembly=True)
+        names = [tool["function"]["name"] for tool in tools]
+        primary = profile_name_for_home(get_hermes_home()) or "default"
+        self._queue_prompt_turn(build_initiate_setup_prompt("cli", names, primary), "/initiate-setup")
+
+    def _chat_stage_first_contact_note(self, agent, message: str) -> None:
+        from cli import logger
+        if self.conversation_history:
+            return
+        try:
+            from agent.onboarding import first_contact_turn_note
+            from hermes_cli.config import load_config
+            from hermes_constants import get_hermes_home
+
+            db = self._session_db
+            note = first_contact_turn_note(
+                load_config(), get_hermes_home() / "config.yaml",
+                session_history_empty=True,
+                install_has_prior_sessions=db is not None and db.session_count_ge(2 if agent._session_db_created else 1),
+                message=message,
+            )
+            if note:
+                prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
+                agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+        except Exception:
+            logger.debug("first-contact onboarding note failed", exc_info=True)
 
     def _chat_stage_user_message(self, agent, message):
         """Append the staged user dict to the transcript under the agent's persist lock."""

@@ -2319,8 +2319,7 @@ DEFAULT_CONFIG = {
     # `seen`; wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
-        # First-ever gateway message: ask = offer to build a user profile (consent- gated; never
-        # reads connected accounts silently); off = plain intro only.
+        # First-ever message: ask = offer; off = plain intro only.
         "profile_build": "ask",
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)

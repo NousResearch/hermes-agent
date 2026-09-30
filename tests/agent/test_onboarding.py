@@ -98,11 +98,11 @@ class TestProfileBuildMode:
 
 
 class TestFirstContactTurnNote:
-    def test_returns_profile_directive_and_marks_seen(self, tmp_path):
+    def test_returns_setup_offer_and_marks_seen(self, tmp_path):
         from agent.onboarding import (
             PROFILE_BUILD_FLAG,
+            SETUP_OFFER_NOTE,
             first_contact_turn_note,
-            profile_build_directive,
         )
 
         cfg_path = tmp_path / "config.yaml"
@@ -112,13 +112,14 @@ class TestFirstContactTurnNote:
             cfg_path,
             session_history_empty=True,
             install_has_prior_sessions=False,
+            message="hello",
         )
-        assert note == profile_build_directive().strip()
+        assert note == SETUP_OFFER_NOTE.format(command="/initiate-setup")
         loaded = yaml.safe_load(cfg_path.read_text())
         assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
 
     def test_every_first_contact_note_puts_a_real_task_first(self, tmp_path):
-        # Default "ask" (profile-build offer) and "off" (plain intro) must both
+        # Default "ask" (offer) and "off" (plain intro) must both
         # tell the model to do a first-message task before the intro/offer.
         from agent.onboarding import TASK_FIRST_CLAUSE, first_contact_turn_note
 
@@ -128,6 +129,7 @@ class TestFirstContactTurnNote:
                 tmp_path / f"{mode}.yaml",
                 session_history_empty=True,
                 install_has_prior_sessions=False,
+                message="hello",
             )
             assert TASK_FIRST_CLAUSE in note, mode
 
@@ -141,6 +143,7 @@ class TestFirstContactTurnNote:
                 cfg_path,
                 session_history_empty=False,
                 install_has_prior_sessions=False,
+                message="hello",
             )
             is None
         )
@@ -150,6 +153,7 @@ class TestFirstContactTurnNote:
                 cfg_path,
                 session_history_empty=True,
                 install_has_prior_sessions=True,
+                message="hello",
             )
             is None
         )

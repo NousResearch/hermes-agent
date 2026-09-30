@@ -1,6 +1,6 @@
-"""Desktop/TUI first-contact profile-build onboarding via tui_gateway (#82750).
+"""Desktop/TUI first-contact onboarding via tui_gateway (#82750).
 
-The messaging gateway stages the consent-gated profile-build offer on the
+The messaging gateway stages the offer on the
 install's very first message (gateway/run_turn.py ``_hmwa_first_contact_notes``);
 the TUI/Desktop surface must do the same through
 ``_stage_first_contact_onboarding_note`` in the prompt turn.
@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
+from agent.onboarding import PROFILE_BUILD_FLAG, SETUP_OFFER_NOTE
 from hermes_yaml import safe_dump, safe_load
 from tui_gateway import server
 
@@ -38,10 +38,10 @@ def onboarding_home(monkeypatch, tmp_path):
 
 
 def _stage(session, agent, history_empty):
-    server._stage_first_contact_onboarding_note(session, agent, history_empty)
+    server._stage_first_contact_onboarding_note(session, agent, history_empty, "hello")
 
 
-def test_stages_profile_build_directive_on_first_contact(monkeypatch, onboarding_home):
+def test_stages_setup_offer_on_first_contact(monkeypatch, onboarding_home):
     """Fresh install + empty history: the opt-in directive is staged on the agent
     and the offered flag is persisted before the turn runs."""
     monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
@@ -49,7 +49,7 @@ def test_stages_profile_build_directive_on_first_contact(monkeypatch, onboarding
     agent = types.SimpleNamespace()
     _stage(_session(agent), agent, history_empty=True)
 
-    assert agent._gateway_turn_context_notes == profile_build_directive().strip()
+    assert agent._gateway_turn_context_notes == SETUP_OFFER_NOTE.format(command="/initiate-setup")
     loaded = safe_load((onboarding_home / "config.yaml").read_text())
     assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
 

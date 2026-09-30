@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "計画中: {task}"
     ack_conversation: "この会話のコンテキストから計画を作成しています…"
+  initiate_setup:
+    ack: "セットアップを開始しています…"
   init:
     start_failed: "/init を開始できませんでした — もう一度お試しください。"
     ack_update: "プロジェクトスキャンから AGENTS.md を更新しています…"
@@ -1555,6 +1557,8 @@ slash:
     description: "このセッションでプロンプトを一定間隔で繰り返し実行"
   plan:
     description: "何も実行せずに markdown の実装計画を .hermes/plans/ に書き出す"
+  initiate-setup:
+    description: "初回セットアップを実行: あなたについて知り、Hermes をあなたに合わせて設定します"
   moa:
     description: "デフォルトの Mixture of Agents プリセットでプロンプトを 1 回実行し、元のモデルに戻す"
   subgoal:
@@ -2911,6 +2915,8 @@ cli:
     plan:
       planning: "📋 計画中: {task}"
       from_conversation: "📋 この会話のコンテキストから計画を作成しています..."
+    initiate_setup:
+      starting: "🧭 セットアップを開始しています..."
     init:
       updating: "⚡ プロジェクトのスキャン結果から AGENTS.md を更新しています..."
       generating: "⚡ プロジェクトのスキャン結果から AGENTS.md を生成しています..."

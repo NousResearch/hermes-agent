@@ -750,6 +750,18 @@ _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 _cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
 
 
+def _cmd_initiate_setup(rid, params, session, name, arg):
+    with _session_profile_runtime_scope(session or {}):
+        enabled, disabled = _session_toolsets(session)
+        tools = _tools_mod("model_tools").get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True)
+        surface = _resolve_agent_platform(_session_source(session))
+        primary = _tools_mod("tools.connectors.catalog").default_target_profile()
+        message = _tools_mod("agent.initiate_setup_prompt").build_initiate_setup_prompt(
+            surface, [tool["function"]["name"] for tool in tools], primary)
+    return _ok(rid, {"type": "send", "message": message})
+
+
 def _cmd_moa(rid, params, session, name, arg):
     # One prompt through the default MoA preset, then restore the prior model (whole-session
     # switching goes through the model picker).
@@ -977,6 +989,7 @@ def _cmd_compress(rid, params, session, name, arg):
 
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
+    "initiate-setup": _cmd_initiate_setup,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}

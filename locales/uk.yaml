@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Планування: {task}"
     ack_conversation: "Планую на основі контексту цієї розмови…"
+  initiate_setup:
+    ack: "Запуск налаштування…"
   init:
     start_failed: "Не вдалося запустити /init — спробуйте ще раз."
     ack_update: "Оновлюю AGENTS.md за результатами сканування проєкту…"
@@ -1555,6 +1557,8 @@ slash:
     description: "Повторно виконувати запит із заданим інтервалом у цьому сеансі"
   plan:
     description: "Записати план реалізації в markdown до .hermes/plans/, нічого не виконуючи"
+  initiate-setup:
+    description: "Запустити початкове налаштування: дізнатися про вас і налаштувати Hermes під вас"
   moa:
     description: "Виконати один запит через типовий пресет Mixture of Agents, потім повернути вашу модель"
   subgoal:
@@ -2911,6 +2915,8 @@ cli:
     plan:
       planning: "📋 Планування: {task}"
       from_conversation: "📋 Планування на основі контексту цієї розмови..."
+    initiate_setup:
+      starting: "🧭 Запуск налаштування..."
     init:
       updating: "⚡ Оновлення AGENTS.md за результатами сканування проєкту..."
       generating: "⚡ Генерація AGENTS.md за результатами сканування проєкту..."

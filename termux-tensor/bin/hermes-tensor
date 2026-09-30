@@ -1,0 +1,37 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+MODEL_DIR="${HERMES_LOCAL_MODEL_DIR:-$HOME/.hermes/models}"
+export HERMES_LOCAL_MODEL_DIR="$MODEL_DIR"
+
+usage() {
+  cat <<'EOF'
+Hermes Tensor launcher
+Usage:
+  hermes-tensor doctor
+  hermes-tensor chat
+  hermes-tensor gateway
+  hermes-tensor models
+Environment:
+  HERMES_LOCAL_MODEL_DIR   default: ~/.hermes/models
+  HERMES_LOCAL_BASE_URL    default: http://127.0.0.1:9379/v1
+  HERMES_LOCAL_MODEL       default: local
+EOF
+}
+
+case "${1:-chat}" in
+  doctor) exec bash "$(dirname "$0")/tensor-doctor" ;;
+  models)
+    mkdir -p "$MODEL_DIR"
+    find "$MODEL_DIR" -maxdepth 3 -type f \( -name '*.litertlm' -o -name '*.gguf' \) -print
+    ;;
+  gateway) exec hermes gateway run ;;
+  chat)
+    command -v hermes >/dev/null 2>&1 || { echo "Install Hermes first."; exit 1; }
+    echo "Hermes Tensor profile"
+    echo "Model directory: $MODEL_DIR"
+    echo "Local endpoint: ${HERMES_LOCAL_BASE_URL:-http://127.0.0.1:9379/v1}"
+    exec hermes --tui
+    ;;
+  -h|--help|help) usage ;;
+  *) echo "Unknown command: $1"; usage; exit 2 ;;
+esac

@@ -3057,7 +3057,7 @@ onboarding:
   seen: {}               # internal latch — leave empty
 ```
 
-- `profile_build` — controls the setup offer on the first message ever, in the CLI, the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) adds one closing line to the agent's intro that offers `/initiate-setup` (`/initiate_setup` on Telegram). The offer is skipped when the first message is `/initiate-setup` itself. `"off"` stops only the offer line; the agent still gives a plain intro. The offer fires at most once per profile.
+- `profile_build` — controls the setup offer on the first message ever, in the CLI, the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) adds one closing line to the agent's intro that offers `/initiate-setup` (`/initiate_setup` on Telegram). The offer is skipped when the first message is `/initiate-setup` itself. `"off"` stops only the offer line; the agent still gives a plain intro. The offer fires at most once per profile. `/initiate-setup` also scans the machine automatically; see [The setup chat's machine scan](./desktop.md#the-setup-chats-machine-scan).
 - `seen` — internal state. Hermes latches each shown hint here so it never fires again; the setup offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
 
 ## Dashboard

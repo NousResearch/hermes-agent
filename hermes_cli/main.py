@@ -1580,6 +1580,16 @@ def _apply_in_dir(args) -> None:
     """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
     in_dir = getattr(args, "in_dir", None)
     if not in_dir:
+        inherited = os.environ.pop("HERMES_CLI_EXPLICIT_CWD", None)
+        if (
+            inherited
+            and os.environ.get("TERMINAL_CWD") == inherited
+            and os.environ.get("TERMINAL_ENV", "local") == "local"
+            and os.environ.get("_HERMES_GATEWAY") != "1"
+        ):
+            # This paired value came from the parent CLI, not this invocation.
+            # Leave strict isolation enabled; let normal cwd policy resolve afresh.
+            os.environ.pop("TERMINAL_CWD", None)
         return
     # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
     # translate drive-root spellings to native Windows form. No-op elsewhere.

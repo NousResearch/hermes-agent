@@ -163,11 +163,30 @@ For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-ho
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.
 
-Set `providers.<id>.max_in_flight` to a positive integer to cap concurrent LLM requests to that provider across agents and auxiliary tasks in the same Hermes process. All models on the provider share the limit, and streaming requests hold a slot until the stream ends or closes. Leaving it unset (or setting a non-positive value) keeps provider concurrency unlimited. In a multiplex gateway, profiles sharing that provider should configure the same value; the first configured value initializes the process-wide provider budget. Restart a long-running Hermes process after changing this setting.
-
 You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var. The same key is the streaming stale-stream deadline: an explicit value is used as-is — the implicit context-size tiers (240s above 50k tokens, 300s above 100k) and the reasoning-model floors apply only to the 180s default, so an explicit value can shorten how long a hung stream is tolerated.
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+
+### Provider Request Limits
+
+Two optional keys make Hermes queue its own requests instead of collecting 429s from a provider that limits concurrency or request rate:
+
+```yaml
+providers:
+  openrouter:
+    max_in_flight: 2          # at most 2 requests to this provider at once
+  my-local-llm:
+    max_in_flight: 1          # one request at a time; the rest queue instead of stalling the backend
+  nous:
+    requests_per_minute: 30   # a number, or "auto" to pace only from the provider's rate-limit headers
+```
+
+- **`max_in_flight`** (positive integer) caps how many requests to that provider are open at once. Every physical request counts: main-loop turns (streaming and non-streaming), subagents, cron jobs, fallback attempts, and auxiliary tasks such as compression, title generation and vision. A streaming response holds its slot until the stream finishes, is closed, or fails. A call made from inside another call to the same provider reuses that call's slot, so `max_in_flight: 1` cannot deadlock.
+- **`requests_per_minute`** (positive number) spaces request starts at least `60 / N` seconds apart, retries included. With a number or `auto`, Hermes also reads the `x-ratelimit-*-requests` headers the provider returns (the values `/usage` shows): it spreads the reported remaining requests over the rest of the window, and waits for the reset when none are left. `auto` uses only the headers, so it does nothing for a provider that does not send them.
+- When both main-loop and auxiliary requests are waiting, Hermes admits them alternately, so a burst of background work cannot hold up your turn, and your turns cannot starve background work.
+- Interrupting a turn ends its wait at once. The main loop's stale-request detectors do not count time spent queued.
+- Limits apply per provider id (all models on it share one budget), per profile, and per process. Two Hermes processes (for example the CLI and a gateway) each keep their own budget. Profiles served by one [multiplexed gateway](./multi-profile-gateways.md) each read their own `config.yaml` and keep separate budgets, even for the same provider. If they share one account, split its limit between them. A fallback provider is limited by its own entry.
+- Changes take effect on the next request, with no restart. Leaving a key unset (or setting a value that is not positive) means no limit.
 
 ## Update Behavior
 

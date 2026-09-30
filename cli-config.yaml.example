@@ -274,8 +274,11 @@ model:
 #     key_cmd: "databricks auth token -p MY-PROFILE"
 
 # Named provider overrides (optional)
-# Use this for per-provider concurrency limits, request timeouts,
-# non-stream stale timeouts, and per-model timeout exceptions.
+# Use this for per-provider request limits (max_in_flight, requests_per_minute),
+# request timeouts, non-stream stale timeouts, and per-model timeout exceptions.
+# Request limits count every request to the provider (main turns, subagents,
+# cron, auxiliary tasks) per profile and per process; waiting requests queue
+# locally instead of drawing 429s.
 # Applies to the primary turn client on every api_mode (OpenAI-wire, native
 # Anthropic, and Anthropic-compatible providers), the fallback chain, and
 # client rebuilds during credential rotation.  For OpenAI-wire chat
@@ -298,6 +301,7 @@ model:
 #     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
 #   anthropic:
 #     max_in_flight: 1              # Serialize all Anthropic models across agents and auxiliary tasks
+#     requests_per_minute: 50        # Space request starts >= 1.2 s apart ("auto": pace from x-ratelimit headers only)
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:
 #       claude-opus-4.6:

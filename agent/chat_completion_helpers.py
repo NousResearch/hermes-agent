@@ -4076,13 +4076,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     streaming codex runner; cron turns and delegated children run inline."""
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
-    if agent.api_mode == "codex_responses":
-        return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
-    if agent.api_mode == "bedrock_converse":
-        return _BedrockStream(agent, api_kwargs, on_first_delta).run()
-    # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
-    _check_stale_giveup(agent)
-    return _StreamingCall(agent, api_kwargs, on_first_delta).run()
+    from agent.llm_concurrency import provider_slot
+
+    # Admitted before the stale-stream monitor starts: queueing for a provider slot is not a
+    # stalled stream. The Relay stream opened inside (worker thread included) re-enters it.
+    with provider_slot(agent.provider, cancelled=lambda: bool(agent._interrupt_requested)):
+        if agent.api_mode == "codex_responses":
+            return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
+        if agent.api_mode == "bedrock_converse":
+            return _BedrockStream(agent, api_kwargs, on_first_delta).run()
+        # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
+        _check_stale_giveup(agent)
+        return _StreamingCall(agent, api_kwargs, on_first_delta).run()
 
 
 __all__ = ["interruptible_api_call", "build_api_kwargs", "build_assistant_message", "try_activate_fallback",

@@ -84,6 +84,27 @@ delegation:
 
 不设置这些值将保持旧版默认值（`HERMES_API_TIMEOUT=1800`s、`HERMES_API_CALL_STALE_TIMEOUT=90`s、原生 Anthropic 900s）。隐式的非流式 stale 检测会在本地端点上自动禁用，并且会在超大上下文下自动放宽。目前不适用于 AWS Bedrock（`bedrock_converse` 和 AnthropicBedrock SDK 路径均使用 boto3 及其自身的超时配置）。请参阅 [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example) 中的注释示例。
 
+### Provider 请求限制 {#provider-request-limits}
+
+两个可选键让 Hermes 在本地排队自己的请求，而不是被限制并发或请求速率的 provider 返回一连串 429：
+
+```yaml
+providers:
+  openrouter:
+    max_in_flight: 2          # 同一时间最多 2 个发往该 provider 的请求
+  my-local-llm:
+    max_in_flight: 1          # 一次只发一个请求；其余排队，而不是把后端拖到卡死
+  nous:
+    requests_per_minute: 30   # 数字；或 "auto"，只按 provider 返回的限流响应头调节
+```
+
+- **`max_in_flight`**（正整数）限制同时发往该 provider 的请求数。每个实际发出的请求都计入：主循环轮次（流式与非流式）、子代理、cron 任务、回退尝试，以及压缩、标题生成、视觉等辅助任务。流式响应在流结束、被关闭或失败之前一直占用名额。在某个请求内部发起的、指向同一 provider 的调用复用该请求的名额，因此 `max_in_flight: 1` 不会死锁。
+- **`requests_per_minute`**（正数）让请求的启动间隔至少为 `60 / N` 秒，重试同样计入。设置为数字或 `auto` 时，Hermes 还会读取 provider 返回的 `x-ratelimit-*-requests` 响应头（即 `/usage` 显示的数值）：把报告的剩余请求数平摊到窗口的剩余时间内，剩余为零时等待重置。`auto` 只使用响应头，因此对不发送这些响应头的 provider 不起作用。
+- 当主循环请求和辅助任务请求同时在等待时，Hermes 轮流放行两者，因此一批后台任务不会拖住你的轮次，你的轮次也不会饿死后台任务。
+- 中断当前轮次会立即结束其等待。主循环的陈旧请求检测不会把排队时间计算在内。
+- 限制按 provider id（该 provider 上的所有模型共享同一份额度）、按 profile、按进程分别计算。两个 Hermes 进程（例如 CLI 和 gateway）各自维护自己的额度。同一个多路复用 gateway 中的各个 profile 读取各自的 `config.yaml`，即使使用同一 provider 也各有独立额度；如果它们共用一个账号，请在它们之间分配该账号的限额。回退 provider 按其自身的条目限制。
+- 修改在下一个请求时生效，无需重启。不设置某个键（或设置为非正数）表示不限制。
+
 ## 终端后端配置
 
 Hermes 支持七种终端后端。每种后端决定 agent 的 shell 命令实际在哪里执行 —— 本地机器、Docker 容器、通过 SSH 的远程服务器、Modal 云沙箱（直接或通过 Nous 托管的 gateway）、Daytona 工作区、Vercel Sandbox，或 Singularity/Apptainer 容器。

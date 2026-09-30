@@ -930,6 +930,17 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
     preserved_stale: list = []
     kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
+        # Keep the original candidate set, but refresh its destructive safety gates:
+        # classification can precede removal by a long parallel sweep.
+        if verdict in {"reap", "reap-keep-branch"}:
+            try:
+                refreshed = _classify_prune_candidates(repo_root, [(entry, mtime, force)])
+                if not refreshed:
+                    continue
+                _, _, _, verdict, lock_state = refreshed[0]
+            except Exception as exc:
+                logger.debug("Could not revalidate worktree %s: %s", entry.name, exc)
+                continue
         reason = _PRESERVE_REASONS.get(verdict)
         if reason:
             if mtime <= stale_work_cutoff:
@@ -945,7 +956,7 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
 
         try:
             branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
-            remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
+            remove_result = _git(["worktree", "remove", str(entry)], repo_root, timeout=15)
             if remove_result.returncode != 0:
                 logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
                 continue

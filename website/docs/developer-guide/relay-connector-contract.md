@@ -167,7 +167,12 @@ interaction sent inside a thread (partial `channel.type` 10, 11 or 12) is keyed
 like the text lane's thread message: `chat_type: thread`, `thread_id` = the
 thread channel id, `parent_chat_id` = `channel.parent_id`. The connector's
 capability binding for that interaction must derive the same fields, or a later
-`follow_up` names a session the vault never bound. `bufferId` is
+`follow_up` names a session the vault never bound. The raw interaction has no
+chat labels, so the gateway gives it the `chat_name` / `chat_topic` the text lane
+last carried for that chat (recorded as observed, so they survive a restart), and
+names the user from the interaction itself: guild nick, else global name, else
+username. The connector's `user_display_name` on a text message must resolve the
+same way, or the two lanes name one user differently. `bufferId` is
 present when the forward was buffered (Phase 5 §5.3 buffered-only flip) and the
 gateway acks it after durable handoff.
 

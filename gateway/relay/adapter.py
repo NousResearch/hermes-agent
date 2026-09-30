@@ -148,10 +148,11 @@ class RelayAdapter(BasePlatformAdapter):
         self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: Dict[str, None] = {}
-        # Discord labels the text lane carries (connector-resolved) and a forwarded interaction does
-        # not: (scope, chat) -> (chat_name, chat_topic), (scope, user) -> display name.
+        # Discord chat labels the text lane carries (connector-resolved) and a forwarded interaction
+        # does not: (scope, chat) -> (chat_name, chat_topic). The second map is what the session
+        # store is known to hold, so a label costs a write only when it is new or changed.
         self._discord_chat_labels: Dict[tuple, tuple] = {}
-        self._discord_user_labels: Dict[tuple, str] = {}
+        self._discord_labels_recorded: Dict[tuple, tuple] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -886,7 +887,7 @@ class RelayAdapter(BasePlatformAdapter):
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
         self._capture_scope(event)
-        self._remember_discord_labels(event.source)
+        await self._remember_discord_labels(event.source)
         self._stamp_slack_session_thread(event)
         # A structured prompt answer resolves its waiting primitive and is CONSUMED —
         # never also dispatched as chat.
@@ -898,51 +899,53 @@ class RelayAdapter(BasePlatformAdapter):
     _SEEN_INBOUND_MAX = 512
     _DISCORD_LABELS_MAX = 2048
 
-    def _remember_discord_labels(self, source) -> None:
-        """Keep the text lane's Discord chat/user labels for the interaction lane: the pinned
+    async def _remember_discord_labels(self, source) -> None:
+        """Keep the text lane's Discord chat labels for the interaction lane: the pinned
         session-context prompt renders them, so a slash turn without them re-rendered the cached
         prefix and the next message rendered it back."""
-        if getattr(source, "platform", None) != Platform.DISCORD or not source.chat_id:
+        if (getattr(source, "platform", None) != Platform.DISCORD or not source.chat_id
+                or not (source.chat_name or source.chat_topic)):
             return
-        scope = str(source.scope_id or "")
-        if source.chat_name or source.chat_topic:
-            key, labels = (scope, str(source.chat_id)), (source.chat_name, source.chat_topic)
-            store = getattr(self, "_session_store", None)
-            if store is not None and self._discord_chat_labels.get(key) != labels:
-                # New to this process or renamed: the persisted origins are what the interaction
-                # lane falls back to after a restart, and they still hold the creation-time labels.
-                try:
-                    store.refresh_origin_labels(source)
-                except Exception:
-                    logger.debug("relay: Discord origin labels not refreshed", exc_info=True)
-            self._discord_chat_labels[key] = labels
-            self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
-        if source.user_id and source.user_name:
-            self._discord_user_labels[(scope, str(source.user_id))] = source.user_name
-            self._evict_oldest(self._discord_user_labels, self._DISCORD_LABELS_MAX)
+        key, labels = (str(source.scope_id or ""), str(source.chat_id)), (source.chat_name, source.chat_topic)
+        self._discord_chat_labels[key] = labels
+        self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
+        store = getattr(self, "_session_store", None)
+        if store is None or self._discord_labels_recorded.get(key) == labels:
+            return
+        # Recorded when observed, so the interaction lane has them after a restart whatever order
+        # the chat's sessions were created or reset in. Awaited before dispatch (the reader delivers
+        # events one at a time, so records land in observation order) but off the loop: it is a
+        # disk write.
+        try:
+            await asyncio.to_thread(store.record_chat_labels, source)
+        except Exception:
+            # Not recorded: leave the key out so the next message tries again.
+            logger.debug("relay: Discord chat labels not recorded", exc_info=True)
+            self._discord_labels_recorded.pop(key, None)
+            return
+        self._discord_labels_recorded[key] = labels
+        self._evict_oldest(self._discord_labels_recorded, self._DISCORD_LABELS_MAX)
 
     def _discord_chat_labels_for(self, scope: str, chat_id: str) -> tuple:
         """The text lane's last (chat_name, chat_topic) for a chat. After a restart (or eviction) the
-        map is empty until the text lane speaks again, so fall back to the labels the session origin
-        persisted from it; otherwise a first interaction re-renders the prompt the cache still holds."""
+        map is empty until the text lane speaks again, so ask the session store for what that lane
+        last recorded; otherwise a first interaction re-renders the prompt the cache still holds."""
         key = (scope, chat_id)
-        if key not in self._discord_chat_labels:
-            labels = (None, None)
-            store = getattr(self, "_session_store", None)
-            try:
-                origins = [e for e in (store.list_sessions() if store else ())
-                           if (o := e.origin) is not None and o.platform == Platform.DISCORD
-                           and str(o.chat_id) == chat_id and str(o.scope_id or "") == scope
-                           and (o.chat_name or o.chat_topic)]
-            except Exception:
-                # Labels only keep the prompt cache warm; a store fault must not drop the interaction.
-                logger.debug("relay: session origins unreadable for Discord labels", exc_info=True)
-                origins = []
-            if origins:
-                newest = max(origins, key=lambda e: e.created_at).origin
-                labels = (newest.chat_name, newest.chat_topic)
-            self._discord_chat_labels[key] = labels
-            self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
+        if key in self._discord_chat_labels:
+            return self._discord_chat_labels[key]
+        store = getattr(self, "_session_store", None)
+        try:
+            recorded = store.chat_labels(Platform.DISCORD, scope, chat_id) if store is not None else None
+        except Exception:
+            # Labels only keep the prompt cache warm; a store fault must not drop the interaction.
+            # Not cached either: the next interaction asks the store again.
+            logger.debug("relay: recorded Discord chat labels unreadable", exc_info=True)
+            return (None, None)
+        if recorded is not None:
+            self._discord_labels_recorded[key] = recorded
+            self._evict_oldest(self._discord_labels_recorded, self._DISCORD_LABELS_MAX)
+        self._discord_chat_labels[key] = recorded or (None, None)
+        self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
         return self._discord_chat_labels[key]
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
@@ -1223,14 +1226,14 @@ class RelayAdapter(BasePlatformAdapter):
         if not isinstance(user, dict):
             user = {}
         guild_id = payload.get("guild_id")
-        scope, user_id = str(guild_id or ""), str(user.get("id") or "")
-        # The text lane's user_display_name is the native author.display_name (guild nick, else
-        # global name, else username); prefer what that lane last carried for this user.
-        user_name = self._discord_user_labels.get((scope, user_id)) or next(
+        # The text lane's user_display_name is the native author.display_name: guild nick, else
+        # global name, else username. The interaction carries all three as of now, so derive the
+        # same name from it; a remembered one would outlive a nickname change.
+        user_name = next(
             (str(v) for v in ((member.get("nick") if isinstance(member, dict) else None),
                               user.get("global_name"), user.get("username")) if v), None)
         chat_id = str(payload.get("channel_id") or "")
-        chat_name, chat_topic = self._discord_chat_labels_for(scope, chat_id)
+        chat_name, chat_topic = self._discord_chat_labels_for(str(guild_id or ""), chat_id)
         # The text lane keys a message inside a thread on chat_type "thread" + thread_id (both session-key
         # fields), so an interaction sent there must carry the same or it lands in a per-user "group"
         # session beside the thread's. The partial channel object marks a thread by type (10 announcement,

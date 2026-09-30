@@ -9,7 +9,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
-from gateway.session_identity import replace_source
 from hermes_state_ids import new_session_id
 
 if TYPE_CHECKING:
@@ -113,25 +112,6 @@ class SessionLifecycleMixin:
             if changed:
                 self._save()
         return changed
-
-    def refresh_origin_labels(self, source: SessionSource) -> int:
-        """Carry *source*'s ``chat_name`` / ``chat_topic`` onto the origin of every session in its
-        chat. An origin is written when the session is created and inherited by a reset, so after a
-        rename it still named the old chat to whatever rebuilds a source from it. Every session of
-        the chat, not only the sender's: a group chat has one session per user. Returns the count
-        refreshed."""
-        labels = (source.chat_name, source.chat_topic)
-        chat = (source.platform, str(source.scope_id or ""), str(source.chat_id))
-
-        def _refresh(entry: SessionEntry) -> bool:
-            origin = entry.origin
-            if (origin is None or (origin.chat_name, origin.chat_topic) == labels
-                    or (origin.platform, str(origin.scope_id or ""), str(origin.chat_id)) != chat):
-                return False
-            entry.origin = replace_source(origin, chat_name=labels[0], chat_topic=labels[1])
-            return True
-
-        return self._update_all_entries_locked(_refresh)
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session suspended so it auto-resets on next access (/stop). True if it existed.

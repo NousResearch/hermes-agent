@@ -87,6 +87,7 @@ except ImportError:
         """Import-safe stand-in for the homeserver's M_NOT_FOUND error."""
 
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
@@ -190,8 +191,9 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
-# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply".
-_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^>\s*<(@[^>]+)>\s*(.*)$")
+# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply". An emote
+# fallback starts with "> * <@alice:example.org>".
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
 
 
 def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
@@ -229,21 +231,6 @@ def _strip_reply_fallback(body: str) -> str:
                 continue
         stripped.append(line)
     return "\n".join(stripped) if stripped else body
-
-
-_MATRIX_THREAD_FALLBACK_FIRST_LINE_RE = re.compile(r"^> (?:\* )?<@[^>\s]+>")
-
-
-def _strip_thread_reply_fallback(body: str) -> str:
-    """Strip a thread message's legacy reply fallback. A quote written by the user stays.
-
-    Element sets ``is_falling_back`` on ordinary thread messages without adding a body fallback,
-    so a leading quote there is the user's own text. A real fallback starts with the quoted
-    sender's pill (``> <@user:server>``, or ``> * <@user:server>`` for an emote).
-    """
-    if not _MATRIX_THREAD_FALLBACK_FIRST_LINE_RE.match(body or ""):
-        return body
-    return _strip_reply_fallback(body)
 
 
 # Auth errcodes that genuinely require re-authentication (never retried).
@@ -294,6 +281,27 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
         idx += 1  # the blank line separating the quote from the reply belongs to the quote
     head = "\n".join(lines[:idx])
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
+
+
+def _has_reply_fallback(body: str, content: dict) -> bool:
+    """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
+
+    Matrix 1.13 (MSC2781) removed reply fallbacks, so a modern client sends the reply as typed
+    and a leading ``> `` block is the user's quotation. A legacy client marks its fallback with
+    an ``<mx-reply>`` element at the start of the HTML body. Its plain fallback starts with the
+    quoted sender's pill (``> <@user:srv>``, or ``> * <@user:srv>`` for an emote) and ends with
+    a blank line.
+    """
+    if not body.startswith("> "):
+        return False
+    formatted_body = content.get("formatted_body")
+    if (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
+            and formatted_body.lstrip().startswith("<mx-reply>")):
+        return True
+    if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
+        return False
+    quote_block, reply_text = _split_reply_fallback(body)
+    return quote_block.endswith("\n\n") or not reply_text
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -443,6 +451,7 @@ from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
 _ROOM_STATE_READ_TIMEOUT_SECONDS = 10.0
+_ROOM_NAME_STATE_KEYS = {"m.room.name": "name", "m.room.topic": "topic", "m.room.canonical_alias": "alias"}
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -916,7 +925,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: Dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
+        # Last successful state read per room and event type. Kept apart from _room_identities
+        # because _absorb_sync clears that cache whenever a sync response includes joined rooms.
+        self._room_state_values: Dict[str, Dict[str, Optional[str]]] = {}
         self._event_context_cache = MatrixEventContextCache()
+        self._thread_fallbacks = ThreadFallbackTracker()
         try:
             self._thread_backfill_limit = max(0, min(100, int(config.extra.get("thread_backfill_limit", 20))))
         except (TypeError, ValueError):
@@ -1479,7 +1492,7 @@ class MatrixAdapter(BasePlatformAdapter):
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
             if (metadata or {}).get("non_conversational"):
                 msg_content[NON_CONVERSATIONAL_KEY] = True
             try:
@@ -1506,6 +1519,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._event_context_cache.store(
             chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
         )
+        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
         return event_id
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -1886,7 +1900,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["info"]["duration"] = audio_metadata["duration"]
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
-        self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+        self._apply_relation_metadata(room_id, msg_content, reply_to=reply_to, metadata=metadata)
         return await self._send_content_event(room_id, msg_content)
 
     async def _room_needs_encrypted_upload(self, room_id: str) -> bool:
@@ -1909,6 +1923,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -2134,7 +2149,9 @@ class MatrixAdapter(BasePlatformAdapter):
         relation = MatrixRelation.from_content(relates_to)
         thread_id = relation.thread_root
         if relation.thread_fallback_target:
-            body = _normalize_matrix_bang_command(_strip_thread_reply_fallback(body))
+            if _has_reply_fallback(body, source_content):
+                body = _strip_reply_fallback(body)
+            body = _normalize_matrix_bang_command(body)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         requires_mention = False
         if not is_dm:
@@ -2167,9 +2184,9 @@ class MatrixAdapter(BasePlatformAdapter):
             # Strip the mention from the reply text only: the quote block carries the
             # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
-            # and silently dropped the replied-to author (#111233). Only a real reply carries a
-            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
-            if relation.reply_target:
+            # and silently dropped the replied-to author (#111233). Without a fallback, a leading
+            # quote is the user's own text, so the mention is stripped from the whole body.
+            if relation.reply_target and _has_reply_fallback(body, source_content):
                 quote_block, reply_text = _split_reply_fallback(body)
                 body = quote_block + self._strip_mention(reply_text)
             else:
@@ -2193,12 +2210,13 @@ class MatrixAdapter(BasePlatformAdapter):
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
+            self._thread_fallbacks.remember(room_id, thread_id, event_id)
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, requires_mention, source
 
     async def _extract_reply_context(
-        self, room_id: str, body: str, relates_to: dict, *, sender: str, chat_type: str,
-        formatted_body: Any = None,
+        self, room_id: str, body: str, source_content: dict, relates_to: dict, *, sender: str,
+        chat_type: str,
     ) -> MatrixReplyContext:
         """Resolve an explicit reply and its inline or fetched quoted context."""
         relation = MatrixRelation.from_content(relates_to)
@@ -2207,7 +2225,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to_is_own_message = False
         reply_to_author_authorized = None
         reply_media_path = reply_media_type = None
-        if reply_to and body.startswith("> "):
+        if reply_to and _has_reply_fallback(body, source_content):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
             body = _strip_reply_fallback(body)
             if reply_to_text:
@@ -2215,7 +2233,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if reply_to_author_id:
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
         if reply_to and not reply_to_text:
-            reply_to_text = extract_mx_reply_quote(formatted_body)
+            reply_to_text = extract_mx_reply_quote(source_content.get("formatted_body"))
             if reply_to_text:
                 reply_to_author_authorized = False
         if reply_to and (
@@ -2280,8 +2298,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if requires_mention:
             extra["metadata"] = {**(extra.get("metadata") or {}), "matrix_requires_mention": True}
         reply = await self._extract_reply_context(
-            room_id, body, relates_to, sender=sender, chat_type=chat_type,
-            formatted_body=source_content.get("formatted_body"),
+            room_id, body, source_content, relates_to, sender=sender, chat_type=chat_type,
         )
         body = reply.body
         if reply.media_path:
@@ -3006,21 +3023,46 @@ class MatrixAdapter(BasePlatformAdapter):
         return f"{', '.join(names[:3])} and {remaining} {noun}"
 
     async def _read_room_state_event(self, room_id: str, event_type: str) -> Any:
-        """The content of a room state event, or None when the room has no such event. Any other
-        failure, including the read deadline, raises."""
+        """The content of a room state event, or None when the room has no such event (``M_NOT_FOUND``).
+        Any other failure, including the read deadline, raises."""
         if not self._client or not hasattr(self._client, "get_state_event"):
             return None
         try:
             return await asyncio.wait_for(
                 self._client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
             )
-        except MNotFound:
-            return None
+        except Exception as exc:
+            if isinstance(exc, MNotFound) or getattr(exc, "errcode", None) == "M_NOT_FOUND":
+                return None
+            raise
 
     async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
         members = await self._get_room_members(room_id)
         profiles = await self._get_room_member_profiles(room_id) if members is not None else None
         return members, profiles
+
+    def _remember_room_names(
+        self, room_id: str, reads: Dict[str, Any], profiles: Optional[Dict[Any, Any]],
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """The room's name, topic, canonical alias and member-derived name. *reads* maps each event type
+        in ``_ROOM_NAME_STATE_KEYS`` to its content or to the exception that its read raised, and
+        *profiles* is None when the member read failed. A failed read gives the last value read for the
+        room, so a timeout does not rename the room; a successful read replaces that value, so a removed
+        name or topic applies."""
+        values = self._room_state_values.pop(room_id, {})
+        for event_type, key in _ROOM_NAME_STATE_KEYS.items():
+            event = reads[event_type]
+            if not isinstance(event, Exception):
+                values[event_type] = (self._state_event_value(event, key) or "").strip() or None
+        if profiles is not None:
+            values["m.room.member"] = self._compute_room_display_name(profiles)
+        if len(self._room_state_values) >= self._room_identity_cache_max:
+            del self._room_state_values[next(iter(self._room_state_values))]
+        self._room_state_values[room_id] = values
+        return (
+            values.get("m.room.name"), values.get("m.room.topic"), values.get("m.room.canonical_alias"),
+            values.get("m.room.member"),
+        )
 
     def _invalidate_room_identities(self, room_id: str | None = None) -> None:
         """Drop one cached room identity (or all when *room_id* is None)."""
@@ -3061,9 +3103,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 return None
             return (self._state_event_value(event, key) or "").strip() or None
 
-        room_name = state_value(name_event, "name")
-        room_topic = state_value(topic_event, "topic")
-        canonical_alias = state_value(alias_event, "alias")
+        room_name, room_topic, canonical_alias, member_name = self._remember_room_names(
+            room_id, dict(zip(_ROOM_NAME_STATE_KEYS, (name_event, topic_event, alias_event))), profiles,
+        )
         member_count = len(members) if members is not None else None
         members_digest = None
         if members is not None and profiles is not None:
@@ -3078,10 +3120,7 @@ class MatrixAdapter(BasePlatformAdapter):
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
         is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
-        computed_name = None
-        if not room_name and not canonical_alias:
-            computed_name = self._compute_room_display_name(profiles)
-        display_name = room_name or canonical_alias or computed_name or room_id
+        display_name = room_name or canonical_alias or member_name or room_id
         room_state = (
             None if failed_reads or members_digest is None
             else MatrixRoomState(
@@ -3258,19 +3297,24 @@ class MatrixAdapter(BasePlatformAdapter):
         return msg_content
 
     def _apply_relation_metadata(
-        self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
+        self, room_id: str, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
-        thread_id = str((metadata or {}).get("thread_id") or "")
+        meta = metadata or {}
+        thread_id = str(meta.get("thread_id") or "")
+        fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
         if reply_to:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            if reply_to and not self._thread_fallbacks.is_continuation(room_id, thread_id, reply_to):
+                relates_to["is_falling_back"] = False
+            else:
+                latest = self._thread_fallbacks.latest(room_id, thread_id)
+                relates_to["m.in_reply_to"] = {"event_id": fallback_to or latest or thread_id}
+                relates_to["is_falling_back"] = True
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

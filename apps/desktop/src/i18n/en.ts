@@ -5129,6 +5129,10 @@ export const en: Translations = {
           title: 'The reply was cut off',
           body: 'The connection dropped before the reply finished. Retry to send it again.'
         },
+        no_reply: {
+          title: "The reply didn't finish",
+          body: 'Hermes ended this turn without a reply. Retry to send it again.'
+        },
         upstream_blocked: {
           title: 'A firewall blocked the request',
           body: provider =>

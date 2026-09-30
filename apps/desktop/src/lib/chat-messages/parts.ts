@@ -387,6 +387,35 @@ export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt:
   )
 }
 
+/** Settle a turn that ended without its terminal message: drop empty
+ *  pending/stream placeholders and un-pend the rest. Shared by Stop, the
+ *  running=false edge, and the store's silent-turn settle. */
+export function finalizeInterruptedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  return messages
+    .filter(
+      message =>
+        !(
+          (message.pending || message.id === streamId) &&
+          message.parts.length === 0 &&
+          !chatMessageText(message).trim()
+        )
+    )
+    .map(message =>
+      message.pending || message.id === streamId
+        ? {
+            ...message,
+            completedAt: occurredAt,
+            parts: completeOpenTimelineParts(message.parts, occurredAt),
+            pending: false
+          }
+        : message
+    )
+}
+
 // Coalesce only adjacent deltas of the same channel. Switching between text
 // and reasoning is a real timeline boundary and must remain visible even when
 // both channels arrive inside one batched renderer flush.

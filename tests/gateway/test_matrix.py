@@ -931,6 +931,43 @@ async def test_room_state_read_failure_adds_no_note_and_keeps_baseline(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_room_baseline_survives_compaction_of_every_saved_snapshot(tmp_path):
+    from agent.context_compressor import ContextCompressor
+
+    store, source = _room_session(tmp_path)
+    session_id = store.get_or_create_session(source).session_id
+    renamed_state = {"m.room.name": {"name": "Ops 2"}, "m.room.topic": {"topic": "Incidents 2"}}
+    runner = _room_context_runner(store, _room_context_adapter(_OPS_STATE))
+
+    def media_turns(count):
+        # Media turns get no room snapshot.
+        for index in range(count):
+            store.append_to_transcript(session_id, {"role": "user", "content": f"[image {index}] " + "x" * 400})
+            store.append_to_transcript(session_id, {"role": "assistant", "content": f"seen {index} " + "y" * 400})
+
+    await _prepare_room_turn(runner, source, "$first", persist=True)
+    media_turns(2)
+    runner.adapters = {Platform.MATRIX: _room_context_adapter(renamed_state)}
+    renamed, _ = await _prepare_room_turn(runner, source, "$renamed", persist=True)
+    media_turns(15)
+    with patch("agent.context_compressor.get_model_context_length", return_value=8000):
+        compressor = ContextCompressor(model="test-model", quiet_mode=True, config_context_length=8000)
+    summary = MagicMock()
+    summary.choices[0].message.content = "## Active Task\nroom chat"
+    with patch("agent.context_compressor.call_llm", return_value=summary):
+        compacted = compressor.compress(store.load_transcript(session_id), current_tokens=100_000, force=True)
+    store._db.archive_and_compact(session_id, compacted)
+
+    after_compaction, _ = await _prepare_room_turn(runner, source, "$after-compaction")
+
+    assert (renamed, after_compaction) == (
+        '[The room display name is now: "Ops 2"]\n[The room topic changed to: "Incidents 2"]\n'
+        f'{_UNTRUSTED_MARKER}\n\n[New message]\nhello',
+        "hello",
+    )
+
+
+@pytest.mark.asyncio
 async def test_room_state_reads_overlap_and_stop_at_the_deadline(tmp_path, monkeypatch):
     from plugins.platforms.matrix import adapter as matrix_adapter
 
@@ -967,6 +1004,53 @@ async def test_turn_reuses_the_fresh_room_identity(tmp_path):
     message, _ = await _prepare_room_turn(runner, source, "$m")
 
     assert (message, adapter._client.get_state_event.await_count) == ("hello", reads)
+
+
+_NAMED_ROOM_STATE = {**_OPS_STATE, "m.room.canonical_alias": {"alias": "#ops:example.org"}}
+
+
+def _fail_state_reads(adapter, state):
+    adapter._client.get_state_event = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _fail_member_reads(adapter, state):
+    adapter._client.state_store.has_full_member_list = AsyncMock(side_effect=asyncio.TimeoutError())
+    adapter._client.get_joined_members = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _empty_room_names(adapter, state):
+    state.update({
+        "m.room.name": {"name": ""}, "m.room.topic": {"topic": ""}, "m.room.canonical_alias": {"alias": ""},
+    })
+
+
+def _delete_room_names(adapter, state):
+    state.clear()
+
+
+def _report_room_names_missing_by_errcode(adapter, state):
+    adapter._client.get_state_event = AsyncMock(
+        side_effect=_sync_error("Event not found.", errcode="M_NOT_FOUND", http_status=404),
+    )
+
+
+@pytest.mark.parametrize("state,refresh,expected", [
+    (_NAMED_ROOM_STATE, _fail_state_reads, ("Ops", "Incidents", "#ops:example.org", "Ops")),
+    ({}, _fail_member_reads, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _empty_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _delete_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _report_room_names_missing_by_errcode, (None, None, None, "Alice and Bob")),
+], ids=["state-read-fails", "member-read-fails", "state-emptied", "state-not-found", "state-not-found-errcode"])
+@pytest.mark.asyncio
+async def test_room_identity_keeps_the_last_names_only_when_a_read_fails(state, refresh, expected):
+    state = dict(state)
+    adapter = _room_context_adapter(state)
+    await adapter._resolve_room_identity(_ROOM_ID)
+
+    refresh(adapter, state)
+    identity = await adapter._resolve_room_identity(_ROOM_ID, force_refresh=True)
+
+    assert (identity.room_name, identity.room_topic, identity.canonical_alias, identity.display_name) == expected
 
 
 @pytest.mark.asyncio
@@ -1166,6 +1250,7 @@ def _make_room_adapter():
     ("> quoted from elsewhere\n\nwhat does this mean?", "> quoted from elsewhere\n\nwhat does this mean?"),
     ("> <@alice:example.org> root\n\n> my own quote\n\nquestion", "> my own quote\n\nquestion"),
     ("> * <@alice:example.org> waves\n\nhello", "hello"),
+    ("> <@bob:example.org> said it failed\nI disagree", "> <@bob:example.org> said it failed\nI disagree"),
 ])
 async def test_thread_message_strips_only_the_reply_fallback(body, expected_text):
     adapter = _make_room_adapter()
@@ -1258,7 +1343,7 @@ async def test_inline_reply_fallback_does_not_verify_claimed_author(claimed_auth
     adapter._is_sender_authorized = MagicMock(return_value=True)
 
     reply = await adapter._extract_reply_context(
-        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue",
+        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue", {},
         {"m.in_reply_to": {"event_id": "$parent"}},
         sender="@alice:example.org", chat_type="group",
     )
@@ -2610,6 +2695,159 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("reply_to", "is_falling_back"), [
+        ("$other-thread", False),
+        ("$root", True),
+    ])
+    async def test_thread_payload_replies_to_any_event_except_the_root(self, reply_to, is_falling_back):
+        result = await self.adapter.send(
+            "!room:example.org", "threaded reply", reply_to=reply_to,
+            metadata={"thread_id": "$root"},
+        )
+
+        assert result.success is True
+        assert self._sent_contents()[0]["m.relates_to"] == {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": reply_to},
+            "is_falling_back": is_falling_back,
+        }
+
+
+    @pytest.mark.asyncio
+    async def test_split_threaded_reply_continues_after_the_first_chunk(self):
+        self.adapter.max_message_length = 60
+        self.mock_client.send_message_event = AsyncMock(
+            side_effect=lambda *args: f"$sent-{self.mock_client.send_message_event.await_count}"
+        )
+
+        result = await self.adapter.send(
+            "!room:example.org", "one two three four five " * 15,
+            reply_to="$incoming", metadata={"thread_id": "$root"},
+        )
+
+        relations = [content["m.relates_to"] for content in self._sent_contents()]
+        assert result.success is True
+        assert len(relations) > 1
+        assert relations == [
+            {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": "$incoming"}, "is_falling_back": False,
+            },
+            *[
+                {
+                    "rel_type": "m.thread", "event_id": "$root",
+                    "m.in_reply_to": {"event_id": f"$sent-{index}"}, "is_falling_back": True,
+                }
+                for index in range(1, len(relations))
+            ],
+        ]
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("steps", "expected"), [
+        pytest.param(
+            [("inbound", "$q1"), ("send", "$q1"), ("inbound", "$q2"), ("send", "$q2"), ("send", "$q1")],
+            [("$q1", False), ("$q2", False), ("$sent-2", True)],
+            id="busy-ack-between-messages-of-a-response",
+        ),
+        pytest.param(
+            [("inbound", "$a"), ("inbound", "$b"), ("send", "$a"), ("send", "$b"), ("send", "$a"), ("send", "$b")],
+            [("$a", False), ("$b", False), ("$sent-2", True), ("$sent-3", True)],
+            id="interleaved-responses",
+        ),
+        pytest.param(
+            [("inbound", "$incoming"), ("send", "$incoming"), ("inbound", "$other-user"), ("send", "$sent-1")],
+            [("$incoming", False), ("$other-user", True)],
+            id="inbound-post-between-stream-chunks",
+        ),
+    ])
+    async def test_interleaved_thread_events_do_not_repeat_a_reply(self, steps, expected):
+        self.mock_client.send_message_event = AsyncMock(
+            side_effect=lambda *args: f"$sent-{self.mock_client.send_message_event.await_count}"
+        )
+
+        for kind, event_id in steps:
+            if kind == "inbound":
+                self.adapter._thread_fallbacks.remember("!room:example.org", "$root", event_id)
+                continue
+
+            await self.adapter.send(
+                "!room:example.org", "message", reply_to=event_id, metadata={"thread_id": "$root"},
+            )
+
+        assert [content["m.relates_to"] for content in self._sent_contents()] == [
+            {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": target}, "is_falling_back": is_falling_back,
+            }
+            for target, is_falling_back in expected
+        ]
+
+
+    @pytest.mark.asyncio
+    async def test_thread_payload_accepts_explicit_fallback_anchor(self):
+        result = await self.adapter.send(
+            "!room:example.org", "threaded fallback",
+            metadata={"thread_id": "$root", "matrix_thread_fallback_event_id": "$latest"},
+        )
+
+        assert result.success is True
+        assert self._sent_contents()[0]["m.relates_to"] == {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$latest"},
+            "is_falling_back": True,
+        }
+
+
+    @pytest.mark.asyncio
+    async def test_thread_replies_chain_from_inbound_event_and_preserve_explicit_target(self):
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
+            display_name="Alice", room_topic="", server_name="example.org", members_digest=None,
+        ))
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter.max_message_length = 60
+        self.mock_client.send_message_event = AsyncMock(
+            side_effect=lambda *args: f"$sent-{self.mock_client.send_message_event.await_count}"
+        )
+
+        await self.adapter._resolve_message_context(
+            "!room:example.org", "@alice:example.org", "$incoming", "continue",
+            {"msgtype": "m.text", "body": "continue"},
+            {"rel_type": "m.thread", "event_id": "$root"},
+        )
+        result = await self.adapter.send(
+            "!room:example.org", "one two three four five " * 15,
+            metadata={"thread_id": "$root"},
+        )
+
+        contents = self._sent_contents()
+        assert result.success is True
+        assert len(contents) > 1
+        assert [content["m.relates_to"]["m.in_reply_to"]["event_id"] for content in contents] == [
+            "$incoming", *[f"$sent-{index}" for index in range(1, len(contents))],
+        ]
+
+        await self.adapter.send(
+            "!room:example.org", "explicit", reply_to="$other-thread",
+            metadata={"thread_id": "$root"},
+        )
+        explicit_relation = self._sent_contents()[-1]["m.relates_to"]
+        assert explicit_relation == {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$other-thread"}, "is_falling_back": False,
+        }
+
+        await self.adapter.send("!room:example.org", "after", metadata={"thread_id": "$root"})
+        assert self._sent_contents()[-1]["m.relates_to"] == {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": f"$sent-{len(self._sent_contents()) - 1}"},
+            "is_falling_back": True,
+        }
+
+
+    @pytest.mark.asyncio
     async def test_long_response_split_preserves_thread_context(self):
         # Build a payload guaranteed to exceed the adapter's outbound chunk
         # size (configurable since #53026) so send() must split it.
@@ -2625,11 +2863,69 @@ class TestMatrixRenderingPayloads:
         assert result.success is True
         contents = self._sent_contents()
         assert len(contents) > 1
-        for content in contents:
+        for index, content in enumerate(contents):
             assert content["m.relates_to"]["rel_type"] == "m.thread"
             assert content["m.relates_to"]["event_id"] == "$root"
-            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+            assert content["m.relates_to"]["m.in_reply_to"] == {
+                "event_id": "$root" if index == 0 else "$evt",
+            }
             assert content["body"].count("```") % 2 == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["buffered", "live"])
+async def test_streamed_threaded_reply_continues_after_the_first_message(delivery):
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="syt_test_token",
+        extra={
+            "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",
+            "max_message_length": 1000,
+        },
+    ))
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent-{index}" for index in range(20)])
+    adapter._client = client
+    preview_sent = asyncio.Event()
+    consumer = GatewayStreamConsumer(
+        adapter, "!room:example.org", StreamConsumerConfig(edit_interval=0, cursor=""),
+        metadata={"thread_id": "$root"}, initial_reply_to_id="$incoming",
+        on_new_message=preview_sent.set,
+    )
+
+    task = asyncio.create_task(consumer.run())
+    try:
+        if delivery == "live":
+            consumer.on_delta("preview " * 25)
+            await asyncio.wait_for(preview_sent.wait(), timeout=5)
+        consumer.on_delta("answer " * 350)
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+    finally:
+        if not task.done():
+            task.cancel()
+
+    messages = [
+        (f"$sent-{index}", call.args[2]["m.relates_to"])
+        for index, call in enumerate(client.send_message_event.await_args_list)
+        if call.args[2]["m.relates_to"].get("rel_type") != "m.replace"
+    ]
+    assert len(messages) > 2
+    assert [relation for _, relation in messages] == [
+        {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$incoming"}, "is_falling_back": False,
+        },
+        *[
+            {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": previous}, "is_falling_back": True,
+            }
+            for previous, _ in messages[:-1]
+        ],
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -3456,6 +3752,52 @@ class TestMatrixUploadAndSend:
         assert sent["m.relates_to"]["rel_type"] == "m.thread"
         assert sent["m.relates_to"]["event_id"] == "$root"
         assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+
+
+    @pytest.mark.asyncio
+    async def test_encrypted_and_plain_media_extend_thread_fallback_chain(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store.is_encrypted = AsyncMock(side_effect=[True, False, False, False])
+        mock_client.upload_media = AsyncMock(side_effect=[
+            "mxc://example.org/secret", "mxc://example.org/plain",
+            "mxc://example.org/one", "mxc://example.org/two",
+        ])
+        mock_client.send_message_event = AsyncMock(side_effect=[
+            "$text", "$encrypted", "$plain", "$image-one", "$image-two",
+        ])
+        adapter._client = mock_client
+        metadata = {"thread_id": "$root"}
+        first = tmp_path / "one.png"
+        second = tmp_path / "two.png"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            text_result = await adapter.send("!room:example.org", "start", metadata=metadata)
+            encrypted_result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.png", "image/png", "m.image",
+                metadata=metadata,
+            )
+            plain_result = await adapter._upload_and_send(
+                "!room:example.org", b"plain", "plain.png", "image/png", "m.image",
+                metadata=metadata,
+            )
+            image_result = await adapter.send_multiple_images(
+                "!room:example.org", [(first.as_uri(), "one"), (second.as_uri(), "two")],
+                metadata=metadata,
+            )
+
+        contents = [call.args[2] for call in mock_client.send_message_event.await_args_list]
+        assert (
+            text_result.success, encrypted_result.success, plain_result.success, image_result.success,
+        ) == (True, True, True, True)
+        assert [content["m.relates_to"]["m.in_reply_to"]["event_id"] for content in contents] == [
+            "$root", "$text", "$encrypted", "$plain", "$image-one",
+        ]
+        assert ["file" in content for content in contents] == [False, True, False, False, False]
 
 
 class TestMatrixDiagnostics:

@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — 標準處理"
     choice_auto: "auto — 每輪的前幾秒快速"
     choice_cold: "cold — 僅會話的第一輪快速"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra，6 倍價格）"
+    ultrafast_not_supported: "⚡ Ultrafast 僅適用於 GPT-6 Astra（目前模型：`{model}`）。"
   footer:
     status: "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"
     usage: "用法：`/footer [on|off|status]`"
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "快速模式"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "用法：/fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast 僅適用於 GPT-6 Astra（目前模型：{model}）。"
+      usage: "用法：/fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}：{status}"
       set_to: "✓ {feature} 已設為 {value} {scope}"
     hatch:

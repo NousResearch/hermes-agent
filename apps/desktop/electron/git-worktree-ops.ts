@@ -27,7 +27,18 @@ function runGit(gitBin, args, cwd): Promise<string> {
 // (#125686). Same refspec as `hermes update`: the `+` matters on a depth-1
 // clone, where the new tip need not descend from the old one.
 async function fetchTrackingRef(gitBin, root, remote, branch): Promise<boolean> {
-  return gitOk(gitBin, ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], root)
+  const fetched = await gitOk(gitBin, ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], root)
+
+  if (fetched) {
+    // Partial clones receive lazy blobs in separate promisor packs. Repeated
+    // fetches otherwise leave one tiny pack per request indefinitely, causing
+    // the install repository to grow without bound. `--auto` keeps this
+    // maintenance cheap when there is nothing to consolidate while allowing
+    // Git to repack once its normal thresholds are reached.
+    await gitOk(gitBin, ['gc', '--auto'], root)
+  }
+
+  return fetched
 }
 
 // Parse `git worktree list --porcelain`. The first record is the main worktree.

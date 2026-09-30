@@ -133,12 +133,14 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
 def test_truncated_framed_archive_falls_back_to_older_answer(cron_env):
     import os
     from cron.jobs import create_job, OUTPUT_DIR
+    from cron.scheduler import _run_doc_header
     from cron.scheduler_prompt import _inject_context_from
 
     job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
     _write_archive(cron_env, job["id"], "older.md", "## Response\n\nOLDER ANSWER\n")
     _write_archive(cron_env, job["id"], "newer.md",
-                   "**Response Characters:** 80\n## Response\n\nTRUNCATED\n")
+                   _run_doc_header(job, "probe", job["id"], "Report", frame_prompt=True)
+                   + "**Response Characters:** 80\n## Response\n\nTRUNCATED\n")
     os.utime(OUTPUT_DIR / job["id"] / "older.md", (1, 1))
     os.utime(OUTPUT_DIR / job["id"] / "newer.md", (2, 2))
     prompt, injected = _inject_context_from(job, "Report")
@@ -191,18 +193,59 @@ def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, mon
     assert "OLDER COMPLETE ANSWER" in prompt
     assert quoted not in prompt
 
-    # Archives produced before prompt-length framing get the same conservative
-    # treatment: an invalid first response frame never promotes a later one.
-    saved.write_text(f"**Response Characters:** {len(answer)}\n## Response\n\n"
-                     + answer[:-len(suffix)] + "\n", encoding="utf-8")
-    os.utime(saved, (2, 2))
-    prompt, injected = _inject_context_from(job, "Next task")
-    assert injected and "OLDER COMPLETE ANSWER" in prompt
-    assert quoted not in prompt
-
     # Losing the response boundary itself is also unusable, not a script archive.
     saved.write_text(complete.split("**Response Characters:**", 1)[0], encoding="utf-8")
     os.utime(saved, (2, 2))
     prompt, injected = _inject_context_from(job, "Next task")
     assert injected and "OLDER COMPLETE ANSWER" in prompt
     assert "## Prompt" not in prompt
+
+
+def _make_latest(job_id: str) -> None:
+    import os
+    from cron.jobs import OUTPUT_DIR
+
+    _write_archive(None, job_id, "older.md", "## Response\n\nSTALE ANSWER\n")
+    for path in (OUTPUT_DIR / job_id).glob("*.md"):
+        os.utime(path, (1, 1) if path.name == "older.md" else (2, 2))
+
+
+def test_unframed_archive_quoting_a_frame_in_its_prompt_keeps_its_answer(cron_env):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler import _run_doc_header
+    from cron.scheduler_prompt import _inject_context_from
+
+    prompt = "Discuss this example:\n**Response Characters:** 4\n## Response\n\nbody\nEnd."
+    job = create_job(prompt=prompt, schedule="0 8 * * *", context_from="self")
+    # The pre-framing writer: unstamped header, bare response heading.
+    save_job_output(job["id"], _run_doc_header(job, "probe", job["id"], prompt)
+                    + "## Response\n\nCURRENT COMPLETE ANSWER\n")
+    _make_latest(job["id"])
+
+    result, injected = _inject_context_from(job, "Next task")
+
+    assert injected
+    assert "CURRENT COMPLETE ANSWER" in result
+    assert "STALE ANSWER" not in result
+
+
+def test_script_output_quoting_a_prompt_frame_stays_whole(cron_env):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
+
+    report = "A report\n**Prompt Characters:** 4\n## Prompt\n\nbody\nEnd of report"
+    (cron_env / "scripts").mkdir()
+    (cron_env / "scripts" / "report.py").write_text(f"print({report!r})\n")
+    job = create_job(prompt="", schedule="0 8 * * *", script="report.py",
+                     no_agent=True, context_from="self")
+    job["interpreter"] = sys.executable
+    success, archive, final, error = cron.scheduler.run_job(job)
+    assert success, error
+    save_job_output(job["id"], archive)
+    _make_latest(job["id"])
+
+    result, injected = _inject_context_from(job, "Next task")
+
+    assert injected
+    assert report in result
+    assert "STALE ANSWER" not in result

@@ -68,6 +68,8 @@ def _archive_answer(archive: str) -> str | None:
     """The reusable answer of a stored run, using its frame when available.
 
     Framed runs validate the response length before whitespace normalization.
+    Only a prompt stamp in the agent writer's own header selects framing: prompts
+    from older writers and script output can quote the same markers.
     Archives without the heading (script-mode runs) stay whole-document. For legacy
     archives without a frame, the LAST
     occurrence is the writer's boundary — the assembled prompt half can itself carry
@@ -78,29 +80,32 @@ def _archive_answer(archive: str) -> str | None:
     delivery lane itself suppresses) — so the caller falls through to an older
     archive instead of injecting prompt noise the job already has.
     """
-    frame_pattern = re.compile(r"(?m)^\*\*Response Characters:\*\* (\d+)\n## Response\n\n")
-    # New writers stamp the prompt length outside user-owned text. Jump past
-    # that prompt instead of searching its quoted markers for a response frame.
-    prompt_frame = re.search(r"(?m)^\*\*Prompt Characters:\*\* (\d+)\n## Prompt\n\n", archive)
-    if (prompt_frame is not None
-            and archive.find("## Prompt\n\n") == prompt_frame.end() - len("## Prompt\n\n")):
+    # New agent writers stamp the prompt length in their fixed header, outside
+    # user-owned text. Jump past that prompt instead of searching its quoted
+    # markers for a response frame. The title may be a multi-line prompt, so
+    # anchor on the first Job ID block and never search the payload after it.
+    prompt_frame = None
+    if archive.startswith("# Cron Job: "):
+        header_at = archive.find("\n\n**Job ID:** ")
+        prompt_frame = re.compile(
+            r"\n\n\*\*Job ID:\*\* [^\n]*\n\*\*Run Time:\*\* [^\n]*\n\*\*Schedule:\*\* [^\n]*\n\n"
+            r"\*\*Prompt Characters:\*\* (\d+)\n## Prompt\n\n"
+        ).match(archive, header_at) if header_at != -1 else None
+    if prompt_frame is not None:
         response_start = prompt_frame.end() + int(prompt_frame.group(1)) + 2
-        frame = frame_pattern.match(archive, response_start)
+        frame = re.compile(r"\*\*Response Characters:\*\* (\d+)\n## Response\n\n").match(
+            archive, response_start)
         if frame is None:
             return None  # The writer-owned boundary is missing or truncated.
-    else:
-        if "## Response" not in archive:
-            return archive
-        # Older framed archives lack a prompt length. Be conservative: validate
-        # only the first frame, never promote a nested frame after a bad boundary.
-        frame = frame_pattern.search(archive)
-    if frame is not None:
         length = int(frame.group(1))
         tail = archive[frame.end():]
         if len(tail) != length + 1 or not tail.endswith("\n"):
             return None
         answer = tail[:-1].strip()
     else:
+        # Unframed writers (older agent runs, scripts, errors): markers are payload.
+        if "## Response" not in archive:
+            return archive
         answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):
         return None

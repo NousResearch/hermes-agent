@@ -59,6 +59,16 @@ def test_set_hidden_unknown_id_still_errors(db):
     assert envelope.get("error"), envelope
 
 
+def test_set_hidden_without_flag_leaves_visible_session_alone(db):
+    """#122190: a flag-less ``session.set_hidden`` is rejected, never treated as hide."""
+    _seed(db, "plain-chat")
+    assert db.get_session("plain-chat")["hidden"] == 0
+
+    envelope = _call("session.set_hidden", {"session_id": "plain-chat"})
+    assert envelope.get("error"), envelope
+    assert db.get_session("plain-chat")["hidden"] == 0
+
+
 def test_session_list_include_hidden(db):
     _seed(db, "plain-chat")
     _seed(db, "bot-chat")

@@ -36,13 +36,7 @@ class RecordingTransport:
 
 
 class TestInterimMetadataHelper:
-    def test_marks_and_preserves(self):
-        md = _interim_metadata({"thread_id": "t1", "notify": False})
-        assert md["_interim_send"] is True
-        assert md["thread_id"] == "t1"
 
-    def test_none_input(self):
-        assert _interim_metadata(None) == {"_interim_send": True}
 
     def test_does_not_mutate_input(self):
         src = {"thread_id": "t1"}

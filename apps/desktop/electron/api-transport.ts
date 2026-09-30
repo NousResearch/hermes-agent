@@ -195,6 +195,29 @@ function readStatusCode(error: unknown): number {
 }
 
 /**
+ * The structured JSON body an httpStatusError carries after its "<status>: "
+ * prefix, or null when the body was not a JSON object. NAS answers
+ * `{ error: "<code>", ... }` on 4xx, and every reader of that code (the 409
+ * org picker, the stale-team fallback) must parse the prefix the same way.
+ */
+function readJsonErrorBody(error: unknown): null | Record<string, unknown> {
+  const message = error instanceof Error ? error.message : ''
+  const start = message.indexOf('{')
+
+  if (start < 0) {
+    return null
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(message.slice(start))
+
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Error for a JSON endpoint that did not answer JSON. A 2xx HTML body is the
  * SPA index.html for an unregistered /api path, and downstream capability
  * probes (isMissingHealthEndpointError, gateway-rpc) key on the "endpoint is
@@ -253,6 +276,7 @@ export {
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,
+  readJsonErrorBody,
   readStatusCode,
   shouldRetryRequest,
   withRetry

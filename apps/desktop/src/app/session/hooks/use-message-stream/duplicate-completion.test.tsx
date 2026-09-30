@@ -70,9 +70,15 @@ it('keeps distinct segments, user boundaries, and failures on their own side of 
     const earlierId = stream.state().messages[0].id
 
     if (fixture.user) {
-      stream.states.set(SID, appendMidTurnUserMessage(stream.state(), {
-        id: 'correction', role: 'user', parts: [textPart('Use the other file.')], hidden: fixture.hidden
-      }))
+      stream.states.set(
+        SID,
+        appendMidTurnUserMessage(stream.state(), {
+          id: 'correction',
+          role: 'user',
+          parts: [textPart('Use the other file.')],
+          hidden: fixture.hidden
+        })
+      )
     }
 
     if (fixture.assistant) {
@@ -90,12 +96,20 @@ it('keeps distinct segments, user boundaries, and failures on their own side of 
     }
 
     const liveId = stream.state().streamId
-    await send('message.complete', { text: fixture.final ?? 'same reply', ...(fixture.error ? { error: fixture.error, status: 'error' } : {}) })
+    await send('message.complete', {
+      text: fixture.final ?? 'same reply',
+      ...(fixture.error ? { error: fixture.error, status: 'error' } : {})
+    })
 
     const messages = stream.state().messages
     expect(messages.at(-1)?.id, fixture.name).toBe(liveId)
-    expect(chatMessageText(messages.find(message => message.id === earlierId)!), fixture.name).toBe(fixture.interim ?? 'same reply')
-    expect(messages.at(-1)?.parts.some(part => part.type === 'tool-call'), fixture.name).toBe(true)
+    expect(chatMessageText(messages.find(message => message.id === earlierId)!), fixture.name).toBe(
+      fixture.interim ?? 'same reply'
+    )
+    expect(
+      messages.at(-1)?.parts.some(part => part.type === 'tool-call'),
+      fixture.name
+    ).toBe(true)
 
     if (fixture.error) {
       expect(messages.at(-1)?.error).toBe(fixture.error)

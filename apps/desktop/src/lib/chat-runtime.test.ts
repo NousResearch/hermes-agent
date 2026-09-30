@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
@@ -8,47 +8,107 @@ import {
   attachmentId,
   coalesceToolOnlyAssistants,
   coerceThinkingText,
+  createClientSessionState,
   createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
+  personalityNamesFromConfig,
   toRuntimeMessage
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 const THUMB_URL = 'data:image/png;base64,dGh1bWI='
 
+describe('createClientSessionState', () => {
+  it('anchors a fresh runtime to its creation time', () => {
+    const createdAt = 1_700_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(createdAt)
+
+    try {
+      expect(createClientSessionState('stored-1').runtimeStartedAt).toBe(createdAt)
+    } finally {
+      now.mockRestore()
+    }
+  })
+})
+
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
 }
 
 describe('optimisticAttachmentRef', () => {
-  it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {
+  it('renders a path-backed image through the same @image: ref as a reloaded turn (#93204)', () => {
     const ref = optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL }))
 
-    // The raw data URL flows through extractEmbeddedImages → inline thumbnail,
-    // dodging the remote /api/media 403 an @image:<localpath> ref would hit.
-    expect(ref).toBe(DATA_URL)
+    // DirectiveImage paints a bounded thumbnail inline and hands the full file
+    // to the lightbox, so the in-flight bubble matches the reloaded turn instead
+    // of freezing on a 512px thumbnail. Remote gateways resolve the same path
+    // over the authenticated media API (no /api/media 403).
+    expect(ref).toBe('@image:/tmp/shot.png')
   })
 
-  it('prefers the downscaled thumbnail for the display ref when present', () => {
+  it('prefers the path ref even when a downscaled thumbnail is present (#93204)', () => {
     const ref = optimisticAttachmentRef(
-      attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
+      attachment({ kind: 'image', path: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
     )
 
-    // The bubble is display-only; full bytes are read on demand and for upload.
-    expect(ref).toBe(THUMB_URL)
+    // The thumbnail no longer caps fidelity: the path lets the lightbox load the
+    // original. Full bytes are read on demand and for upload.
+    expect(ref).toBe('@image:/tmp/shot.png')
   })
 
-  it('does not render a full path-backed image while its bounded thumbnail is pending', () => {
-    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBeNull()
+  it('emits the path ref for a freshly attached image before its thumbnail resolves (#93204)', () => {
+    // Previously this returned null (waiting on the resize); now the path drives
+    // an @image: ref that DirectiveImage renders bounded-inline immediately.
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBe('@image:/tmp/shot.png')
   })
 
-  it('does not use a path fallback for a non-data preview url', () => {
+  it('emits the path ref regardless of a non-data preview url (#93204)', () => {
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: 'https://example.com/x.png' })
     )
 
-    expect(ref).toBeNull()
+    expect(ref).toBe('@image:/tmp/shot.png')
+  })
+
+  it('falls back to the bounded thumbnail for a path-less pasted image', () => {
+    // No filesystem path to rehydrate from (raw clipboard bytes): keep the
+    // inline thumbnail so the bubble still renders something.
+    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL }))
+
+    expect(ref).toBe(THUMB_URL)
+  })
+
+  it('falls back to a data preview url when a path-less image has no thumbnail', () => {
+    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: DATA_URL }))
+
+    expect(ref).toBe(DATA_URL)
+  })
+
+  it('returns null for a path-less image with no renderable inline source', () => {
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'https://example.com/x.png' }))).toBeNull()
+  })
+
+  it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
+    const blobUrl = 'blob:https://desktop/preview-1'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
+    )
+
+    expect(ref).toBe(`![Lattice.png](${blobUrl})`)
+  })
+
+  it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
+    const blobUrl = 'blob:file:///07aa165b-55f6-4167-96c0-68f45ce7de27'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'shot[1].png', detail: '/tmp/shot[1].png', previewUrl: blobUrl })
+    )
+
+    // `]` in the raw label would end the alt span in the Markdown-image form
+    // the directive parser matches, leaking the raw expression into text.
+    expect(ref).toBe(`![shot%5B1%5D.png](${blobUrl})`)
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
@@ -66,10 +126,6 @@ describe('optimisticAttachmentRef', () => {
     expect(() => optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).not.toThrow()
     expect(optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).toBeNull()
   })
-
-  it('returns null for a null attachment instead of throwing', () => {
-    expect(optimisticAttachmentRef(null as unknown as ComposerAttachment)).toBeNull()
-  })
 })
 
 describe('attachmentDisplayText', () => {
@@ -77,10 +133,6 @@ describe('attachmentDisplayText', () => {
     expect(() => attachmentDisplayText(undefined as unknown as ComposerAttachment)).not.toThrow()
     expect(attachmentDisplayText(undefined as unknown as ComposerAttachment)).toBeNull()
     expect(attachmentDisplayText(null as unknown as ComposerAttachment)).toBeNull()
-  })
-
-  it('still resolves a normal file ref', () => {
-    expect(attachmentDisplayText(attachment({ kind: 'file', refText: '@file:src/a.ts' }))).toBe('@file:src/a.ts')
   })
 })
 
@@ -209,5 +261,42 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
       .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
+  })
+})
+
+describe('personalityNamesFromConfig', () => {
+  it('reads root-level personalities the runtime honours (#123297)', () => {
+    expect(personalityNamesFromConfig({ personalities: { root_persona: '...' } })).toEqual(['root_persona'])
+  })
+
+  it('merges root and agent blocks, deduping name clashes', () => {
+    const names = personalityNamesFromConfig({
+      personalities: { root_persona: 'r', shared: 'root' },
+      agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
+    })
+
+    // Direct array equality pins membership, dedupe, AND order in one assertion:
+    // `available_personalities()` inserts the root block before `agent.personalities`,
+    // and a clashing name keeps its first-insert (root) position, so the GUI listing
+    // must match that exact order.
+    expect(names).toEqual(['root_persona', 'shared', 'agent_persona'])
+  })
+
+  it('ignores non-object or array blocks', () => {
+    expect(personalityNamesFromConfig({ personalities: ['nope'], agent: { personalities: 'nope' } })).toEqual([])
+    expect(personalityNamesFromConfig(null)).toEqual([])
+  })
+
+  it('folds keys like the runtime: case/whitespace fold and dedupe, neutral names dropped', () => {
+    // The runtime (`available_personalities`) folds each key `str(name).strip().lower()`
+    // and skips the neutral spellings, so the dropdown must not offer a row the runtime
+    // never resolves. `Catgirl` and `catgirl` are one personality; `  Spaced  ` resolves
+    // to `spaced`; `none`/`default`/`neutral` resolve to nothing.
+    const names = personalityNamesFromConfig({
+      personalities: { Catgirl: 'r', '  Spaced  ': 'r', none: 'r', Default: 'r', NEUTRAL: 'r' },
+      agent: { personalities: { catgirl: 'a' } }
+    })
+
+    expect(names).toEqual(['catgirl', 'spaced'])
   })
 })

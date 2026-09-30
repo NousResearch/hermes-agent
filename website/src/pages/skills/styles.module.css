@@ -369,11 +369,6 @@
   color: rgba(255, 215, 0, 0.6);
 }
 
-.sidebarToggle {
-  display: none;
-}
-
-
 .main {
   padding: 1.25rem 1.5rem 3rem;
   min-width: 0;
@@ -905,14 +900,207 @@
   display: none;
 }
 
-.activeCatBadge {
-  font-size: 0.72rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 3px;
-  background: rgba(255, 215, 0, 0.1);
-  color: rgba(255, 215, 0, 0.8);
+
+.controlsTopRow {
+  display: contents;
 }
 
+.filterToggle,
+.compactSelect,
+.sidebarSourceSelect,
+.sidebarClose {
+  display: none;
+}
+
+@media (max-width: 1024px), (max-height: 800px) {
+  .controlsBar {
+    flex-direction: row;
+    gap: 0.65rem;
+    justify-content: center;
+    padding: 0.55rem 1rem;
+  }
+
+  .controlsTopRow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: min(100%, 1200px);
+    min-width: 0;
+  }
+
+  .searchWrap {
+    flex: 1 1 24rem;
+    min-width: 8rem;
+    max-width: none;
+  }
+
+  .searchInput { min-height: 44px; }
+
+  .compactSelect {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    /* Hold the select's 7.5rem floor: without it the column shrinks below the
+       select and the control overruns its neighbour. */
+    min-width: 7.5rem;
+    color: var(--ifm-color-emphasis-600);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .compactSelect select {
+    height: 44px;
+    max-width: 11rem;
+    min-width: 7.5rem;
+    padding: 0 1.9rem 0 0.65rem;
+    border: 1px solid rgba(255, 215, 0, 0.14);
+    border-radius: 8px;
+    background: var(--ifm-background-surface-color);
+    color: var(--ifm-font-color-base);
+    font: 500 0.78rem "DM Sans", sans-serif;
+  }
+
+  [data-theme="light"] .compactSelect select {
+    border-color: var(--ifm-color-emphasis-300);
+  }
+
+  .sourcePills { display: none; }
+  .layout { grid-template-columns: 1fr; }
+  .layout > .sidebar { display: none; }
+}
+
+/* Below ~820px the uppercase labels leave no room for the select's own value. */
+@media (max-width: 820px) {
+  .compactSelect > span { display: none; }
+}
+
+@media (max-width: 600px) {
+  .controlsBar {
+    display: contents;
+  }
+
+  .controlsTopRow {
+    position: sticky;
+    top: 60px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
+    padding: 0.55rem 0.75rem;
+    background: var(--ifm-navbar-background-color);
+    border-bottom: 1px solid var(--ifm-hr-border-color);
+    backdrop-filter: blur(16px);
+  }
+
+  .searchWrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  .compactSelect { display: none; }
+
+  .filterToggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    flex: 0 0 auto;
+    min-height: 44px;
+    margin: 0;
+    padding: 0 0.85rem;
+    border: 1px solid rgba(255, 215, 0, 0.16);
+    border-radius: 8px;
+    background: rgba(255, 215, 0, 0.04);
+    color: var(--ifm-font-color-base);
+    font: 600 0.82rem "DM Sans", sans-serif;
+  }
+
+  .activeFilterCount {
+    min-width: 1.25rem;
+    border-radius: 999px;
+    background: var(--ifm-color-emphasis-200);
+    color: var(--ifm-font-color-base);
+  }
+
+  [data-theme="dark"] .activeFilterCount {
+    background: rgba(255, 215, 0, 0.14);
+    color: #ffd700;
+  }
+
+  /* Gold accents are tuned for the dark theme; against the light surface the
+     translucent gold borders are invisible. */
+  [data-theme="light"] .controlsTopRow .filterToggle,
+  [data-theme="light"] .sidebarClose,
+  [data-theme="light"] .sidebarSourceSelect select {
+    border-color: var(--ifm-color-emphasis-300);
+  }
+
+  .layout > .sidebar.sidebarOpen {
+    display: block;
+  }
+
+  .sidebarSourceSelect {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-bottom: 0.8rem;
+    color: var(--ifm-font-color-secondary);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .sidebarSourceSelect select {
+    min-height: 44px;
+    border: 1px solid rgba(255, 215, 0, 0.14);
+    border-radius: 8px;
+    background: var(--ifm-background-surface-color);
+    color: var(--ifm-font-color-base);
+    padding: 0 0.65rem;
+  }
+
+  .catItem { min-height: 44px; }
+
+  .clearBtn {
+    right: 0.25rem;
+    width: 44px;
+    height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .sidebarClear {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .sidebarClose {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    border: 1px solid rgba(255, 215, 0, 0.14);
+    border-radius: 8px;
+    background: rgba(255, 215, 0, 0.04);
+    color: var(--ifm-font-color-base);
+    font: 400 1.5rem/1 "DM Sans", sans-serif;
+    cursor: pointer;
+  }
+
+  .sidebarClose:focus-visible {
+    outline: 2px solid #ffd700;
+    outline-offset: 2px;
+  }
+}
 
 @media (max-width: 900px) {
   .layout {
@@ -944,27 +1132,6 @@
     z-index: 190;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
-  }
-
-  .sidebarToggle {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem 0.85rem;
-    margin: 0 1rem 0.75rem;
-    border: 1px solid rgba(255, 215, 0, 0.1);
-    border-radius: 6px;
-    background: rgba(255, 215, 0, 0.03);
-    color: var(--ifm-font-color-secondary);
-    font-family: "DM Sans", sans-serif;
-    font-size: 0.82rem;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .sidebarToggle:hover {
-    border-color: rgba(255, 215, 0, 0.2);
-    color: var(--ifm-font-color-base);
   }
 
   .hero {
@@ -1012,6 +1179,13 @@
 
 .pickerMode {
   padding-top: 0.5rem;
+}
+
+/* The navbar is hidden in picker mode, so the sticky controls row must pin to
+   the frame top — its normal 60px navbar offset would float it over the first
+   card row. */
+.pickerMode .controlsTopRow {
+  top: 0;
 }
 
 :global(html):has(.pickerMode) :global(.navbar),

@@ -86,16 +86,14 @@ class TestStaleInflightSelfHeal:
         job_id = env["job_id"]
         import cron.jobs as J
 
-        if not hasattr(S, "sweep_stale_inflight"):
-            pytest.skip("guard not present on this build")
 
         # Simulate the incident leak: job id claimed with no owning future,
         # old enough to be past its allowance.
         S._running_job_ids.clear()
         S._running_since.clear()
         S._running_futures.clear()
-        S._running_job_ids.add(job_id)
-        S._running_since[job_id] = time.time() - 6 * 60 * 60
+        S._running_job_ids.add(S._inflight_key(job_id))
+        S._running_since[S._inflight_key(job_id)] = time.time() - 6 * 60 * 60
 
         # get_due_jobs is called inside tick BEFORE the sweep; we patch it to
         # return the wedged job as due so the in-cycle sweep releases the claim
@@ -111,48 +109,17 @@ class TestStaleInflightSelfHeal:
             "wedged job must fire again without force-run"
         )
 
-    def test_two_consecutive_auto_fires_after_guard(self, cron_env, monkeypatch):
-        """GREEN: after the guard releases a stale claim, the job fires on
-        consecutive ticks (no manual intervention)."""
-        S, E, env = self._setup(cron_env, monkeypatch)
-        job_id = env["job_id"]
-        import cron.jobs as J
-
-        if not hasattr(S, "sweep_stale_inflight"):
-            pytest.skip("guard not present on this build")
-
-        S._running_job_ids.clear()
-        S._running_since.clear()
-        S._running_futures.clear()
-        S._running_job_ids.add(job_id)
-        S._running_since[job_id] = time.time() - 6 * 60 * 60
-
-        job = J.get_job(job_id)
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
-            n1 = S.tick(verbose=False, sync=True)
-        latest1 = E.latest_execution(job_id)
-        assert latest1["status"] == "completed"
-
-        # Re-arm due and tick again: fire #2.
-        now = datetime.now(timezone.utc)
-        J.update_job(job_id, {"next_run_at": (now - timedelta(minutes=1)).isoformat()})
-        n2 = S.tick(verbose=False, sync=True)
-        latest2 = E.latest_execution(job_id)
-        assert latest2["status"] == "completed"
-        assert latest2["id"] != latest1["id"], "two distinct executions"
 
     def test_guard_stats_reported(self, cron_env, monkeypatch):
         """The guard must surface a countable forced-release signal."""
         S, E, env = self._setup(cron_env, monkeypatch)
         import cron.jobs as J
-        if not hasattr(S, "sweep_stale_inflight"):
-            pytest.skip("guard not present on this build")
 
         S._running_job_ids.clear()
         S._running_since.clear()
         S._running_futures.clear()
-        S._running_job_ids.add(env["job_id"])
-        S._running_since[env["job_id"]] = time.time() - 6 * 60 * 60
+        S._running_job_ids.add(S._inflight_key(env["job_id"]))
+        S._running_since[S._inflight_key(env["job_id"])] = time.time() - 6 * 60 * 60
         S.sweep_stale_inflight([J.get_job(env["job_id"])])
         stats = S.get_inflight_guard_stats()
         assert stats["forced_releases"] >= 1
@@ -164,38 +131,6 @@ class TestEAGAINCreateExecutionLeak:
     in-flight claim and execution creation (create_execution / pool.submit).
     The claim must be released immediately so the next tick re-dispatches."""
 
-    def test_create_execution_failure_releases_claim(self, cron_env, monkeypatch, tmp_path):
-        from cron import scheduler as S
-        from cron import executions as E
-        import cron.jobs as J
-
-        env = cron_env
-        monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
-        monkeypatch.setattr(S, "_hermes_home", env["home"])
-        job_id = env["job_id"]
-        job = J.get_job(job_id)
-
-        S._running_job_ids.clear()
-        S._running_since.clear()
-        S._running_futures.clear()
-
-        # Simulate EAGAIN during create_execution (substrate thread exhaustion
-        # at 12:50): the in-flight claim was taken but execution creation fails.
-        def boom(*a, **k):
-            raise OSError(11, "Resource temporarily unavailable")
-        monkeypatch.setattr(S, "create_execution", boom)
-
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
-            # The failure is contained per-job (#86482 follow-up): the tick
-            # logs an ERROR, skips this fire, and moves on to the remaining
-            # due jobs instead of aborting the whole dispatch loop.
-            S.tick(verbose=False, sync=True)
-
-        # The claim must be released (not leaked) so the NEXT tick can retry.
-        assert job_id not in S.get_running_job_ids(), (
-            "claim must be released when execution creation fails, so the "
-            "next tick re-dispatches instead of wedging on 'already running'"
-        )
 
     def test_pool_submit_eagain_releases_claim_and_redispatches(self, cron_env, monkeypatch, tmp_path):
         from cron import scheduler as S

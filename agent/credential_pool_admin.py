@@ -11,11 +11,21 @@ if TYPE_CHECKING:
 
 def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
     from agent.credential_pool import _CLEAR_STATUS
+    from agent.credential_pool_model_cooldowns import MODEL_COOLDOWN_OBSERVED_AT_KEY
 
     # The reset marker lets a live pool in another process tell "reset after my cooldown" from
-    # "never had a status" — both read as bare None on disk (#89415).
-    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None, status_cleared_at=time.time(),
-                   extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
+    # "never had a status" — both read as bare None on disk (#89415). Model observation metadata
+    # is part of the cleared state too; stale processes carry their own copy for merge ordering.
+    return replace(
+        entry,
+        **_CLEAR_STATUS,
+        model_cooldowns=None,
+        status_cleared_at=time.time(),
+        extra={
+            k: v for k, v in entry.extra.items()
+            if k not in {"failure_reason", MODEL_COOLDOWN_OBSERVED_AT_KEY}
+        },
+    )
 
 
 class CredentialPoolAdminMixin:

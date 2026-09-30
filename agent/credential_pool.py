@@ -2146,7 +2146,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # unhydrated duplicate as an empty key.
             if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
                 continue
-            synced = self._resync_stale_entry(entry)
+            synced = self._resync_model_cooldown_clear(self._resync_stale_entry(entry))
             if synced is not entry:
                 entry = synced
                 cleared_any = True

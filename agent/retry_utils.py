@@ -91,11 +91,15 @@ def _quota_reset_seconds(m: "re.Match[str]") -> float:
     return value / 1000.0 if m.group(2).lower() == "ms" else value
 
 
-def _try_again_in_seconds(m: "re.Match[str]") -> float:
+def _try_again_in_seconds(m: "re.Match[str]") -> Optional[float]:
     value = float(m.group(1))
     unit = m.group(2).lower()
     if unit == "ms":
-        return value / 1000.0
+        value /= 1000.0
+    if value <= 0:
+        return None
+    if unit == "ms":
+        return value
     if unit.startswith("h"):
         return value * 3600.0
     if unit.startswith("m"):

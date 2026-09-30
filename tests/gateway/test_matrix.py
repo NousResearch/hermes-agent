@@ -899,6 +899,43 @@ async def test_room_state_read_failure_adds_no_note_and_keeps_baseline(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_room_baseline_survives_compaction_of_every_saved_snapshot(tmp_path):
+    from agent.context_compressor import ContextCompressor
+
+    store, source = _room_session(tmp_path)
+    session_id = store.get_or_create_session(source).session_id
+    renamed_state = {"m.room.name": {"name": "Ops 2"}, "m.room.topic": {"topic": "Incidents 2"}}
+    runner = _room_context_runner(store, _room_context_adapter(_OPS_STATE))
+
+    def media_turns(count):
+        # Media turns get no room snapshot.
+        for index in range(count):
+            store.append_to_transcript(session_id, {"role": "user", "content": f"[image {index}] " + "x" * 400})
+            store.append_to_transcript(session_id, {"role": "assistant", "content": f"seen {index} " + "y" * 400})
+
+    await _prepare_room_turn(runner, source, "$first", persist=True)
+    media_turns(2)
+    runner.adapters = {Platform.MATRIX: _room_context_adapter(renamed_state)}
+    renamed, _ = await _prepare_room_turn(runner, source, "$renamed", persist=True)
+    media_turns(15)
+    with patch("agent.context_compressor.get_model_context_length", return_value=8000):
+        compressor = ContextCompressor(model="test-model", quiet_mode=True, config_context_length=8000)
+    summary = MagicMock()
+    summary.choices[0].message.content = "## Active Task\nroom chat"
+    with patch("agent.context_compressor.call_llm", return_value=summary):
+        compacted = compressor.compress(store.load_transcript(session_id), current_tokens=100_000, force=True)
+    store._db.archive_and_compact(session_id, compacted)
+
+    after_compaction, _ = await _prepare_room_turn(runner, source, "$after-compaction")
+
+    assert (renamed, after_compaction) == (
+        '[The room display name is now: "Ops 2"]\n[The room topic changed to: "Incidents 2"]\n'
+        f'{_UNTRUSTED_MARKER}\n\n[New message]\nhello',
+        "hello",
+    )
+
+
+@pytest.mark.asyncio
 async def test_room_state_reads_overlap_and_stop_at_the_deadline(tmp_path, monkeypatch):
     from plugins.platforms.matrix import adapter as matrix_adapter
 

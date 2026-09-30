@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { DEMO_LAYOUT_ID } from '@/app/contrib/layout-presets'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
@@ -33,6 +33,10 @@ import { showHandoffTour } from './signpost'
 export type IntroCopyStage = 'hidden' | 'landed' | 'playing'
 
 export const $introCopy = atom<IntroCopyStage>('hidden')
+
+/** While the copy types and springs up, the thread under it stays hidden: the backend's first row and the
+ *  card after it can land early, and a see-through chat surface (glass) would show them mid-motion. */
+export const $introHoldsThread = computed($introCopy, stage => stage === 'playing')
 
 /** The hidden `/initiate-setup` turn has been handed to the backend (or failed to be). */
 export const $introTurnSent = atom(false)

@@ -12,6 +12,11 @@
   background: var(--ui-chat-surface-background);
 }
 
+/* The thread waits under the copy until the spring settles (`$introHoldsThread`). */
+[data-intro-holding] > [data-slot='thread'] {
+  visibility: hidden;
+}
+
 /* Same column as the thread content, so the risen copy sits where the first message lands. */
 .intro-copy-text {
   position: absolute;

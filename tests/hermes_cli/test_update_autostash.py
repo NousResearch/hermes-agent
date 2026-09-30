@@ -10,6 +10,25 @@ from hermes_cli import main as hermes_main, update_cmd
 from tests.hermes_cli.test_update_target_identity import git, update_tree  # noqa: F401
 
 
+
+
+def test_update_refuses_to_autostash_huge_untracked_file(tmp_path, capsys):
+    """A sparse core dump must not be fed to ``git stash -u`` (#128782)."""
+    git(tmp_path, 'init', '-q', '-b', 'main')
+    git(tmp_path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'base')
+    huge = tmp_path / 'core.1234'
+    with huge.open('wb') as handle:
+        handle.truncate(update_cmd._LARGE_UNTRACKED_FILE_BYTES)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        hermes_main._stash_local_changes_if_needed(['git'], tmp_path)
+
+    output = capsys.readouterr().out
+    assert 'core.1234' in output
+    assert 'too large to autostash safely' in output
+    assert not git(tmp_path, 'stash', 'list')
+
 @pytest.mark.parametrize('history,failure,keep', [
     ('ordinary', None, False), ('ordinary', None, True),
     ('ordinary', 'reset', False), ('ordinary', 'reset', True),

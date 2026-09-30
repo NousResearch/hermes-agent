@@ -140,7 +140,10 @@ def test_kanban_complete_result_field_scrubbed(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     secret = "sk-" + "D" * 48
-    kt._handle_complete({"result": f"finished with key={secret}"})
+    kt._handle_complete({
+        "summary": "done with the migration",
+        "result": f"finished with key={secret}",
+    })
     conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)

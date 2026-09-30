@@ -134,6 +134,11 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
     "kanban_create": frozenset({"session_id", "project_id"}),
     # ``title`` is the pre-schema alias of ``filename`` that ``_handle_attach_url`` still honours.
     "kanban_attach_url": frozenset({"title"}),
+    # ``result`` is the legacy log-line field (maps to task.result) that the model-facing
+    # schema no longer declares since ``summary`` became mandatory. The handler still
+    # accepts and stores it for legacy programmatic callers — but it never substitutes
+    # for a missing ``summary`` (see _handle_complete).
+    "kanban_complete": frozenset({"result"}),
 }
 
 
@@ -755,7 +760,15 @@ def _handle_complete(args: dict, **kw) -> str:
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
-    _check(summary or result, "provide at least one of: summary (preferred), result")
+    # summary is mandatory for the tool surface (observed attended worker runs: the
+    # model claimed 19 times to be sending `summary` while emitting only {artifacts, board};
+    # the old summary-or-result tolerance let that loop burn the turn). No fallback to
+    # `result` or any auto-invented text: a rejection the model can see is the contract.
+    _check(summary and summary.strip(),
+           "summary is required — provide a 1-3 sentence human-readable handoff of what was "
+           "done. Nothing changed and the task is still in-flight; retry kanban_complete with "
+           "a non-empty summary. (result-only tool completions are no longer accepted; the "
+           "CLI --result flag remains for legacy callers.)")
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
@@ -763,7 +776,7 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        _goal_gate("kanban_complete", task, tid, summary.strip())
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -798,10 +811,12 @@ def _handle_complete(args: dict, **kw) -> str:
         except kb.EmptyCompletionError as empty_err:
             # Same shape as the card gate: nothing was mutated, the audit event
             # already landed; the worker retries with evidence instead of stalling.
+            # (Unreachable for empty `summary` since the handler requires it; kept
+            # for the kernel contract the CLI path shares.)
             return tool_error(
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
-                f"change). Retry kanban_complete with a non-empty summary or result describing "
-                f"what was done.")
+                "change). Retry kanban_complete with a non-empty summary describing "
+                "what was done.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or

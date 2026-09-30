@@ -34,6 +34,18 @@ MUTATING_TOOL_NAMES = frozenset({
 
 # Pollers: legitimately re-invoked with identical args; the identical-call NOTICE never fires.
 STALL_GUARD_REPEATABLE_TOOLS = frozenset({"process_manage"})
+# Kanban run-lifecycle tools (mirrors tools/kanban_tools._RUN_LIFECYCLE_TOOLS — kept literal
+# here because this module is dependency-free and imported by agent/__init__ paths).
+# An identical-args retry of a terminal handoff is a replay, never a new experiment.
+KANBAN_LIFECYCLE_TOOL_NAMES = frozenset({
+    "kanban_complete", "kanban_block",
+    "kanban_request_review", "kanban_request_changes",
+    "kanban_schedule",
+})
+# After this many identical FAILED lifecycle calls the next identical call is blocked and the
+# turn halts — deterministically, regardless of hard_stop_enabled. Evidence: observed attended worker runs replayed the same summary-less kanban_complete {artifacts, board} 19
+# times on a warn-only (interactive-platform) config, ignoring every appended warning.
+LIFECYCLE_IDENTICAL_FAILURE_BLOCK_AFTER = 3
 _STALL_GUARD_REPEATABLE_SUFFIXES = ("_get_result", "_poll")  # generated / MCP poller conventions
 # Nth consecutive identical (tool, args, result) call that fires the notice; 3 tolerates one double-check.
 STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
@@ -249,6 +261,12 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
 # Guardrail verdict text injected into the conversation, keyed by decision code.
 # ``same_tool_failure_warning`` is built by _tool_failure_recovery_hint (tool-specific).
 _DECISION_MESSAGES: dict[str, str] = {
+    "lifecycle_identical_failure_block": (
+        "Blocked {tool_name}: this run-lifecycle call failed {count} times with identical "
+        "arguments. The run is stopped to break the loop — the task was NOT completed, "
+        "blocked, scheduled or handed off by these calls, and nothing further was mutated. "
+        "The last result above states exactly what was missing; do not retry the identical call."
+    ),
     "repeated_exact_failure_block": (
         "Blocked {tool_name}: the same tool call failed {count} times with identical arguments. "
         "Stop retrying it unchanged; change strategy or explain the blocker."
@@ -366,8 +384,22 @@ class ToolCallGuardrailController:
 
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
-        if cap_block is not None or not self.config.hard_stop_enabled:
-            return cap_block or allow
+        if cap_block is not None:
+            return cap_block
+        # Kanban lifecycle calls are a terminal handoff: a 4th identical replay after 3
+        # identical failures is stopped deterministically, even on warn-only (interactive)
+        # configs — the appended warnings are the only defence there, and a model can
+        # ignore them indefinitely (19 identical summary-less kanban_complete calls in
+        # observed attended worker runs). A successful mutating call in between
+        # still resets the streak (shared _progress_since_failure semantics), so a
+        # legitimately changed recovery attempt is never blocked; other tools are
+        # unaffected and keep their configured thresholds.
+        if tool_name in KANBAN_LIFECYCLE_TOOL_NAMES:
+            exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
+            if exact_count >= LIFECYCLE_IDENTICAL_FAILURE_BLOCK_AFTER:
+                return self._decide("block", "lifecycle_identical_failure_block", tool_name, exact_count, signature)
+        if not self.config.hard_stop_enabled:
+            return allow
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:

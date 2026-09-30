@@ -89,13 +89,33 @@ const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS].sort((a, b) => b.length 
  */
 const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
 
+// Bare-word fallback for paths the anchored branch misses (relative paths,
+// unknown extensions). Stop before backtick and double-quote so an inline-code
+// closer is not swallowed. Apostrophes stay legal inside the path.
+const _MEDIA_PATH_BARE = '[^\\s`"]+'
+
+// Sentence punctuation that can trail a bare capture when the tag sits in
+// prose (`open MEDIA:/tmp/a.pdf.`).
+const _MEDIA_TRAILING_PUNCTUATION = '.,;:!?'
+
+/**
+ * Whether a capture can name a real deliverable: a path separator, or a dot
+ * with file content after it (an extension or a dotfile — `report.md`,
+ * `.env`, `../a.png`). Anything else (`...`, a lone quote, a bare English
+ * word) renders as prose: a dead `#media:` link for a non-path is worse
+ * than no link (#84361).
+ */
+function isPlausibleMediaPath(value: string): boolean {
+  return value.includes('/') || value.includes('\\') || /\.[^.]/.test(value)
+}
+
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
   'g'
 )
 
 const MEDIA_TAG_RE = new RegExp(
-  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?`,
+  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
   'g'
 )
 
@@ -103,27 +123,86 @@ function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+    return trimmed.slice(1, -1)
+  }
+
+  // A trailing backtick or double-quote left in the value is formatting residue,
+  // not part of the path. Apostrophes are not residue (`john's.md`).
+  const last = trimmed.at(-1)
+
+  return last === '`' || last === '"' ? trimmed.slice(0, -1) : trimmed
 }
 
-function mediaLink(value: string): string {
-  const path = unquoteMediaPath(value)
+/**
+ * Split a bare (unquoted) capture into its path and the sentence punctuation
+ * that trailed it in prose: `open MEDIA:/tmp/a.pdf.` captures `/tmp/a.pdf.` —
+ * the period belongs to the sentence, not the path. Punctuation is only
+ * prose while what precedes it still names a path, so an ellipsis
+ * (`MEDIA:...`) is never split into a degenerate capture. Quoted captures are
+ * exempt (quotes are the documented escape hatch for odd names:
+ * `MEDIA:'/tmp/stop!.md'` keeps its `!`).
+ */
+function splitTrailingPunctuation(value: string): { path: string; punctuation: string } {
+  let end = value.length
 
-  return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
+  while (end > 0 && _MEDIA_TRAILING_PUNCTUATION.includes(value[end - 1] ?? '')) {
+    if (!isPlausibleMediaPath(value.slice(0, end - 1))) {
+      break
+    }
+
+    end -= 1
+  }
+
+  return { path: value.slice(0, end), punctuation: value.slice(end) }
+}
+
+function mediaLink(value: string): string | null {
+  const raw = value.trim()
+  const quote = raw[0]
+  const quoted = quote && quote === raw.at(-1) && ['"', "'", '`'].includes(quote)
+
+  // Quoted captures are the escape hatch for odd names — punctuation inside
+  // the quotes is part of the path, so only a BARE capture is split.
+  const { path, punctuation } = quoted
+    ? { path: unquoteMediaPath(raw), punctuation: '' }
+    : splitTrailingPunctuation(unquoteMediaPath(raw))
+
+  return isPlausibleMediaPath(path)
+    ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}`
+    : null
 }
 
 export function renderMediaTags(text: string): string {
   return text
     .replace(
       MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
+      (match, lead: string, value: string, trailer: string) => {
+        const link = mediaLink(value)
+
+        return link ? `${lead}${link}${trailer}` : match
+      }
     )
-    .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
+    .replace(MEDIA_TAG_RE, (match, value: string) => mediaLink(value) ?? match)
 }
 
-/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */
+/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share.
+ *  Bare captures shed trailing sentence punctuation (same rule as
+ *  {@link renderMediaTags}); degenerate non-path captures are dropped. */
 export function mediaTagValues(text: string): string[] {
-  return [...text.matchAll(MEDIA_TAG_RE)].map(match => match[1] ?? '')
+  return [...text.matchAll(MEDIA_TAG_RE)]
+    .map(match => match[1] ?? '')
+    .flatMap(value => {
+      const { path, punctuation } = splitTrailingPunctuation(unquoteMediaPath(value))
+
+      if (!isPlausibleMediaPath(path)) {
+        return []
+      }
+
+      // Bare captures shed the prose punctuation (it trails the raw value
+      // too); quoted captures keep every character inside their quotes.
+      return [punctuation ? value.slice(0, -punctuation.length || undefined) : value]
+    })
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
@@ -266,8 +345,10 @@ export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessage
 /**
  * Merge the final assistant text into a message's parts.
  *
- * - Removes all existing `text` parts (they were streamed deltas, now superseded
- *   by the authoritative final response).
+ * - Preserves earlier tool-delimited responses: a missed interim frame must
+ *   not make their public text disposable.
+ * - Replaces provisional text only in the latest response with its authoritative
+ *   final text, retaining confirmed text/reasoning boundaries.
  * - Keeps `reasoning` parts, but drops one that the final text fully covers
  *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
  *   NOT swallow a longer reasoning block that merely starts with it (#61447).
@@ -300,14 +381,41 @@ export function mergeFinalAssistantText(
     return parts
   }
 
+  // A tool call is an explicit model-response boundary even when no
+  // message.interim frame sealed the earlier text into a separate bubble.
+  // Only the suffix after the last call belongs to this authoritative final.
+  const lastToolIndex = parts.findLastIndex(part => part.type === 'tool-call')
+
+  if (lastToolIndex >= 0) {
+    const earlier = parts.slice(0, lastToolIndex + 1)
+
+    const earlierText = earlier
+      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+      .map(part => part.text)
+      .join('')
+
+    // Some terminal frames carry cumulative text. Strip only an exact prefix;
+    // fuzzy similarity is not proof that two assistant messages are the same.
+    const responseText =
+      earlierText && finalText.startsWith(earlierText) ? finalText.slice(earlierText.length) : finalText
+
+    const suffix = parts.slice(lastToolIndex + 1)
+
+    // A cumulative final can stop exactly at the pre-tool update. The suffix
+    // draft is still provisional; the ordinary empty-final path keeps drafts.
+    if (earlierText && finalText === earlierText) {
+      return [...earlier, ...suffix.filter(part => part.type !== 'text')]
+    }
+
+    return [...earlier, ...mergeFinalAssistantText(suffix, responseText, fallbackTimestamp)]
+  }
+
   const previousText = parts.findLast(part => part.type === 'text')
 
   const kept = parts.filter(part => {
     if (part.type === 'text') {
-      // Sealed text parts were already finalized into their own bubbles —
-      // this filter only runs on the LAST streaming bubble, so there are no
-      // sealed parts here. All text parts are streamed deltas that get
-      // replaced by the authoritative final text.
+      // The tool-delimited prefix was retained above. This suffix is
+      // provisional text from the response being finalized.
       return false
     }
 
@@ -343,6 +451,35 @@ export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt:
       ? ({ ...part, completedAt } as ChatMessagePart)
       : part
   )
+}
+
+/** Settle a turn that ended without its terminal message: drop empty
+ *  pending/stream placeholders and un-pend the rest. Shared by Stop, the
+ *  running=false edge, and the store's silent-turn settle. */
+export function finalizeInterruptedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  return messages
+    .filter(
+      message =>
+        !(
+          (message.pending || message.id === streamId) &&
+          message.parts.length === 0 &&
+          !chatMessageText(message).trim()
+        )
+    )
+    .map(message =>
+      message.pending || message.id === streamId
+        ? {
+            ...message,
+            completedAt: occurredAt,
+            parts: completeOpenTimelineParts(message.parts, occurredAt),
+            pending: false
+          }
+        : message
+    )
 }
 
 // Coalesce only adjacent deltas of the same channel. Switching between text

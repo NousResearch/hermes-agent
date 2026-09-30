@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -30,6 +29,7 @@ from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
+from hermes_constants import find_node_executable, with_hermes_node_path
 from .sidecar_paths import (
     _NPM_ERROR_LOG_MAX_CHARS,
     _npm_error_log,
@@ -362,7 +362,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # auth.print_credential_summary's emit callback is the only sink that sees
     # credential-derived strings (keeps cli.py taint-free for CodeQL).
     photon_auth.print_credential_summary(print)
-    node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
+    node_bin = find_node_executable("node")
     sidecar_installed = sidecar_deps_installed()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 20+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
@@ -405,13 +405,19 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
-    npm = shutil.which("npm") or "npm"
-    if not shutil.which(npm):
-        print(
-            "npm is not on PATH. Install Node.js 20+ (https://nodejs.org/) "
-            "and re-run.",
-            file=sys.stderr,
-        )
+    import pm
+
+    try:
+        npm = find_node_executable("npm")
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm", explicit=True).env
+            installed = pm.installed_package("npm")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
+            npm = str(installed.binary)
+    except pm.InstallError as exc:
+        print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —
     # never `@latest` (see README "Upgrading spectrum-ts"). `npm ci` installs the lockfile
@@ -422,7 +428,7 @@ def _install_sidecar() -> int:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
         proc = subprocess.run(  # noqa: S603
-            [npm, verb], cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True)
+            [npm, verb], cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc
@@ -489,26 +495,3 @@ def _prompt(prompt: str, *, secret: bool = False) -> str:
     except (KeyboardInterrupt, EOFError):
         print()
         return ""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'resolve_sidecar_dir': ('plugins.platforms.photon.sidecar_paths', 'resolve_sidecar_dir'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

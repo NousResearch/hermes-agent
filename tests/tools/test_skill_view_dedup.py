@@ -10,7 +10,6 @@ from tools.skills_tool import (
     reset_skill_view_dedup,
 )
 
-
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -31,13 +30,11 @@ def skills_home(tmp_path, monkeypatch):
     _reset_background_review_read_marks()
     return home
 
-
 def _view(name, file_path=None, task="t-svd"):
     args = {"name": name}
     if file_path:
         args["file_path"] = file_path
     return json.loads(_skill_view_with_bump(args, task_id=task))
-
 
 class TestSkillViewDedup:
     def test_first_view_returns_full_content(self, skills_home):
@@ -128,4 +125,3 @@ class TestSkillViewDedup:
         repeat = _view("demo-dedup-skill")
         assert repeat.get("dedup") is True
         assert repeat.get("content_returned") is False
-

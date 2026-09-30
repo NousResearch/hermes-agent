@@ -26,7 +26,7 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,  # noqa: F401
-    has_usable_secret, is_actual_local_base_url, normalize_actual_base_url,
+    has_usable_secret, is_actual_local_base_url, looks_like_openrouter_key, normalize_actual_base_url,
 )
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
@@ -533,6 +533,13 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             # model.base_url is the secondary proxy override (same rule as the generic tail below:
             # only when the pool row still carries the canonical URL).
             if base_url in ("", default_url):
+                base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+        if provider == "xai":
+            # Env-seeded rows keep the registry host. model.base_url is the relay
+            # override, and only while the row is still that host — an explicit
+            # per-credential endpoint stays authoritative (#121347).
+            canonical = (PROVIDER_REGISTRY["xai"].inference_base_url or "").rstrip("/")
+            if base_url.rstrip("/") in ("", canonical):
                 base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
@@ -1081,30 +1088,6 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
 
 def format_runtime_provider_error(error: Exception) -> str:
     return format_auth_error(error) if isinstance(error, AuthError) else str(error)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'custom_provider_aliases': ('hermes_cli.providers', 'custom_provider_aliases'),
-    'custom_provider_slug': ('hermes_cli.providers', 'custom_provider_slug'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
 
 
 def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested: Optional[str] = None,

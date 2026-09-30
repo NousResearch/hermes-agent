@@ -51,12 +51,16 @@ optional_env:
     description: "Loopback port for the Node sidecar control + inbound channel (default 8789)"
     prompt: "Sidecar control port"
     password: false
+  - name: PHOTON_SIDECAR_TOKEN
+    description: "Shared secret for the loopback sidecar channel (default: random per start)"
+    prompt: "Sidecar token"
+    password: true
   - name: PHOTON_SIDECAR_AUTOSTART
     description: "Spawn the Node sidecar on connect (true/false, default true)"
     prompt: "Auto-start the sidecar?"
     password: false
   - name: PHOTON_NODE_BIN
-    description: "Path to the node binary (default: shutil.which('node'))"
+    description: "Path to the node binary (default: PM's pinned node, then PATH)"
     prompt: "Node executable path"
     password: false
   - name: PHOTON_DASHBOARD_HOST

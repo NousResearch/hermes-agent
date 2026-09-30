@@ -159,6 +159,10 @@ export interface ClientSessionState {
   /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
    *  has stamped the current pick (so a clamp is never inferred client-side). */
   reasoningEffortWire?: string
+  /** The runtime has not reported this session's effort yet, so '' above means
+   *  "unknown", not "profile default". A cold resume answers before the agent
+   *  builds, and only the built agent knows the session's own pin (#79807). */
+  reasoningEffortPending?: boolean
   serviceTier: string
   fast: boolean
   yolo: boolean
@@ -185,6 +189,9 @@ export interface ClientSessionState {
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean
+  /** Epoch ms this renderer attached to the live runtime. Per-runtime so a
+   *  cached session keeps its elapsed anchor when it becomes foreground again. */
+  runtimeStartedAt: number
   /** Epoch ms the current turn started, or null when idle. Per-session so a
    *  background turn's elapsed timer keeps counting while another session is
    *  focused, and switching sessions doesn't zero a still-running turn's clock.

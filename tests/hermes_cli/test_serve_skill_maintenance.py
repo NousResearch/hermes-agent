@@ -2,6 +2,7 @@
 import asyncio
 import json
 from contextlib import suppress
+from queue import Queue
 
 import pytest
 
@@ -61,20 +62,32 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
         "curator:\n  enabled: true\n  consolidate: false\n  interval_hours: 168\n"
         "  min_idle_hours: 0\n  prune_builtins: false\n", encoding="utf-8")
     from agent.curator import load_state, save_state, set_paused
-    from hermes_cli.web_server_sessions import _auto_archive_ticker_loop
+    import hermes_cli.web_server_sessions as web_server_sessions
+
+    ticks = Queue()
+    original_maintenance = web_server_sessions._maybe_run_skill_maintenance
+
+    def observed_maintenance(started_at):
+        try:
+            return original_maintenance(started_at)
+        finally:
+            ticks.put(None)
+
+    monkeypatch.setattr(web_server_sessions, "_maybe_run_skill_maintenance", observed_maintenance)
 
     save_state({"last_run_at": "2020-01-01T00:00:00+00:00", "run_count": 0, "paused": True})
-    task = asyncio.create_task(_auto_archive_ticker_loop(interval_s=.02, initial_delay_s=0))
+    task = asyncio.create_task(web_server_sessions._auto_archive_ticker_loop(
+        interval_s=.02, initial_delay_s=0))
     try:
-        await asyncio.sleep(.15)
+        await asyncio.to_thread(ticks.get, True, 8)
         assert load_state()["run_count"] == 0
-        set_paused(False)
         # Active turns must suppress maintenance even with a zero idle threshold.
         import tui_gateway.server as gateway
         with gateway._sessions_lock:
             gateway._sessions['maintenance-test'] = {"running": True}
+        set_paused(False)
         try:
-            await asyncio.sleep(.15)
+            await asyncio.to_thread(ticks.get, True, 8)
             assert load_state()["run_count"] == 0
         finally:
             with gateway._sessions_lock:

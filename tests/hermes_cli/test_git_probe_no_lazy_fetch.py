@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import banner
+from hermes_cli import source_check
 from hermes_cli._subprocess_compat import bounded_git_probe
 
 _ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -56,15 +56,15 @@ def _fetched(clone: Path, sha: str) -> bool:
     return subprocess.run(["git", "cat-file", "-e", sha], cwd=clone, env=env, capture_output=True).returncode == 0
 
 
-def test_update_check_ancestry_probe_never_fetches_from_the_promisor(partial_clone, monkeypatch):
+def test_update_check_ancestry_probe_never_fetches_from_the_promisor(partial_clone):
     clone, head, upstream_tip = partial_clone
-    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: None)
 
-    assert banner._tips_behind(head, upstream_tip, clone) == banner.UPDATE_AVAILABLE_NO_COUNT
+    # The exact ancestry probe check_for_updates runs before it falls back to the compare API.
+    assert not source_check._git_ok(["merge-base", "--is-ancestor", upstream_tip, head], cwd=clone)
     assert not _fetched(clone, upstream_tip), "the update check downloaded upstream history"
     # Control: an upstream tip already in local history still reads as up to date.
     parent = _git("rev-parse", "HEAD~1", cwd=clone)
-    assert banner._tips_behind(head, parent, clone) == 0
+    assert source_check._git_ok(["merge-base", "--is-ancestor", parent, head], cwd=clone)
 
 
 def test_bounded_git_probe_never_fetches_from_the_promisor(partial_clone):

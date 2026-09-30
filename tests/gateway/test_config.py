@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +23,32 @@ from gateway.config import (
     _apply_env_overrides,
     load_gateway_config,
 )
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_gateway_file_layers_preserve_unicode_and_fallback(tmp_path, monkeypatch, encoding):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    legacy = tmp_path / "gateway.json"
+    yaml_path = tmp_path / "config.yaml"
+    legacy.write_bytes(json.dumps({"reset_triggers": ["/départ"], "quick_commands": {
+        "salut": {"type": "prompt", "prompt": "héritage 世界"},
+    }}, ensure_ascii=False).encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "héritage 世界"
+
+    yaml_path.write_bytes("quick_commands:\n  salut:\n    type: prompt\n    prompt: bonjour 世界\n".encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "bonjour 世界"
+
+    yaml_path.write_bytes("quick_commands: [".encode(encoding))
+    assert load_gateway_config().quick_commands["salut"]["prompt"] == "héritage 世界"
+    legacy.write_bytes("{broken".encode(encoding))
+    assert load_gateway_config().quick_commands == {}
 
 
 class TestHomeChannelRoundtrip:
@@ -1316,7 +1343,7 @@ class TestHomeChannelEnvOverrides:
 
         for platform, platform_config, env, expected in cases:
             config = GatewayConfig(platforms={platform: platform_config})
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {**env, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
                 _apply_env_overrides(config)
 
             home = config.platforms[platform].home_channel
@@ -1452,7 +1479,7 @@ class TestApiServerEnvOverride:
         )
 
         api_server_key = "secret-key-at-least-16"
-        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
@@ -1538,6 +1565,7 @@ class TestWebhookEnvOverride:
         with patch.dict(
             os.environ,
             {
+                "HERMES_HOME": os.environ["HERMES_HOME"],
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",
@@ -1558,3 +1586,35 @@ class TestWebhookEnvOverride:
             config.platforms[Platform.WEBHOOK].extra.get("secret")
             == "shared-secret"
         )
+
+
+class TestOnAllAdaptersDown:
+    """gateway.on_all_adapters_down: what the runner does when the last messaging
+    adapter goes down (#118080). Default 'exit' preserves the service-restart
+    contract; 'stay_alive' is for launchers with no supervising service manager
+    (the desktop app's direct `hermes serve` child)."""
+
+    def test_default_is_exit(self):
+        config = GatewayConfig.from_dict({})
+        assert config.on_all_adapters_down == "exit"
+
+    def test_yaml_value_accepted_and_roundtrips(self):
+        config = GatewayConfig.from_dict({"gateway": {"on_all_adapters_down": "stay_alive"}})
+        assert config.on_all_adapters_down == "stay_alive"
+        assert GatewayConfig.from_dict(config.to_dict()).on_all_adapters_down == "stay_alive"
+
+    def test_unrecognized_yaml_falls_back_to_exit(self):
+        config = GatewayConfig.from_dict({"gateway": {"on_all_adapters_down": "yolo"}})
+        assert config.on_all_adapters_down == "exit"
+
+    def test_env_override_wins_and_invalid_env_falls_back(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_ON_ALL_ADAPTERS_DOWN", "stay_alive")
+        assert GatewayConfig.from_dict(
+            {"gateway": {"on_all_adapters_down": "exit"}}
+        ).on_all_adapters_down == "stay_alive"
+        monkeypatch.setenv("GATEWAY_ON_ALL_ADAPTERS_DOWN", "whatever")
+        assert GatewayConfig.from_dict(
+            {"gateway": {"on_all_adapters_down": "exit"}}
+        ).on_all_adapters_down == "exit"
+        monkeypatch.delenv("GATEWAY_ON_ALL_ADAPTERS_DOWN")
+        assert GatewayConfig.from_dict({}).on_all_adapters_down == "exit"

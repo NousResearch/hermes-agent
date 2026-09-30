@@ -76,15 +76,6 @@ DRIVERS: dict[str, Driver] = {
     "cron (run-now)": _drive_cron.drive_cron,
 }
 
-# Cells that are red on current main for a tracked, open bug. Strict: the test
-# FAILS as soon as the cell turns green, so the entry is removed with the fix
-# instead of silently masking a later regression of the same cell.
-KNOWN_RED: dict[tuple[str, str], str] = {
-    # ACP builds its AIAgent without the configured agent.disabled_toolsets.
-    ("acp (stdio)", "toolset_restriction"): "#74582",
-}
-
-
 @dataclass
 class Row:
     entrypoint: str
@@ -157,10 +148,7 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
     if out:
         with open(out, "a", encoding="utf-8") as fh:
             for row in rows.values():
-                fh.write(json.dumps({
-                    **asdict(row), "detail": None,
-                    "known_red": {c: ref for (ep, c), ref in KNOWN_RED.items() if ep == row.entrypoint},
-                }) + "\n")
+                fh.write(json.dumps({**asdict(row), "detail": None}) + "\n")
     return rows
 
 
@@ -168,10 +156,5 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
 def test_entrypoint_parity(entrypoint: str, matrix: dict[str, Row]) -> None:
     row = matrix[entrypoint]
     assert row.error is None, f"{entrypoint}: turn failed before the cells could be evaluated:\n{row.error}"
-    known = {cell for (ep, cell) in KNOWN_RED if ep == entrypoint}
-    fixed = sorted(cell for cell in known if row.cells.get(cell))
-    assert not fixed, (
-        f"{entrypoint}: {fixed} now green — drop the KNOWN_RED entry "
-        f"({[KNOWN_RED[(entrypoint, c)] for c in fixed]}) so the cell is enforced again")
-    failed = sorted(k for k, ok in row.cells.items() if not ok and k not in known)
+    failed = sorted(k for k, ok in row.cells.items() if not ok)
     assert not failed, f"{entrypoint}: parity cells red: {failed}\n{row.detail}"

@@ -165,6 +165,24 @@ class TestBranchFlushesBeforeEndSession:
             conversation_history=cli_instance.conversation_history,
         )
 
+    def test_branch_child_row_carries_the_parent_system_prompt(self, cli_instance, session_db):
+        """The branch's first turn must send the bytes the parent already sends: with no stored prompt the
+        child rebuilds (a fresh workspace probe) and the copied transcript's warm cache is lost at byte 0."""
+        from cli import HermesCLI
+
+        parent_id = cli_instance.session_id
+        session_db.update_system_prompt(parent_id, "PARENT PROMPT\n\nWorkspace snapshot: session start")
+        # No live agent: the parent's persisted row is the source.
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+        child = session_db.get_session(cli_instance.session_id)
+        assert child["parent_session_id"] == parent_id
+        assert child["system_prompt"] == "PARENT PROMPT\n\nWorkspace snapshot: session start"
+
+        # A live agent's cached prompt (what THIS process sends) wins over the row.
+        cli_instance.agent = MagicMock(_cached_system_prompt="LIVE PROMPT")
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+        assert session_db.get_session(cli_instance.session_id)["system_prompt"] == "LIVE PROMPT"
+
 
 REASONING_DETAILS = [
     {"type": "reasoning.text", "text": "sort in place instead", "format": "unknown"}

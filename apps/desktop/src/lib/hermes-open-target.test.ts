@@ -59,5 +59,6 @@ describe('pathFromHermesDeepLink', () => {
   it('ignores reserved kinds', () => {
     expect(pathFromHermesDeepLink('blueprint', 'morning-brief')).toBeNull()
     expect(pathFromHermesDeepLink('plugin', 'install')).toBeNull()
+    expect(pathFromHermesDeepLink('skill', 'install')).toBeNull()
   })
 })

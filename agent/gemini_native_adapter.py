@@ -25,13 +25,9 @@ from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_
 
 logger = logging.getLogger(__name__)
 
-try:
-    import hermes_cli as _hermes_cli
+from hermes_cli.version_info import get_version_info
 
-    _HERMES_VERSION = str(_hermes_cli.__version__)
-except Exception:
-    _HERMES_VERSION = "0.0.0"
-_API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's partner-integration guidance
+_API_CLIENT = f"hermes-agent/{get_version_info().base_version}"  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 # A Vertex AI express-mode base, when the user configures one explicitly: aiplatform serves the
@@ -503,19 +499,36 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> Dict[str, Any]:
+    """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
+
+    Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
+    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
+    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    """
+    if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
+        return {}
+    spec = response_format.get("json_schema") if response_format.get("type") == "json_schema" else None
+    # A ``json_schema`` spec with no ``schema`` key has nothing to constrain with (the Anthropic
+    # translator bails the same way) — ask for JSON and let the model shape it.
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    if not isinstance(schema, dict):
+        return {"responseMimeType": "application/json"}
+    key, prep = ("responseJsonSchema", prepare_gemini_tool_parameters) if json_schema else ("responseSchema", sanitize_gemini_tool_parameters)
+    return {"responseMimeType": "application/json", key: prep(schema)}
+
+
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "", tools_as_json_schema: bool = False,
+    response_format: Any = None, model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
-    optional = (
-        ("systemInstruction", system_instruction),
-        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
-        ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
-    )
+    gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
+    tool_config = _translate_tool_choice_to_gemini(tool_choice)
+    optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
@@ -523,7 +536,18 @@ def build_gemini_request(
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
-    request["generationConfig"] = {k: v for k, v in generation if v is not None}
+    json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
+    # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
+    # function) is combined with a JSON responseMimeType, and pre-Gemini-3 models reject JSON output
+    # alongside ANY function declarations ("Function calling with a response mime type:
+    # 'application/json' is unsupported"); only Gemini 3+ combines tools with structured output.
+    # The tools win; JSON can come on a later turn, and callers tolerate an unconstrained reply.
+    forced_call = (tool_config or {}).get("functionCallingConfig", {}).get("mode") == "ANY"
+    if json_output and (forced_call or (gemini_tools and not is_gemini3)):
+        logger.debug("Gemini: dropping JSON response_format — %s",
+                     "tool_choice forces function calling (mode ANY)" if forced_call else "pre-Gemini-3 model with tools")
+        json_output = {}
+    request["generationConfig"] = {**{k: v for k, v in generation if v is not None}, **json_output}
     return request
 
 
@@ -551,10 +575,21 @@ def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
 
 
 def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:
+    """Gemini ``usageMetadata`` → OpenAI-shaped usage.
+
+    Hidden thinking is reported separately in ``thoughtsTokenCount``:
+    ``candidatesTokenCount`` counts visible output only, while ``totalTokenCount``
+    already includes thoughts. OpenAI's ``completion_tokens`` covers reasoning, so
+    thoughts are folded in (otherwise a thinking turn bills a few percent of its
+    real output and ``prompt + completion != total``) and also surfaced under
+    ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
+    them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
     count = lambda key: int(usage_meta.get(key) or 0)  # noqa: E731
+    reasoning_tokens = count("thoughtsTokenCount")
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount"),
+        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
     )
 
 
@@ -813,12 +848,14 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[Dict[str, Any]] = None,
+        timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
-            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
+            response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)

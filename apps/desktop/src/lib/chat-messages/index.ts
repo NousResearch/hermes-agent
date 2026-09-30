@@ -1,3 +1,4 @@
+export { sameAttachmentTurn } from './attachment-turn'
 export { toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,
@@ -7,6 +8,7 @@ export {
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
+  finalizeInterruptedMessages,
   mergeFinalAssistantText,
   normalizeWs,
   reasoningPart,
@@ -14,7 +16,12 @@ export {
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
-export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
+export {
+  branchGroupForUser,
+  preserveLocalAssistantErrors,
+  preserveLocalSystemNotices,
+  spliceOlderPreservedRows
+} from './reconciliation'
 export {
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,

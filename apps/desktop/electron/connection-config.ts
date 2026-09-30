@@ -107,9 +107,55 @@ function isGatewayAuthRejection(error) {
   return statusCode === 401 || statusCode === 403
 }
 
+/** True when the rejected credential is the app's saved bearer, not the server session. */
+function isStaleAppTokenRejection(error: unknown) {
+  return Boolean(error && typeof error === 'object' && (error as any).appTokenRejected === true)
+}
+
+/**
+ * User-facing copy for a ticket mint that failed as a TRANSPORT fault (the
+ * gateway never answered with a usable HTTP status — timeout, refused
+ * connection, DNS). Distinguishing these lets the user act on the real
+ * problem instead of a blanket "could not reach" (#98647's diagnostic-cost
+ * complaint): a timeout suggests a network/VPN path issue, a refused
+ * connection a stopped gateway, DNS a wrong hostname.
+ */
+export function gatewayTicketTransportMessage(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : ''
+
+  if (['ETIMEDOUT', 'ETIMEOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection timed out or the host could not be resolved. ' +
+      'Check your network/VPN path and the gateway URL, then reconnect.'
+    )
+  }
+
+  if (code === 'ECONNREFUSED') {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection was refused. The gateway process is likely down or listening on another port. ' +
+      'Start the gateway (or fix its URL), then reconnect.'
+    )
+  }
+
+  return 'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+}
+
 function gatewayTicketFailure(error, authMessage, transportMessage) {
   const needsOauthLogin = isGatewayAuthRejection(error)
-  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  const message = needsOauthLogin
+    ? isStaleAppTokenRejection(error)
+      ? 'Reached the gateway over HTTP, but the app token is invalid. ' +
+        "The app's saved gateway bearer is no longer valid. Sign out in the app and sign in again to replace it."
+      : authMessage
+    : transportMessage
+
+  const err = new Error(message)
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
@@ -229,6 +275,8 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
+      // Untagged 401s keep the server OAuth-session wording. A stale app
+      // bearer is named inside gatewayTicketFailure.
       throw gatewayTicketFailure(
         error,
         'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
@@ -547,8 +595,26 @@ function profileRemoteOverride(config, profile) {
     url,
     authMode: normAuthMode(entry.authMode),
     token: entry.token,
-    ...(Object.keys(headers).length > 0 ? { headers } : {})
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    // A URL-remote/cloud host serves every profile via ?profile=, so a Desktop
+    // profile that is only a routing label (e.g. `gris` for the backend's
+    // `main-gris`) can map its explicit self-profile scope into the backend's
+    // namespace — same contract as the managed-SSH `remoteProfile`.
+    ...(normalizeRemoteProfileName(entry.remoteProfile) ?? {})
   }
+}
+
+// Validate a remote profile mapping the same way the SSH path does (a valid
+// Hermes profile identifier, never a reserved alias). Invalid/blank → no
+// mapping, so callers fall back to the historical same-name behavior.
+function normalizeRemoteProfileName(value) {
+  const remoteProfile = String(value || '').trim()
+
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+    return { remoteProfile }
+  }
+
+  return null
 }
 
 export interface ProfileRouteOptions {
@@ -1129,6 +1195,7 @@ export {
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
+  normalizeRemoteProfileName,
   normalizeSshConfig,
   normAuthMode,
   pathForRegistryBackendRequest,

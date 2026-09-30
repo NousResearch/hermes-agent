@@ -106,6 +106,7 @@ describe('isRemoteReauthError', () => {
   it('recognizes auth-shaped boot errors', () => {
     expect(isRemoteReauthError('Your remote gateway session has expired.')).toBe(true)
     expect(isRemoteReauthError('OAuth: please sign in')).toBe(true)
+    expect(isRemoteReauthError('Reached the gateway over HTTP, but the app token is invalid.')).toBe(true)
   })
 
   it('ignores non-auth boot errors and nullish', () => {

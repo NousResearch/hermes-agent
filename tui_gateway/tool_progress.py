@@ -15,8 +15,6 @@ from .method_ctx import bind_module
 _TUI_VERBOSE_TEXT_MAX_CHARS = 1_000
 _TUI_VERBOSE_TEXT_MAX_LINES = 16
 
-_TODO_TOOL_NAMES = ("todo_list", "todo")  # legacy alias: pre-rename replays
-
 
 def _cap_tui_verbose_text(text: str) -> str:
     if len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES:
@@ -157,18 +155,37 @@ def _attach_todo_state(payload: dict, session: dict) -> dict:
     return payload
 
 
+def _todo_state_from_db(db, session_id: str) -> dict | None:
+    """Cold-resume Todo snapshot without the REST page or model-history limits."""
+    from tools.todo_tool import MAX_TODO_RESULT_CHARS
+    getter = getattr(db, "get_latest_todo_result", None)
+    if not callable(getter):
+        return None
+    try:
+        content = getter(session_id)
+        if not isinstance(content, str) or len(content) > MAX_TODO_RESULT_CHARS:
+            return None
+        return _normalize_todo_state(json.loads(content))
+    except (TypeError, ValueError):
+        return None
+    except Exception:
+        logger.debug("failed to read persisted todo state", exc_info=True)
+        return None
+
+
 def _todo_state_from_history(history) -> dict | None:
     """Latest todo snapshot from a loaded transcript, for resume paths that answer before an AIAgent (and
-    its live TodoStore) exists: the newest tool result paired with an assistant ``todo`` call IS it."""
+    its live TodoStore) exists: the newest tool result paired with an assistant Todo-tool call (aliases and
+    the ``tool_call`` bridge included) IS it."""
     if not isinstance(history, list) or not history:
         return None
     try:
-        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS, is_todo_tool_call
         todo_call_ids = {
             call.get("id")
             for msg in history if isinstance(msg, dict)
             for call in msg.get("tool_calls") or []
-            if (call.get("function") or {}).get("name") in _TODO_TOOL_NAMES and call.get("id")
+            if isinstance(call, dict) and call.get("id") and is_todo_tool_call(call)
         }
         if not todo_call_ids:
             return None
@@ -186,6 +203,27 @@ def _todo_state_from_history(history) -> dict | None:
     except Exception:
         logger.debug("failed to derive todo state from history", exc_info=True)
         return None
+
+
+def _tool_result_needs_user(result: object) -> bool:
+    """A failed call the user still has to see. Display policy must not swallow it."""
+    if not isinstance(result, str) or not result:
+        return False
+    try:
+        data = json.loads(result)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False or data.get("ok") is False:
+        return True
+    error = data.get("error")
+    if isinstance(error, str) and bool(error.strip()):
+        return True
+    # terminal reports a failed command as {output, exit_code: 1, error: null}:
+    # a non-zero exit is a failure the user must see even without an error string.
+    exit_code = data.get("exit_code")
+    return isinstance(exit_code, int) and exit_code != 0 and not isinstance(exit_code, bool)
 
 
 def _tool_labels(name: str, args: dict) -> list[dict] | None:
@@ -242,10 +280,14 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if session is not None:
         with contextlib.suppress(Exception):
             from agent.display import capture_local_edit_snapshot
-            snapshot = capture_local_edit_snapshot(name, args)
+            task_id = session.get("session_key") or getattr(session.get("agent"), "session_id", None) or sid
+            snapshot = capture_local_edit_snapshot(name, args, task_id=task_id)
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        # A preview prepared for an earlier call whose completion never fired (failed
+        # flush) must not attach to a provider that reuses the same call id.
+        session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
@@ -260,14 +302,40 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         _emit_tool_lifecycle("tool.start", sid, name, args, payload)
 
 
+def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: dict, result: str) -> dict:
+    """Non-emitting preview preparation for the canonical tool-result append.
+
+    Retain the exact preview for the post-flush event, including an empty preview
+    for failed/no-op edits. A cold client reads the same sidecar from SQLite.
+    """
+    session = _sessions.get(sid)
+    snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
+    metadata = {}
+    with contextlib.suppress(Exception):
+        from agent.display import render_edit_diff_with_delta
+        rendered: list[str] = []
+        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
+            metadata["inline_diff"] = "\n".join(rendered)
+    if session is not None:
+        session.setdefault("tool_result_metadata", {})[tool_call_id] = metadata
+    return {"tool_result_metadata": metadata} if metadata else {}
+
+
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
+    session = _sessions.get(sid)
+    prepared = session.setdefault("tool_result_metadata", {}) if session is not None else {}
+    # Consume the pre-flush preview even when this completion is dropped as stale.
+    metadata = prepared.pop(tool_call_id, None)
     if _connector_lifecycle_is_stale(sid, name, args):
         return
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
     if (labels := _tool_labels(name, args)) is not None:
         payload["labels"] = labels
-    session = _sessions.get(sid)
-    snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
+    if metadata is None:
+        # Native runtimes may emit lifecycle callbacks without the tool executor.
+        metadata = _prepare_tool_result_metadata(sid, tool_call_id, name, args, result).get("tool_result_metadata", {})
+        prepared.pop(tool_call_id, None)
+    payload.update(metadata)
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
@@ -281,18 +349,16 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["summary"] = summary
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
-    todo_state = _normalize_todo_state(payload.get("result")) if name in _TODO_TOOL_NAMES else None
+    from tools.todo_tool import is_todo_tool_name
+
+    todo_state = _normalize_todo_state(payload.get("result")) if is_todo_tool_name(name) else None
     if todo_state is not None:
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    with contextlib.suppress(Exception):
-        from agent.display import render_edit_diff_with_delta
-        rendered: list[str] = []
-        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
-            payload["inline_diff"] = "\n".join(rendered)
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
-            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
+            or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
+            or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
@@ -305,8 +371,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
 # the stable id and args; an id-less duplicate row makes the desktop live view diverge from history.
 
 def _progress_output_risk(sid, name, preview, kw):
+    # A risk badge on a tool row: tool chrome, so it follows display.tool_progress.
     metadata = kw.get("risk_metadata")
-    if isinstance(metadata, dict):
+    if isinstance(metadata, dict) and _tool_progress_enabled(sid):
         _emit("tool.output_risk", sid, {
             "tool_id": str(kw.get("tool_call_id") or ""), "name": str(name), "risk": str(metadata.get("risk") or "low"),
             "findings": [str(item) for item in metadata.get("findings", [])], "redacted": bool(metadata.get("redacted", False)),
@@ -314,11 +381,15 @@ def _progress_output_risk(sid, name, preview, kw):
 
 
 def _progress_reasoning(sid, name, preview, kw):
+    if not _session_show_reasoning(sid):
+        return
     _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _progress_moa_reference(sid, name, preview, kw):
-    # MoA reference-model output, rendered as a labelled block before the aggregator's response.
+    # Reference-model output lands in the reasoning disclosure. Answer-only drops it.
+    if not _session_show_reasoning(sid):
+        return
     # `name` is the slot label, `preview` the text.
     ref_payload: dict[str, object] = {"label": str(name), "text": str(preview or "")}
     for key, out in (("moa_index", "index"), ("moa_count", "count")):
@@ -330,10 +401,7 @@ def _progress_moa_reference(sid, name, preview, kw):
 def _progress_moa_progress(sid, name, preview, kw):
     # Drives the status-bar `MOA: 2/3 refs done`; both counters required for deterministic rendering.
     refs_done, refs_total = kw.get("moa_refs_done"), kw.get("moa_refs_total")
-    # Per-reference completion — drives the status-bar progress indicator (`MOA: 2/3 refs done`) requested
-    # in issue #59546. Only emitted when both counters are present so the client can render
-    # deterministically.
-    if refs_done is None or refs_total is None:
+    if not _session_show_reasoning(sid) or refs_done is None or refs_total is None:
         return
     _emit("moa.progress", sid, {"label": str(name or ""), "refs_done": int(refs_done), "refs_total": int(refs_total)})
 
@@ -341,7 +409,7 @@ def _progress_moa_progress(sid, name, preview, kw):
 def _progress_moa_phase(sid, name, preview, kw):
     # Currently only phase="aggregator" fires, once fan-out completes.
     phase = kw.get("moa_phase")
-    if not phase:
+    if not phase or not _session_show_reasoning(sid):
         return
     phase_payload: dict[str, object] = {"phase": str(phase)}
     for key, out in (("moa_refs_done", "refs_done"), ("moa_refs_total", "refs_total")):
@@ -382,7 +450,7 @@ _SUBAGENT_FIELDS = (
 )
 
 
-def _progress_subagent(sid, name, preview, kw, event_type):
+def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _SUBAGENT_FIELDS:
@@ -390,6 +458,10 @@ def _progress_subagent(sid, name, preview, kw, event_type):
             val = coerce(source[key])
             if val is not None:
                 payload[key] = val
+    # subagent.thinking's text is the child's chain of thought: with reasoning hidden the
+    # delegate card must not leak it, same policy as the child-mirror's reasoning.delta.
+    if event_type == "subagent.thinking" and not _session_show_reasoning(sid):
+        payload.pop("text", None)
     if preview and event_type == "subagent.tool":
         payload["tool_preview"] = str(preview)
         payload["text"] = str(preview)
@@ -397,7 +469,11 @@ def _progress_subagent(sid, name, preview, kw, event_type):
     # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
     if event_type != "subagent.text":
         _emit(event_type, sid, payload)
-    _mirror_subagent_to_child(event_type, payload)
+    # The child runs under the PARENT's profile: the mirror and its liveness registry are scoped to
+    # that home. A parent record already gone (close / WS orphan reap mid-turn) cannot be attributed
+    # to a profile — bind nothing rather than fold the run into the launch profile.
+    if (parent := _sessions.get(sid)) is not None:
+        _mirror_subagent_to_child(event_type, payload, parent.get("profile_home"))
 
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
@@ -405,6 +481,9 @@ def _progress_subagent(sid, name, preview, kw, event_type):
 _PROGRESS_HANDLERS = {
     "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),
+    # Answer-only drops MoA content (references, progress/phase lines that land in the reasoning
+    # disclosure or activity log) but keeps this: a bare state transition both clients use only
+    # for the busy indicator. Same rule as subagent.thinking: frame kept, text dropped.
     "moa.aggregating": (lambda sid, name, preview, kw: _emit("moa.aggregating", sid, {"aggregator": str(name or "")}), None),
     "moa.progress": (_progress_moa_progress, None), "moa.phase": (_progress_moa_phase, None),
 }
@@ -420,8 +499,8 @@ def _on_tool_progress(
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
     if event_type.startswith("subagent."):
         return _progress_subagent(sid, name, preview, _kwargs, event_type)
-    if not _tool_progress_enabled(sid):
-        return
+    # No blanket tool_progress gate here: reasoning.available and moa.* are reasoning
+    # content that follow display.show_reasoning in their own handlers.
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))
     if handler is not None and (requires is None or {"name": name, "preview": preview}[requires]):
         handler(sid, name, preview, _kwargs)

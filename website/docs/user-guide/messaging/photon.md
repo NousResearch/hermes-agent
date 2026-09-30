@@ -41,7 +41,8 @@ automatically.
 
 ## Prerequisites
 
-- **Node.js 20 or newer** on PATH (`node --version`)
+- **Node.js 20 or newer**. Hermes uses its managed Node when available;
+  `hermes pm install node` provisions the pin, with PATH as a fallback.
 - For managed cloud mode, a [Photon account][app] and a phone number that can
   receive iMessage
 - For local mode, a Mac signed in to Messages with Full Disk Access granted to
@@ -297,7 +298,6 @@ Common issues:
 | `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
-| `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |

@@ -9,6 +9,13 @@ from __future__ import annotations
 
 import os
 import sys
+
+import pytest
+
+# The layout helper branches per host (win-unpacked / linux-unpacked / mac-arm64), so every
+# lane should run its own shape — without a platforms marker the OS lanes never import the
+# file and the darwin-specific lock retry stays unexercised in CI.
+pytestmark = pytest.mark.platforms("any")
 from pathlib import Path
 
 from hermes_cli import main_desktop

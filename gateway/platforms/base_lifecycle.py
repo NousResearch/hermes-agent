@@ -50,8 +50,11 @@ class BaseLifecycleMixin:
             return
         event = args[0] if args else None
         if isinstance(event, MessageEvent):
-            owner = event._processing_state.owner
-            if hook_name == "on_processing_complete" and owner is not None and owner is not event:
+            state = event._processing_state
+            # A completion through another copy, or of an event parked for or absorbed by a later
+            # turn, is refused before it touches the inputs attached to the event: that turn
+            # completes the event and them.
+            if hook_name == "on_processing_complete" and not state.accepts_completion(event):
                 return
             if hook_name == "on_processing_complete":
                 completion = event._processing_state.pending_completion

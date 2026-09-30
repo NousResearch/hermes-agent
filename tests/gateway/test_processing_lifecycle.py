@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult
 from gateway.run import _INTERRUPT_REASON_STOP, GatewayRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
@@ -218,7 +218,7 @@ class _Walk:
     turn, so the adapter starts every correction itself before the runner handles it."""
 
     expected: tuple
-    verb: str = "steer"            # steer | redirect | interrupt | queue
+    verb: str = "steer"            # steer | redirect | interrupt | queue | photo (merged into a queued follow-up)
     leftovers: int = 0             # corrections that the model does not read in the opening turn
     turn: str = "tracked"          # tracked | untracked (no platform message) | hooks-done (completed early)
     ack: str = "returned"          # returned | in-flight (/steer, acknowledgement held until after the drain) |
@@ -240,7 +240,7 @@ class _WalkRun:
 
 
 _OPENING = "opening-1"
-_C1, _C2, _Q1, _Q2 = "corr-1", "corr-2", "queued-1", "queued-2"
+_C1, _C2, _Q1, _Q2, _P1 = "corr-1", "corr-2", "queued-1", "queued-2", "photo-1"
 _S_OPEN = _started(_OPENING)
 
 
@@ -309,6 +309,13 @@ _WALKS = {
                                  verb="interrupt", exit="exception"),
     # A started message that waits in the queue completes with its own turn, or when it is dropped.
     "queue": _Walk((*_CONSUMED, _completed(_OPENING, _OK), _completed(_C1, _OK)), verb="queue"),
+    # A photo that the priority path merges into a queued follow-up completes with that follow-up.
+    "photo-merged": _Walk(
+        (_S_OPEN, _started(_P1), _completed(_OPENING, _OK), _started(_Q1), _completed(_P1, _OK),
+         _completed(_Q1, _OK)), verb="photo", placement="fifo"),
+    "photo-merged-stop-turn": _Walk(
+        (_S_OPEN, _started(_P1), _completed(_P1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="photo",
+        placement="fifo", exit="stop-turn"),
     "queue-stop-turn": _Walk((*_CONSUMED, _completed(_C1, _CANCELLED), _completed(_OPENING, _CANCELLED)), verb="queue",
                              exit="stop-turn"),
     **_leftover_rows(),
@@ -349,7 +356,8 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
     _WalkModel._supports_active_turn_redirect = walk.verb == "redirect"
     _install_fake_agent(monkeypatch, tmp_path, _WalkModel)
     runner, _adapter = _priority_runner(
-        monkeypatch, {"redirect": "interrupt", "interrupt": "interrupt", "queue": "queue"}.get(walk.verb, "steer"))
+        monkeypatch,
+        {"redirect": "interrupt", "interrupt": "interrupt", "queue": "queue", "photo": "queue"}.get(walk.verb, "steer"))
     adapter = (_WalkCompleteOnlyAdapter if walk.adapter == "complete-only" else _WalkAdapter)(
         hold_ack=walk.ack != "returned")
     adapter.platform = Platform.SLACK
@@ -368,6 +376,8 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
     prepare = runner._prepare_profile_scoped_inbound_message_text
 
     async def gated_prepare(**kwargs):
+        if kwargs["event"].media_urls:
+            return kwargs["event"].text or "photo"
         if str(kwargs["event"].message_id).startswith("corr"):
             copy_prepared.set()
             await copy_release.wait()
@@ -426,9 +436,17 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
         runner._session_state(key).turn.started_ts = time.time()
         if walk.turn == "hooks-done":
             await adapter._run_processing_hook("on_processing_complete", opening, _OK)
+        if walk.verb == "photo":
+            for queued_id in queued_ids:
+                runner._enqueue_fifo(key, MessageEvent(text=queued_id, source=source, message_id=queued_id), adapter)
+            queued_ids = []
         for index in range(1, max(walk.leftovers, 1) + 1):
             text = f"correction {index}" if walk.ack == "returned" else f"/steer correction {index}"
-            await adapter.handle_message(MessageEvent(text=text, source=source, message_id=f"corr-{index}"))
+            message = MessageEvent(text=text, source=source, message_id=f"corr-{index}")
+            if walk.verb == "photo":
+                message = MessageEvent(text="", message_type=MessageType.PHOTO, source=source, message_id=_P1,
+                                       media_urls=["/nonexistent/photo-1.jpg"], media_types=["image/jpeg"])
+            await adapter.handle_message(message)
             correction_task = adapter._session_tasks[key]
             if walk.ack != "returned":
                 await asyncio.wait_for(adapter.ack_sending.wait(), 30)

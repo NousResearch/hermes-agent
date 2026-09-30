@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
@@ -62,24 +63,23 @@ _FS_READDIR_HIDDEN = {
 
 # Basenames the managed-files API must never list, read or download: credential
 # stores that become live secrets in the browsable tree the moment an operator
-# points the managed root at HERMES_HOME. Mirrors the two canonical guards
-# (agent.file_safety.get_read_block_error, gateway.platforms.base
-# ._ROOT_CREDENTIAL_FILES) so the Files tab never lags behind them.
+# points the managed root at HERMES_HOME. Derived from agent.file_safety.SECRET_STORE_FILES, the
+# list the read guard and gateway chat delivery also use, so the Files tab never lags behind them.
 # These typically contain credentials (API keys, tokens) and exposing them through the dashboard file
 # browser is a security leak — see issue #57505.
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
-    "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json", "bws_cache.json", "bws_cache.enc.json",
+    *(os.path.basename(p).lower() for p in SECRET_STORE_FILES),
+    "credentials", "config.yaml", "google_token.json", "google_oauth_pending.json",
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
 })
 
-# Directory names whose whole subtree is credential material (the canonical
-# guards deny these as trees: _ROOT_CREDENTIAL_DIRS and the mcp-tokens/ prefix
-# match). The browser can descend into subdirs, so a basename-only guard would
-# still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
-# trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# Credential store trees (file_safety.SECRET_STORE_DIRS). The browser can descend into subdirs,
+# so a basename-only guard would still expose ``mcp-tokens/<server>.json``; match the store's
+# path components as a run anywhere under the root, no HERMES_HOME resolution. ``vault`` is left
+# to its two file basenames above: a bare ``vault/`` component is also every Obsidian vault.
+_SENSITIVE_MANAGED_DIR_PARTS = tuple(
+    tuple(Path(d).parts) for d in SECRET_STORE_DIRS if d != "vault"
+)
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -94,8 +94,8 @@ def _is_sensitive_filename(name: str) -> bool:
 
 
 def _is_sensitive_path(path: Path) -> bool:
-    """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
+    """True when the basename is sensitive OR the path (case-insensitive)
+    runs through a credential store directory. Read-side guard (list/read/
     download); the write endpoints are a separate threat class.
 
     Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
@@ -104,7 +104,9 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
-    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+    parts = tuple(part.lower() for part in path.parts)
+    return any(parts[i:i + len(store)] == store
+               for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts)))
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024

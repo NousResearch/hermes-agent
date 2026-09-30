@@ -203,6 +203,12 @@ def _require_known_toolset(name: str) -> None:
         raise _bad_request(f"Unknown toolset: {name}")
 
 
+def _resolve_request_profile(query_profile: Optional[str], body_profile: Optional[str] = None) -> Optional[str]:
+    if query_profile and body_profile and query_profile != body_profile:
+        raise _bad_request("Conflicting profile targets")
+    return body_profile or query_profile
+
+
 def _dict_section(config: dict, key: str) -> dict:
     """``config[key]`` as a dict, replacing a non-dict value in place."""
     section = config.setdefault(key, {})
@@ -243,15 +249,18 @@ async def get_toolsets(profile: Optional[str] = None):
             # Credential presence resolves through the profile's secret scope: outside this block
             # it read the dashboard process env (another profile's keys) or fails closed.
             configured = {name: _toolset_has_keys(name, config, features=features) for name, _, _ in toolset_rows}
-        return config, toolset_rows, enabled_by_platform, configured
+            tools_by_name = {}
+            for name, _, _ in toolset_rows:
+                try:
+                    tools_by_name[name] = sorted(set(resolve_toolset(name)))
+                except Exception:
+                    tools_by_name[name] = []
+        return config, toolset_rows, enabled_by_platform, configured, tools_by_name
 
-    config, toolset_rows, enabled_by_platform, configured = await run_in_threadpool(_read)
+    config, toolset_rows, enabled_by_platform, configured, tools_by_name = await run_in_threadpool(_read)
     result = []
     for name, label, desc in toolset_rows:
-        try:
-            tools = sorted(set(resolve_toolset(name)))
-        except Exception:
-            tools = []
+        tools = tools_by_name[name]
         target_platform = _toolset_configuration_platform(name)
         if name in _CONFIG_ONLY_TOOLSETS:
             # Config-only capabilities (stt) have no per-platform toolset —
@@ -280,7 +289,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
         _toolset_configuration_platform)
 
     target_platform = _toolset_configuration_platform(name)
-    scope_profile = body.profile or profile
+    scope_profile = _resolve_request_profile(profile, body.profile)
 
     def _run():
         with config_write_scope(scope_profile):
@@ -433,6 +442,7 @@ async def get_toolset_models(
 
     def _read():
         with _profile_scope(profile):
+            _require_known_toolset(name)
             config = load_config()
             row = _find_toolset_provider_row(name, config, provider)
             plugin = _resolve_toolset_model_plugin(name, row) if row else None
@@ -474,7 +484,8 @@ async def select_toolset_model(
         raise _bad_request("model is required")
 
     def _run():
-        with config_write_scope(body.profile or profile):
+        with config_write_scope(_resolve_request_profile(profile, body.profile)):
+            _require_known_toolset(name)
             config = load_config()
             row = _find_toolset_provider_row(name, config, body.provider)
             plugin = _resolve_toolset_model_plugin(name, row) if row else None
@@ -521,7 +532,7 @@ async def select_toolset_provider(
             (p for p in _category_providers(name, config) if p.get("name") == body.provider), None)
 
     def _run():
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(_resolve_request_profile(profile, body.profile)):
             _require_known_toolset(name)
             with _CONFIG_MUTATION_LOCK:
                 config = load_config()
@@ -585,8 +596,10 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     can't write arbitrary env vars; a blank value means "leave unchanged"."""
     from hermes_cli.config import get_env_value, save_env_value
 
+    scope_profile = _resolve_request_profile(profile, body.profile)
+
     def _run():
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(scope_profile):
             _require_known_toolset(name)
             config = load_config()
             allowed: set[str] = {
@@ -626,7 +639,7 @@ async def run_toolset_post_setup(
     ``profile`` is threaded so hooks see the drawer's HERMES_HOME."""
     from hermes_cli.tools_config import valid_post_setup_keys
 
-    scope_profile = body.profile or profile
+    scope_profile = _resolve_request_profile(profile, body.profile)
 
     def _validate():
         # Plugin toolsets and plugin providers' post-setup keys are both per profile.

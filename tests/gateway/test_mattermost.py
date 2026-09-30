@@ -24,6 +24,13 @@ class TestMattermostProgressThreadRouting:
 
 class TestMattermostDisplayHygiene:
 
+    def test_trailing_self_mention_requires_a_boundary(self):
+        from plugins.platforms.mattermost.adapter import _strip_edge_self_mentions
+
+        assert _strip_edge_self_mentions("ping @hermes-bot", ["@hermes-bot"]) == "ping"
+        assert _strip_edge_self_mentions("ping mail@hermes-bot", ["@hermes-bot"]) == "ping mail@hermes-bot"
+        assert _strip_edge_self_mentions("ping support@hermes.bot", ["@hermes.bot"]) == "ping support@hermes.bot"
+
     def test_mattermost_platform_opt_in_can_enable_interim_assistant_messages(self):
         """Mattermost can still opt into commentary explicitly per platform."""
         user_config = {

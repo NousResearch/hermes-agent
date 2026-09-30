@@ -147,7 +147,12 @@ def _strip_edge_self_mentions(text: str, handles: Sequence[str]) -> str:
         for nm, nm_low in zip(names, lowered):
             if body[-len(nm):].lower() != nm_low:
                 continue
-            remaining = body[: -len(nm)].rstrip() + tail
+            before = body[: -len(nm)]
+            # Mirror the leading-edge guard: don't strip a handle glued to a
+            # longer token such as ``support@hermes-bot``.
+            if before and before[-1] not in _MENTION_BOUNDARY_CHARS:
+                continue
+            remaining = before.rstrip() + tail
             break
         else:
             return remaining

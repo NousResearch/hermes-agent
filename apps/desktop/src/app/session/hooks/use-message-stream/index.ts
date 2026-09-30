@@ -865,8 +865,17 @@ export function useMessageStream({
           })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
+          // A tool round can leave an empty assistant bubble after the streamed
+          // text (for example when a late thinking/tool event is applied after
+          // the text flush). Prefer the last assistant that actually owns
+          // visible response text; otherwise completion appends the durable
+          // final beside the streamed bubble instead of replacing it.
           const fallbackIndex = prev.findLastIndex(
-            (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
+            (message, index) =>
+              index > lastUserIndex &&
+              message.role === 'assistant' &&
+              !message.hidden &&
+              Boolean(chatMessageText(message).trim())
           )
 
           if (fallbackIndex >= 0) {

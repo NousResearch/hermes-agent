@@ -211,7 +211,6 @@ def test_register_locale_accepts_dicts_and_rejects_bad_ids(home):
         ctx.register_locale("pl", home / "missing.yaml")
 
 
-
 # ── resets racing a cache fill ────────────────────────────────────────────────────────────────
 
 
@@ -247,7 +246,7 @@ class _FillRace:
     change: Callable[[Path], None]
     observe: Callable[[], object]
     expected: object
-    only: Callable[..., bool] = lambda *args: True
+    only: Callable[..., bool] = lambda home, *args: True
 
 
 def _register_pack(lang: str, messages: dict[str, str]) -> None:
@@ -256,6 +255,11 @@ def _register_pack(lang: str, messages: dict[str, str]) -> None:
 
 def _rewrite_de_overlay(home: Path) -> None:
     (home / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "New"}}), encoding="utf-8")
+    i18n.reset_language_cache()
+
+
+def _add_pl_overlay(home: Path) -> None:
+    (home / "locales" / "pl.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Odmowa"}}), encoding="utf-8")
     i18n.reset_language_cache()
 
 
@@ -270,15 +274,18 @@ def _t_de() -> str:
                            lambda: "pl" in i18n.supported_languages(), True),
                  id="supported-languages"),
     pytest.param(_FillRace("parse_locale_file", _t_de, _rewrite_de_overlay, _t_de, "New",
-                           only=lambda path: path.parent.parent.name == "home"),
+                           only=lambda home, path: path.parent == i18n_layers.overlay_dir(home)),
                  id="overlay-layer"),
+    pytest.param(_FillRace("scan_locale_dir", i18n.supported_languages, _add_pl_overlay,
+                           lambda: "pl" in i18n.supported_languages(), True),
+                 id="overlay-languages"),
 ])
 def test_fill_that_overlaps_a_reset_does_not_cache_the_old_view(home, monkeypatch, race):
     """A worker reads a layer, a reset lands, then the worker stores what it built. The next lookup must
     see the state after the reset, not the worker's result."""
     (home / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Old"}}), encoding="utf-8")
     i18n.reset_language_cache()
-    reached, resume = _pause(monkeypatch, race.pause, "i18n-fill", only=race.only)
+    reached, resume = _pause(monkeypatch, race.pause, "i18n-fill", only=lambda *args: race.only(home, *args))
     worker = threading.Thread(target=race.fill, name="i18n-fill")
     worker.start()
     assert reached.wait(timeout=10)
@@ -294,7 +301,7 @@ def test_fill_that_overlaps_a_reset_does_not_cache_the_old_view(home, monkeypatc
 def test_fill_during_a_reset_does_not_cache_the_old_pack_layer(home, monkeypatch):
     """A reset clears the merged catalogs and the layer views in two steps. A catalog built between
     those steps must not keep the pack layer from before the reset."""
-    _t_de()
+    assert i18n_layers.pack_layer("de") == {}
     reached, resume = _pause(monkeypatch, "clear_cache", "i18n-reset", before=True)
     registrar = threading.Thread(target=_register_pack, args=("de", {_KEY: "Pack"}), name="i18n-reset")
     registrar.start()

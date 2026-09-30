@@ -186,6 +186,88 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
+def _squash_control_bytes(s: str) -> str:
+    """Drop control bytes and escape-whitespace so two renderings of the same string compare
+    equal: a streamed payload can carry a literal newline where the re-serialised form carries
+    the two-character ``\\n`` escape, which is not a difference in content."""
+    return re.sub(r"[\x00-\x1f]", "", re.sub(r"\\[nrt]", "", s))
+
+
+def _try_leading_prefix_repair(raw_stripped: str, prefixes, tool_name: str) -> str | None:
+    """Restore a prefix the provider stream never delivered; ``None`` when no candidate applies.
+
+    A candidate only wins when everything received is already a bare string INSIDE the restored
+    object, so this pass can only put dropped bytes back — it never invents content.
+    """
+    if raw_stripped.startswith("{"):
+        # The opening brace arrived: the loss (if any) is elsewhere and a prefix cannot help.
+        return None
+    for prefix, label in prefixes:
+        try:
+            # strict=False because a dropped head also strands the string's own literal
+            # newlines inside the payload, which strict JSON rejects outright.
+            parsed = json.loads(prefix + raw_stripped, strict=False)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict) or not parsed:
+            continue
+        # Prepend-only proof: every received byte must survive as the TAIL of the restored
+        # object.  The serialised form is what gets compared (the payload's ``\"`` escapes
+        # reappear there identically, while a decoded value would not), under each separator
+        # style, with control bytes squashed so a literal newline still matches its ``\n``.
+        raw_cmp = _squash_control_bytes(raw_stripped)
+        if not any(
+            len(ser) > len(raw_cmp) and ser.endswith(raw_cmp)
+            for ser in (
+                _squash_control_bytes(json.dumps(parsed, separators=sep))
+                for sep in ((",", ":"), (",", ": "), (", ", ":"), (", ", ": "))
+            )
+        ):
+            continue
+        logger.warning("Repaired tool_call arguments for %s with %s", tool_name, label)
+        return json.dumps(parsed, separators=(",", ":"))
+    return None
+
+
+# Fallback heads for tools whose schema cannot be resolved (unregistered/plugin tools).
+_STATIC_LEADING_PREFIXES = (
+    ("{", "missing leading '{'"),
+    ('{"', "missing leading '{\"'"),
+    ('{"command": "', "missing leading '{\"command\": \"'"),
+    ('{"command":"', "missing leading '{\"command\":\"'"),
+)
+
+
+def _schema_leading_prefixes(tool_name: str) -> tuple:
+    """Leading-byte candidates read from the called tool's own schema.
+
+    The static heads above only know ``terminal``.  Every tool whose first required parameter is
+    spelled differently (``execute_code`` → ``code``, ``write_file`` → ``path``) stayed
+    unrepairable, so the truncation path rewrote the call to ``"{}"`` and the turn died with a
+    bogus "Response truncated due to output length limit".  The missing head of a mid-object
+    stream is always the first required parameter's key, so take it from the registry.  Only
+    string-typed parameters qualify: for any other type the received tail begins with
+    ``[``/``{``/a digit, which ``_try_leading_prefix_repair`` already rejects.  The registry
+    import is lazy so this module keeps no import edge to the tool layer.
+    """
+    try:
+        from tools.registry import registry
+
+        schema = registry.get_schema(tool_name) or {}
+        params = (schema.get("function") or schema).get("parameters") or {}
+        props = params.get("properties") or {}
+        required = params.get("required") or []
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return ()
+    out: list[tuple[str, str]] = []
+    for name in [n for n in required if n in props][:2]:
+        if (props.get(name) or {}).get("type") != "string":
+            continue
+        for sep in ('": "', '":'):
+            out.append((f'{{"{name}{sep}', f"missing leading '{{\"{name}{sep}'"))
+    return tuple(out)
+
+
 _JSON_CLOSERS = {"{": "}", "[": "]"}
 
 
@@ -248,6 +330,36 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+
+    # Pass 1: the provider streamed tool-call arguments whose LEADING bytes never arrived.
+    # Observed on DeepSeek-class models behind OpenAI-compatible routers, where the SSE
+    # deltas begin mid-object, leaving the payload as valid JSON minus a prefix:
+    #
+    #   a) the opening `{"` lost:      `command": "cd ~/x && git log"}`
+    #   b) the whole `{"command": ` lost:   `cd ~/x && git log"}`
+    #
+    # Everything received parses once the missing prefix is restored.  Left unrepaired this is
+    # not merely a lost call: the truncation path retries, rewrites the stored history argument
+    # to "{}" (destroying the call in the transcript) and finally reports the bogus
+    # "Response truncated due to output length limit" the user sees.
+    #
+    # Schema-derived heads go FIRST — they are keyed to the tool that actually made the call,
+    # so a lost head is restored to the right parameter.  The static heads follow as a fallback
+    # for tools whose schema cannot be resolved (unregistered/plugin tools); when the schema IS
+    # known the command-specific static heads are dropped, since for any other tool such a
+    # payload's own body is a valid bare string and `{"command": "` would silently mis-key it.
+    schema_prefixes = _schema_leading_prefixes(tool_name)
+    fallbacks = (
+        _STATIC_LEADING_PREFIXES
+        if not schema_prefixes
+        else tuple(pr for pr in _STATIC_LEADING_PREFIXES if "command" not in pr[0])
+    )
+    for candidates in (schema_prefixes, fallbacks):
+        if not candidates:
+            continue
+        leading = _try_leading_prefix_repair(raw_stripped, candidates, tool_name)
+        if leading is not None:
+            return leading
 
     # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
     # (bounded). Bracket counting is string-aware: delimiters inside string values

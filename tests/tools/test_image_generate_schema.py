@@ -127,10 +127,9 @@ class TestDynamicParamGating(unittest.TestCase):
             props = _build_dynamic_image_schema()["parameters"]["properties"]
         declared = KreaImageGenProvider().capabilities()["creative_controls"]
         self.assertTrue(declared)
-        self.assertEqual(set(declared) & set(props), set(declared))
+        self.assertLessEqual(set(declared), set(props))
         for model in (self._t2i_only(), self._edit_multi_ref()):
             self.assertFalse(set(ig._CREATIVE_CONTROL_PARAMS) & set(self._schema_for(model)["parameters"]["properties"]))
-
 
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic

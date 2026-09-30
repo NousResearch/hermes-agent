@@ -54,7 +54,6 @@ class TestPluginDispatch:
         assert seen["intensity"] == 80
         assert "creativity" not in seen
 
-
     def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
         """DeepInfra chat credentials do not imply consent to image billing."""
         from tools import image_generation_tool

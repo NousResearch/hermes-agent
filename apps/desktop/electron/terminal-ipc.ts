@@ -256,6 +256,14 @@ export function registerTerminalIpc({
   }
 
   // SSH teardown: close every pane whose PTY rode the disconnected tunnel.
+  function disposeTerminalSessionsForWebContents(webContentsId: number) {
+    for (const [id, info] of [...terminalSessions.entries()]) {
+      if (info.webContentsId === webContentsId) {
+        disposeTerminalSession(id)
+      }
+    }
+  }
+
   function disposeTerminalSessionsForSshScope(scope: string) {
     for (const [id, info] of [...terminalSessions.entries()]) {
       if (info.sshScope === scope) {
@@ -356,6 +364,7 @@ export function registerTerminalIpc({
       outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
+    event.sender.once('render-process-gone', () => disposeTerminalSessionsForWebContents(event.sender.id))
 
     return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
   })

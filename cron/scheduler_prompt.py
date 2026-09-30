@@ -65,9 +65,11 @@ _UPSTREAM_CONTEXT_INTRO = (
 
 
 def _archive_answer(archive: str) -> str | None:
-    """The reusable answer of a stored run: the text after the last ``## Response``.
+    """The reusable answer of a stored run, using its frame when available.
 
-    Archives without the heading (script-mode runs) stay whole-document. The LAST
+    Framed runs validate the response length before whitespace normalization.
+    Archives without the heading (script-mode runs) stay whole-document. For legacy
+    archives without a frame, the LAST
     occurrence is the writer's boundary — the assembled prompt half can itself carry
     the literal heading (a skill documenting its response format, an injected previous
     answer quoting it), so an early split would re-inject the prompt noise this
@@ -78,15 +80,18 @@ def _archive_answer(archive: str) -> str | None:
     """
     if "## Response" not in archive:
         return archive
+    # A frame is valid only when it consumes the document's exact tail (the
+    # writer adds one newline). Use the first valid frame: quoted frames in the
+    # answer must not replace the enclosing response. Never strip before this.
     framed = list(re.finditer(r"(?m)^\*\*Response Characters:\*\* (\d+)\n^## Response\n\n", archive))
     if framed:
-        boundary = framed[-1].end()
-        length = int(framed[-1].group(1))
-        answer = archive[boundary:boundary + length]
-        if len(answer) == length:
-            answer = answer.strip()
-        else:
-            answer = ""
+        answer = ""
+        for frame in framed:
+            length = int(frame.group(1))
+            tail = archive[frame.end():]
+            if len(tail) == length + 1 and tail.endswith("\n"):
+                answer = tail[:-1].strip()
+                break
     else:
         answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):
@@ -133,7 +138,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8-sig").strip()
+                candidate = output_file.read_text(encoding="utf-8-sig")
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -142,7 +147,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if not candidate or silent_audit:
+                if not candidate.strip() or silent_audit:
                     continue
                 answer = _archive_answer(candidate)
                 if answer is None:

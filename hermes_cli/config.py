@@ -4116,8 +4116,14 @@ def _cmd_config_unlock(args):
         if not verify_password(getpass.getpass("Unlock password: "), spec.get("password")):
             print("Incorrect password.", file=sys.stderr)
             sys.exit(1)
-    minutes = max(0.1, float(getattr(args, "minutes", 15.0) or 15.0))
-    expires = begin_unlock(seconds=minutes * 60, state=state)
+    # The floor is max()'s SECOND argument so a NaN request survives to begin_unlock's refusal
+    # (max(0.1, nan) is 0.1: a garbage duration would quietly become a six-second window).
+    minutes = max(float(getattr(args, "minutes", 15.0) or 15.0), 0.1)
+    try:
+        expires = begin_unlock(seconds=minutes * 60, state=state)
+    except ValueError as exc:
+        print(f"Not unlocked: {exc}.", file=sys.stderr)
+        sys.exit(1)
     print(f"Settings unlocked until {time.strftime('%H:%M:%S', time.localtime(expires))} "
           f"({minutes:g} min). `hermes config relock` closes it sooner.")
 
@@ -4125,7 +4131,11 @@ def _cmd_config_unlock(args):
 def _cmd_config_relock(_args):
     from hermes_cli.settings_lock import end_unlock
 
-    end_unlock()
+    try:
+        end_unlock()
+    except OSError as exc:
+        print(f"The unlock window is STILL OPEN: its receipt could not be removed ({exc}).", file=sys.stderr)
+        sys.exit(1)
     print("Unlock window closed.")
 
 

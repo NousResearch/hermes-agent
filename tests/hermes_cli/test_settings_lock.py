@@ -354,6 +354,7 @@ def test_the_receipt_never_carries_the_stored_hash(tmp_path):
     assert stored.split("$")[-1] not in body
 
 
+@pytest.mark.platforms("posix")  # st_mode's permission bits are synthesised on Windows
 def test_the_window_file_is_not_world_readable(tmp_path):
     home = _root(tmp_path, LOCKED)
     sl.begin_unlock(home, seconds=30)

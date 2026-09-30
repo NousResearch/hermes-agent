@@ -1,10 +1,10 @@
 """Operator settings lock: named config paths no writer may change until it is unlocked.
 
 The lock is enforced at the seam where a ``config.yaml`` document is realised on disk, not in each
-front door: the whole-document primitives — :func:`hermes_cli.config.atomic_config_write` and the
-two ruamel round-trip writers :func:`utils.atomic_roundtrip_yaml_save` /
-:func:`utils.atomic_roundtrip_yaml_update` — each call :func:`check_config_write` against the
-document they are about to replace. ``save_config``, ``hermes config set``/``unset``, the TUI's and
+front door: the two ruamel round-trip writers :func:`utils.atomic_roundtrip_yaml_save` /
+:func:`utils.atomic_roundtrip_yaml_update` (which :func:`hermes_cli.config.atomic_config_write` and
+``atomic_config_replace`` end in) dump inside :func:`authorized_config_write`, which compares the
+document on disk with the merged document about to replace it. ``save_config``, ``hermes config set``/``unset``, the TUI's and
 the desktop's model switch, the desktop's ``config.set`` RPC, the web Config page, the gateway
 slash commands, the credential lifecycle, the ``hermes auth`` provider switch, ``hermes agent
 import`` and the post-update restore all end in one of those — and a writer added tomorrow is
@@ -66,19 +66,25 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
+import re
 import secrets
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 LOCK_SECTION = "settings_lock"
 UNLOCK_FILENAME = ".settings-unlock"
 EPOCH_FILENAME = ".settings-lock-epoch"
+FENCE_FILENAME = ".settings-unlock.lock"
 DEFAULT_UNLOCK_SECONDS = 900
+# A window is time-boxed by contract: no request and no stored receipt may outlive this.
+MAX_UNLOCK_SECONDS = 24 * 3600
 
 # scrypt parameters. n=2**14 keeps an interactive unlock well under a second on the machines
 # Hermes runs on while costing a brute-forcer real memory; r/p are the usual defaults.
@@ -105,6 +111,30 @@ class _RootPolicyUnavailable(Exception):
     """The root config.yaml exists (or may) but its lock policy cannot be established."""
 
 
+# The only ways YAML can spell a key without its literal characters: a numeric escape inside a
+# double-quoted scalar, or an escaped line break splitting it.
+_YAML_ESCAPE = re.compile(r"\\(?:x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|\r?\n[ \t]*)")
+
+
+def _may_name_lock(raw: str) -> bool:
+    """False only when no spelling of ``settings_lock`` occurs in *raw* — so an unparseable root
+    that provably names no lock still reads as "no lock", while ``"settings\\u005flock":`` (which
+    the parser resolves to the key) is never skipped."""
+    if LOCK_SECTION in raw:
+        return True
+    if "\\" not in raw:
+        return False
+
+    def _decode(match: "re.Match[str]") -> str:
+        digits = match.group(1) or match.group(2) or match.group(3)
+        try:
+            return chr(int(digits, 16)) if digits else ""
+        except (ValueError, OverflowError):
+            return ""
+
+    return LOCK_SECTION in _YAML_ESCAPE.sub(_decode, raw)
+
+
 def _read_root_yaml(root: Path) -> dict:
     """The root config as raw YAML, or {} when it provably names no lock — read directly, never
     through the config loader.
@@ -128,7 +158,7 @@ def _read_root_yaml(root: Path) -> dict:
         raise _RootPolicyUnavailable(
             f"the root config.yaml cannot be read ({exc.strerror or type(exc).__name__}), so whether "
             f"it names a {LOCK_SECTION} is unknown") from exc
-    if LOCK_SECTION not in raw:  # cheap precheck: the dominant install has no lock at all
+    if not _may_name_lock(raw):  # cheap precheck: the dominant install has no lock at all
         return {}
     try:
         import hermes_yaml
@@ -193,7 +223,9 @@ def is_enabled(spec: dict) -> bool:
 
 
 # The lock always protects itself. Without this, the front doors it guards would each be one
-# `settings_lock.enabled false` away from turning it off, which is no lock at all.
+# `settings_lock.enabled false` away from turning it off, which is no lock at all. Matched on the
+# dotted spelling like every pattern (see ``violations``), so a literal top-level key named
+# ``settings_lock.x`` counts as the policy too: it refuses more, never less.
 SELF_PATTERN = f"{LOCK_SECTION}.*"
 
 
@@ -486,7 +518,9 @@ def unlock_expiry(home: Path | str | None = None, *, spec: dict | None = None) -
         expires = float(data.get("expires_at") or 0)
     except (OSError, ValueError, TypeError, AttributeError):
         return None
-    if expires <= time.time():
+    now = time.time()
+    # Written as one chained comparison so NaN and Infinity (both valid JSON to Python) fail it.
+    if not now < expires <= now + MAX_UNLOCK_SECONDS:
         return None
     if data.get("lock") != spec_fingerprint(spec):
         return None
@@ -505,14 +539,21 @@ def begin_unlock(home: Path | str | None = None, seconds: float = DEFAULT_UNLOCK
     The caller verifies the password first. *state* is the :func:`lock_state` that authority was
     proven against (its spec and the epoch observed before it); the window lapses if the spec is
     replaced or any policy write starts a new epoch. *spec* overrides the state's spec.
+
+    Raises ``ValueError``, before anything is written, for a duration that is not a finite number
+    or exceeds :data:`MAX_UNLOCK_SECONDS`: ``inf`` would otherwise be a receipt that never expires.
     """
     from utils import atomic_json_write
 
+    seconds = float(seconds)
+    if not math.isfinite(seconds) or seconds > MAX_UNLOCK_SECONDS:
+        raise ValueError(
+            f"an unlock window must be a finite duration of at most {MAX_UNLOCK_SECONDS // 3600} hours")
     if state is None:
         state = lock_state(home)
     if spec is None:
         spec = state.spec
-    expires = time.time() + max(1.0, float(seconds))
+    expires = time.time() + max(1.0, seconds)
     path = unlock_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_json_write(path, {"expires_at": expires, "lock": spec_fingerprint(spec), "epoch": state.epoch},
@@ -520,23 +561,58 @@ def begin_unlock(home: Path | str | None = None, seconds: float = DEFAULT_UNLOCK
     return expires
 
 
+@contextmanager
+def _window_fence(home: Path | str | None = None) -> Iterator[None]:
+    """Cross-process mutual exclusion between realising a write the unlock window authorised and
+    closing that window (``FENCE_FILENAME`` beside the receipt)."""
+    path = hermes_root(home) / FENCE_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as handle:
+        try:
+            import fcntl
+        except ImportError:  # Windows
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def end_unlock(home: Path | str | None = None) -> None:
+    """Close the unlock window. Returning means it is closed: the receipt is gone, and no write
+    that the window authorised is still on its way to disk (see :func:`authorized_config_write`).
+
+    Raises ``OSError`` when the receipt exists but cannot be removed — the window is then still
+    open, and the caller must say so instead of reporting a relock.
+    """
+    path = unlock_path(home)
     try:
-        unlock_path(home).unlink()
-    except OSError:
-        pass
+        os.stat(path)
+    except FileNotFoundError:
+        return
+    with _window_fence(home):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # ── the gate ─────────────────────────────────────────────────────────────────
 
 
-def check_write(before: Any, after: Any, home: Path | str | None = None) -> None:
-    """Raise :class:`SettingsLockError` when this write would change a locked path.
-
-    Never raises for a locked path while an unlock window is live, and never for a write that
-    leaves every locked path exactly as it was. A write that changes the policy itself also starts
-    a new epoch first, and is refused if that cannot be recorded.
-    """
+def _authorize(before: Any, after: Any, home: Path | str | None = None) -> bool:
+    """Raise :class:`SettingsLockError` when this write would change a locked path with no live
+    unlock window. Returns whether the open window is the only thing that authorises it."""
     state = lock_state(home)
     if state.status == "unusable":
         # No unlock-window escape here on purpose: a stanza that cannot be normalised cannot be
@@ -548,14 +624,19 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
             f"{state.reason}. Fix the root config.yaml (or set "
             f"{LOCK_SECTION}.enabled: false there) — every config write is refused until you do.")
     spec = state.spec
-    if state.status == "valid" and not is_unlocked(home, spec=spec):
-        offending = violations(before, after, spec)
-        if offending:
-            raise SettingsLockError(
-                "settings are locked: " + ", ".join(offending)
-                + ". Run `hermes config unlock` to open a time-boxed window"
-                + (" (a password is required)." if has_password(spec) else "."),
-                offending)
+    if state.status != "valid":
+        return False
+    offending = violations(before, after, spec)
+    if offending and not is_unlocked(home, spec=spec):
+        raise SettingsLockError(
+            "settings are locked: " + ", ".join(offending)
+            + ". Run `hermes config unlock` to open a time-boxed window"
+            + (" (a password is required)." if has_password(spec) else "."),
+            offending)
+    return bool(offending)
+
+
+def _start_epoch_for_policy_change(before: Any, after: Any, home: Path | str | None = None) -> None:
     if _policy_nodes(before) != _policy_nodes(after):
         # Any change to the policy — including while it is off, so re-enabling cannot revive a
         # window — starts a new epoch BEFORE the write lands. If that cannot be recorded, the
@@ -568,16 +649,53 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
                 f"{epoch_path(home)} ({exc.strerror or type(exc).__name__}).") from exc
 
 
-def check_config_write(config_path: Path | str, before: Any, after: Any) -> None:
-    """The seam every ``config.yaml`` writer passes through: :func:`check_write` for the document at
-    *config_path*, with the lock read from the root that owns it (``profiles/<name>`` → root).
+def check_write(before: Any, after: Any, home: Path | str | None = None) -> None:
+    """Raise :class:`SettingsLockError` when this write would change a locked path.
 
-    Called by the whole-document primitives — ``hermes_cli.config.atomic_config_write``,
-    ``utils.atomic_roundtrip_yaml_save`` and ``utils.atomic_roundtrip_yaml_update`` — and by
-    writers that must refuse BEFORE an earlier side effect (a ``.env`` rotation whose config.yaml
-    mirror is locked, an ``auth.json`` provider switch).
+    Never raises for a locked path while an unlock window is live, and never for a write that
+    leaves every locked path exactly as it was. A write that changes the policy itself also starts
+    a new epoch first, and is refused if that cannot be recorded.
+    """
+    _authorize(before, after, home)
+    _start_epoch_for_policy_change(before, after, home)
+
+
+def check_config_write(config_path: Path | str, before: Any, after: Any) -> None:
+    """:func:`check_write` for the document at *config_path*, with the lock read from the root that
+    owns it (``profiles/<name>`` → root). The ask-first form, for writers that must refuse BEFORE
+    an earlier side effect (a ``.env`` rotation whose config.yaml mirror is locked, an
+    ``auth.json`` provider switch); the write itself goes through :func:`authorized_config_write`.
     """
     check_write(before, after, Path(config_path).parent)
+
+
+@contextmanager
+def authorized_config_write(config_path: Path | str, before: Any, after: Any) -> Iterator[None]:
+    """The seam every ``config.yaml`` writer realises its document under — the whole-document
+    primitives ``utils.atomic_roundtrip_yaml_save`` / ``atomic_roundtrip_yaml_update`` wrap their
+    dump in it. *after* is the document that will be written, not the caller's proposal: a YAML
+    alias lets a change to one node land on another, and only the merged document shows it.
+
+    A write that needs the unlock window is re-authorised and written while holding the fence
+    ``end_unlock`` takes, so authorisation is current at realisation: once a relock has returned,
+    a write that passed the check earlier is refused here instead of landing after it. Every other
+    write takes no fence (an install without a lock never creates the file).
+    """
+    home = Path(config_path).parent
+    if not _authorize(before, after, home):
+        _start_epoch_for_policy_change(before, after, home)
+        yield
+        return
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_window_fence(home))
+        except OSError as exc:
+            raise SettingsLockError(
+                "settings are locked: the unlock window could not be confirmed "
+                f"({exc.strerror or type(exc).__name__}).") from exc
+        _authorize(before, after, home)
+        _start_epoch_for_policy_change(before, after, home)
+        yield
 
 
 def describe(home: Path | str | None = None) -> dict:
@@ -594,13 +712,3 @@ def describe(home: Path | str | None = None) -> dict:
         "unlocked": expires is not None,
         "unlocked_until": expires,
     }
-
-
-def locked_leaf_paths(config: Any, home: Path | str | None = None) -> tuple[str, ...]:
-    """Which existing config leaves are currently locked — what a UI greys out."""
-    state = lock_state(home)
-    if state.status != "valid":
-        return ()
-    patterns = locked_patterns(state.spec)
-    return tuple(sorted({_spelling(path) for path in _flatten(config or {})
-                         if any(path_matches(_spelling(path), pattern) for pattern in patterns)}))

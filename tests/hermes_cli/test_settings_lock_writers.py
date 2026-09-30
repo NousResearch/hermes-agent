@@ -432,6 +432,205 @@ def test_an_unreadable_root_refuses_a_profile_write_and_only_a_missing_root_is_o
     assert read_user_config_raw(config_path)["approvals"]["mode"] == "off"
 
 
+@pytest.mark.parametrize("spelling", ['"settings\\u005flock"', '"settings\\x5flock"'])
+def test_an_escaped_spelling_of_the_root_stanza_still_governs_a_profile(home, spelling):
+    # YAML resolves both spellings to the key `settings_lock`; neither contains it literally.
+    from hermes_cli.config import read_user_config_raw
+    from utils import atomic_roundtrip_yaml_save
+
+    config_path = home / "profiles" / "work" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    root_config = home / "config.yaml"
+    root_config.write_text(spelling + ": {enabled: true, keys: [approvals.mode]}\n", encoding="utf-8")
+    assert "settings_lock" not in _text(root_config)
+
+    with pytest.raises(sl.SettingsLockError, match="approvals.mode"):
+        atomic_roundtrip_yaml_save(config_path, {"approvals": {"mode": "off"}})
+    assert _text(config_path) == "approvals:\n  mode: manual\n"
+
+    # Control: a root that spells no lock at all stays "no lock", even with an escape in it and
+    # even when it does not parse (a broken root must not block every profile of a lock-less install).
+    root_config.write_text('path: "C:\\\\u005fdir"\nbroken: [unclosed\n', encoding="utf-8")
+    atomic_roundtrip_yaml_save(config_path, {"approvals": {"mode": "off"}})
+    assert read_user_config_raw(config_path)["approvals"]["mode"] == "off"
+
+
+_ALIAS_LOCK = "settings_lock: {enabled: true, keys: [approvals.mode, allowed]}\n"
+
+
+@pytest.mark.parametrize("document, sibling, value", [
+    ("approvals: &a {mode: manual}\nunlocked_copy: *a\n" + _ALIAS_LOCK, "unlocked_copy", {"mode": "off"}),
+    ("approvals: {mode: manual}\nallowed: &s [one]\nunlocked_copy: *s\n" + _ALIAS_LOCK, "unlocked_copy", ["two"]),
+    ("approvals: {mode: manual}\nsettings_lock: &p {enabled: true, keys: [approvals.mode, allowed]}\n"
+     "unlocked_copy: *p\n", "unlocked_copy", {"enabled": False, "keys": ["approvals.mode", "allowed"]}),
+], ids=["mapping", "sequence", "policy"])
+@pytest.mark.parametrize("target", ["root", "profile"])
+def test_a_yaml_alias_cannot_carry_a_change_onto_a_locked_node(home, document, sibling, value, target):
+    # The proposal changes only the UNLOCKED sibling, so its own diff names no locked path; the
+    # round-trip merge then writes through the node the alias shares. What is judged must be the
+    # document that is written.
+    import hermes_yaml
+    from hermes_cli.config import atomic_config_replace
+
+    root_config = home / "config.yaml"
+    config_path = root_config if target == "root" else home / "profiles" / "work" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    root_config.write_text(document, encoding="utf-8")
+    config_path.write_text(document, encoding="utf-8")
+    before = _text(config_path)
+
+    proposal = hermes_yaml.safe_load(before)
+    proposal[sibling] = value
+    with pytest.raises(sl.SettingsLockError):
+        atomic_config_replace(config_path, proposal)
+    assert _text(config_path) == before
+    assert sl.lock_state(home).status == "valid"
+
+    # Control: on the same aliased document, a change that reaches no locked node still writes.
+    unrelated = hermes_yaml.safe_load(before)
+    unrelated["display"] = {"theme": "dark"}
+    atomic_config_replace(config_path, unrelated)
+    assert hermes_yaml.safe_load(_text(config_path))["display"] == {"theme": "dark"}
+
+
+@pytest.mark.parametrize("minutes", [float("inf"), float("nan"), 1e300, 24 * 60 + 1])
+def test_an_unlock_window_is_always_finite_and_bounded(home, monkeypatch, minutes):
+    # `hermes config unlock --minutes inf` (argparse's float() accepts it, and `1e309` overflows to
+    # it) must fail BEFORE a receipt exists; a stored non-finite or far-future expiry is not a window.
+    import json
+    import time
+    import types
+
+    import tui_gateway.server as server
+    from hermes_cli.config import _cmd_config_unlock
+
+    monkeypatch.setattr("getpass.getpass", lambda *_a, **_k: PASSWORD)
+    with pytest.raises(SystemExit) as exit_info:
+        _cmd_config_unlock(types.SimpleNamespace(minutes=minutes))
+    assert exit_info.value.code == 1
+    assert not sl.unlock_path(home).exists()
+
+    reply = server._methods["config.unlock"](1, {"password": PASSWORD, "minutes": minutes})
+    assert "error" in reply and not sl.unlock_path(home).exists()
+
+    state = sl.lock_state(home)
+    stored = minutes if minutes != minutes or minutes == float("inf") else time.time() + minutes * 60
+    sl.unlock_path(home).write_text(json.dumps(
+        {"expires_at": stored, "lock": sl.spec_fingerprint(state.spec), "epoch": state.epoch}), encoding="utf-8")
+    assert sl.is_unlocked(home) is False
+
+    # Control: the same doors with a finite duration open a window that a locked write can use.
+    _cmd_config_unlock(types.SimpleNamespace(minutes=5.0))
+    assert sl.is_unlocked(home) is True
+
+
+@pytest.mark.parametrize("door", ["cli", "rpc"])
+def test_a_relock_that_cannot_remove_the_receipt_reports_the_window_as_still_open(home, monkeypatch, door, capsys):
+    import types
+
+    import tui_gateway.server as server
+    from hermes_cli.config import _cmd_config_relock, set_config_value
+
+    def relock():
+        if door == "rpc":
+            return "error" not in server._methods["config.relock"](1, {})
+        try:
+            _cmd_config_relock(types.SimpleNamespace())
+        except SystemExit as exc:
+            return exc.code in (0, None)
+        return True
+
+    assert relock() is True  # no receipt at all: closing a closed window is a success
+
+    sl.begin_unlock(home, seconds=600)
+    receipt = sl.unlock_path(home)
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == receipt:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    capsys.readouterr()
+    assert relock() is False
+    assert "Unlock window closed" not in capsys.readouterr().out
+    assert sl.is_unlocked(home) is True
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert relock() is True
+    before = _text(home / "config.yaml")
+    with pytest.raises(sl.SettingsLockError, match="approvals.mode"):
+        set_config_value("approvals.mode", "off")
+    assert _text(home / "config.yaml") == before
+
+
+@pytest.mark.parametrize("paused", ["after_the_check", "at_the_dump"])
+def test_no_locked_write_lands_after_relock_has_returned(home, monkeypatch, paused):
+    # A writer the open window authorised is held mid-flight while another thread relocks.
+    # Whichever side wins, a locked value may only reach disk BEFORE `end_unlock` returns.
+    import threading
+
+    import utils
+    from hermes_cli.config import read_user_config_raw
+
+    config_path = home / "profiles" / "work" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    sl.begin_unlock(home, seconds=600)
+
+    reached, resume, events, outcome = threading.Event(), threading.Event(), [], []
+    real_authorize, real_dump = sl._authorize, utils._roundtrip_dump
+
+    def authorize(*args, **kwargs):
+        used_window = real_authorize(*args, **kwargs)
+        if paused == "after_the_check" and not reached.is_set():
+            reached.set()
+            assert resume.wait(30)
+        return used_window
+
+    def dump(*args, **kwargs):
+        if paused == "at_the_dump":
+            reached.set()
+            assert resume.wait(30)
+        real_dump(*args, **kwargs)
+        events.append("landed")
+
+    monkeypatch.setattr(sl, "_authorize", authorize)
+    monkeypatch.setattr(utils, "_roundtrip_dump", dump)
+
+    def write():
+        try:
+            if paused == "at_the_dump":
+                utils.atomic_roundtrip_yaml_save(config_path, {"approvals": {"mode": "off"}})
+            else:
+                utils.atomic_roundtrip_yaml_update(config_path, "approvals.mode", "off")
+        except sl.SettingsLockError:
+            outcome.append("refused")
+
+    def relock():
+        sl.end_unlock(home)
+        events.append("relocked")
+
+    writer, relocker = threading.Thread(target=write), threading.Thread(target=relock)
+    writer.start()
+    assert reached.wait(30)
+    relocker.start()
+    relocker.join(2.0)  # returns at once unless the writer holds the fence; either way, let it go on
+    resume.set()
+    writer.join(30)
+    relocker.join(30)
+    assert not writer.is_alive() and not relocker.is_alive()
+
+    assert sl.is_unlocked(home) is False
+    if paused == "after_the_check":
+        assert outcome == ["refused"] and events == ["relocked"]
+        assert read_user_config_raw(config_path)["approvals"]["mode"] == "manual"
+    else:
+        assert events == ["landed", "relocked"]
+
+
 # ── hermes agent import (command_allowlist / approvals.deny / mcp_servers → config.yaml) ─────
 
 

@@ -562,10 +562,14 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4003, "incorrect password")
     minutes = params.get("minutes")
     try:
-        seconds = max(6.0, float(minutes) * 60) if minutes is not None else 900.0
+        # Floor second, so NaN reaches begin_unlock's refusal instead of becoming six seconds.
+        seconds = max(float(minutes) * 60, 6.0) if minutes is not None else 900.0
     except (TypeError, ValueError):
         seconds = 900.0
-    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds, state=state)})
+    try:
+        return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds, state=state)})
+    except ValueError as exc:
+        return _err(rid, 4002, str(exc))
 
 
 @method("config.relock")
@@ -574,7 +578,10 @@ def _(rid, params: dict) -> dict:
     del params
     from hermes_cli.settings_lock import end_unlock
 
-    end_unlock()
+    try:
+        end_unlock()
+    except OSError as exc:
+        return _err(rid, 5000, f"the unlock window is still open: its receipt could not be removed ({exc})")
     return _ok(rid, {"ok": True})
 
 

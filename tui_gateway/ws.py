@@ -85,8 +85,26 @@ _TOKEN_COALESCE_S = 0.033
 # starlette stays optional at import time; fall back to a generic sentinel.
 try:
     from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
+    from starlette.websockets import WebSocketState as _WebSocketState
 except ImportError:  # pragma: no cover - starlette is a required install path
     _WebSocketDisconnect = Exception  # type: ignore[assignment]
+    _WebSocketState = None  # type: ignore[assignment]
+
+
+def _peer_gone(ws: Any, exc: BaseException) -> bool:
+    """True when a ``send_text`` failure means the client already left, not that the server broke.
+
+    Starlette raises ``WebSocketDisconnect`` for a send on a dropped connection. Once the disconnect
+    has been received (or our own close sent), uvicorn instead rejects the send with "Unexpected ASGI
+    message 'websocket.send', after sending 'websocket.close'" (a ``RuntimeError``); the socket state
+    tells that apart from a real ``RuntimeError`` on a live connection.
+    """
+    if isinstance(exc, _WebSocketDisconnect):
+        return True
+    if not isinstance(exc, RuntimeError) or _WebSocketState is None:
+        return False
+    disconnected = _WebSocketState.DISCONNECTED
+    return disconnected in (getattr(ws, "client_state", None), getattr(ws, "application_state", None))
 
 
 class WSTransport:
@@ -104,6 +122,9 @@ class WSTransport:
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self._closed = False
+        # Set when a send failed because the client had already gone (see _peer_gone): the disconnect
+        # is expected, and handle_ws's "ws closed ... reason=" line is the record of it.
+        self._peer_gone = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
         self._token_lock = threading.Lock()
@@ -181,6 +202,10 @@ class WSTransport:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def peer_gone(self) -> bool:
+        return self._peer_gone
+
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning loop; awaits until the frame is on the wire. Buffered tokens are flushed
         ahead of it in the SAME batch so nothing slips between."""
@@ -220,7 +245,11 @@ class WSTransport:
                 except Exception as exc:
                     # Latch while holding the writer lock so queued batches observe the failure first.
                     self._closed = True
-                    _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
+                    if _peer_gone(self._ws, exc):
+                        self._peer_gone = True
+                        _log.debug("ws send to departed peer=%s error_type=%s", self._peer, type(exc).__name__)
+                    else:
+                        _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
                     return
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
@@ -306,7 +335,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         if not await transport.write_async(frame):
             disconnect_reason = reason
             send_failures += 1
-            _log.warning(msg, *args)
+            _log.log(logging.DEBUG if transport.peer_gone else logging.WARNING, msg, *args)
             raise _SendFailed
 
     def _error(code: int, message: str, req_id: Any) -> dict:
@@ -388,7 +417,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
-            _log.error("ws ready frame send failed peer=%s", peer)
+            _log.log(logging.DEBUG if transport.peer_gone else logging.ERROR, "ws ready frame send failed peer=%s", peer)
             return
 
         dispatcher = asyncio.create_task(_dispatch_loop())

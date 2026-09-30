@@ -350,10 +350,32 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
     reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
     if reason:
-        detail = ("has never been pushed" if reason == "never-pushed"
-                  else "is gone from the remote but has commits that are not in main")
-        result.update(error="branch-local-only", localOnly=True,
-                      message=f"Branch '{selected_branch}' {detail}; keeping it instead of switching to main.")
+        # updates.parked_branch_strategy: update_in_place parks the checkout on this branch on
+        # purpose; the updater (update_cmd._apply_parked_branch_guard) merges origin/main INTO
+        # it. Report against main's tip instead of refusing — the refusal path is for branches
+        # the updater would have to abandon, which in-place updates never do.
+        try:
+            from hermes_cli.config import load_config
+            _in_place = ((load_config() or {}).get("updates", {})
+                         .get("parked_branch_strategy") == "update_in_place")
+        except Exception:
+            _in_place = False
+        if not _in_place:
+            detail = ("has never been pushed" if reason == "never-pushed"
+                      else "is gone from the remote but has commits that are not in main")
+            result.update(error="branch-local-only", localOnly=True,
+                          message=f"Branch '{selected_branch}' {detail}; keeping it instead of switching to main.")
+            return
+        target, _, failure = _branch_tip(co.repository, "main", co.root, co.git,
+                                         remote if co.embedded else "origin")
+        if target is None:
+            result.update(error="fetch-failed",
+                          message=f"Could not resolve the remote branch tip: {failure}" if failure
+                          else "Could not resolve the remote branch tip.")
+            return
+        behind, commits = _behind_count(co, target)
+        result["commits"] = commits
+        result.update(targetSha=target, behind=behind, updateAvailable=behind != 0)
         return
     if missing and selected_branch != "main":
         result["branch"] = "main"

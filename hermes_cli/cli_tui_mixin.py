@@ -2303,7 +2303,8 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
+        from cli import _estimate_tui_input_height, get_skill_bundles
+        from agent.skill_commands import get_skill_commands
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self

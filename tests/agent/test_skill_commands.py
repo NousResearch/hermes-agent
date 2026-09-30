@@ -579,6 +579,26 @@ class TestPostInstallFreshness:
         ):
             assert sc_mod.get_skill_commands() is fake
 
+    def test_quarantine_change_invalidates_project_skill_snapshot(self, tmp_path):
+        import agent.skill_commands as sc_mod
+
+        project_root = tmp_path / "project-skills"
+        _make_skill(project_root, "project-skill")
+        quarantined = False
+
+        def _is_quarantined(_path):
+            return quarantined
+
+        with (
+            patch("agent.skill_utils.get_project_skills_dirs", return_value=[project_root]),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("tools.skills_tool._skills_dir", return_value=tmp_path / "local-skills"),
+            patch("agent.skill_utils.is_quarantined_project_skill", side_effect=_is_quarantined),
+        ):
+            assert "/project-skill" in sc_mod.get_skill_commands()
+            quarantined = True
+            assert "/project-skill" not in sc_mod.get_skill_commands()
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

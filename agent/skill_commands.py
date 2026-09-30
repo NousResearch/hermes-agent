@@ -414,18 +414,25 @@ def _skills_tree_signature() -> tuple:
     try:
         from tools.skills_tool import _skills_dir
         from agent.skill_utils import (
-            get_external_skills_dirs, get_project_skills_dirs, iter_skill_index_files,
+            get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files,
+            iter_skill_index_files,
         )
-        roots = [d for d in [*get_project_skills_dirs(), _skills_dir(), *get_external_skills_dirs()] if d]
-        for root in roots:
-            for skill_md in iter_skill_index_files(Path(root), "SKILL.md"):
-                # A directory-level prune (iter_skill_index_files mirrors the scan's own
-                # pruning, so the walk cost matches the scan's traversal shape) plus the
-                # file's own mtime: in-place SKILL.md edits change no directory mtime.
-                try:
-                    sig.append((str(skill_md.parent), skill_md.stat().st_mtime_ns))
-                except OSError:
-                    sig.append((str(skill_md.parent), None))
+        project_roots = [d for d in get_project_skills_dirs() if d]
+        other_roots = [d for d in [_skills_dir(), *get_external_skills_dirs()] if d]
+        skill_files = [
+            skill_md for root in project_roots for skill_md in iter_project_skill_files(Path(root))
+        ]
+        skill_files.extend(
+            skill_md for root in other_roots for skill_md in iter_skill_index_files(Path(root), "SKILL.md")
+        )
+        for skill_md in skill_files:
+            # A directory-level prune (iter_skill_index_files mirrors the scan's own
+            # pruning, so the walk cost matches the scan's traversal shape) plus the
+            # file's own mtime: in-place SKILL.md edits change no directory mtime.
+            try:
+                sig.append((str(skill_md.parent), skill_md.stat().st_mtime_ns))
+            except OSError:
+                sig.append((str(skill_md.parent), None))
     except Exception:
         return ()  # rescan on the next lookup rather than trust a partial fingerprint
     return tuple(sig)

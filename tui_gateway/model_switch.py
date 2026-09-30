@@ -150,6 +150,28 @@ def _session_default_model(session: dict) -> str:
         return _resolve_model()
 
 
+def _sync_resume_runtime_with_pinned_override(session: dict) -> None:
+    """Fold a pinned ``model_override`` into the full resume-runtime bundle.
+
+    A cold resume seeds BOTH stores (``_ResumeOps.record``), and the deferred build splats
+    ``resume_runtime_overrides`` wholesale whenever its provider still routs
+    (``_deferred_build_agent_kwargs``) — a pin that only rewrote ``model_override`` was
+    discarded by that build, which constructed the OLD route while the record announced the
+    new one (#122986 review of #122678). Same merge semantics the failed-build restart applies
+    before rebuilding.
+    """
+    pin = session.get("model_override")
+    resume = session.get("resume_runtime_overrides")
+    if not (isinstance(pin, dict) and isinstance(resume, dict)):
+        return
+    resume = {**resume, "model_override": pin}
+    if provider := pin.get("provider"):
+        resume["provider_override"] = provider
+    else:
+        resume.pop("provider_override", None)
+    session["resume_runtime_overrides"] = resume
+
+
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
     """Replace one completed failed build generation and start its retry."""
     if failed_ready is None:
@@ -158,15 +180,7 @@ def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready:
         if (session.get("agent") is not None or session.get("agent_error") is None
                 or session.get("agent_ready") is not failed_ready or not failed_ready.is_set()):
             return False
-        model_override = session.get("model_override")
-        resume_overrides = session.get("resume_runtime_overrides")
-        if isinstance(model_override, dict) and isinstance(resume_overrides, dict):
-            resume_overrides = {**resume_overrides, "model_override": model_override}
-            if provider := model_override.get("provider"):
-                resume_overrides["provider_override"] = provider
-            else:
-                resume_overrides.pop("provider_override", None)
-            session["resume_runtime_overrides"] = resume_overrides
+        _sync_resume_runtime_with_pinned_override(session)
         session["agent_error"] = None
         session["agent_ready"] = threading.Event()
         session.pop("agent_build_started", None)

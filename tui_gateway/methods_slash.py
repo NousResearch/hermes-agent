@@ -197,6 +197,11 @@ def _format_live_model_output(session: dict) -> str:
     agent = session.get("agent")
     model = getattr(agent, "model", "") if agent is not None else ""
     provider = getattr(agent, "provider", "") if agent is not None else ""
+    if agent is None and (override := session.get("model_override") or {}):
+        # A pre-first-turn session has no agent; the pinned route is the answer (matches
+        # _live_session_identity, which is also what a cold resume reports for this session).
+        model = str(override.get("model") or "")
+        provider = str(override.get("provider") or "")
     if not model:
         return "Current model: (unknown)"
     return f"Current model: {model}" + (f" ({provider})" if provider else "")
@@ -346,10 +351,79 @@ def _mirror_stop(sid, session, agent, arg) -> None:
     process_registry.kill_all(source="slash.stop")
 
 
+_MODEL_BUILD_WAIT = 30.0  # ceiling for a prewarm build to land before a /model defers (config.set parity)
+
+
+def _defer_model_switch(sid: str, session: dict, arg: str) -> str:
+    """Queue a ``/model`` for the next turn when the prewarm build outlived the wait.
+
+    Pinning while a build is still resolving its kwargs loses: the finished build
+    splats the route it resolved BEFORE the switch and re-announces the OLD model —
+    the last frame the Desktop paints, inverting #122678. Stash exactly like
+    ``config.set``'s deferred branch (selection guards first): ``_session_info`` reports
+    the pending pick over the agent's model, so emitting now moves the picker, and
+    ``_apply_pending_model_switch`` at next turn start commits against the built agent
+    (prompt.submit gates on it) before anything bills.
+    """
+    from hermes_cli.model_switch import parse_model_switch_args
+    try:
+        parsed = parse_model_switch_args(arg)
+        display_model, display_provider = parsed.model_input, (parsed.explicit_provider or "").strip()
+    except Exception:
+        display_model, display_provider = arg.strip(), ""
+    if warning := _pending_switch_selection_warning(display_model, display_provider):
+        return warning
+    session["pending_model_switch"] = {
+        "raw": arg, "confirm_expensive_model": False,
+        "display_model": display_model, "display_provider": display_provider}
+    _emit("session.info", sid, _session_info(None, session))
+    return (f"Still starting this session, so the switch to {display_model or 'the picked model'} "
+            "will apply with your next message.")
+
+
+def _mirror_model(sid, session, agent, arg) -> str:
+    """Mirror a typed ``/model`` onto the live session; returns the switch's warning, if any.
+
+    With a built agent, ``_apply_model_switch`` commits in place and its own announce emits
+    ``session.info``. Without one — a pre-first-turn (lazy) session, Desktop's default state for
+    every fresh or watch-window pane — the commit was skipped entirely, so the route the slash
+    worker just applied and reported only reaches this process as the pinned ``model_override``.
+    Re-emit ``session.info`` for that case (same pin + announce the MoA one-shot makes at its lazy
+    branch): without it the Desktop picker keeps painting the old model until an app restart, while
+    later turns bill the switched one (#122678).
+
+    A prewarm build may be in flight (``session.create`` starts one before the first prompt): a pin
+    applied mid-build loses to it — the build resolves its kwargs earlier and the finished agent
+    re-announces the OLD model. Wait it out (the build's announce lands BEFORE ``agent_ready``, so a
+    committed switch always announces last), and if the build outlives the ceiling, defer instead of
+    pinning under a loser. A lazy watch-window resume never prewarms: key the wait on the build
+    actually having started, or every /model on a spectated session parks for the full ceiling.
+
+    Resolution (no agent: config fallback, provider routing, secrets) must run under the
+    SESSION's profile scope — on a pooled multi-profile serve, an unscoped bare call resolves
+    against the LAUNCH profile's credentials (#122986 review; same wrap config.set applies).
+    And the pin must land in BOTH route stores a cold resume seeds: ``model_override`` AND the
+    full ``resume_runtime_overrides`` bundle, or the deferred build splats the old route
+    wholesale and the announce was a lie (#122986 review of #122678)."""
+    if agent is None:
+        ready = session.get("agent_ready")
+        if ready is not None and session.get("agent_build_started") and not ready.is_set():
+            if not ready.wait(timeout=_MODEL_BUILD_WAIT):
+                return _defer_model_switch(sid, session, arg)
+    with _session_profile_runtime_scope(session):
+        previous_override = session.get("model_override")
+        warning = _apply_model_switch(sid, session, arg).get("warning", "")
+    if session.get("agent") is None:
+        pinned = session.get("model_override")
+        if pinned and pinned != previous_override:
+            _sync_resume_runtime_with_pinned_override(session)
+            _emit("session.info", sid, _session_info(None, session))
+    return warning
+
+
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
 _SLASH_MIRRORS = {
-    "model": lambda sid, session, agent, arg: (
-        _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
+    "model": lambda sid, session, agent, arg: (_mirror_model(sid, session, agent, arg) if arg else ""),
     "approvals": _mirror_approvals, "personality": _mirror_personality, "prompt": _mirror_prompt,
     "compress": lambda sid, session, agent, arg: (
         _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),

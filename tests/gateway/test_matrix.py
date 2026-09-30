@@ -2248,6 +2248,51 @@ async def test_mention_catch_up_passes_over_bot_status_notices(scope):
 
 
 @pytest.mark.asyncio
+async def test_mention_catch_up_passes_over_the_restart_notices(tmp_path, monkeypatch):
+    """The gateway announced a restart in the home room and came back online while Bob's
+    messages went unanswered, because they did not mention the bot."""
+    import gateway.run as gateway_run
+    from gateway.config import HomeChannel
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    history: list[dict] = []
+    adapter = _catch_up_adapter(history, thread=False)
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    adapter._client.send_message_event = AsyncMock(side_effect=["$shutdown", "$online"])
+    runner, _ = make_restart_runner(adapter)
+    runner.config.platforms = {
+        Platform.MATRIX: PlatformConfig(
+            enabled=True,
+            token="***",
+            home_channel=HomeChannel(
+                platform=Platform.MATRIX, chat_id=_CATCH_UP_ROOM, name="Ops"
+            ),
+        )
+    }
+    runner.adapters = {Platform.MATRIX: adapter}
+
+    await runner._notify_active_sessions_of_shutdown()
+    await runner._send_home_channel_startup_notifications()
+
+    shutdown, online = (
+        call.args[2] for call in adapter._client.send_message_event.await_args_list
+    )
+    history.extend([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", {}),
+        {"event_id": "$online", "sender": "@bot:example.org", "content": online},
+        {"event_id": "$shutdown", "sender": "@bot:example.org", "content": shutdown},
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", {}),
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", {}),
+    ])
+    event = await _catch_up_trigger(adapter, {})
+
+    context = await adapter.fetch_mention_context(event)
+
+    assert context == "[Recent room messages]\n[bob] Gated one\n[bob] Gated two"
+
+
+@pytest.mark.asyncio
 async def test_first_room_turn_after_new_catches_up_only_since_the_reset():
     """The new session's transcript is empty, but the conversation before `/new` was
     discarded on purpose, so catch-up still stops at the bot's reply to `/new`."""

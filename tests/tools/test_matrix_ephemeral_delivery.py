@@ -171,7 +171,10 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch,
         )
         await wait_for(started)
         task.cancel()
-        release.set()
+        # A cancelled resolution never needs releasing. Releasing it could let it finish before
+        # the cancellation reaches the gateway loop.
+        if phase != "resolution":
+            release.set()
         try:
             return await task
         except asyncio.CancelledError:
@@ -180,6 +183,7 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch,
     try:
         result = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
     finally:
+        release.set()
         if loop is not None:
             loop.call_soon_threadsafe(loop.stop)
     accepted = {

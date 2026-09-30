@@ -121,12 +121,25 @@ async def test_matrix_read_refuses_a_stopped_owner_loop():
 
 @pytest.mark.asyncio
 async def test_matrix_read_deadline_cancels_a_stalled_read(monkeypatch):
-    monkeypatch.setattr(matrix_read_tool, "_READ_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(matrix_read_tool, "_READ_DEADLINE_SECONDS", 0)
+    owner_loop = asyncio.get_running_loop()
+    reading = asyncio.Event()
     release = asyncio.Event()
     settled = asyncio.Event()
     outcome = []
+    schedule = matrix_read_tool.safe_schedule_threadsafe
+
+    # A read cancelled before the gateway loop starts it never runs, so the
+    # deadline must not begin until the read is waiting.
+    def schedule_and_wait_until_reading(*args, **kwargs):
+        future = schedule(*args, **kwargs)
+        asyncio.run_coroutine_threadsafe(reading.wait(), owner_loop).result()
+        return future
+
+    monkeypatch.setattr(matrix_read_tool, "safe_schedule_threadsafe", schedule_and_wait_until_reading)
 
     async def stalled_read(*args, **kwargs):
+        reading.set()
         try:
             await release.wait()
             outcome.append("completed")
@@ -140,10 +153,14 @@ async def test_matrix_read_deadline_cancels_a_stalled_read(monkeypatch):
     tokens = _bind_matrix_session(SimpleNamespace(read_matrix_context=stalled_read))
     try:
         dispatch = asyncio.create_task(asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"}))
-        await asyncio.wait({dispatch}, timeout=2)
+        started = asyncio.create_task(reading.wait())
+        await asyncio.wait({dispatch, started}, return_when=asyncio.FIRST_COMPLETED)
+        started.cancel()
+        await asyncio.wait({dispatch}, timeout=10)
         release.set()
         result = json.loads(await dispatch)
-        await asyncio.wait_for(settled.wait(), timeout=2)
+        if reading.is_set():
+            await settled.wait()
     finally:
         clear_session_vars(tokens)
 

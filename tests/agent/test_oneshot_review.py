@@ -1,6 +1,7 @@
 """One-shot runs (``hermes chat -q``/``-Q``) keep their post-turn review (#126417).
 
-Covers: the exit linger that lets an in-flight review land, the deferred-queue flush at exit, and ``-Q`` stdout staying clean when the review now
+Covers: the exit linger that lets an in-flight review land, the deferred-queue flush at exit, the
+opt-in one-shot learning mode (skill_manage kept, memory reviewed after a substantive turn), and ``-Q`` stdout staying clean when the review now
 finishes inside the process.
 """
 
@@ -12,12 +13,27 @@ import types
 import pytest
 
 from agent import background_review as br
+from agent import oneshot_footprint
+
+
+@pytest.fixture
+def oneshot(monkeypatch):
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+
+
+@pytest.fixture
+def interactive(monkeypatch):
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
 
 
 def _cfg(monkeypatch, **task):
     enabled = task.pop("enabled", True)
     monkeypatch.setattr(br, "load_background_review_settings", lambda: (enabled, dict(task)))
     monkeypatch.setattr(br, "_background_review_task_config", lambda task_cfg=None: task_cfg if isinstance(task_cfg, dict) else dict(task))
+
+
+def _tools(*names):
+    return [{"type": "function", "function": {"name": n}} for n in names]
 
 
 # ── exit linger ───────────────────────────────────────────────────────────────
@@ -82,6 +98,49 @@ def test_hermes_z_teardown_waits_for_the_review_before_closing_the_agent(monkeyp
     threading.Timer(0.05, _finish).start()
     oneshot._close_agent(agent, None)
     assert order == ["review", "memory", "close"]
+
+
+# ── opt-in one-shot learning ──────────────────────────────────────────────────
+
+
+def test_oneshot_keeps_skill_manage_only_when_learning_is_opted_in(oneshot, monkeypatch):
+    names = lambda: {t["function"]["name"] for t in oneshot_footprint.prune_oneshot_tools(_tools("skill_manage", "terminal"))}
+    _cfg(monkeypatch)
+    assert names() == {"terminal"}
+    _cfg(monkeypatch, oneshot_learning=True)
+    assert names() == {"skill_manage", "terminal"}
+    assert "skill_manage(action='patch')" in oneshot_footprint.oneshot_skills_guidance()
+
+
+def test_interactive_sessions_are_untouched(interactive, monkeypatch):
+    _cfg(monkeypatch, oneshot_learning=True)
+    assert oneshot_footprint.oneshot_skills_guidance() == ""
+    assert len(oneshot_footprint.prune_oneshot_tools(_tools("skill_manage"))) == 1
+    assert br.oneshot_memory_review_due(types.SimpleNamespace(_skill_nudge_interval=10), 50) is False
+
+
+@pytest.mark.parametrize(("cfg", "calls", "due"), [
+    ({}, 40, False),                                                       # default: off
+    ({"oneshot_learning": True}, 9, False),                                # trivial run: no fork
+    ({"oneshot_learning": True}, 10, True),                                # substantive run
+    ({"oneshot_learning": True, "oneshot_min_tool_calls": 3}, 3, True),
+    ({"oneshot_learning": True, "enabled": False}, 40, False),             # reviews disabled wins
+])
+def test_oneshot_memory_review_due(oneshot, monkeypatch, cfg, calls, due):
+    _cfg(monkeypatch, **cfg)
+    assert br.oneshot_memory_review_due(types.SimpleNamespace(_skill_nudge_interval=10), calls) is due
+
+
+def test_turn_tool_call_count_counts_batched_calls_of_this_turn_only():
+    earlier = [{"role": "user", "content": "old"}, {"role": "assistant", "tool_calls": [1]},
+               {"role": "tool", "content": "x"}, {"role": "assistant", "content": "done"}]
+    batched = [{"role": "user", "content": "now"},
+               {"role": "assistant", "tool_calls": list(range(11))}]
+    batched += [{"role": "tool", "content": str(i)} for i in range(11)]
+    batched += [{"role": "assistant", "content": "answer"}]
+    assert br.turn_tool_call_count(earlier + batched) == 11   # one iteration, eleven calls
+    assert br.turn_tool_call_count(earlier) == 1
+    assert br.turn_tool_call_count([]) == 0
 
 
 # ── -Q stdout stays clean ─────────────────────────────────────────────────────

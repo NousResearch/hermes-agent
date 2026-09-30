@@ -266,6 +266,58 @@ def drain_background_review(agent: Any, *, timeout: Optional[float] = None) -> b
     return bool(finished)
 
 
+def oneshot_learning_enabled(task_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """``auxiliary.background_review.oneshot_learning`` (default off).
+
+    For installs whose one-shot runs are turns of a longer-lived identity (an orchestrator that
+    resumes the same session once per wake, a kanban worker): keep ``skill_manage`` in the tool
+    surface so the skill nudge can fire and the review fork can patch skills, and review memory
+    after a substantive turn (see :func:`oneshot_memory_review_due`)."""
+    try:
+        from utils import is_truthy_value
+
+        return is_truthy_value(_background_review_task_config(task_cfg).get("oneshot_learning"), default=False)
+    except Exception:  # noqa: BLE001 — a bad knob keeps the default
+        return False
+
+
+def turn_tool_call_count(messages: Any) -> int:
+    """Tool calls the CURRENT turn made: tool results after the last user message.
+
+    Counts calls, not loop iterations, so a model that batches eleven calls into one
+    response is as "substantive" as one that makes them one at a time."""
+    count = 0
+    for message in reversed(list(messages or [])):
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "user":
+            break
+        if role == "tool":
+            count += 1
+    return count
+
+
+def oneshot_memory_review_due(agent: Any, turn_tool_calls: int,
+                              task_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when a one-shot turn should get a memory review although the turn-count nudge did not fire.
+
+    Needs ``oneshot_learning`` on, automatic reviews enabled, a single-query session, and a
+    substantive turn: at least ``oneshot_min_tool_calls`` tool calls (default: the skill nudge
+    interval, 10), so a trivial probe never pays for a fork."""
+    from agent.oneshot_footprint import is_single_query_session
+
+    if not is_single_query_session():
+        return False
+    enabled, cfg = (True, task_cfg) if task_cfg is not None else load_background_review_settings()
+    if not enabled or not oneshot_learning_enabled(cfg):
+        return False
+    default_min = getattr(agent, "_skill_nudge_interval", 10) or 10
+    try:
+        min_calls = int((cfg or {}).get("oneshot_min_tool_calls", default_min))
+    except (TypeError, ValueError):
+        min_calls = default_min
+    return int(turn_tool_calls or 0) >= max(1, min_calls)
+
+
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as

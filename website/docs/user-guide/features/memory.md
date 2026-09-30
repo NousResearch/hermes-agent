@@ -453,9 +453,16 @@ one-shot run now waits for an in-flight review, bounded by `linger_timeout_s`
 (default 240; `0` restores the old exit-at-once behaviour). With `-Q` the
 review's summary goes to `agent.log`, never to stdout.
 
+By default a one-shot run also hides `skill_manage` and never triggers the
+turn-count memory nudge: most `-q` runs have no later session to learn for. When
+yours do (an orchestrator that resumes the same session once per task wake, a
+worker that keeps its identity across runs), opt in:
+
 ```yaml
 auxiliary:
   background_review:
+    oneshot_learning: true           # keep skill_manage; review memory after a substantive run
+    oneshot_min_tool_calls: 10       # "substantive": tool calls in the run (default: the skill nudge interval)
     linger_timeout_s: 240
 ```
 

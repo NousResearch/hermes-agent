@@ -991,6 +991,9 @@ prompt_caching:
 #     provider: "auto"         # or pin a cheaper model (see memory.md)
 #     model: ""
 #     linger_timeout_s: 240    # one-shot (-q/-Q) exit waits this long for an in-flight review (0 = don't)
+#     oneshot_learning: false  # true: keep skill_manage in one-shot runs and review memory after a
+#                              # substantive run (for orchestrators that resume one session per task)
+#     oneshot_min_tool_calls: 10  # "substantive" (default: the skill nudge interval)
 
 # =============================================================================
 # Persistent Memory

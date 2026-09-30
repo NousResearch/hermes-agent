@@ -812,8 +812,10 @@ DEFAULT_CONFIG = {
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
         # if you want a different effort level; a one-time warning says so when the key is set.
         # One-shot (-q/-Q) knobs, all optional: linger_timeout_s (default 240; 0 = no linger) bounds the
-        # wait for an in-flight review at exit.
-        "background_review": {"enabled": True, "linger_timeout_s": 240, **_aux(120)},
+        # wait for an in-flight review at exit; oneshot_learning (default false) keeps skill_manage and
+        # reviews memory after a substantive one-shot turn (oneshot_min_tool_calls, default = the
+        # skill nudge interval) for installs that resume one session per run.
+        "background_review": {"enabled": True, "linger_timeout_s": 240, "oneshot_learning": False, **_aux(120)},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

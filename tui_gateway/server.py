@@ -2335,8 +2335,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
-    if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
+    if reasoning_effort and reasoning_effort != "none" and not pending_switch:
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(provider, model)) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,

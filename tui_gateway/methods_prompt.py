@@ -576,9 +576,12 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None, 
             _persist_branch_seed(session)
             # The first real turn reopens a finalized row (#85303): resume is read-only, so
             # an ended_at set at mount time is cleared HERE, before the turn's first write.
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
+            with session["history_lock"]:
+                if not _holds_submit_claim(session, turn_generation):
+                    return _superseded_submit_error(rid)
+                with _session_db(session) as db:
+                    if db is not None:
+                        _reopen_if_finalized(db, str(session.get("session_key") or ""))
             staged = _write_submit_user_row(session, text, display_kind)
             with session["history_lock"]:
                 if not _holds_submit_claim(session, turn_generation):
@@ -628,11 +631,11 @@ def _run_after_agent_ready(
     err = _wait_agent_for_prompt(session, rid, sid)
     with session["history_lock"]:
         if not _holds_submit_claim(session, turn_generation):
-            # A later prompt.submit has claimed the session since this thread was published. `running`, the
-            # in-flight turn and the staged user row belong to that turn, so leave them alone and emit nothing:
-            # clients end the live turn on an `error` event.
+            # A later prompt.submit has claimed the session since this one did. `running`, the in-flight turn
+            # and the staged user row belong to that turn, so leave them alone and emit nothing: clients end the
+            # live turn on an `error` event.
             return
-        if not err and (session.get("_turn_cancel_requested") or not session.get("running")):
+        if session.get("_turn_cancel_requested") or not session.get("running"):
             session["running"] = False
             _clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
@@ -821,13 +824,16 @@ def _(rid, params: dict) -> dict:
         # applied inline), and the child's transcript writes must land in a live row
         # (#85303 review: the early return made _reopen_if_finalized unreachable on
         # this path). Best-effort like the helper: a failed read never blocks the send.
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
-        except Exception:
-            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
-                         sid, exc_info=True)
+        with session["history_lock"]:
+            if not _holds_submit_claim(session, turn_generation):
+                return _superseded_submit_error(rid)
+            try:
+                with _session_db(session) as db:
+                    if db is not None:
+                        _reopen_if_finalized(db, str(session.get("session_key") or ""))
+            except Exception:
+                logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                             sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):

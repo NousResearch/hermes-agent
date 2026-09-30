@@ -26,6 +26,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from tools.bot_mode_dm import live_wait_seconds
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -887,7 +888,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
         record = await await_delivery_async(
-            home, delivery_id, None, should_stop=lambda: run_id in self._stopping_run_ids) or record
+            home, delivery_id, live_wait_seconds(), should_stop=lambda: run_id in self._stopping_run_ids) or record
         if record["status"] in ("queued", "claimed"):
             _finish("cancelled", completed=False, partial=False, interrupted=True)
             return

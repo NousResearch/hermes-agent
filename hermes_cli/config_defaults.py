@@ -1961,6 +1961,12 @@ DEFAULT_CONFIG = {
         # before failing with a structured 'target_busy' error. Deliveries are serialized per
         # profile with a cross-process file lock.
         "turn_wait_seconds": 120,
+        # How long a live Bot Chat delivery waits for the target's reply (tools/bot_mode_dm.py
+        # live_wait_seconds; local DMs, peer DMs and the Desktop relay share it). The budget
+        # covers the queue wait AND the reply production: work that outlives it still settles
+        # its receipt, but the waiter has already exited, so the reply reaches no one — raise
+        # this when agent-to-agent turns routinely run longer than five minutes.
+        "live_wait_seconds": 300,
     },
     "code_execution": {  # execute_code settings (programmatic tool calls).
         # project = run in the session cwd with the active venv/conda python so project deps and

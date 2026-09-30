@@ -3523,9 +3523,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         settles or the local DM budget runs out; ``keepalive`` (async) is called every SSE keepalive interval
         so a streaming caller's proxy keeps the socket."""
         from tools.bot_live_delivery import await_delivery_async
-        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        from tools.bot_mode_dm import live_wait_seconds
         delivery_id = record["delivery_id"]
-        deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+        deadline = time.monotonic() + live_wait_seconds()
         while record["status"] in ("queued", "claimed"):
             remaining = deadline - time.monotonic()
             if remaining <= 0:

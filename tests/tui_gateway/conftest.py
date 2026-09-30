@@ -8,22 +8,3 @@ Importing it once here, before any window opens, keeps boot out of the mocked im
 """
 
 import hermes_bootstrap  # noqa: F401
-
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _clear_parked_notifications():
-    """The unowned-notification park is process-global, like the poller registry.
-
-    A park leaked by one test would let a later test's session claim a stale event, or spend the
-    cap and refuse a later test's park. Same seam the poller teardown uses.
-    """
-    from tui_gateway import server
-
-    parked = getattr(server, "_unowned_parked", None)
-    if parked is not None:
-        parked[:] = []
-    yield
-    if parked is not None:
-        parked[:] = []

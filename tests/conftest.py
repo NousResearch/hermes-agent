@@ -801,6 +801,12 @@ def _reset_tui_gateway_server_state():
         obj = getattr(mod, name, None)
         if isinstance(obj, dict):
             obj.clear()
+    # Addressed notifications parked for an absent session: a leak would let a
+    # later test's session claim a stale event, or spend the cap and refuse its
+    # own park.
+    parked = getattr(mod, "_unowned_parked", None)
+    if isinstance(parked, list):
+        parked.clear()
 
     if snapshot is not None:
         mod._methods.clear()

@@ -316,6 +316,34 @@ def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     assert marker.is_file()
 
 
+def test_relaunch_selects_dependencies_when_the_target_is_the_store_interpreter(tmp_path, monkeypatch):
+    """A clean-restart relaunch lands on the BARE store interpreter, which has no
+    third-party site-packages: the body must select the committed dependency
+    generation itself, or the re-entered process dies on its first transitive
+    import (cron.jobs -> utils -> hermes_yaml -> ruamel) -- the failure that
+    silently killed every agent-dispatching cron worker. A non-store target keeps
+    the plain body: it carries its own dependencies."""
+    from hermes_cli import _launchers
+
+    root = tmp_path / "source"
+    root.mkdir()
+    store = tmp_path / "store-python"
+    store.write_text("")
+    argv = ["entry.py", "--flag"]
+    original = [sys.executable, "-m", "entry", "--flag"]
+
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: store)
+    store_command = venv_sync.relaunch_command(store, root, argv, original, "entry")
+    assert store_command[0] == str(store)
+    assert store_command[1:3] == ["-I", "-c"]
+    assert "activate_dependencies" in store_command[3]
+    assert "runpy.run_module('entry'" in store_command[3]
+
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: None)
+    other_command = venv_sync.relaunch_command(Path(sys.executable), root, argv, original, "entry")
+    assert "activate_dependencies" not in other_command[3]
+
+
 def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, monkeypatch, completion_tail):
     """The tail imports the application, whose entry point runs prepare_launch: inside the
     process tree of the update that owns the pending tail it must be a no-op, not recurse."""

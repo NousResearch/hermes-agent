@@ -333,6 +333,16 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
+    if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER"):
+        # An external cron worker already boots on a dependency-complete runtime
+        # (cron.worker_bootstrap) and owns a SINGLE-CONSUMPTION handoff: its
+        # payload file is deleted the moment the run adopts it. Re-entering the
+        # launcher from inside that run re-executes the worker against an
+        # already-consumed handoff, which refuses the execution and exits 1 --
+        # leaving the adopted row stranded as 'running' until recovery records it
+        # 'unknown', with no output and no delivery. Never relaunch a process that
+        # already owns a cron handoff.
+        return None
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
@@ -482,6 +492,31 @@ def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
         (root / name).unlink(missing_ok=True)
 
 
+def _is_store_interpreter(python: Path, root: Path) -> bool:
+    """True when *python* is the bare store interpreter ``prepare_launch`` returns.
+
+    That interpreter owns the ABI but carries NO third-party site-packages: the
+    repo and the committed dependency generation sit only on the launching
+    process's in-process ``sys.path``. A child started on it therefore has to
+    select the generation for itself, or it dies on its first transitive import
+    (the observed chain is ``cron.jobs`` -> ``utils`` -> ``hermes_yaml`` ->
+    ``ruamel``). Best effort: when the store interpreter cannot be resolved the
+    caller keeps the previous behaviour rather than failing harder.
+    """
+    try:
+        from hermes_cli._launchers import resolve_store_python
+
+        resolved = resolve_store_python(root)
+    except Exception:
+        return False
+    if resolved is None:
+        return False
+    try:
+        return Path(resolved).resolve() == Path(python).resolve()
+    except OSError:
+        return False
+
+
 def relaunch_command(
     python: Path, root: Path, argv: list[str], original: list[str], module: str | None,
 ) -> list[str]:
@@ -489,6 +524,13 @@ def relaunch_command(
 
     An old venv may use a different Python ABI. Do not add the new generation
     to that interpreter, and do not depend on its obsolete editable finder.
+
+    The relaunch target is normally the bare store interpreter (that is what
+    ``prepare_launch`` hands back for a clean restart), and dependency selection
+    is the child's own job when it gets there: the store interpreter has no
+    site-packages, so a ``run_module``/``run_path`` body that just inserts the
+    checkout dies at its first third-party import. Activate the committed
+    generation in the child instead of relying on ambient state.
     """
     # Preserve interpreter options, not application flags with the same names.
     options: list[str] = []
@@ -502,7 +544,16 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
+    if _is_store_interpreter(python, root):
+        # Bare store interpreter: nothing on its default sys.path carries the
+        # application's dependencies, so select the committed generation here.
+        prefix += (
+            "from pathlib import Path as _Path; "
+            "from pm.environments import activate_dependencies as _activate; "
+            f"_activate(_Path({str(root)!r})); "
+        )
+    prefix += f"sys.argv = {argv!r}; "
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

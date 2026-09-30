@@ -1477,7 +1477,7 @@ def _live_send_text(
 ) -> tuple[bool, bool, Any]:
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
-    from agent.async_utils import safe_schedule_threadsafe
+    from agent.async_utils import WithdrawableDispatch
     from gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
@@ -1488,33 +1488,19 @@ def _live_send_text(
     # Send through the already-authorized transport: re-resolving from the plain target_adapters
     # dict cannot re-derive the SharedRouteAdapters satellite grant (the satellite owned
     # platforms.<p> block is disabled), yields None, and drops the delivery (#115656).
-    # cancel() cannot tell "never started" from "in flight": a run_coroutine_threadsafe future stays
-    # PENDING until the coroutine finishes, so cancel() returns True mid-send AND kills it. The send
-    # records its own start under a lock; a timeout abandons it only if it never began.
-    dispatch_lock = threading.Lock()
-    dispatch = {"started": False, "abandoned": False}
-
-    async def _send_once():
-        with dispatch_lock:
-            if dispatch["abandoned"]:
-                return None
-            dispatch["started"] = True
-        return await router._deliver_to_platform(route_target, text_to_send, route_metadata, transport=t.transport)
-
-    future = safe_schedule_threadsafe(_send_once(), t.loop)
-    if future is None:
+    dispatch = WithdrawableDispatch.schedule(
+        router._deliver_to_platform(
+            route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
+    if dispatch is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None
     try:
-        send_result = future.result(timeout=_LIVE_SEND_CONFIRM_TIMEOUT_SECS)
+        send_result = dispatch.result(timeout=_LIVE_SEND_CONFIRM_TIMEOUT_SECS)
     except TimeoutError:
-        # Slow confirmation != failure. Never started (loop wedged): nothing was sent, so fall through
-        # to standalone or it is silently dropped. Started: in flight (a paced multi-chunk send can
-        # legitimately outlast the wait) — leave it running; a standalone resend would DUPLICATE.
-        with dispatch_lock:
-            dispatch["abandoned"] = not dispatch["started"]
-        if dispatch["abandoned"]:
-            future.cancel()
+        # A slow confirmation is not a failure. A send that has started may still land, so a
+        # standalone resend would duplicate it. A send the loop never started (wedged loop) must
+        # go through standalone, or the message is lost.
+        if dispatch.withdraw():
             msg = f"live adapter send to {t.where} timed out before the coroutine was dispatched"
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)

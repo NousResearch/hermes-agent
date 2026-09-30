@@ -333,7 +333,11 @@ def _validate_python_files_syntax(
     import tempfile
 
     root = Path(root)
-    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
+    # A Windows scanner may hold scratch bytecode pending deletion. Cleanup
+    # must neither abort a valid pull nor mask the syntax error that triggers rollback.
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-syntax-check-", ignore_cleanup_errors=True
+    ) as tmpdir:
         for relpath in relpaths:
             path = root / relpath
             if not path.exists():

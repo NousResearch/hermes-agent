@@ -100,3 +100,28 @@ def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     ) is None
     assert _mark_entitlement_rejected_model(agent, _entitlement_400()) is True
     assert _is_entitlement_rejected(agent, "openai-codex", MODEL)
+
+
+def test_other_model_bench_does_not_block_429_rotation(pool):
+    """A bench on model X must not stop a 429 on model Y from rotating to the healthy entry.
+
+    The mid-turn 429 path re-selects while it knows the model; an unscoped re-select treats
+    every model bench as blocking and reports an empty pool while the other entry is idle.
+    """
+    for i, tok in enumerate(TOKENS):
+        pool.mark_exhausted_and_rotate(
+            status_code=400, api_key_hint=tok, credential_id=f"cred-{i}",
+            failure_reason="model_entitlement", model=OTHER_MODEL,
+        )
+    assert all(set(e.model_cooldowns) == {OTHER_MODEL} for e in pool.entries())
+    assert pool.select(model=MODEL).id == "cred-0"
+    assert pool.has_available(model=MODEL)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429, api_key_hint=TOKENS[0], credential_id="cred-0",
+        failure_reason="rate_limit", model=MODEL,
+        error_context={"reason": "usage_limit_reached", "reset_at": time.time() + 3600},
+    )
+    assert next_entry is not None and next_entry.id == "cred-1"
+    # The healthy entry stays selectable for the requested model; the bench on the other model is intact.
+    assert set(next_entry.model_cooldowns) == {OTHER_MODEL}

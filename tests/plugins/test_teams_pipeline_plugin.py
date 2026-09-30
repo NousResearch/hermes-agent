@@ -138,6 +138,80 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
     assert sink["page_id"] == "page-1"
 
 
+@pytest.mark.parametrize("client_state", ["", "ours"])
+def test_listing_preserves_subscription_ownership(tmp_path, monkeypatch, capsys, client_state):
+    import json
+
+    from plugins.teams_pipeline import cli, subscriptions
+
+    monkeypatch.setenv("MSGRAPH_WEBHOOK_CLIENT_STATE", client_state)
+    store_path = tmp_path / "subscriptions.json"
+    expiration = subscriptions.utc_timestamp(1)
+    foreign = {
+        "id": "foreign-sub",
+        "resource": "users/other/messages",
+        "changeType": "created",
+        "notificationUrl": "https://other.invalid/hooks",
+        "clientState": "theirs",
+        "expirationDateTime": expiration,
+    }
+    remote = [foreign]
+    patches = []
+
+    class SubscriptionGraphClient:
+        async def collect_paginated(self, path):
+            assert path == "/subscriptions"
+            return [dict(sub) for sub in remote]
+
+        async def post_json(self, path, *, json_body):
+            assert path == "/subscriptions"
+            created = {"id": "owned-sub", **json_body}
+            remote.append(created)
+            return dict(created)
+
+        async def patch_json(self, path, *, json_body):
+            patches.append((path, json_body))
+            return dict(json_body)
+
+    monkeypatch.setattr(cli, "build_graph_client", SubscriptionGraphClient)
+    args = SimpleNamespace(store_path=str(store_path))
+    cli._cmd_maintain_subscriptions(args)
+    before = json.loads(capsys.readouterr().out)
+    assert before["renewed_count"] == 0
+    assert before["skipped"] == [{
+        "subscription_id": foreign["id"], "reason": "not_managed_by_teams_pipeline",
+    }]
+
+    # Creation, not mere inventory visibility, establishes durable ownership.
+    cli._cmd_subscribe(SimpleNamespace(
+        store_path=str(store_path), resource="communications/onlineMeetings/getAllTranscripts",
+        notification_url="https://example.invalid/hooks", expiration=expiration,
+        client_state=client_state,
+    ))
+    capsys.readouterr()
+    assert TeamsPipelineStore(store_path).get_subscription("owned-sub") is not None
+    remote[1]["expirationDateTime"] = subscriptions.utc_timestamp(2)
+
+    cli._cmd_subscriptions(args)
+    listed = capsys.readouterr().out
+    assert foreign["id"] in listed
+    assert "owned-sub" in listed
+    reloaded = TeamsPipelineStore(store_path)
+    assert reloaded.get_subscription("foreign-sub") is None
+    assert reloaded.get_subscription("owned-sub")["expiration_datetime"] == remote[1]["expirationDateTime"]
+
+    # Maintenance opens the persisted store again, just as a later CLI invocation does.
+    cli._cmd_maintain_subscriptions(args)
+    after = json.loads(capsys.readouterr().out)
+    assert after["skipped"] == before["skipped"]
+    assert [path for path, _ in patches] == ["/subscriptions/owned-sub"]
+    assert after["renewed_count"] == 1
+    renewed = TeamsPipelineStore(store_path).get_subscription("owned-sub")
+    assert renewed["expiration_datetime"] == patches[0][1]["expirationDateTime"]
+    assert renewed["latest_renewal_at"]
+    assert TeamsPipelineStore(store_path).get_subscription("foreign-sub") is None
+
+
 @pytest.mark.anyio
 class TestTeamsMeetingPipeline:
     async def test_transcript_first_path_persists_state_and_skips_recording(self, tmp_path, monkeypatch):

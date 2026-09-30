@@ -646,3 +646,48 @@ async def test_a_failed_turn_completes_with_its_delivery_outcome(monkeypatch, tm
         [entry for entry in adapter.log if entry[0] != "send"],
         len([entry for entry in adapter.log if entry[0] == "send"]) >= 1,
     ) == ([("start", "first-1"), ("complete", "first-1", ProcessingOutcome.SUCCESS)], True)
+
+
+class _BlockingStartAdapter(LifecycleLogAdapter):
+    """The adapter's own start I/O (for example Slack reactions.add) for ``blocked_id`` never returns."""
+
+    def __init__(self, blocked_id):
+        super().__init__()
+        self.blocked_id, self.in_start = blocked_id, asyncio.Event()
+
+    async def on_processing_start(self, event):
+        await super().on_processing_start(event)
+        if event.message_id == self.blocked_id:
+            self.in_start.set()
+            await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_a_follow_ups_own_start_hook_completes_it(monkeypatch):
+    """/stop can cancel the chain while the adapter is still reporting a queued follow-up's start. The
+    follow-up has started, so it must complete."""
+    runner, _adapter = _priority_runner(monkeypatch, "queue")
+    adapter = _BlockingStartAdapter("queued-1")
+    adapter.platform = Platform.SLACK
+    runner.adapters[Platform.SLACK] = adapter
+    source, key, _receiver, running = _running_slack_turn(runner, finished=False)
+    await adapter._run_processing_hook("on_processing_start", running)
+    runner._enqueue_fifo(key, MessageEvent(text="queued", source=source, message_id="queued-1"), adapter)
+    result = {"final_response": "reply", "messages": []}
+    pending_event, pending = await runner._run_agent_drain_pending(
+        result, adapter, source, key, processing_event=running)
+    monkeypatch.setattr(runner, "_run_agent_deliver_first_response", AsyncMock(return_value=True))
+    turn_ctx = TurnContext(source=source, processing_event=running, session_key=key, session_id="s", history=[])
+    chain = asyncio.create_task(runner._run_agent_queued_followup(
+        turn_ctx, adapter, pending, pending_event, "reply", result, None))
+    adapter._expected_cancelled_tasks.add(chain)
+    await asyncio.wait_for(adapter.in_start.wait(), 30)
+
+    chain.cancel()
+    with suppress(asyncio.CancelledError):
+        await chain
+
+    assert adapter.log == [
+        ("start", "running-1"), ("complete", "running-1", ProcessingOutcome.SUCCESS),
+        ("start", "queued-1"), ("complete", "queued-1", ProcessingOutcome.CANCELLED),
+    ]

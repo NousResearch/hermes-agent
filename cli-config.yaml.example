@@ -2100,6 +2100,35 @@ display:
 
 
 # =============================================================================
+# Post-update commands
+# =============================================================================
+# Run your own commands after a code update and BEFORE the gateway restarts.
+# `hermes update` git-pulls with `non_interactive_local_changes: stash`, so local
+# core-code patches are stashed out of the running tree and profile configs are
+# regenerated. A restore you run out of band (a launchd WatchPaths job, a cron,
+# a script) can only catch up AFTER the gateway has already come back on
+# unpatched code, so a second restart is needed when the re-assert lands.
+# Declaring the command here removes that second restart: the ordering becomes
+# update -> declared commands -> gateway restart.
+#
+# Each entry runs as a subprocess with the ACTIVE profile's HERMES_HOME in its
+# environment, so a command that re-asserts profile configs sees the profile it
+# is restoring. Commands run in declaration order; a non-zero exit is reported as
+# a failed step and never stops the others. With no block, nothing runs.
+#
+# run_with: "profile" forces the active interpreter, "system" runs the command as
+# written, and when omitted a .py command runs under the active interpreter (so
+# it sees the venv the update just synced) while anything else runs as written.
+#
+# post_update:
+#   commands:
+#     - command: ~/bin/hermes-restore-customizations.py
+#       timeout: 600
+#     - command: ~/bin/sync-my-config.sh
+#       run_with: system
+
+
+# =============================================================================
 # Telemetry
 # =============================================================================
 # Shared metrics are disabled by default. When enabled, Hermes writes only

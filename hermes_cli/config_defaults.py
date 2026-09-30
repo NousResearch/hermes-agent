@@ -1740,6 +1740,12 @@ DEFAULT_CONFIG = {
     # HERMES_ACCEPT_HOOKS=1). Gateway/cron/non-interactive runs need one of these to pick up
     # newly-added hooks.
     "hooks_auto_accept": False,
+    # User commands run after a code update and BEFORE the gateway restarts:
+    # {"commands": [{"command", "timeout", "run_with"}]}. Each runs as a subprocess
+    # with the active profile's HERMES_HOME in its env, in declaration order; a
+    # non-zero exit is a failed step and never stops the others. Absent = nothing runs.
+    # Schema + example: cli-config.yaml.example (Post-update commands).
+    "post_update": {},
     # Custom personalities: {"name": "system prompt"} or {"name": {"description", "system_prompt",
     # "tone", "style"}}.
     "personalities": {},

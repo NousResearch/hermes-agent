@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 
-import pm.cli as cli
+from pm import cli
 from pm.package import InstallError
 
 

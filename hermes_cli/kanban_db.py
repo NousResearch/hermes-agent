@@ -110,6 +110,10 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``);
 # progress between two blocks restarts the streak (``_block_streak_progress``).
 BLOCK_RECURRENCE_LIMIT = 2
+# A re-block whose reason CHANGED is discounted, not forgiven: it escalates only
+# at this higher limit, so a worker rewording one unsatisfiable wait still
+# reaches ``triage`` instead of spinning forever.
+BLOCK_RECURRENCE_CHANGED_LIMIT = 2 * BLOCK_RECURRENCE_LIMIT
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -3275,16 +3279,21 @@ def block_task(
         prev_kind = _row_get(cur_row, "block_kind")
         prev_recurrences = int(_row_get(cur_row, "block_recurrences") or 0)
         streak_reset: list[str] = []
+        reason_changed = False
         if kind != "dependency" and prev_kind == kind and prev_recurrences:
-            streak_reset = _block_streak_progress(conn, task_id)
+            streak_reset, prev_reason = _block_streak_progress(conn, task_id)
             if streak_reset:
                 prev_recurrences = 0
+            else:
+                reason_changed = _normalize_block_reason(reason) != _normalize_block_reason(prev_reason)
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=prev_kind,
-            prev_recurrences=prev_recurrences,
+            prev_recurrences=prev_recurrences, reason_changed=reason_changed,
         )
         if streak_reset:
             payload["streak_reset"] = streak_reset
+        if reason_changed:
+            payload["reason_changed"] = True
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
@@ -3322,21 +3331,30 @@ _TASK_ID_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
 _BLOCK_STREAK_PROGRESS_EVENTS = ("review_requested", "changes_requested")
 
 
-def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> list[str]:
-    """Progress since the task's last block, which makes a same-kind re-block a
-    new block rather than an unblock loop. Empty list = genuine loop.
+def _normalize_block_reason(reason: Any) -> str:
+    """Case/whitespace-insensitive reason identity for the loop breaker."""
+    return " ".join(reason.split()).casefold() if isinstance(reason, str) else ""
+
+
+def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> tuple[list[str], Optional[str]]:
+    """``(signals, last_reason)`` for the task's last block. Non-empty
+    *signals* = progress since that block, so a same-kind re-block is a new
+    block rather than an unblock loop; empty = no progress was proven.
 
     Two signals, both durable and checked against the last ``blocked`` /
     ``block_loop_detected`` event:
 
     * a review cycle on this card (``review_requested`` / ``changes_requested``),
       e.g. a reviewer approves, then blocks for the owner's release handoff;
-    * a card cited by id in the last block's reason completed after that block:
-      the wait it named was satisfied, so a new block is a new wait (flat,
-      unlinked cards re-kinded ``dependency`` -> ``needs_input`` hit this).
+    * the last block was filed as a ``dependency`` wait (re-kinded
+      ``needs_input`` because the card had no open parent -- a flat, unlinked
+      wait) and a card it cited by id completed after that block: the declared
+      blocking obligation was satisfied, so a new block is a new wait. Ids
+      cited in any other kind's reason are context, never the obligation, and
+      cannot launder an unchanged blocker.
 
-    A reworded reason alone is deliberately NOT progress: a worker re-filing
-    the same unsatisfiable wait in new words is exactly the loop to break.
+    A changed reason alone is not progress; :func:`_route_block` discounts it
+    instead (``BLOCK_RECURRENCE_CHANGED_LIMIT``).
     """
     last = conn.execute(
         "SELECT id, payload FROM task_events WHERE task_id = ? "
@@ -3344,7 +3362,7 @@ def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> list[str]:
         (task_id,),
     ).fetchone()
     if last is None:
-        return []
+        return [], None
     placeholders = ", ".join("?" for _ in _BLOCK_STREAK_PROGRESS_EVENTS)
     signals = [
         row["kind"] for row in conn.execute(
@@ -3353,22 +3371,24 @@ def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> list[str]:
             (task_id, last["id"], *_BLOCK_STREAK_PROGRESS_EVENTS),
         )
     ]
-    reason = _json_dict(last["payload"]).get("reason")
-    cited = sorted(set(_TASK_ID_RE.findall(reason)) - {task_id}) if isinstance(reason, str) else []
-    for cited_id in cited:
-        # Event ids are board-global and monotonic: ordering is exact even
-        # when both transitions land in the same wall-clock second.
-        if conn.execute(
-            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'completed' AND id > ? LIMIT 1",
-            (cited_id, last["id"]),
-        ).fetchone() is not None:
-            signals.append(f"resolved:{cited_id}")
-    return signals
+    payload = _json_dict(last["payload"])
+    reason = payload.get("reason")
+    reason = reason if isinstance(reason, str) else None
+    if payload.get("requested_kind") == "dependency" and reason:
+        for cited_id in sorted(set(_TASK_ID_RE.findall(reason)) - {task_id}):
+            # Event ids are board-global and monotonic: ordering is exact even
+            # when both transitions land in the same wall-clock second.
+            if conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'completed' AND id > ? LIMIT 1",
+                (cited_id, last["id"]),
+            ).fetchone() is not None:
+                signals.append(f"resolved:{cited_id}")
+    return signals, reason
 
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int,
+    prev_kind: Optional[str], prev_recurrences: int, reason_changed: bool = False,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3381,7 +3401,9 @@ def _route_block(
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human,
+    unless *reason_changed* (the re-block names a different cause than the
+    previous block): that is discounted to ``BLOCK_RECURRENCE_CHANGED_LIMIT``.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -3389,8 +3411,9 @@ def _route_block(
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
-    if recurrences >= BLOCK_RECURRENCE_LIMIT:
-        payload["limit"] = BLOCK_RECURRENCE_LIMIT
+    limit = BLOCK_RECURRENCE_CHANGED_LIMIT if reason_changed else BLOCK_RECURRENCE_LIMIT
+    if recurrences >= limit:
+        payload["limit"] = limit
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
 

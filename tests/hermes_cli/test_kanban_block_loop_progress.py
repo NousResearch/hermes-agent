@@ -7,11 +7,14 @@ happened between two blocks of the same kind:
 * a review cycle on the card itself (``review_requested`` /
   ``changes_requested``) -- e.g. a reviewer approves a stage and then blocks
   for the owner's release handoff;
-* the card the previous block was waiting on (cited by id in its reason)
-  completed -- the wait was satisfied and a *new* wait began.
+* the previous block was a declared ``dependency`` wait and the card it cited
+  completed -- the wait was satisfied and a *new* wait began. Ids cited as
+  context in any other kind of block are not the blocking obligation.
 
-A genuine loop -- the same kind re-filed after an unblock with neither kind of
-progress, even when the reason text is reworded -- still reaches ``triage``.
+A re-block whose reason changed is discounted: it escalates only at
+``BLOCK_RECURRENCE_CHANGED_LIMIT``. A genuine loop -- the same cause re-filed
+with no progress -- still reaches ``triage`` at ``BLOCK_RECURRENCE_LIMIT``, and
+a reworded spin still reaches it at the higher limit.
 """
 
 from __future__ import annotations
@@ -104,54 +107,113 @@ def test_new_dependency_after_cited_blocker_completed_does_not_triage(kanban_hom
         blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1].payload
         assert blocked["streak_reset"] == [f"resolved:{card_a}"]
 
-        # ...but if B then never lands and the same wait is re-filed, that IS a loop.
+        # ...but if B never lands and the same wait is re-filed, that IS a loop.
         assert kb.unblock_task(conn, tid)
         _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=f"Still waiting on {card_b}.", kind="dependency")
+        assert kb.block_task(conn, tid, reason=f"Producer run failed; waiting on {card_b}.", kind="dependency")
         assert kb.get_task(conn, tid).status == "triage"
+
+
+def _cycle(conn, tid, reason, kind):
+    """unblock (if parked) -> claim -> block; returns the task afterwards."""
+    if kb.get_task(conn, tid).status == "blocked":
+        assert kb.unblock_task(conn, tid)
+    _claim(conn, tid)
+    assert kb.block_task(conn, tid, reason=reason, kind=kind)
+    return kb.get_task(conn, tid)
 
 
 @pytest.mark.parametrize("reasons", [
     ["cannot publish to Slack", "cannot publish to Slack"],
-    # Rewording alone is not progress (estate t_1ee8149d / t_853e5b26 pattern).
-    ["cannot publish to Slack", "still cannot publish or verify on Slack"],
+    # Whitespace/case noise is the same reason, not a changed cause.
+    ["cannot publish to Slack", "  Cannot publish   to SLACK "],
 ])
 def test_genuine_loop_without_progress_still_triages(kanban_home: Path, reasons) -> None:
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="loop", assignee="worker")
-        _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=reasons[0], kind="capability")
-        assert kb.unblock_task(conn, tid)
-        _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=reasons[1], kind="capability")
-        task = kb.get_task(conn, tid)
+        for reason in reasons:
+            task = _cycle(conn, tid, reason, "capability")
+        assert (task.status, task.block_recurrences) == ("triage", kb.BLOCK_RECURRENCE_LIMIT)
+        loop = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"][-1].payload
+        assert "streak_reset" not in loop and "reason_changed" not in loop
+        assert loop["limit"] == kb.BLOCK_RECURRENCE_LIMIT
+
+
+def test_changed_block_reason_is_discounted_not_triaged(kanban_home: Path) -> None:
+    """Reviewer probe (round 1): a needs_input block whose cause moved on --
+    registry access received, now waiting on a maintenance window -- is a new
+    block, not a loop, even with no review cycle or cited card in between."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="publish package", assignee="worker")
+        _cycle(conn, tid, "Need registry access from owner before publishing", "needs_input")
+        task = _cycle(
+            conn, tid,
+            "Registry access received and package published; need owner\u2019s maintenance window for activation",
+            "needs_input",
+        )
+        assert (task.status, task.block_recurrences) == ("blocked", 2)
+        assert "block_loop_detected" not in _kinds(conn, tid)
+        blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1].payload
+        assert blocked["reason_changed"] is True and "streak_reset" not in blocked
+        # The SAME changed cause re-filed with no progress is a loop again.
+        task = _cycle(
+            conn, tid,
+            "Registry access received and package published; need owner\u2019s maintenance window for activation",
+            "needs_input",
+        )
+        assert task.status == "triage"
+
+
+def test_reworded_spin_still_escalates_at_changed_limit(kanban_home: Path) -> None:
+    """Estate t_1ee8149d / t_853e5b26 pattern: the same unsatisfiable wait
+    reworded on every re-block. Discounted, but still bounded."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="spin", assignee="worker")
+        for n in range(1, kb.BLOCK_RECURRENCE_CHANGED_LIMIT):
+            task = _cycle(conn, tid, f"cannot publish to Slack (attempt {n})", "capability")
+            assert (task.status, task.block_recurrences) == ("blocked", n)
+        task = _cycle(conn, tid, "still cannot publish or verify on Slack", "capability")
+        assert (task.status, task.block_recurrences) == ("triage", kb.BLOCK_RECURRENCE_CHANGED_LIMIT)
+        loop = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"][-1].payload
+        assert loop["limit"] == kb.BLOCK_RECURRENCE_CHANGED_LIMIT and loop["reason_changed"] is True
+
+
+def test_completed_card_cited_as_context_does_not_reset_unchanged_blocker(kanban_home: Path) -> None:
+    """Reviewer negative control (round 1): an id mentioned as context in a
+    non-dependency block is not the blocking obligation. Completing that card
+    is no progress on the missing credentials; the identical re-block triages."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="post to slack", assignee="worker")
+        other = kb.create_task(conn, title="unrelated docs", assignee="cody")
+        reason = f"Slack credentials are missing. Context only: {other}; this is not a dependency."
+        _cycle(conn, tid, reason, "capability")
+        _finish(conn, other)
+        task = _cycle(conn, tid, reason, "capability")
         assert (task.status, task.block_recurrences) == ("triage", kb.BLOCK_RECURRENCE_LIMIT)
         loop = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"][-1].payload
         assert "streak_reset" not in loop
 
 
 def test_cited_card_still_open_or_completed_earlier_is_not_progress(kanban_home: Path) -> None:
-    """Only a cited card completing *between* the two blocks counts; one that
-    was already done before the first block, or is still open, does not."""
+    """Only a cited card completing *between* the two dependency blocks counts;
+    one already done before the first block, or still open, does not."""
     with kbc.connect_closing() as conn:
         done_before = kb.create_task(conn, title="old", assignee="cody")
         still_open = kb.create_task(conn, title="open", assignee="cody")
         _finish(conn, done_before)
         tid = kb.create_task(conn, title="waiter", assignee="generalist")
-        _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=f"waiting on {done_before} and {still_open}", kind="needs_input")
-        assert kb.unblock_task(conn, tid)
-        _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=f"waiting on {still_open}", kind="needs_input")
-        assert kb.get_task(conn, tid).status == "triage"
+        reason = f"waiting on {done_before} and {still_open}"
+        _cycle(conn, tid, reason, "dependency")
+        task = _cycle(conn, tid, reason, "dependency")
+        assert task.status == "triage"
 
 
 def test_self_reference_in_reason_is_not_progress(kanban_home: Path) -> None:
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="self", assignee="worker")
         _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=f"{tid} needs a human", kind="needs_input")
+        assert kb.block_task(conn, tid, reason=f"{tid} needs a human", kind="dependency")
         assert kb.unblock_task(conn, tid)
         _claim(conn, tid)
-        assert kb.block_task(conn, tid, reason=f"{tid} needs a human", kind="needs_input")
+        assert kb.block_task(conn, tid, reason=f"{tid} needs a human", kind="dependency")
         assert kb.get_task(conn, tid).status == "triage"

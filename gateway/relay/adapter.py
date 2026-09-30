@@ -912,6 +912,30 @@ class RelayAdapter(BasePlatformAdapter):
             self._discord_user_labels[(scope, str(source.user_id))] = source.user_name
             self._evict_oldest(self._discord_user_labels, self._DISCORD_LABELS_MAX)
 
+    def _discord_chat_labels_for(self, scope: str, chat_id: str) -> tuple:
+        """The text lane's last (chat_name, chat_topic) for a chat. After a restart (or eviction) the
+        map is empty until the text lane speaks again, so fall back to the labels the session origin
+        persisted from it; otherwise a first interaction re-renders the prompt the cache still holds."""
+        key = (scope, chat_id)
+        if key not in self._discord_chat_labels:
+            labels = (None, None)
+            store = getattr(self, "_session_store", None)
+            try:
+                origins = [e for e in (store.list_sessions() if store else ())
+                           if (o := e.origin) is not None and o.platform == Platform.DISCORD
+                           and str(o.chat_id) == chat_id and str(o.scope_id or "") == scope
+                           and (o.chat_name or o.chat_topic)]
+            except Exception:
+                # Labels only keep the prompt cache warm; a store fault must not drop the interaction.
+                logger.debug("relay: session origins unreadable for Discord labels", exc_info=True)
+                origins = []
+            if origins:
+                newest = max(origins, key=lambda e: e.created_at).origin
+                labels = (newest.chat_name, newest.chat_topic)
+            self._discord_chat_labels[key] = labels
+            self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
+        return self._discord_chat_labels[key]
+
     def _inbound_dedupe_key(self, event) -> Optional[str]:
         """Stable replay identity: (platform, chat, platform message id). The platform
         joins the key because one relay socket can front several platforms whose
@@ -1196,8 +1220,7 @@ class RelayAdapter(BasePlatformAdapter):
         user_name = self._discord_user_labels.get((scope, user_id)) or next(
             (str(v) for v in ((member.get("nick") if isinstance(member, dict) else None),
                               user.get("global_name"), user.get("username")) if v), None)
-        chat_name, chat_topic = self._discord_chat_labels.get(
-            (scope, str(payload.get("channel_id") or "")), (None, None))
+        chat_name, chat_topic = self._discord_chat_labels_for(scope, str(payload.get("channel_id") or ""))
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
             # capability binding (platform="discord"), /sethome must file under the

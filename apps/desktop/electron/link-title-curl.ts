@@ -1,3 +1,4 @@
+import type { TitleFetchTarget } from './link-title-guard'
 import { decodeWebText } from './web-text-decoder'
 
 const CONTENT_TYPE_MARK = 'hermes-content-type:'
@@ -34,4 +35,30 @@ export function parseCurlTitleResponse(bodyWithTrailer: Buffer, tail: Buffer): C
     redirectUrl,
     httpCode: Number.isFinite(httpCode) ? httpCode : 0
   }
+}
+
+/**
+ * curl arguments that make one hop dial exactly what admission vetted.
+ *
+ * Direct: `--noproxy '*'` (no env proxy the guard did not account for) and
+ * `--resolve host:port:addr` pinned to a vetted DNS answer, so curl never
+ * resolves the name a second time — a rebinding answer between the check and
+ * the connect cannot reach a private address. Proxied: the same proxy the
+ * guard saw, with `--noproxy ''` overriding NO_PROXY, so a host the guard
+ * never resolved is not dialed directly either.
+ */
+export function curlTitleTargetArgs(target: TitleFetchTarget): string[] {
+  if (target.proxy) {
+    return ['--proxy', target.proxy, '--noproxy', '']
+  }
+
+  const [address] = target.addresses
+
+  if (!address) {
+    return ['--noproxy', '*']
+  }
+
+  const pinned = address.includes(':') ? `[${address}]` : address
+
+  return ['--noproxy', '*', '--resolve', `${target.hostname}:${target.port}:${pinned}`]
 }

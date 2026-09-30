@@ -5,11 +5,20 @@ import path from 'node:path'
 import { app, BrowserWindow, net as electronNet, session } from 'electron'
 
 import { type FaviconIo, resolveFavicon } from './favicon'
-import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
-import { isSafeTitleFetchTarget, literalTitleBlockReason, sensitiveTitleQueryParam } from './link-title-guard'
+import { CURL_TITLE_WRITE_OUT, curlTitleTargetArgs, parseCurlTitleResponse } from './link-title-curl'
+import {
+  isSafeLinkMetadataTarget,
+  isSafeTitleFetchTarget,
+  literalTitleBlockReason,
+  resolveTitleFetchTarget,
+  sensitiveTitleQueryParam,
+  type TitleFetchTarget
+} from './link-title-guard'
 import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { metadataRequestOnce } from './metadata-http-hop'
+import { fetchWithSafeRedirects } from './safe-http-redirects'
 import { decodeWebText } from './web-text-decoder'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
@@ -77,17 +86,24 @@ const URL_EFFECTIVE_TAIL_BYTES = 4096
 // One curl request without --location. Redirects are followed manually so
 // every hop is re-admitted by the destination guard before it is dialed
 // (#126885); %{redirect_url} / %{http_code} say whether a hop happened.
+// `target` is that admission: the hop dials the vetted DNS answer it carries
+// (`--resolve`) or the proxy the guard saw, never a fresh lookup of its own.
 function curlTitleRequest(
-  url: string
-): Promise<{ authWall: boolean; httpCode: number; redirectUrl: string; title: string }> {
+  url: string,
+  remainingMs: number,
+  target: TitleFetchTarget
+): Promise<{ authWall: boolean; redirectUrl: string; statusCode: number; title: string }> {
   return new Promise(resolve => {
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1000))
+
     const args = [
       '--silent',
       '--show-error',
       '--max-time',
-      String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
+      String(seconds),
       '--connect-timeout',
-      '4',
+      String(Math.min(4, seconds)),
+      ...curlTitleTargetArgs(target),
       '--user-agent',
       TITLE_USER_AGENT,
       '--header',
@@ -126,10 +142,10 @@ function curlTitleRequest(
       bytes += next.length
     })
 
-    child.on('error', () => resolve({ authWall: false, httpCode: 0, redirectUrl: '', title: '' }))
+    child.on('error', () => resolve({ authWall: false, redirectUrl: '', statusCode: 0, title: '' }))
     child.on('close', () => {
       if (!chunks.length) {
-        return resolve({ authWall: false, httpCode: 0, redirectUrl: '', title: '' })
+        return resolve({ authWall: false, redirectUrl: '', statusCode: 0, title: '' })
       }
 
       // The trailer is inside `bodyWithTrailer` unless the budget cut it off;
@@ -141,56 +157,23 @@ function curlTitleRequest(
 
       // A sign-in wall answers the cookieless title partition, and tier 2 must
       // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), httpCode, redirectUrl, title })
+      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), redirectUrl, statusCode: httpCode, title })
     })
   })
 }
 
 function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; refused?: boolean; title: string }> {
   // Manual redirect ladder (#126885): curl no longer follows Location itself,
-  // so each next hop passes isSafeTitleFetchTarget — private, loopback,
+  // so each next hop passes the destination guard — private, loopback,
   // link-local, CGNAT and metadata destinations get no GET even mid-chain.
   // A refused hop returns `refused` so the renderer tier never re-walks the
-  // chain: Chromium would follow the redirect itself, and only the synchronous
-  // literal check would stand between it and the private target.
-  return (async () => {
-    let url = String(rawUrl || '').trim()
-
-    if (!url) {
-      return { authWall: false, title: '' }
-    }
-
-    for (let hop = 0; hop <= TITLE_MAX_REDIRECTS; hop += 1) {
-      const result = await curlTitleRequest(url)
-
-      if (!result.redirectUrl || result.httpCode < 300 || result.httpCode >= 400) {
-        return result
-      }
-
-      let next: URL
-
-      try {
-        next = new URL(result.redirectUrl, url)
-      } catch {
-        return { authWall: false, refused: true, title: '' }
-      }
-
-      // The scheme check curl's own --proto-redir would have done.
-      if (next.protocol !== 'http:' && next.protocol !== 'https:') {
-        return { authWall: false, refused: true, title: '' }
-      }
-
-      if (!(await isSafeTitleFetchTarget(next.href))) {
-        return { authWall: false, refused: true, title: '' }
-      }
-
-      url = next.href
-    }
-
-    // Redirect budget exhausted: a chain that long is a loop or abuse, and the
-    // renderer tier re-walking it would be no safer.
-    return { authWall: false, refused: true, title: '' }
-  })()
+  // chain: Chromium would follow the redirect itself. One deadline covers the
+  // whole chain, as `curl --location --max-time` did.
+  return fetchWithSafeRedirects(rawUrl, curlTitleRequest, {
+    admit: url => resolveTitleFetchTarget(url),
+    maxRedirects: TITLE_MAX_REDIRECTS,
+    timeoutMs: TITLE_TIMEOUT_MS
+  }).then(({ refused, response }) => response ?? { authWall: false, refused, title: '' })
 }
 
 function getLinkTitleSession() {
@@ -215,7 +198,17 @@ function getLinkTitleSession() {
       blocked = false
     }
 
-    callback({ cancel: blocked })
+    if (blocked) {
+      return callback({ cancel: true })
+    }
+
+    // Names get the same DNS-backed verdict as the curl tier: a public-looking
+    // host (or a redirect hop Chromium follows itself) that resolves into
+    // private space is cancelled before Chromium dials it.
+    void isSafeLinkMetadataTarget(details.url).then(
+      allowed => callback({ cancel: !allowed }),
+      () => callback({ cancel: true })
+    )
   })
   guardLinkTitleSession(linkTitleSession)
 
@@ -462,49 +455,59 @@ function saveFaviconCacheSoon() {
   faviconWriteTimer.unref?.()
 }
 
-async function faviconFetch(url: string, accept: string) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FAVICON_TIMEOUT_MS)
+// One favicon GET, with every redirect hop re-admitted by the same destination
+// policy as link titles. A page-declared icon or manifest URL, or a public
+// URL answering 302 onto a private one, never reaches the network.
+async function faviconFetch(url: string, accept: string, maxBytes: number, overflow: 'reject' | 'truncate') {
+  const { response } = await fetchWithSafeRedirects(
+    url,
+    (hopUrl, remainingMs) =>
+      metadataRequestOnce(options => electronNet.request(options), hopUrl, {
+        // Same browser-shaped identity the title fetcher uses: a plain Electron
+        // UA gets a challenge page from anything behind a bot wall.
+        headers: { Accept: accept, 'Accept-Language': 'en-US,en;q=0.7', 'User-Agent': TITLE_USER_AGENT },
+        maxBytes,
+        overflow,
+        timeoutMs: remainingMs
+      }),
+    {
+      admit: async hopUrl => ((await isSafeLinkMetadataTarget(hopUrl)) ? true : null),
+      maxRedirects: TITLE_MAX_REDIRECTS,
+      timeoutMs: FAVICON_TIMEOUT_MS
+    }
+  )
 
-  try {
-    return await electronNet.fetch(url, {
-      // Same browser-shaped identity the title fetcher uses: a plain Electron
-      // UA gets a challenge page from anything behind a bot wall.
-      headers: { Accept: accept, 'Accept-Language': 'en-US,en;q=0.7', 'User-Agent': TITLE_USER_AGENT },
-      redirect: 'follow',
-      signal: controller.signal
-    })
-  } finally {
-    clearTimeout(timer)
-  }
+  return response && response.statusCode >= 200 && response.statusCode < 300 ? response : null
 }
 
 const faviconIo: FaviconIo = {
   fetchImage: async url => {
-    const response = await faviconFetch(url, 'image/avif,image/webp,image/svg+xml,image/*;q=0.8,*/*;q=0.5')
+    const response = await faviconFetch(
+      url,
+      'image/avif,image/webp,image/svg+xml,image/*;q=0.8,*/*;q=0.5',
+      FAVICON_MAX_BYTES,
+      'reject'
+    )
 
-    if (!response.ok) {
+    if (!response?.body?.byteLength) {
       return null
     }
 
-    const buffer = await response.arrayBuffer()
-
-    if (buffer.byteLength === 0 || buffer.byteLength > FAVICON_MAX_BYTES) {
-      return null
-    }
-
-    return { bytes: new Uint8Array(buffer), mime: response.headers.get('content-type') ?? '' }
+    return { bytes: new Uint8Array(response.body), mime: response.contentType }
   },
   fetchText: async url => {
-    const response = await faviconFetch(url, 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5')
+    const response = await faviconFetch(
+      url,
+      'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5',
+      TITLE_BYTE_BUDGET * 2,
+      'truncate'
+    )
 
-    if (!response.ok) {
+    if (!response?.body) {
       return ''
     }
 
-    const bytes = new Uint8Array(await response.arrayBuffer()).subarray(0, TITLE_BYTE_BUDGET * 2)
-
-    return decodeWebText(bytes, response.headers.get('content-type') ?? '')
+    return decodeWebText(response.body, response.contentType)
   }
 }
 

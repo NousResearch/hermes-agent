@@ -42,8 +42,14 @@ EXEMPT = "supply-chain-guard: allow"
 def dockerfiles() -> list[Path]:
     root = REPO_ROOT / "Dockerfile"
     files = [root] if root.is_file() else []
-    files.extend(sorted((REPO_ROOT / "docker").glob("*.Dockerfile")))
-    return files
+    files.extend(
+        sorted(
+            path
+            for path in REPO_ROOT.rglob("*.Dockerfile")
+            if ".git" not in path.parts
+        )
+    )
+    return list(dict.fromkeys(files))
 
 
 def logical_lines(text: str) -> list[tuple[int, str]]:

@@ -406,15 +406,61 @@ class GatewayNotificationsMixin:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                    await self._ledger_flood_refused_media(
+                        adapter, chat_id, media_path, result,
+                        thread_id=getattr(event.source, "thread_id", None),
+                        message_ref=str(getattr(event, "ledger_message_id", None)
+                                        or getattr(event, "message_id", "") or ""),
+                    )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+
+    async def _ledger_flood_refused_media(
+        self, adapter, chat_id, media_path: str, result, *,
+        thread_id: Optional[str] = None, message_ref: str = "",
+    ) -> None:
+        """Ledger a held-back notice for a media send the platform refused under flood control.
+
+        Ledger rows are text, so a refused native upload is otherwise invisible to redelivery: the
+        media callers do not feed SendResults to the ledger (only text final responses arm it), and a
+        flood refusal comes back as a result, not an exception. The file would be dropped with no
+        notice and no retry once the text fallback is gone (#125857). Recording the refusal as a
+        *failed text obligation* reuses the existing flood machinery verbatim — the row keeps the
+        platform's own wait, the flood timer arms, and the notice is redelivered once the penalty
+        has passed. Best-effort, never raises."""
+        error = str(getattr(result, "error", "") or "")
+        if getattr(result, "success", False) or not error:
+            return
+        try:
+            from gateway.delivery_ledger import (
+                compute_obligation_id, is_flood_error, ledger_enabled, mark_failed, record_obligation)
+            if not is_flood_error(error):
+                return
+            if not await asyncio.to_thread(ledger_enabled):
+                return
+            raw_platform = getattr(adapter, "platform", "")
+            platform = str(getattr(raw_platform, "value", raw_platform))
+            content = (f'📎 Attachment "{Path(media_path).name}" was refused by the platform '
+                       "rate limit and was not delivered.")
+            session_key = f"{platform}:{chat_id}"
+            obligation_id = compute_obligation_id(session_key, message_ref, content)
+            await asyncio.to_thread(
+                record_obligation, obligation_id=obligation_id, session_key=session_key,
+                platform=platform, chat_id=str(chat_id), thread_id=thread_id, content=content,
+                adapter_profile=getattr(adapter, "_owner_profile", None))
+            await asyncio.to_thread(mark_failed, obligation_id, error)
+            schedule = getattr(self, "_schedule_flood_redelivery", None)
+            if callable(schedule):
+                schedule(platform, profile=getattr(adapter, "_owner_profile", None))
+        except Exception:
+            logger.debug("flood-refused media notice ledger record failed", exc_info=True)
 
 
     async def _deliver_queued_first_response(

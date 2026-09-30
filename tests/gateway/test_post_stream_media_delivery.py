@@ -41,10 +41,14 @@ def _event():
 
 
 def _fake_runner(thread_meta):
-    return SimpleNamespace(
+    runner = SimpleNamespace(
         _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
         _reply_anchor_for_event=lambda event: None,
     )
+    # Plain-function attribute (no implicit self), so bind the mixin method explicitly.
+    from functools import partial
+    runner._ledger_flood_refused_media = partial(GatewayRunner._ledger_flood_refused_media, runner)
+    return runner
 
 
 def _adapter():
@@ -111,5 +115,79 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     images_kwargs = adapter.send_multiple_images.await_args.kwargs
     assert images_kwargs["chat_id"] == "C123CHAN"
     assert str(media_file) in unquote(images_kwargs["images"][0][0])
+
+
+def _patch_ledger(monkeypatch, *, enabled=True):
+    """Capture ledger writes for the flood-notice path; returns (recorded, failed, scheduled)."""
+    from gateway import delivery_ledger
+
+    recorded, failed, scheduled = {}, {}, []
+    monkeypatch.setattr(delivery_ledger, "ledger_enabled", lambda config=None: enabled)
+    monkeypatch.setattr(delivery_ledger, "record_obligation", lambda **kwargs: recorded.update(kwargs))
+    monkeypatch.setattr(delivery_ledger, "mark_failed", lambda oid, error="": failed.update(id=oid, error=error))
+    return recorded, failed, scheduled
+
+
+@pytest.mark.asyncio
+async def test_flood_refused_post_stream_media_records_ledger_notice(tmp_path, monkeypatch):
+    """A flood-refused upload must not vanish now the text fallback is gone (#125857): the refusal
+    becomes a failed text obligation (a held-back notice) so the ledger's flood timer arms and
+    redelivers the notice once the platform's penalty has passed."""
+    from gateway.delivery_ledger import compute_obligation_id
+
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.txt")
+    adapter = _adapter()
+    adapter.platform = Platform.SLACK
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=False, error="flood_control:26.0", retry_after=26.0))
+    recorded, failed, scheduled = _patch_ledger(monkeypatch)
+    runner = _fake_runner({})
+    runner._schedule_flood_redelivery = lambda platform, profile=None: scheduled.append((platform, profile))
+
+    await GatewayRunner._deliver_media_from_response(
+        runner, f"Here.\nMEDIA:{media_file}", _event(), adapter)
+
+    adapter.send_document.assert_awaited_once()
+    expected_content = ('📎 Attachment "report.txt" was refused by the platform rate limit '
+                        "and was not delivered.")
+    assert recorded["content"] == expected_content
+    assert recorded["platform"] == "slack"
+    assert recorded["chat_id"] == "C123CHAN"
+    assert recorded["session_key"] == "slack:C123CHAN"
+    assert failed == {"id": recorded["obligation_id"], "error": "flood_control:26.0"}
+    assert failed["id"] == compute_obligation_id("slack:C123CHAN", "171.000001", expected_content)
+    assert scheduled == [("slack", None)]
+
+
+@pytest.mark.asyncio
+async def test_flood_refused_media_notice_respects_ledger_gate(tmp_path, monkeypatch):
+    """The notice follows the ``gateway.delivery_ledger`` config gate."""
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.txt")
+    adapter = _adapter()
+    adapter.platform = Platform.SLACK
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=False, error="flood_control:26.0", retry_after=26.0))
+    recorded, _, _ = _patch_ledger(monkeypatch, enabled=False)
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"Here.\nMEDIA:{media_file}", _event(), adapter)
+
+    adapter.send_document.assert_awaited_once()
+    assert recorded == {}
+
+
+@pytest.mark.asyncio
+async def test_delivered_media_send_is_not_ledgered(tmp_path, monkeypatch):
+    """Only refusals are ledgered; a delivered upload records no obligation."""
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.txt")
+    adapter = _adapter()
+    adapter.platform = Platform.SLACK
+    recorded, _, _ = _patch_ledger(monkeypatch)
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"Here.\nMEDIA:{media_file}", _event(), adapter)
+
+    adapter.send_document.assert_awaited_once()
+    assert recorded == {}
 
 

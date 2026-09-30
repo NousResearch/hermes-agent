@@ -8,7 +8,9 @@ import contextlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .session_lifecycle import _start_turn_thread
+    import threading
+
+    from .session_lifecycle import _decide_submit_thread, _start_turn_thread
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -559,10 +561,14 @@ def _reopen_if_finalized(db, session_id: str) -> None:
         db.reopen_session(session_id)
 
 
-def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
+def _persist_session_row_for_submit(rid, session, text=None, display_kind=None, *, turn_generation):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
-    resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast).
+
+    ``turn_generation`` is the claim from ``_lock_in_submit_turn``. Once a later submit has claimed the
+    session, its turn owns the staged user row, ``running`` and the lease, so this submit's row is written
+    but not staged, and a storage failure does not release the session."""
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
@@ -574,12 +580,20 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
-            # The first real turn reopens a finalized row (#85303): resume is read-only, so
-            # an ended_at set at mount time is cleared HERE, before the turn's first write.
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
-            _persist_submit_user_row(session, text, display_kind)
+            with session["history_lock"]:
+                if not _holds_submit_claim(session, turn_generation):
+                    return _superseded_submit_error(rid)
+                with _session_db(session) as db:
+                    if db is not None:
+                        _reopen_if_finalized(db, str(session.get("session_key") or ""))
+            staged = _write_submit_user_row(session, text, display_kind)
+            with session["history_lock"]:
+                if not _holds_submit_claim(session, turn_generation):
+                    return _superseded_submit_error(rid)
+                # A failed or unsupported write must not acknowledge an older send.
+                session.pop("_submit_user_row", None)
+                if staged is not None:
+                    session["_submit_user_row"] = staged
             return None
     except Exception as exc:
         failure = describe_storage_failure(exc)
@@ -599,6 +613,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
+        if not _holds_submit_claim(session, turn_generation):
+            return error
         session["running"] = False
         session["last_active"] = time.time()
         session.pop("_hosted_room_task", None)
@@ -618,12 +634,20 @@ def _run_after_agent_ready(
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
     with session["history_lock"]:
-        superseded = session.get("_submit_turn_generation") != turn_generation
-    if superseded:
-        # An interrupt ended this turn before prompt.submit published this thread, and a later submit has
-        # claimed the session since. `running`, the in-flight turn and the staged user row belong to that
-        # turn, so leave them alone and emit nothing: clients end the live turn on an `error` event.
-        return
+        if not _holds_submit_claim(session, turn_generation):
+            # A later prompt.submit has claimed the session since this thread was published. `running`, the
+            # in-flight turn and the staged user row belong to that turn, so leave them alone and emit nothing:
+            # clients end the live turn on an `error` event.
+            return
+        if not err and (session.get("_turn_cancel_requested") or not session.get("running")):
+            session["running"] = False
+            _clear_inflight_turn(session)
+            # Without this emit the turn vanishes silently after {"status": "streaming"}.
+            _emit("error", sid, {"message": (
+                "Turn cancelled before the agent was ready"
+                if session.get("_turn_cancel_requested")
+                else "Session no longer running before the agent was ready")})
+            return
     if err:
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
@@ -635,16 +659,6 @@ def _run_after_agent_ready(
             session["last_active"] = time.time()
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
-    with session["history_lock"]:
-        if session.get("_turn_cancel_requested") or not session.get("running"):
-            session["running"] = False
-            _clear_inflight_turn(session)
-            # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, {"message": (
-                "Turn cancelled before the agent was ready"
-                if session.get("_turn_cancel_requested")
-                else "Session no longer running before the agent was ready")})
-            return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author)
@@ -652,6 +666,19 @@ def _run_after_agent_ready(
 
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
+
+
+def _holds_submit_claim(session, turn_generation) -> bool:
+    """Whether the claim that ``_lock_in_submit_turn`` returned is still the session's latest.
+    The caller holds ``history_lock``."""
+    return session.get("_submit_turn_generation") == turn_generation
+
+
+def _superseded_submit_error(rid) -> dict:
+    return _err(
+        rid, 4125,
+        "This message did not run because the session was stopped or another message started first. "
+        "Send it again to run it.")
 
 
 def _lock_in_submit_turn(
@@ -796,19 +823,16 @@ def _(rid, params: dict) -> dict:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
-        # The isolated dispatch returns BELOW before the inline persist, so the reopen
-        # cannot live only in _persist_session_row_for_submit: the turn is already
-        # admitted here (running, in flight, active-slot lease claimed, truncation
-        # applied inline), and the child's transcript writes must land in a live row
-        # (#85303 review: the early return made _reopen_if_finalized unreachable on
-        # this path). Best-effort like the helper: a failed read never blocks the send.
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
-        except Exception:
-            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
-                         sid, exc_info=True)
+        with session["history_lock"]:
+            if not _holds_submit_claim(session, turn_generation):
+                return _superseded_submit_error(rid)
+            try:
+                with _session_db(session) as db:
+                    if db is not None:
+                        _reopen_if_finalized(db, str(session.get("session_key") or ""))
+            except Exception:
+                logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                             sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
@@ -826,7 +850,8 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
+    if (err := _persist_session_row_for_submit(
+            rid, session, text, display_kind, turn_generation=turn_generation)) is not None:
         return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
@@ -835,13 +860,17 @@ def _(rid, params: dict) -> dict:
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
-            turn_generation=turn_generation),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    _start_turn_thread(session, run_thread)
+    decision: list[bool] = []
+
+    def run():
+        if _decide_submit_thread(session, threading.current_thread(), turn_generation, decision):
+            _run_after_agent_ready(
+                rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+                turn_generation=turn_generation)
+
+    run_thread = threading.Thread(target=run, daemon=True)
+    if not _start_turn_thread(session, run_thread, decision, turn_generation=turn_generation):
+        return _superseded_submit_error(rid)
     return _ok(rid, {"status": "streaming", **survivor_fields})
 
 

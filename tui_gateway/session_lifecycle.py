@@ -48,22 +48,31 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         raise
 
 
-_turn_thread_publish_lock = threading.Lock()
+def _decide_submit_thread(
+    session, thread, claim: int | None, decision: list[bool]
+) -> bool:
+    with session["history_lock"]:
+        if not decision:
+            decision.append(claim is None or _holds_submit_claim(session, claim))
+            if decision[0]:
+                session["_run_thread"] = thread
+        return decision[0]
 
 
-def _start_turn_thread(session: dict, thread: threading.Thread) -> None:
-    """Start ``thread``, then publish it as ``session["_run_thread"]``. Other threads call ``is_alive()`` and
-    ``join()`` on that handle, so it must never refer to a thread that has not started.
-
-    The new thread can publish its own worker before or after this store, so the store replaces only the handle
-    seen before ``start()`` or the calling thread itself. A worker published by the new thread is kept, and a
-    worker always replaces the thread that started it."""
+def _start_turn_thread(
+    session: dict, thread: threading.Thread, decision: list[bool] | None = None, *,
+    turn_generation: int | None = None,
+) -> bool:
+    if decision is not None:
+        thread.start()
+        return _decide_submit_thread(session, thread, turn_generation, decision)
     previous = session.get("_run_thread")
     thread.start()
-    with _turn_thread_publish_lock:
+    with session["history_lock"]:
         current = session.get("_run_thread")
         if current is previous or current is threading.current_thread():
             session["_run_thread"] = thread
+    return True
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> list[str]:

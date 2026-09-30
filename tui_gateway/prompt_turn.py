@@ -116,10 +116,15 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, turn_claim: int | None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
-    bypass that once let a second backend run a duplicate turn."""
+    bypass that once let a second backend run a duplicate turn.
+
+    A stopped or replaced claim cannot start a turn."""
+    with session["history_lock"]:
+        if not _holds_turn_claim(session, turn_claim):
+            return None
     held_lease = session.get("active_session_lease")
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if not session.get("_closing") and (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
@@ -128,11 +133,15 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
+            if not _owns_turn_claim(session, turn_claim):
+                return None
             session["running"] = False
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
+        if not _holds_turn_claim(session, turn_claim):
+            return None
         if session.get("_closing") or (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
@@ -419,20 +428,19 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 
 
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
-                            on_done=None, on_error=None) -> None:
-    """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
-    release ``running``."""
+                            turn_claim: int, on_done=None, on_error=None) -> None:
+    """Chain one follow-up turn for the caller's ``turn_claim``; on failure run ``on_error``, log,
+    release the claim."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _run_prompt_submit(rid, sid, session, prompt, turn_claim=turn_claim)
         if on_done is not None:
             on_done()
     except Exception as exc:
         if on_error is not None:
             on_error()
         _hook_failure(what, exc)
-        with session["history_lock"]:
-            session["running"] = False
+        _release_session_turn(session, turn_claim)
 
 
 def _run_post_turn_followups(
@@ -453,8 +461,9 @@ def _run_post_turn_followups(
                 return  # user already sent something — their turn wins
             if session.get("_turn_cancel_requested"):
                 return  # the user pressed Stop; the goal resumes after their next prompt
-            session["running"] = True
-        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+            goal_claim = _claim_session_turn(session)
+        _dispatch_followup_turn(
+            rid, sid, session, goal_followup, "goal continuation dispatch", turn_claim=goal_claim)
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.
@@ -1107,7 +1116,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, turn_claim: int | None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1117,7 +1126,8 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        turn_claim=turn_claim)
     if admitted is None:
         return False
     images, agent = admitted
@@ -1188,11 +1198,12 @@ def _run_prompt_submit(
             # A stale interim closure must not fire during a later turn.
             st.agent.interim_assistant_callback = None
             with session["history_lock"]:
-                session["running"] = False
                 session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
-                _release_hosted_room_turn_slot(session)
+                if _owns_turn_claim(session, turn_claim):
+                    session["running"] = False
+                    if not st.error_retained:
+                        _clear_inflight_turn(session)
+                    _release_hosted_room_turn_slot(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).
@@ -1235,10 +1246,10 @@ def _run_prompt_submit(
             # still run its turn, but its stamp stays (#106459).
             if registered is session:
                 _reopen_routed_session_row(routing_db, sid, session)
-            can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
+            can_start = _start_session_work(
+                run, name=f"prompt-turn-{sid}", session=session, turn_claim=turn_claim) is not None
     if not can_start:
-        with session["history_lock"]:
-            session["running"] = False
+        _release_session_turn(session, turn_claim)
     return can_start
 
 

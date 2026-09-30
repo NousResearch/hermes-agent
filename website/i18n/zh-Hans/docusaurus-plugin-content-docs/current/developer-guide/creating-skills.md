@@ -278,12 +278,13 @@ required_credential_files:
 
 #### 在 SKILL.md 中引用内置脚本
 
-Skill 加载时，激活消息会将 skill 目录的绝对路径以 `[Skill directory: /abs/path]` 的形式暴露，同时在 SKILL.md 正文中替换两个模板 token：
+Skill 加载时，激活消息会将 skill 目录的绝对路径以 `[Skill directory: /abs/path]` 的形式暴露，同时在 SKILL.md 正文中替换三个模板 token：
 
 | Token | 替换为 |
 |---|---|
 | `${HERMES_SKILL_DIR}` | skill 目录的绝对路径 |
 | `${HERMES_SESSION_ID}` | 当前会话 ID（若无会话则保留原样） |
+| `${HERMES_PYTHON}` | 运行 Hermes 的 Python 解释器的绝对路径 |
 
 因此，SKILL.md 可以直接告知 agent 运行内置脚本：
 

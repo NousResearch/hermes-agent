@@ -42,6 +42,7 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
+    _OPENAI_ULTRAFAST_MODELS,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -1185,17 +1186,30 @@ def _fast_mode_route_supported(
     return not host or host in allowed.values()
 
 
+def model_supports_ultrafast(model_id: Optional[str]) -> bool:
+    """OpenAI Ultrafast (``service_tier: "ultrafast"``) is published per model, not per family."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
+    return base in _OPENAI_ULTRAFAST_MODELS
+
+
 def resolve_fast_mode_overrides(
-    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None
+    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
+    tier: Optional[str] = None,
 ) -> dict[str, Any] | None:
     """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
     ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
+    ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
+    Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
     With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
     never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None
+    if tier == "ultrafast":
+        return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
 
 

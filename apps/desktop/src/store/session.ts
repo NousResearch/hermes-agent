@@ -1583,6 +1583,12 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
+
+// The fresh-draft identity lives in store/composer.ts with the draft stash it
+// keys; re-exported here because session.ts is where new-chat lifecycles rotate
+// it (startFreshSessionDraft) and where most call sites already import from.
+export { $freshDraftKey, rotateFreshDraftKey } from './composer'
+
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
 export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {

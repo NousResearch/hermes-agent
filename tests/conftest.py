@@ -245,7 +245,7 @@ from tests._fixtures.platform_gating import _platforms_gate_reason, _reject_cont
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
     Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
@@ -310,6 +310,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    # Relay 0.9 normally discovers the user's XDG plugins.toml. Select an empty
+    # per-test user file instead so tests cannot activate a developer's plugins,
+    # without changing XDG_CONFIG_HOME for unrelated Hermes code under test.
+    # Outside tmp_path: tests that list or git-status their tmp dir must not see it.
+    relay_plugins = tmp_path_factory.getbasetemp() / "relay-plugins.toml"
+    if not relay_plugins.exists():
+        relay_plugins.write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(relay_plugins))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test

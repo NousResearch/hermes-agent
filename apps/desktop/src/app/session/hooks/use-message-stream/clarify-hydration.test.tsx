@@ -187,7 +187,10 @@ describe('clarify request stream hydration', () => {
       }
     ])
 
-    clarifyRequest({ choices: ['Approve', 'Reject'], question: 'Continue?', request_id: 'req-pending' })
+    clarifyRequest({
+      questions: [{ choices: ['Approve', 'Reject'], qid: 'q0', question: 'Continue?' }],
+      request_id: 'req-pending'
+    })
 
     const messages = stream.state().messages
     const part = clarifyParts()[0]
@@ -195,7 +198,7 @@ describe('clarify request stream hydration', () => {
     expect(messages[1]).toMatchObject({ id: 'assistant-pending', pending: true })
     expect(part).toMatchObject({
       toolCallId: 'call-provider',
-      args: { choices: ['Approve', 'Reject'], question: 'Continue?' }
+      args: { questions: [{ choices: ['Approve', 'Reject'], question: 'Continue?' }] }
     })
     expect(stream.state().streamId).toBe('assistant-pending')
   })
@@ -313,7 +316,7 @@ describe('clarify request stream hydration', () => {
 
   it.each(['message.complete', 'error'] as const)('keeps a live clarify card through a spurious %s', type => {
     mountStream()
-    clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-live' })
+    clarifyRequest({ questions: [{ choices: ['a', 'b'], qid: 'q0', question: 'Pick' }], request_id: 'req-live' })
 
     act(() =>
       stream.handleEvent({
@@ -341,11 +344,9 @@ describe('clarify request stream hydration', () => {
     state.awaitingResponse = true
     stream.states.set(SID, state)
 
-    clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-live' })
+    clarifyRequest({ questions: [{ choices: ['a', 'b'], qid: 'q0', question: 'Pick' }], request_id: 'req-live' })
 
-    act(() =>
-      stream.handleEvent({ payload: { running: false }, session_id: SID, type: 'session.info' })
-    )
+    act(() => stream.handleEvent({ payload: { running: false }, session_id: SID, type: 'session.info' }))
 
     expect($clarifyRequests.get()[SID]?.requestId).toBe('req-live')
 

@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — стандартная обработка"
     choice_auto: "auto — быстро в первые секунды каждого хода"
     choice_cold: "cold — быстро только на первом ходе сессии"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, цена ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступен только для GPT-6 Astra (текущая модель: `{model}`)."
   footer:
     status: "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Использование: `/footer [on|off|status]`"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Управлять уровнем и отображением рассуждений"
   fast:
-    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показать или сменить скин/тему оформления"
   indicator:
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "Быстрый режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Использование: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступен только для GPT-6 Astra (текущая модель: {model})."
+      usage: "Использование: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: установлено {value} {scope}"
     hatch:

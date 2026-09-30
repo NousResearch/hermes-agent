@@ -283,6 +283,7 @@ class DiscordMediaMixin:
 
         try:
             import io
+            import math
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
@@ -308,7 +309,12 @@ class DiscordMediaMixin:
                     from mutagen.oggopus import OggOpus
                     duration_secs = OggOpus(audio_path).info.length
                 except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
+                    from tools.transcription_audio import _probe_audio_duration
+                    probed_duration = _probe_audio_duration(audio_path)
+                    if probed_duration is not None and math.isfinite(probed_duration) and probed_duration > 0:
+                        duration_secs = probed_duration
+                    else:
+                        duration_secs = max(1.0, len(file_data) / 2000.0)
                 payload_data = {
                     "flags": 8192,
                     "attachments": [{

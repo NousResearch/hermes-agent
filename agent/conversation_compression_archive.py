@@ -14,9 +14,10 @@ ABSORBED_ROW_IDS = "_absorbed_row_ids"
 # How many durable rows an alternation repair folded into one user dict. A reload without row ids
 # has no other way to tell that dict from a prompt that was never persisted.
 MERGED_DURABLE_ROWS = "_merged_durable_rows"
-# How many durable rows the repair dropped behind a dict on a reload without row ids (a tool call
-# with no result, a result with no call). The caller was handed them, and nothing else names them.
-DROPPED_DURABLE_ROWS = "_dropped_durable_rows"
+# How many more durable rows a dict stands for on a reload without row ids, besides a merged user
+# run: rows the repair dropped behind it (a tool call with no result, a result with no call) or
+# folded into an assistant turn. The caller was handed them, and nothing else names them.
+UNNAMED_DURABLE_ROWS = "_unnamed_durable_rows"
 
 
 def _positive_id(value: Any) -> Optional[int]:
@@ -86,8 +87,8 @@ def coverage_for_commit(
 
     ``None`` when the newest exact held row is already inactive (another compaction
     won: archiving only the held ids would clone the winner), when nothing held
-    is a durable row, or when a row the repair dropped has no id: naming the rest
-    would clone that one behind the running turn. A trailing unpersisted turn
+    is a durable row, or when a held dict counts rows no id names: naming the rest
+    would clone those behind the running turn. A trailing unpersisted turn
     does not take this branch: the rows above it stay unnamed and are cloned.
     """
     from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -97,7 +98,7 @@ def coverage_for_commit(
     if newest is not None and callable(role_of) and role_of(session_id, newest) is None:
         return None, None
     covered, unresolved = held_archive_coverage(messages, verbatim_tail)
-    if any(message.get(DROPPED_DURABLE_ROWS) for message in unresolved):
+    if any(message.get(UNNAMED_DURABLE_ROWS) for message in unresolved):
         return None, None
     marked = [
         message for message in unresolved

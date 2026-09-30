@@ -467,7 +467,7 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
     the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
-    from agent.conversation_compression_archive import DROPPED_DURABLE_ROWS
+    from agent.conversation_compression_archive import UNNAMED_DURABLE_ROWS
 
     own_id = survivor.get("_row_id")
     ids = []
@@ -482,28 +482,37 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
         for row_id in ids:
             if row_id not in absorbed:
                 absorbed.append(row_id)
-    # Rows the repair dropped behind the retired dict are behind the survivor now.
-    if dropped.get(DROPPED_DURABLE_ROWS):
-        survivor[DROPPED_DURABLE_ROWS] = int(survivor.get(DROPPED_DURABLE_ROWS) or 0) + int(dropped[DROPPED_DURABLE_ROWS])
+    # The rows the retired dict counted are behind the survivor now.
+    if dropped.get(UNNAMED_DURABLE_ROWS):
+        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + int(dropped[UNNAMED_DURABLE_ROWS])
     # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
     # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
     if folded:
         record_absorbed_message(survivor, dropped)
 
 
+def _count_unnamed_row(survivor: Dict[str, Any], retired: Dict[str, Any]) -> None:
+    """On a reload without row ids nothing names *retired*'s durable row once the repair takes the dict
+    out of the list, so *survivor* counts it. A dict that counts rows was loaded too: a merge may have
+    popped its marker since. Call before the merge rewrites the survivor."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import UNNAMED_DURABLE_ROWS
+
+    def loaded(message: Dict[str, Any]) -> bool:
+        return bool(message.get(_DB_PERSISTED_MARKER) or message.get(UNNAMED_DURABLE_ROWS))
+
+    if loaded(survivor) and loaded(retired) and not isinstance(retired.get("_row_id"), int):
+        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
+
+
 def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any]) -> None:
     """A durable row the repair drops was still handed to the caller, so the survivor before it stands
     for it. Left unnamed, an in-place compaction takes it for a row another surface appended and
-    re-sequences it behind the running turn. A reload without row ids can only count it."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression_archive import DROPPED_DURABLE_ROWS
-
+    re-sequences it behind the running turn."""
     prev = kept[-1] if kept and isinstance(kept[-1], dict) else None
-    if prev is None or not dropped.get(_DB_PERSISTED_MARKER):
-        return
-    _remember_absorbed_row(prev, dropped, folded=False)
-    if not isinstance(dropped.get("_row_id"), int):
-        prev[DROPPED_DURABLE_ROWS] = int(prev.get(DROPPED_DURABLE_ROWS) or 0) + 1
+    if prev is not None:
+        _count_unnamed_row(prev, dropped)
+        _remember_absorbed_row(prev, dropped, folded=False)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -519,9 +528,11 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
+                _count_unnamed_row(msg, prev)
                 _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
+                _count_unnamed_row(prev, msg)
                 _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue

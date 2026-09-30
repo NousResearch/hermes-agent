@@ -1083,16 +1083,16 @@ class SessionMessagesMixin:
 
         The watermark path cannot name a merged dict's run, so it widens by the stamp, less the
         rows the dict lists in ``_absorbed_row_ids``: those are already counted in ``tail_count``.
-        Rows the repair dropped behind a dict on a reload without ids are in neither, so their
-        count is added. A dict that holds a ``_row_id`` was written back as a single row by an
-        earlier compaction.
+        Rows the repair dropped behind a dict, or folded into an assistant turn, on a reload
+        without ids are in neither, so their count is added. A dict that holds a ``_row_id`` was
+        written back as a single row by an earlier compaction.
         """
-        from agent.conversation_compression_archive import DROPPED_DURABLE_ROWS, MERGED_DURABLE_ROWS
+        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
         def behind(message: Dict[str, Any]) -> int:
-            merged, dropped = message.get(MERGED_DURABLE_ROWS), message.get(DROPPED_DURABLE_ROWS)
-            unnamed = merged - 1 - len(message.get("_absorbed_row_ids") or ()) if type(merged) is int else 0
-            return max(0, unnamed) + (dropped if type(dropped) is int else 0)
+            merged, unnamed = message.get(MERGED_DURABLE_ROWS), message.get(UNNAMED_DURABLE_ROWS)
+            unlisted = merged - 1 - len(message.get("_absorbed_row_ids") or ()) if type(merged) is int else 0
+            return max(0, unlisted) + (unnamed if type(unnamed) is int else 0)
 
         return sum(
             behind(message) for message in tail

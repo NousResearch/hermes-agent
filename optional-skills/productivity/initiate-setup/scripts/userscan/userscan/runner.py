@@ -58,188 +58,209 @@ def run(max_tier: str = "T1", budget_ms: int = 4000, allow_vss: bool = False,
 
 
 def _run(l0, t0, max_tier, budget_ms, allow_vss, only, skip_family, include_deep, child_env):
-    run_id = l0["run_id"]
-    h = HostAccess(l0, child_env)
-    skip_family = set(skip_family or [])
-    only = set(only) if only else None
-
-    def selected(p):
-        if p.os not in ("any", l0["os"]):
-            return False
-        if p.family in skip_family:
-            return False
-        if p.collect == "deep" and not include_deep:
-            return False
-        if only is not None and p.id not in only and p.family not in only:
-            return False
-        if p.needs_admin and not l0["admin"]:
-            return False
-        return True
-
-    facts: dict = {}
-    timing = {}
-    skipped: dict = {}
-    errors: dict = {}
-
-    def record(p, status, ms, value=None, via=None):
-        facts[p.id] = {"level": p.level, "tier": p.tier, "family": p.family,
-                       "status": status, "ms": round(ms, 3),
-                       "method": (p.ps and "powershell") or (p.fn.__name__ if p.fn else "ps"),
-                       "via": via, "value": value if status == "ok" else None}
-
-    def gate_ok(p):
-        return p.gate is None or _truthy(facts.get(p.gate, {}).get("value"))
-
-    # ---------------- L1 (serial) ----------------
-    t = time.perf_counter()
-    for p in sorted((q for q in REGISTRY.values() if selected(q) and q.level == "L1"), key=lambda q: q.id):
-        if not gate_ok(p):
-            record(p, "skipped_flag", 0)
-            continue
-        s = time.perf_counter()
-        try:
-            v = p.fn(h, facts) if p.fn else None
-            record(p, "ok" if _truthy(v) else "absent", (time.perf_counter() - s) * 1000, v if _truthy(v) else {"present": False})
-        except Exception as e:
-            errors[p.id] = f"{type(e).__name__}: {e}"
-            record(p, "error", (time.perf_counter() - s) * 1000)
-    timing["l1_ms"] = round((time.perf_counter() - t) * 1000, 1)
-
-    # ---------------- L2: batched PowerShell in parallel with the python probes ----------------
-    ps_probes = [p for p in REGISTRY.values() if selected(p) and p.level == "L2" and p.ps]
-    if ps_probes and l0.get("os_detected") != "windows":
-        for p in ps_probes:
-            record(p, "skipped_os", 0)
-            skipped[p.id] = "skipped_os"
-        ps_probes = []
-    ps_holder = {}
-    ps_start = time.perf_counter()
-
-    def _ps_worker():
-        ps_holder["results"] = _run_ps_batch(ps_probes, h, gate_ok, max_tier, allow_vss, skipped)
-
-    ps_thread = threading.Thread(target=_ps_worker, daemon=True) if ps_probes else None
-    if ps_thread:
-        ps_thread.start()
-
-    # ---------------- L2: python probes on worker threads ----------------
-    t = time.perf_counter()
-    py_probes = [p for p in REGISTRY.values() if selected(p) and p.level == "L2" and not p.ps]
-    t_now = time.perf_counter()
-    deadline = t_now + budget_ms / 1000.0
-    lock = threading.Lock()
-    queue = [p for p in py_probes if gate_ok(p)]
-    order = sorted(queue, key=lambda q: (q.collect != "core", q.collect == "deep", q.id))
-
-    # Each probe gets its own deadline: its own timeout_ms, or the remaining budget, whichever
-    # is larger for a deep probe (a 25 s profile walk must not be starved by a 4 s budget) and
-    # whichever is smaller otherwise. Nothing is force-killed; a probe past its deadline is
-    # recorded as "timeout" and the runner moves on.
-    def _probe_deadline(p):
-        own = p.timeout_ms / 1000.0
-        remaining = max(0.0, deadline - time.perf_counter())
-        return time.perf_counter() + (max(own, remaining) if p.collect == "deep" else min(own, remaining))
-
-    join_deadline = max([_probe_deadline(p) for p in order] or [deadline])
-    idx = [0]
-
-    def worker():
-        while True:
-            with lock:
-                i = idx[0]
-                if i >= len(order):
-                    return
-                idx[0] = i + 1
-                p = order[i]
-            if time.perf_counter() > deadline and p.collect != "deep":
-                record(p, "skipped_budget", 0)
-                continue
-            s = time.perf_counter()
-            try:
-                v = p.fn(h, facts)
-                record(p, "ok" if _truthy(v) else "absent", (time.perf_counter() - s) * 1000, v if _truthy(v) else {"present": False}, via=h.last_via if hasattr(h, "last_via") else "live")
-            except Exception as e:
-                with lock:
-                    errors[p.id] = f"{type(e).__name__}: {e}"
-                record(p, "error", (time.perf_counter() - s) * 1000)
-
-    workers = [threading.Thread(target=worker, daemon=True) for _ in range(min(8, (os.cpu_count() or 4)))]
-    for w in workers:
-        w.start()
-    for w in workers:
-        w.join(timeout=max(0.5, join_deadline - time.perf_counter() + 1.0))
-    for p in order:
-        if p.id not in facts:
-            record(p, "timeout", 0)
-    if ps_thread:
-        ps_thread.join(timeout=max(1.0, deadline - time.perf_counter() + 2.0))
-        for p, status, ms, value in ps_holder.get("results", []):
-            record(p, status, ms, value, via="ps")
-        for p in ps_probes:
-            if p.id not in facts:
-                record(p, "timeout", 0)
-    timing["ps_sidecar_ms"] = round((time.perf_counter() - ps_start) * 1000, 1)
-    timing["l2_ms"] = round((time.perf_counter() - t) * 1000, 1)
-
-    # ---------------- L3 ----------------
-    t = time.perf_counter()
-    cap = TIERS.index(max_tier)
-    # Rules see only the facts the reader will see. A rule fed a hidden T2 fact would echo it in
-    # its claim, which is exactly how persona.comms_surface leaked T2 detail into a T1 run.
-    ok_facts = {k: v["value"] for k, v in facts.items()
-                if v["status"] == "ok" and TIERS.index(v.get("tier", "T0")) <= cap}
-    # An input is answered when its probe was selected on this OS and finished (ok, absent, or gated off).
-    # Rules that return a claim from absence ("no notes app") need at least one answered input; otherwise
-    # the claim would rest on a probe that does not exist for this OS or that errored/timed out.
-    selected_ids = {p.id for p in REGISTRY.values() if selected(p)}
-    unanswered = {k for k, v in facts.items() if v["status"] in ("error", "timeout", "skipped_budget", "skipped_os")}
-    no_input = []
-    insights = []
-    for ins in INSIGHTS.values():
-        if only is not None and ins.id not in only:
-            continue
-        if not any(i in selected_ids and i not in unanswered for i in ins.inputs):
-            no_input.append(ins.id)
-            continue
-        try:
-            got = ins.fn(ok_facts)
-        except Exception as e:
-            errors[ins.id] = f"{type(e).__name__}: {e}"
-            continue
-        if not got:
-            continue
-        missing = [i for i in ins.inputs if i not in ok_facts]
-        insights.append({
-            "id": ins.id,
-            "claim": got.get("claim", ""),
-            "strength": got.get("strength", "weak"),
-            "confidence": "partial" if missing else "full",
-            "evidence": [i for i in ins.inputs if i in ok_facts],
-            "value": got.get("value"),
-        })
-    timing["l3_ms"] = round((time.perf_counter() - t) * 1000, 1)
-
-    h.cleanup()
+    ps = _Pass(l0, HostAccess(l0, child_env), max_tier, only, skip_family, include_deep)
+    ps.run_l1()
+    ps.run_l2(budget_ms, allow_vss)
+    insights, no_input = ps.run_l3()
+    ps.h.cleanup()
     out = {
         "schema": "user-insights/1",
-        "run": {"id": run_id, "max_tier": max_tier, "budget_ms": budget_ms,
+        "run": {"id": l0["run_id"], "max_tier": max_tier, "budget_ms": budget_ms,
                 "allow_vss": allow_vss, "collector_version": __version__},
         "host": l0,
-        "timing": timing,
-        "facts": facts,
+        "timing": ps.timing,
+        "facts": ps.facts,
         "insights": insights,
         "coverage": {
-            "detectors_total": sum(1 for p in REGISTRY.values() if selected(p)),
-            "fired": sum(1 for v in facts.values() if v["status"] == "ok"),
-            "extractors_run": sum(1 for v in facts.values() if v["level"] == "L2" and v["status"] == "ok"),
-            "skipped": skipped,
-            "errors": errors,
+            "detectors_total": sum(1 for p in REGISTRY.values() if ps.selected(p)),
+            "fired": sum(1 for v in ps.facts.values() if v["status"] == "ok"),
+            "extractors_run": sum(1 for v in ps.facts.values() if v["level"] == "L2" and v["status"] == "ok"),
+            "skipped": ps.skipped,
+            "errors": ps.errors,
             "insights_no_input": no_input,
         },
     }
     out["run"]["wall_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     _filter_values(out, max_tier)
     return out
+
+
+class _Pass:
+    """State of one collection pass; each run_* method is one layer."""
+
+    def __init__(self, l0, h, max_tier, only, skip_family, include_deep):
+        self.l0, self.h, self.max_tier, self.include_deep = l0, h, max_tier, include_deep
+        self.skip_family = set(skip_family or [])
+        self.only = set(only) if only else None
+        self.facts: dict = {}
+        self.timing = {}
+        self.skipped: dict = {}
+        self.errors: dict = {}
+
+    def selected(self, p):
+        if p.os not in ("any", self.l0["os"]):
+            return False
+        if p.family in self.skip_family:
+            return False
+        if p.collect == "deep" and not self.include_deep:
+            return False
+        if self.only is not None and p.id not in self.only and p.family not in self.only:
+            return False
+        if p.needs_admin and not self.l0["admin"]:
+            return False
+        return True
+
+    def record(self, p, status, ms, value=None, via=None):
+        self.facts[p.id] = {"level": p.level, "tier": p.tier, "family": p.family,
+                            "status": status, "ms": round(ms, 3),
+                            "method": (p.ps and "powershell") or (p.fn.__name__ if p.fn else "ps"),
+                            "via": via, "value": value if status == "ok" else None}
+
+    def gate_ok(self, p):
+        return p.gate is None or _truthy(self.facts.get(p.gate, {}).get("value"))
+
+    def run_l1(self):
+        """L1 detectors, serially."""
+        t = time.perf_counter()
+        for p in sorted((q for q in REGISTRY.values() if self.selected(q) and q.level == "L1"), key=lambda q: q.id):
+            if not self.gate_ok(p):
+                self.record(p, "skipped_flag", 0)
+                continue
+            s = time.perf_counter()
+            try:
+                v = p.fn(self.h, self.facts) if p.fn else None
+                self.record(p, "ok" if _truthy(v) else "absent", (time.perf_counter() - s) * 1000,
+                            v if _truthy(v) else {"present": False})
+            except Exception as e:
+                self.errors[p.id] = f"{type(e).__name__}: {e}"
+                self.record(p, "error", (time.perf_counter() - s) * 1000)
+        self.timing["l1_ms"] = round((time.perf_counter() - t) * 1000, 1)
+
+    def run_l2(self, budget_ms, allow_vss):
+        """L2 extractors: batched PowerShell on a sidecar thread in parallel with the python probes."""
+        ps_probes = [p for p in REGISTRY.values() if self.selected(p) and p.level == "L2" and p.ps]
+        if ps_probes and self.l0.get("os_detected") != "windows":
+            for p in ps_probes:
+                self.record(p, "skipped_os", 0)
+                self.skipped[p.id] = "skipped_os"
+            ps_probes = []
+        ps_holder = {}
+        ps_start = time.perf_counter()
+
+        def _ps_worker():
+            ps_holder["results"] = _run_ps_batch(ps_probes, self.h, self.gate_ok, self.max_tier, allow_vss,
+                                                 self.skipped)
+
+        ps_thread = threading.Thread(target=_ps_worker, daemon=True) if ps_probes else None
+        if ps_thread:
+            ps_thread.start()
+
+        t = time.perf_counter()
+        deadline = self._run_python_l2(budget_ms)
+        if ps_thread:
+            ps_thread.join(timeout=max(1.0, deadline - time.perf_counter() + 2.0))
+            for p, status, ms, value in ps_holder.get("results", []):
+                self.record(p, status, ms, value, via="ps")
+            for p in ps_probes:
+                if p.id not in self.facts:
+                    self.record(p, "timeout", 0)
+        self.timing["ps_sidecar_ms"] = round((time.perf_counter() - ps_start) * 1000, 1)
+        self.timing["l2_ms"] = round((time.perf_counter() - t) * 1000, 1)
+
+    def _run_python_l2(self, budget_ms):
+        """Python L2 probes on worker threads. Returns the pass deadline."""
+        h, facts, errors = self.h, self.facts, self.errors
+        py_probes = [p for p in REGISTRY.values() if self.selected(p) and p.level == "L2" and not p.ps]
+        t_now = time.perf_counter()
+        deadline = t_now + budget_ms / 1000.0
+        lock = threading.Lock()
+        queue = [p for p in py_probes if self.gate_ok(p)]
+        order = sorted(queue, key=lambda q: (q.collect != "core", q.collect == "deep", q.id))
+
+        # Each probe gets its own deadline: its own timeout_ms, or the remaining budget, whichever
+        # is larger for a deep probe (a 25 s profile walk must not be starved by a 4 s budget) and
+        # whichever is smaller otherwise. Nothing is force-killed; a probe past its deadline is
+        # recorded as "timeout" and the runner moves on.
+        def _probe_deadline(p):
+            own = p.timeout_ms / 1000.0
+            remaining = max(0.0, deadline - time.perf_counter())
+            return time.perf_counter() + (max(own, remaining) if p.collect == "deep" else min(own, remaining))
+
+        join_deadline = max([_probe_deadline(p) for p in order] or [deadline])
+        idx = [0]
+
+        def worker():
+            while True:
+                with lock:
+                    i = idx[0]
+                    if i >= len(order):
+                        return
+                    idx[0] = i + 1
+                    p = order[i]
+                if time.perf_counter() > deadline and p.collect != "deep":
+                    self.record(p, "skipped_budget", 0)
+                    continue
+                s = time.perf_counter()
+                try:
+                    v = p.fn(h, facts)
+                    self.record(p, "ok" if _truthy(v) else "absent", (time.perf_counter() - s) * 1000,
+                                v if _truthy(v) else {"present": False},
+                                via=h.last_via if hasattr(h, "last_via") else "live")
+                except Exception as e:
+                    with lock:
+                        errors[p.id] = f"{type(e).__name__}: {e}"
+                    self.record(p, "error", (time.perf_counter() - s) * 1000)
+
+        workers = [threading.Thread(target=worker, daemon=True) for _ in range(min(8, (os.cpu_count() or 4)))]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(timeout=max(0.5, join_deadline - time.perf_counter() + 1.0))
+        for p in order:
+            if p.id not in facts:
+                self.record(p, "timeout", 0)
+        return deadline
+
+    def run_l3(self):
+        """L3 insights over the facts the reader will see. Returns (insights, ids with no input)."""
+        t = time.perf_counter()
+        cap = TIERS.index(self.max_tier)
+        # Rules see only the facts the reader will see. A rule fed a hidden T2 fact would echo it in
+        # its claim, which is exactly how persona.comms_surface leaked T2 detail into a T1 run.
+        ok_facts = {k: v["value"] for k, v in self.facts.items()
+                    if v["status"] == "ok" and TIERS.index(v.get("tier", "T0")) <= cap}
+        # An input is answered when its probe was selected on this OS and finished (ok, absent, or gated off).
+        # Rules that return a claim from absence ("no notes app") need at least one answered input; otherwise
+        # the claim would rest on a probe that does not exist for this OS or that errored/timed out.
+        selected_ids = {p.id for p in REGISTRY.values() if self.selected(p)}
+        unanswered = {k for k, v in self.facts.items()
+                      if v["status"] in ("error", "timeout", "skipped_budget", "skipped_os")}
+        no_input = []
+        insights = []
+        for ins in INSIGHTS.values():
+            if self.only is not None and ins.id not in self.only:
+                continue
+            if not any(i in selected_ids and i not in unanswered for i in ins.inputs):
+                no_input.append(ins.id)
+                continue
+            try:
+                got = ins.fn(ok_facts)
+            except Exception as e:
+                self.errors[ins.id] = f"{type(e).__name__}: {e}"
+                continue
+            if not got:
+                continue
+            missing = [i for i in ins.inputs if i not in ok_facts]
+            insights.append({
+                "id": ins.id,
+                "claim": got.get("claim", ""),
+                "strength": got.get("strength", "weak"),
+                "confidence": "partial" if missing else "full",
+                "evidence": [i for i in ins.inputs if i in ok_facts],
+                "value": got.get("value"),
+            })
+        self.timing["l3_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        return insights, no_input
 
 
 def _run_ps_batch(probes, h, gate_ok, max_tier, allow_vss, skipped):

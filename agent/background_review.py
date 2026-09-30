@@ -318,6 +318,12 @@ def oneshot_memory_review_due(agent: Any, turn_tool_calls: int,
     return int(turn_tool_calls or 0) >= max(1, min_calls)
 
 
+def automatic_review_focus(task_cfg: Optional[Dict[str, Any]] = None) -> str:
+    """``auxiliary.background_review.focus``: standing instructions appended to AUTOMATIC reviews
+    (``/refine <text>`` supplies its own focus and wins). Empty when unset."""
+    focus = _background_review_task_config(task_cfg).get("focus")
+    return focus.strip() if isinstance(focus, str) else ""
+
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
@@ -1417,7 +1423,8 @@ def spawn_background_review_thread(
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
     ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
-    to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
+    to the chosen prompt; automatic reviews pass ``None`` and get ``auxiliary.background_review.focus``
+    when configured. ``task_cfg`` is the pre-loaded
     ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
     (/refine) propagates to the fork's write origin so user-requested reviews keep the full
     memory operation set."""
@@ -1430,6 +1437,14 @@ def spawn_background_review_thread(
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
             f"focus — prioritize it over the general instructions above:\n{focus}"
+        )
+    elif not explicit and (standing := automatic_review_focus(task_cfg)):
+        # auxiliary.background_review.focus: the operator's standing focus for automatic reviews.
+        # Appended after the harness prompt (the last user message), so the replayed prefix and
+        # its prompt cache are untouched.
+        prompt = (
+            f"{prompt}\n\nThe operator configured this standing focus for automatic reviews — "
+            f"apply it in addition to the instructions above:\n{standing}"
         )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)

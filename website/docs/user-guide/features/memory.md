@@ -445,6 +445,26 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### A standing focus for automatic reviews (`focus`)
+
+`/refine <instructions>` points one review at what you care about. `focus` does
+the same for every automatic review, so a profile can keep asking one question
+of its own work:
+
+```yaml
+auxiliary:
+  background_review:
+    focus: >-
+      If this session ran a recurring workflow, note what it cost (model calls,
+      tool calls, external API requests, wall time) and whether the same accuracy
+      is reachable faster or cheaper. Patch the workflow's skill with any cheaper
+      method that keeps every verification guard.
+```
+
+It is appended after the review instructions (the replayed conversation and its
+prompt cache are untouched). An explicit `/refine` focus replaces it for that
+review. Unset by default.
+
 ### One-shot runs (`-q` / `-Q`)
 
 A one-shot process exits as soon as its answer is printed, and the review runs

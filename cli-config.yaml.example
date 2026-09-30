@@ -994,6 +994,7 @@ prompt_caching:
 #     oneshot_learning: false  # true: keep skill_manage in one-shot runs and review memory after a
 #                              # substantive run (for orchestrators that resume one session per task)
 #     oneshot_min_tool_calls: 10  # "substantive" (default: the skill nudge interval)
+#     focus: ""                # standing instruction for every automatic review (/refine's focus wins)
 
 # =============================================================================
 # Persistent Memory

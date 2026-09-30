@@ -1,7 +1,8 @@
 """One-shot runs (``hermes chat -q``/``-Q``) keep their post-turn review (#126417).
 
 Covers: the exit linger that lets an in-flight review land, the deferred-queue flush at exit, the
-opt-in one-shot learning mode (skill_manage kept, memory reviewed after a substantive turn), and ``-Q`` stdout staying clean when the review now
+opt-in one-shot learning mode (skill_manage kept, memory reviewed after a substantive turn), the
+standing ``focus`` for automatic reviews, and ``-Q`` stdout staying clean when the review now
 finishes inside the process.
 """
 
@@ -141,6 +142,24 @@ def test_turn_tool_call_count_counts_batched_calls_of_this_turn_only():
     assert br.turn_tool_call_count(earlier + batched) == 11   # one iteration, eleven calls
     assert br.turn_tool_call_count(earlier) == 1
     assert br.turn_tool_call_count([]) == 0
+
+
+# ── standing focus for automatic reviews ──────────────────────────────────────
+
+
+def _prompt(**kw):
+    agent = types.SimpleNamespace(_MEMORY_REVIEW_PROMPT="review memory", _SKILL_REVIEW_PROMPT="review skills",
+                                  _COMBINED_REVIEW_PROMPT="review both")
+    _target, prompt = br.spawn_background_review_thread(agent, [], review_memory=True, review_skills=True, **kw)
+    return prompt
+
+
+def test_configured_focus_applies_to_automatic_reviews_only():
+    cfg = {"focus": "  measure the workflow's cost  "}
+    assert _prompt(task_cfg=cfg).endswith("measure the workflow's cost")
+    assert _prompt(task_cfg={}) == "review both"
+    explicit = _prompt(task_cfg=cfg, focus="save the deploy steps", explicit=True)
+    assert "save the deploy steps" in explicit and "measure the workflow" not in explicit
 
 
 # ── -Q stdout stays clean ─────────────────────────────────────────────────────

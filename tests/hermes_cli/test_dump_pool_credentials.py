@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize("auth_type,expected", [("oauth", "oauth"), ("api_key", "auth pool"), ("", "auth pool")])
+@pytest.mark.parametrize("auth_type,expected", [("oauth", "oauth"), ("api_key", "auth pool"), ("", "auth pool"), ("oauth-invalid", "auth pool")])
 def test_dump_reports_stored_credentials_without_disclosing_or_changing_them(
     tmp_path, monkeypatch, capsys, auth_type, expected
 ):

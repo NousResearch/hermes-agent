@@ -257,7 +257,7 @@ def _stored_credential_labels() -> dict[str, str]:
         if provider not in PROVIDER_REGISTRY or not isinstance(entries, list):
             continue
         kinds = {
-            "oauth" if str(entry.get("auth_type", "")).startswith("oauth") else "auth pool"
+            "oauth" if entry.get("auth_type") == "oauth" else "auth pool"
             for entry in entries
             if isinstance(entry, dict)
             and isinstance(entry.get("access_token"), str)

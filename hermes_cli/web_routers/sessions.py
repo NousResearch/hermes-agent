@@ -587,7 +587,8 @@ def _session_files_dir(profile) -> Path:
 
 
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
-    from agent.compaction_display import project_compaction_message_for_display
+    from agent.compaction_display import (
+        project_compaction_message_for_display, user_view_without_injected_context)
     from agent.context_compressor import is_compaction_summary_message
     from agent.history_commentary import project_history_commentary
     from agent.turn_failure_copy import untyped_failed_turn_display_kind
@@ -615,6 +616,11 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         if failed_turn:
             message = {**message, "display_kind": failed_turn}
         if not is_compaction_summary_message(message):
+            # A multimodal user turn keeps its injected context in ``content`` for replay (#71998);
+            # the Desktop renders ``display_content``, so the bubble shows only what the user sent.
+            user_view = user_view_without_injected_context(message)
+            if user_view is not None:
+                message = {**message, "display_content": user_view}
             projected_messages.append(message)
             continue
         display_view = project_compaction_message_for_display(message)

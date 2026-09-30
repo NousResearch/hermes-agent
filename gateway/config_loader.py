@@ -264,15 +264,16 @@ def snapshot_authored_extra(platforms_data: dict) -> dict:
     }
 
 
-def _apply_managed_extra(authored: dict, managed: dict, platforms_data: dict) -> None:
+def _apply_managed_extra(authored: dict, managed: dict, platforms_data: dict) -> dict:
     """Remove from *authored* (in place) every key the administrator pinned in a managed ``<plat>:``
     block: the user's ``platforms.<plat>.extra`` must not outrank it. A key the managed layer itself
     sets under ``platforms.<plat>.extra`` stays authored."""
     if not managed:
-        return
+        return {}
     from hermes_cli.config import _deep_merge
 
     managed_platforms = merge_platform_sections(managed, managed.get("gateway"), {})
+    hook_pins = {}
     for name, extra in authored.items():
         root = _coerce_dict(managed.get(name))
         nested = _coerce_dict(managed_platforms.get(name))
@@ -288,6 +289,9 @@ def _apply_managed_extra(authored: dict, managed: dict, platforms_data: dict) ->
         if managed_extra:
             destination = _dict_slot(_dict_slot(platforms_data, name), "extra")
             destination.update(_deep_merge(destination, managed_extra))
+            hook_pins[name] = {key: extra[key] for key in managed_extra
+                               if key not in PlatformConfig._TYPED_KEYS}
+    return hook_pins
 
 
 def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, warned: Optional[set] = None) -> dict:
@@ -372,7 +376,7 @@ def bridge_platform_shared_keys(
 
 def apply_plugin_yaml_hooks(
     yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry,
-    warned: Optional[set] = None, authored: Optional[dict] = None,
+    warned: Optional[set] = None, authored: Optional[dict] = None, managed_extra: Optional[dict] = None,
 ) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
     loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
@@ -395,6 +399,9 @@ def apply_plugin_yaml_hooks(
         # value for keys present in both (adapter readers are env-first).
         effective = _authored_wins(
             authored.get(entry.name, {}), platform_cfg, entry.name, toplevel=cfg_toplevel, warned=warned)
+        # Restored managed pins must reach hooks before raw-YAML/global fallbacks
+        # can seed a stale env value. Other authored-only keys keep existing behavior.
+        effective.update((managed_extra or {}).get(entry.name, {}))
         try:
             seeded = entry.apply_yaml_config_fn(yaml_cfg, effective)
         except Exception as e:
@@ -525,9 +532,10 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
     authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
     from hermes_cli import managed_scope
-    _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
+    managed_extra = _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
-    apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry, warned=warned, authored=authored)
+    apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
+                            warned=warned, authored=authored, managed_extra=managed_extra)
     bridge_core_env_settings(yaml_cfg, platforms_data)

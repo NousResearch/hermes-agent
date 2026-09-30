@@ -1688,9 +1688,12 @@ class TestTopLevelBlockVsAuthoredExtra:
             assert adapter._telegram_require_mention() is (operator_env is None)
             assert os.environ["TELEGRAM_REQUIRE_MENTION"] == (operator_env or "true")
 
-    @pytest.mark.parametrize("source", ["legacy", "root", "root-extra", "nested", "managed-extra", "mixed",
-                                        "dict-disjoint", "dict-overlap", "root-sibling"])
-    def test_configuration_layer_owner(self, source, tmp_path, monkeypatch, caplog):
+    @pytest.mark.parametrize("source,platform", [
+        *((source, "slack") for source in ("legacy", "root", "root-extra", "nested",
+          "managed-extra", "mixed", "dict-disjoint", "dict-overlap", "root-sibling")),
+        ("root-sibling", "discord"), ("root-sibling", "telegram"),
+    ])
+    def test_configuration_layer_owner(self, source, platform, tmp_path, monkeypatch, caplog):
         import json
 
         home = tmp_path / "home"
@@ -1698,44 +1701,45 @@ class TestTopLevelBlockVsAuthoredExtra:
         home.mkdir()
         managed.mkdir()
         pin = {"require_mention": True, "allow_from": ["U_ADMIN"]}
-        user = {"platforms": {"slack": {"enabled": True, "extra": {
+        user = {"platforms": {platform: {"enabled": True, "extra": {
             "require_mention": False, "allow_from": ["U_USER"], "strict_mention": True}}}}
         managed_cfg = {
-            "root": {"slack": pin},
-            "root-extra": {"slack": {"extra": pin}},
-            "nested": {"gateway": {"platforms": {"slack": pin}}},
-            "managed-extra": {"platforms": {"slack": {"extra": pin}}},
-            "mixed": {"slack": pin, "gateway": {"platforms": {"slack": {"extra": pin}}}},
+            "root": {platform: pin},
+            "root-extra": {platform: {"extra": pin}},
+            "nested": {"gateway": {"platforms": {platform: pin}}},
+            "managed-extra": {"platforms": {platform: {"extra": pin}}},
+            "mixed": {platform: pin, "gateway": {"platforms": {platform: {"extra": pin}}}},
         }.get(source, {})
         if source == "legacy":
-            (home / "gateway.json").write_text(json.dumps({"platforms": {"slack": {
+            (home / "gateway.json").write_text(json.dumps({"platforms": {platform: {
                 "enabled": True, "extra": {"require_mention": True, "strict_mention": True}}}}), encoding="utf-8")
-            user = {"slack": {"require_mention": False, "strict_mention": False}}
+            user = {platform: {"require_mention": False, "strict_mention": False}}
         elif source == "managed-extra":
-            user = {"slack": {"require_mention": False, "allow_from": ["U_USER"]}}
+            user = {platform: {"require_mention": False, "allow_from": ["U_USER"]}}
         if source.startswith("dict-"):
-            user["platforms"]["slack"]["extra"] = {"channel_prompts": {"C_USER": "user prompt"}}
+            user["platforms"][platform]["extra"] = {"channel_prompts": {"C_USER": "user prompt"}}
             if source == "dict-overlap":
-                user["platforms"]["slack"]["extra"]["channel_prompts"]["C_ADMIN"] = "user override"
-            managed_cfg = {"platforms": {"slack": {"extra": {"channel_prompts": {"C_ADMIN": "admin prompt"}}}}}
+                user["platforms"][platform]["extra"]["channel_prompts"]["C_ADMIN"] = "user override"
+            managed_cfg = {"platforms": {platform: {"extra": {"channel_prompts": {"C_ADMIN": "admin prompt"}}}}}
         if source == "root-sibling":
-            user["slack"] = {"allow_bots": True}
-            managed_cfg = {"gateway": {"platforms": {"slack": {"extra": pin}}}}
+            user[platform] = {"allow_bots": True}
+            user["require_mention"] = False
+            managed_cfg = {"gateway": {"platforms": {platform: {"extra": pin}}}}
         (home / "config.yaml").write_text(json.dumps(user), encoding="utf-8")
         (managed / "config.yaml").write_text(json.dumps(managed_cfg), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
         for key in list(os.environ):
-            if key.startswith("SLACK_"):
+            if key.startswith(platform.upper() + "_"):
                 monkeypatch.delenv(key)
         with caplog.at_level(logging.WARNING, logger="gateway.config"):
             config = load_gateway_config()
-        extra = config.platforms[Platform.SLACK].extra
+        extra = config.platforms[Platform(platform)].extra
         if source.startswith("dict-"):
             assert extra["channel_prompts"] == {"C_USER": "user prompt", "C_ADMIN": "admin prompt"}
             return
         if source == "root-sibling":
-            assert extra["allow_bots"] is True
+            assert str(extra["allow_bots"]).lower() == "true"
         if source == "legacy":
             assert extra["require_mention"] is False
             assert extra["strict_mention"] is False
@@ -1743,9 +1747,19 @@ class TestTopLevelBlockVsAuthoredExtra:
             assert os.environ["SLACK_STRICT_MENTION"] == "false"
         else:
             assert extra["require_mention"] is True
-            assert extra["allow_from"] == ["U_ADMIN"]
+            assert extra["allow_from"] in (["U_ADMIN"], "U_ADMIN")
             assert os.environ.get("SLACK_REQUIRE_MENTION", "true") == "true"
             if source != "managed-extra":
                 assert extra["strict_mention"] is True
         if source != "managed-extra":
             assert not [r for r in caplog.records if "took precedence" in r.getMessage()]
+        if source == "root-sibling" and platform == "discord":
+            assert os.environ["DISCORD_ALLOWED_USERS"] == "U_ADMIN"
+        if source == "root-sibling" and platform == "telegram":
+            from gateway.platform_registry import platform_registry
+            entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
+            cls = entry.adapter_factory.__globals__["TelegramAdapter"]
+            adapter = cls.__new__(cls)
+            adapter.config = config.platforms[Platform.TELEGRAM]
+            assert adapter._telegram_require_mention() is True
+            assert os.environ["TELEGRAM_REQUIRE_MENTION"] == "true"

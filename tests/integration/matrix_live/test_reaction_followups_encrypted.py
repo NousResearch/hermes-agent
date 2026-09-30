@@ -342,8 +342,8 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
         latest_user = [
             message["content"] for message in messages if message["role"] == "user"
         ][-1]
-        logical_prefix = " ".join(final[:500].split())
-        assert f'[Replying to your previous message: "{logical_prefix}"]' in latest_user
+        excerpt = final[:REPLY_EXCERPT_CHARS]
+        assert f'[Replying to your previous message: "{excerpt}"]' in latest_user
         assert (
             f"Matrix reaction by {live_room.observer.user_id}: 👍 on reply {event_ids[-1]}"
             in latest_user

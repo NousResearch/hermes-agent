@@ -573,6 +573,94 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_active_pr_guard_lifts_for_operator_requeue_after_the_pr(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator re-queue AFTER the PR comment lifts ``active_pr``.
+
+    The sibling ``recent_success`` guard reads a deliberate re-queue as "run it
+    again" (drag ``done->ready``, ``unblock``, re-promotion); ``active_pr`` must
+    agree on the operator levers that emit an event — a board/dashboard status
+    move, ``hermes kanban promote``, ``hermes kanban unblock``. Without it a card
+    that never opened the PR, whose comment merely LINKS one (the norm on a board
+    whose work is about upstream PRs), sits held for the full 24 h window with no
+    lever but a reassign.
+
+    An AUTOMATIC re-queue must keep the guard: ``promoted`` is written by
+    ``recompute_ready`` on a dependency release or a failure retry, and
+    re-spawning there is exactly the duplicate PR the guard exists to prevent.
+    """
+    pytest.importorskip("fastapi")
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    pr_comment = "Follow-up posted on https://github.com/example/repo/pull/44"
+
+    with kbc.connect() as conn:
+        def armed(tid: str) -> None:
+            kb.add_comment(conn, tid, author="em", body=pr_comment)
+            _backdate_comments(conn, tid)
+            assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        # A board/dashboard drag (``todo<->ready``) writes a ``status`` event.
+        dragged_id = kb.create_task(conn, title="operator drag", assignee="dev")
+        armed(dragged_id)
+        dashboard = _dashboard_plugin()
+        assert dashboard._set_status_direct(conn, dragged_id, "todo") is True
+        assert dashboard._set_status_direct(conn, dragged_id, "ready") is True
+        assert kbd.check_respawn_guard(conn, dragged_id) is None
+
+        # ``hermes kanban unblock`` -> 'unblocked'.
+        unblocked_id = kb.create_task(conn, title="operator unblock", assignee="dev")
+        assert kb.block_task(conn, unblocked_id, reason="paused") is True
+        armed(unblocked_id)
+        assert kb.unblock_task(conn, unblocked_id) is True
+        assert kbd.check_respawn_guard(conn, unblocked_id) is None
+
+        # ``hermes kanban promote`` -> 'promoted_manual'.
+        promoted_id = kb.create_task(conn, title="operator promote", assignee="dev")
+        assert kb.block_task(conn, promoted_id, reason="paused") is True
+        armed(promoted_id)
+        assert kb.promote_task(conn, promoted_id, actor="operator")[0] is True
+        assert kbd.check_respawn_guard(conn, promoted_id) is None
+
+        # A dependency release promotes a child automatically -> 'promoted'.
+        parent_id = kb.create_task(conn, title="umbrella", assignee="dev")
+        child_id = kb.create_task(
+            conn, title="waiting child", assignee="dev", parents=[parent_id],
+        )
+        assert kb.get_task(conn, child_id).status == "todo"
+        armed(child_id)
+        assert kb.complete_task(conn, parent_id, result="done") is True
+        assert kb.get_task(conn, child_id).status == "ready"
+        assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
+
+
+_dashboard_plugin_cache: list = []
+
+
+def _dashboard_plugin():
+    """The kanban dashboard's API module, loaded by path (in-tree plugin).
+
+    ``_set_status_direct`` is the drag-drop write the dashboard uses; loading it
+    here keeps the test on the real surface instead of re-inserting a ``status``
+    event by hand.
+    """
+    if _dashboard_plugin_cache:
+        return _dashboard_plugin_cache[0]
+    import importlib.util
+    import sys
+
+    plugin_file = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location("kanban_dashboard_plugin_respawn_test", plugin_file)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    _dashboard_plugin_cache.append(mod)
+    return mod
+
+
 def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
     kanban_home: Path,
 ) -> None:

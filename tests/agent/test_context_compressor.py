@@ -3572,3 +3572,46 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+def _snapshot_user(text, n=None):
+    row = {"role": "user", "content": text}
+    if n is not None:
+        row["display_metadata"] = {"channel_state": {"n": n}}
+    return row
+
+
+def _plain_assistant(text):
+    return {"role": "assistant", "content": text}
+
+
+@pytest.mark.parametrize("messages,compress_start,compress_end,expected", [
+    ([_snapshot_user("u0", 1), _plain_assistant("a0"), _snapshot_user("u1", 2), _plain_assistant("a1"),
+      _snapshot_user("u2", 3), _plain_assistant("a2"), _plain_assistant("a3"), _snapshot_user("u3"),
+      _plain_assistant("a4")], 3, 6,
+     [("user", {"n": 1}), ("assistant", None), ("user", {"n": 2}), ("assistant", {"n": 3}), ("user", None),
+      ("assistant", None)]),
+    ([_snapshot_user("u0", 1), _plain_assistant("a0"), _snapshot_user("u1", 2), _plain_assistant("a1"),
+      _snapshot_user("u2", 3), _plain_assistant("a2"), _plain_assistant("a3"), _snapshot_user("u3", 4),
+      _plain_assistant("a4")], 3, 6,
+     [("user", {"n": 1}), ("assistant", None), ("user", {"n": 2}), ("assistant", None), ("user", {"n": 4}),
+      ("assistant", None)]),
+    ([_snapshot_user("u0", 1), _plain_assistant("a0"), _snapshot_user("u1", 2), _plain_assistant("a1"),
+      _snapshot_user("u2"), _plain_assistant("a2")], 0, 4,
+     [("user", {"n": 2}), ("assistant", None)]),
+], ids=["merged-into-tail", "newer-snapshot-in-tail", "merged-into-first-visible-tail-row"])
+def test_summary_merged_into_a_tail_row_keeps_the_newest_channel_state(
+    compressor, messages, compress_start, compress_end, expected,
+):
+    from agent.context_compressor import _HandoffScan
+
+    scan = _HandoffScan(
+        turns_to_summarize=messages[compress_start:compress_end], summary_indices=set(),
+        tail_start=compress_end, previous_summary_before=None, has_user_turn_before=None,
+    )
+
+    compacted = compressor._assemble_compressed(messages, compress_start, compress_end, scan, "SUMMARY")
+
+    assert [
+        (m["role"], (m.get("display_metadata") or {}).get("channel_state")) for m in compacted
+    ] == expected

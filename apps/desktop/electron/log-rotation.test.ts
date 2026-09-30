@@ -63,7 +63,10 @@ test('an under-cap or absent active log is left alone', () => {
   assert.deepEqual(touched, [])
 })
 
-test('truncation really frees the file, and an append-mode writer restarts at 0', () => {
+test.skipIf(process.platform === 'win32')('truncation really frees the file, and an append-mode writer restarts at 0', () => {
+  // POSIX ftruncate against an open handle is the semantics under test; on
+  // NTFS the same truncate of an O_APPEND-held file fails with EPERM, and the
+  // production path renames instead of truncating on win32.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-log-bound-'))
   const file = path.join(dir, 'desktop-chromium.log')
 

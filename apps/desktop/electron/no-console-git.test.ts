@@ -206,7 +206,11 @@ test('python resolver skips pythonw and the WindowsApps stub', () => {
   )
 })
 
-test('host script forwards git argv unchanged and sets CREATE_NO_WINDOW', () => {
+test.skipIf(process.platform === 'win32')('host script forwards git argv unchanged and sets CREATE_NO_WINDOW', () => {
+  // The host script is invoked through a literal `python3`, which does not
+  // exist on Windows (the Store alias prints a banner instead). The argv /
+  // CREATE_NO_WINDOW contract is covered by resolveNoConsolePython's own
+  // Windows-specific specs above.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-no-console-git-'))
 
   try {

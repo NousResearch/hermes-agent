@@ -16,7 +16,26 @@ test('validate-only admits real prepared inputs without launching tools and reje
     fs.writeFileSync(electron, 'fixture archive')
     const toolsets = { sevenZip: path.join(out, 'sevenZip'), icons: path.join(out, 'icons') }
     for (const dir of Object.values(toolsets)) fs.mkdirSync(dir)
-    const manifest = await publishPackagingInputs({ source, out, target: `${process.platform}-${process.arch}`, formats: ['dir'], electron, toolsets })
+    // readPackagingInputs requires the Windows tool selection on win32 targets
+    // (winCodeSign in the toolsets plus a windows.dotnetRoot); stand-ins under
+    // the job-local out dir keep the admission path honest without
+    // provisioning real toolchains.
+    const windows = process.platform === 'win32'
+      ? {
+          makeappx: path.join(out, 'makeappx.exe'),
+          signtool: path.join(out, 'signtool.exe'),
+          dlib: null,
+          dotnetRoot: path.join(out, 'dotnet')
+        }
+      : null
+    if (windows) {
+      toolsets.winCodeSign = path.join(out, 'winCodeSign')
+      fs.mkdirSync(toolsets.winCodeSign)
+      fs.mkdirSync(windows.dotnetRoot)
+      fs.writeFileSync(windows.makeappx, 'fixture tool')
+      fs.writeFileSync(windows.signtool, 'fixture tool')
+    }
+    const manifest = await publishPackagingInputs({ source, out, target: `${process.platform}-${process.arch}`, formats: ['dir'], electron, toolsets, windows })
     const nativeDeps = path.join(out, 'native')
     fs.mkdirSync(path.join(nativeDeps, 'node-pty'), { recursive: true })
     fs.writeFileSync(path.join(nativeDeps, 'node-pty/package.json'), '{}')

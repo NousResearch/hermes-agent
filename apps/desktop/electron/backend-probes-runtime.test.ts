@@ -19,7 +19,11 @@ interface RuntimeFixture {
   dependencies: string
 }
 
-test('the real bootstrap supplies ruamel-only dependencies and rejects foreign-path rescue', async (): Promise<void> => {
+test.skipIf(process.platform === 'win32')('the real bootstrap supplies ruamel-only dependencies and rejects foreign-path rescue', async (): Promise<void> => {
+  // The fixture drives the POSIX venv layout directly (seed/bin/python,
+  // site-packages .pth wiring, junctionless symlinks); the selected-environment
+  // rescue it exercises is also built around POSIX paths. Windows has its own
+  // probe specs (Scripts/python.exe layouts) in backend-probes.test.ts.
   const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-runtime-'))
   const home: string = path.join(temp, 'home')
 

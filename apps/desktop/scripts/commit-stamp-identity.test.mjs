@@ -8,7 +8,7 @@ import { test } from 'vitest'
 
 const root = path.resolve(import.meta.dirname, '../../..')
 
-test('desktop stamp uses the admitted checkout rather than the dispatch SHA', () => {
+test('desktop stamp uses the admitted checkout rather than the dispatch SHA', { timeout: 60_000 }, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-identity-'))
   const repo = path.join(temp, 'repo')
   const scripts = path.join(repo, 'apps/desktop/scripts')

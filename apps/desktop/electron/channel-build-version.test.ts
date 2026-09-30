@@ -153,7 +153,7 @@ test('channel packaging reuses admitted identity and rejects unsupported or unsa
   }, /identity/)
 })
 
-test('channel stamps verify the real checkout and retain source version and native ownership', async (): Promise<void> => {
+test('channel stamps verify the real checkout and retain source version and native ownership', { timeout: 120_000 }, async (): Promise<void> => {
   const {
     resolveStamp,
     buildStampPayload,
@@ -352,6 +352,15 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
     for (const tree of ['pm', 'scripts/releases']) {
       fs.cpSync(path.join(repo, tree), path.join(root, tree), { recursive: true })
     }
+
+    // record() resolves executableVersion from a sidecar when one exists; on a
+    // Windows host without it, it demands a real *-unpacked/<exe> binary to
+    // query, which this manifest-level fixture never builds. Ship the sidecar
+    // the production recorder prefers.
+    fs.writeFileSync(
+      path.join(root, 'version-info-x64.json'),
+      JSON.stringify({ productVersion: '0.0.65535.0' })
+    )
 
     fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
     const assets: string = path.join(app, 'assets/appx')

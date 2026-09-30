@@ -732,6 +732,16 @@ def _handle_complete(args: dict, **kw) -> str:
     if isinstance(metadata, dict):
         # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
         metadata = _redact_metadata(metadata) or metadata
+    published_pr = _redact_opt(args.get("published_pr"))
+    if published_pr:
+        _require_dict_metadata(metadata)
+        metadata = {} if metadata is None else dict(metadata)
+        existing_pr = metadata.get("published_pr")
+        _check(
+            existing_pr in (None, "", published_pr),
+            "published_pr conflicts with metadata.published_pr; supply one exact PR URL",
+        )
+        metadata["published_pr"] = published_pr
     created_cards = _coerce_str_list(
         args.get("created_cards"), "created_cards", "task ids", strip=True)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)

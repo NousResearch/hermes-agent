@@ -396,8 +396,9 @@ class SyncDispatch:
         self._completed_key_handlers.clear()
 
     async def dispatch_sync(self, response: dict[str, Any]) -> None:
+        # A retry keeps the intake IDs of the failed attempt; take_intakes clears them after
+        # the response succeeds.
         self.failed_sync_handlers.clear()
-        self._seen_intakes.clear()
         self._deferred_intakes.clear()
         try:
             self.client.handle_sync({

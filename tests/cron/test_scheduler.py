@@ -1601,6 +1601,25 @@ class TestBuildJobPromptMissingSkill:
         assert "ghost-skill" in result
         assert "not found" in result.lower() or "skipped" in result.lower()
 
+class TestBuildJobPromptSkillIndex:
+    """Scheduled prompts advertise skills without embedding their full instructions."""
+
+    def test_loaded_skill_body_is_deferred_to_skill_view(self):
+        def _skill_view(name: str) -> str:
+            return json.dumps({
+                "success": True,
+                "description": "A concise skill summary.",
+                "content": "A very large skill body that must not enter the wake prompt.",
+            })
+
+        with patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+            result = _build_job_prompt({"skills": ["large-skill"], "prompt": "run"})
+
+        assert "A concise skill summary." in result
+        assert 'skill_view(name="large-skill")' in result
+        assert "A very large skill body" not in result
+
+
 class TestBuildJobPromptAbsoluteSkillPath:
     """Cron jobs may store absolute skill paths; normalize before skill_view."""
 
@@ -1615,7 +1634,7 @@ class TestBuildJobPromptAbsoluteSkillPath:
         def _skill_view(name: str) -> str:
             seen_names.append(name)
             if name == "alpha-skill":
-                return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
+                return json.dumps({"success": True, "description": "Run alpha tasks.", "content": "# Alpha\nDo alpha."})
             return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
 
         with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
@@ -1623,7 +1642,9 @@ class TestBuildJobPromptAbsoluteSkillPath:
             result = _build_job_prompt({"skills": [absolute_path], "prompt": "go"})
 
         assert seen_names == ["alpha-skill"]
-        assert "Do alpha." in result
+        assert "Run alpha tasks." in result
+        assert 'skill_view(name="alpha-skill")' in result
+        assert "Do alpha." not in result
 
 class TestBuildJobPromptBumpUse:
     """Verify that cron jobs bump skill usage counters so the curator sees them as active."""

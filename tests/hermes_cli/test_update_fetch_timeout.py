@@ -19,12 +19,15 @@ def _timeout(cmd, **kwargs):
 
 def test_network_fetch_stall_becomes_a_failed_run_with_a_named_cause(monkeypatch):
     monkeypatch.setattr(update_cmd, "_m", lambda: MagicMock(PROJECT_ROOT="/repo"))
+    monkeypatch.setattr(update_cmd.os, "name", "nt")
     process = MagicMock(args=["git", "fetch", "origin", "main"], pid=1234, returncode=0)
     process.communicate.side_effect = [
         subprocess.TimeoutExpired(process.args, update_cmd.NETWORK_GIT_TIMEOUT_SECONDS),
         ("partial output", "transport stalled"),
     ]
-    with patch.object(update_cmd.subprocess, "Popen", return_value=process) as popen:
+    taskkill = MagicMock(return_value=subprocess.CompletedProcess(["taskkill"], 0, "", ""))
+    with (patch.object(update_cmd.subprocess, "Popen", return_value=process) as popen,
+          patch.object(update_cmd.subprocess, "run", taskkill)):
         result = update_cmd._git_run(["git"], ["fetch", "origin", "main"], network=True)
 
     assert result.returncode == 124
@@ -32,7 +35,9 @@ def test_network_fetch_stall_becomes_a_failed_run_with_a_named_cause(monkeypatch
     assert popen.call_args.kwargs["cwd"] == "/repo"
     assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
     assert popen.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
-    process.kill.assert_called_once()
+    taskkill.assert_called_once()
+    assert taskkill.call_args.args[0] == ["taskkill", "/PID", "1234", "/T", "/F"]
+    process.kill.assert_not_called()
 
 
 def test_local_git_stays_unbounded_and_check_true_raises(monkeypatch):

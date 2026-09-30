@@ -100,14 +100,14 @@ def _observe(adapter, home):
             await pause(settings["replacement"])
         return await get_session(*args, **kwargs)
 
-    def scoped(operation, *, is_read):
+    def scoped(operation, *, is_read, clear=True):
         async def observed(*args, **kwargs):
             if not is_read and args[0] is not adapter:
                 return await operation(*args, **kwargs)
             settings = config()
             if not settings or (settings["scope"] == "event") != is_read:
                 return await operation(*args, **kwargs)
-            if not (home / "resolution-started.json").exists():
+            if clear and not (home / "resolution-started.json").exists():
                 cache._entries.clear()
                 cache.max_entries = 2
                 gc.collect()
@@ -124,6 +124,7 @@ def _observe(adapter, home):
     client.crypto.crypto_store.get_group_session = observed_session
     adapter.read_matrix_context = scoped(adapter.read_matrix_context, is_read=True)
     type(adapter).fetch_inbound_context = scoped(type(adapter).fetch_inbound_context, is_read=False)
+    type(adapter).prepare_turn_context = scoped(type(adapter).prepare_turn_context, is_read=False, clear=False)
 
 
 def register(ctx):
@@ -139,6 +140,10 @@ def register(ctx):
         message = adapter._on_room_message
 
         async def observed_message(event):
+            config = home / "resolution-config.json"
+            if config.exists() and json.loads(config.read_text(encoding="utf-8"))["scope"] != "event":
+                # Catch-up and thread history run only where the gate requires a mention.
+                adapter._free_rooms.discard(str(event.room_id))
             await message(event)
             path = home / "resolution-observed-events.json"
             seen = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []

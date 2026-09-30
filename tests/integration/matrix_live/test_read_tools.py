@@ -243,6 +243,7 @@ def test_model_reads_valid_encrypted_edit_and_ignores_edit_without_new_content(
                 "edited": True,
             }],
             "errors": [],
+            "skipped": 0,
         }, {
             "events": [{
                 "event_id": targets[1], "sender": live_room.observer.user_id,
@@ -250,6 +251,7 @@ def test_model_reads_valid_encrypted_edit_and_ignores_edit_without_new_content(
                 "thread_id": None, "timestamp": None, "sender_authorized": True,
             }],
             "errors": [],
+            "skipped": 0,
         }]
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

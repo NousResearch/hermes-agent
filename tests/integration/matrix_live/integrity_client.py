@@ -216,6 +216,7 @@ def check_reaction_page(tmp_path, gateway, room, observer, *, eviction):
             }
         ],
         "errors": [],
+        "skipped": 0,
     }
 
 
@@ -303,4 +304,5 @@ def check_replacement_relation(tmp_path, gateway, room, observer, *, relation_ki
             }
         ],
         "errors": [],
+        "skipped": 0,
     }

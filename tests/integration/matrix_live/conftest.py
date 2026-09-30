@@ -374,7 +374,7 @@ def gateway(
     live_room: LiveRoom,
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
-    settings = param if isinstance(param, GatewaySettings) else GatewaySettings(mode=param)
+    settings = GatewaySettings(mode=param) if isinstance(param, str) else param
     _, _, network = synapse
     room_id = live_room.room_id
     mode = settings.mode

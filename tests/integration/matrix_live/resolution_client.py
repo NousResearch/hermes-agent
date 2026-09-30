@@ -281,4 +281,5 @@ def check_resolution(tmp_path, gateway, room, observer, *, scope, barrier, repla
                 }
             ],
             "errors": [],
+            "skipped": 0,
         }

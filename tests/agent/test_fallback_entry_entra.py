@@ -6,7 +6,7 @@ import pytest
 from openai import OpenAI
 
 
-@pytest.mark.parametrize("stage", ["client", "runtime"])
+@pytest.mark.parametrize("stage", ["client", "runtime", "walker"])
 def test_fallback_entry_entra_survives_non_azure_primary(monkeypatch, stage):
     from hermes_constants import get_hermes_home
     import agent.azure_identity_adapter as identity
@@ -38,7 +38,13 @@ fallback_providers:
     monkeypatch.delenv('AZURE_FOUNDRY_API_KEY', raising=False)
     config = load_config_readonly()
     entry = get_fallback_chain(config)[0]
-    key = resolve_entry_api_key(entry)
+    key = resolve_entry_api_key(entry) if stage != 'walker' else None
+    if stage == 'walker':
+        from hermes_cli.runtime_provider import resolve_runtime_with_fallback
+        runtime, chosen = resolve_runtime_with_fallback(config, requested='azure-foundry')
+        assert chosen == entry
+        key = runtime['api_key']
+        assert runtime['auth_mode'] == 'entra_id'
     if stage == "runtime":
         runtime = resolve_runtime_provider(requested=entry['provider'], target_model=entry['model'],
             explicit_base_url=entry['base_url'], explicit_api_key=key)

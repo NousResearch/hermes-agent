@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { markSessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
@@ -353,6 +354,23 @@ describe('active transcript refresh', () => {
 
     expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, undefined, { passive: true })
     expect(updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips a freshly minted, still-empty draft tile instead of 404ing on its unpersisted row (#123622)', async () => {
+    const runtimeId = 'runtime-draft-tile-123622'
+    const storedId = 'stored-draft-tile-123622'
+
+    publishSessionState(runtimeId, createClientSessionState(storedId))
+    markSessionCreatedThisRun(storedId)
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState: vi.fn()
+    })
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
   })
 
   it('does not reconcile a busy tile when the main pane is idle', async () => {
@@ -803,6 +821,20 @@ describe('reconcileActiveTranscript', () => {
     const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
 
     expect(messages.map(message => message.id)).toContain(optimisticId)
+  })
+
+  it('skips a freshly minted, still-empty draft instead of 404ing on its unpersisted row (#123622)', async () => {
+    // A dedicated id, never reused by another test, so marking it "created this
+    // run" cannot leak into an unrelated case sharing ACTIVE_STORED_ID.
+    const draftStoredId = 'stored-draft-123622'
+    const fixture = makeRefresh()
+
+    fixture.selectedStoredSessionIdRef.current = draftStoredId
+    markSessionCreatedThisRun(draftStoredId)
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
   })
 
   it('keeps one failed assistant bubble when refresh rebuilds the same tail turn under a new id', async () => {

@@ -13,7 +13,8 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberAuthor, groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupDeltaLines, isGroupChatSelf } from './group-round-prompt'
-import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import { groupTurnMarkerMatches, isGroupPassText, retireGroupTurnMarker, runGroupChatMemberTurn } from './group-turns'
+import type { GroupTurnMarker } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
 export interface GroupRoundMemberContext {
@@ -140,13 +141,14 @@ async function runVisibleMemberTurn(
   context: GroupRoundMemberContext,
   member: GroupMember,
   prompt: string,
-  images?: Attachment[]
+  images: Attachment[],
+  onSubmitted: (marker: GroupTurnMarker) => void
 ) {
   const turn = { ...member }
   updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
 
   try {
-    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images, onSubmitted)
   } finally {
     if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
@@ -173,11 +175,12 @@ export async function runGroupRoundMember(
   const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
-  let accepted = false
+  let marker: GroupTurnMarker | undefined
 
   try {
-    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
-    accepted = true
+    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages, submitted => {
+      marker = submitted
+    })
 
     // Needs-attention hook (#93091 item 3): a turn that produced a real
     // reply (or an explicit pass) is a good turn — clear the badge.
@@ -187,6 +190,8 @@ export async function runGroupRoundMember(
       clearBotAttention(groupMemberKey(member))
     }
   } catch (error: any) {
+    marker = undefined // Failure does not acknowledge the submitted input.
+
     if (!binding.isLive()) {
       return null
     }
@@ -236,6 +241,8 @@ export async function runGroupRoundMember(
     (e: GroupMessage) => e.from?.kind === 'user' && groupThreadOf(e) === thread
   )
 
+  const submittedMarker = marker
+
   if (
     (roomNow.stoppedEpoch || 0) > startEpoch ||
     !shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)
@@ -246,45 +253,46 @@ export async function runGroupRoundMember(
       thread
     })
 
+    if (submittedMarker !== undefined) {
+      updateGroupChat(context.group, (r: GroupChatRoom) => {
+        retireGroupTurnMarker(r, member, submittedMarker)
+
+        return r
+      })
+    }
+
+    return null
+  }
+
+  if (submittedMarker === undefined) {
+    return false
+  }
+
+  if (!groupTurnMarkerMatches(roomNow, member, submittedMarker)) {
     return null
   }
 
   // Resolve the frozen submit boundary against the retained log. If it was
   // trimmed away, every surviving entry is still unseen. Throws do not
   // acknowledge input, and a timed-out turn keeps its submitted boundary.
-  if (accepted) {
-    updateGroupChat(context.group, (r: GroupChatRoom) => {
-      r.watermarks[markKey] = anchorIdx + 1
+  const commit = (r: GroupChatRoom) => {
+    r.watermarks[markKey] = anchorIdx + 1
 
-      if (heldIds.length) {
-        const deliveredIds = new Set(heldIds)
-        const remaining = (r.heldMessages?.[memberKey] || []).filter(id => !deliveredIds.has(id))
-        r.heldMessages = {
-          ...(r.heldMessages || {})
-        }
-
-        if (remaining.length) {
-          r.heldMessages[memberKey] = remaining
-        } else {
-          delete r.heldMessages[memberKey]
-        }
+    if (heldIds.length) {
+      const deliveredIds = new Set(heldIds)
+      const remaining = (r.heldMessages?.[memberKey] || []).filter(id => !deliveredIds.has(id))
+      r.heldMessages = {
+        ...(r.heldMessages || {})
       }
 
-      return r
-    })
-  }
+      if (remaining.length) {
+        r.heldMessages[memberKey] = remaining
+      } else {
+        delete r.heldMessages[memberKey]
+      }
+    }
 
-  const spoke = reply !== null && !isGroupPassText(reply)
-
-  if (reply !== null && spoke) {
-    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
-  }
-
-  // A member's own entries — its reply, and the rows group-external-writes.ts
-  // mirrored out of its own session — are never news to their author, so the
-  // watermark steps over them. A user entry that arrived during inference
-  // stops the walk: a reply cannot acknowledge what it never saw.
-  updateGroupChat(context.group, (r: GroupChatRoom) => {
+    // Own replies are not news; never step over unseen user input.
     let mark = r.watermarks[markKey] || 0
 
     while (mark < r.log.length && authoredByMember(r.log[mark], member)) {
@@ -295,8 +303,22 @@ export async function runGroupRoundMember(
       r.watermarks[markKey] = mark
     }
 
-    return r
-  })
+    if (reply !== null) {
+      retireGroupTurnMarker(r, member, submittedMarker)
+    }
+  }
+
+  const spoke = reply !== null && !isGroupPassText(reply)
+
+  if (reply !== null && spoke) {
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread, undefined, commit)
+  } else {
+    updateGroupChat(context.group, (r: GroupChatRoom) => {
+      commit(r)
+
+      return r
+    })
+  }
 
   return spoke
 }

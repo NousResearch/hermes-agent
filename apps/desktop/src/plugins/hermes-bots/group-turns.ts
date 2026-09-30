@@ -861,7 +861,8 @@ export async function runGroupChatMemberTurn(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  onSubmitted?: (marker: GroupTurnMarker) => void
 ): Promise<null | string> {
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
@@ -876,7 +877,7 @@ export async function runGroupChatMemberTurn(
   try {
     releaseTurnLease = await retainGroupTurnRoute(member)
 
-    return binding.isLive() ? await runGroupChatMemberTurnLeased(group, member, prompt, thread, images) : null
+    return binding.isLive() ? await runGroupChatMemberTurnLeased(group, member, prompt, thread, images, onSubmitted) : null
   } finally {
     releaseTurnLease?.()
     binding.dispose()
@@ -997,23 +998,31 @@ function markGroupTurnInFlight(
   })
 }
 
-/** Drop the marker only while it is still this poll's: a newer drive may have re-driven the
- *  member and stamped its own. */
-function clearGroupTurnMarker(group: string, member: GroupMember, turn: string) {
-  updateGroupChat(group, (r: GroupChatRoom) => {
-    const key = groupMemberKey(member)
-    const current = r.stranded?.[key]
+export type GroupTurnMarker = NonNullable<GroupChatRoom['stranded']>[string]
 
-    if (current && typeof current === 'object' && current.turn === turn) {
-      const next = {
-        ...(r.stranded || {})
-      }
+/** Legacy markers have no token; modern completions own the full turn boundary. */
+export function groupTurnMarkerMatches(room: GroupChatRoom, member: GroupMember, marker: GroupTurnMarker) {
+  const current = room.stranded?.[groupMemberKey(member)]
 
-      delete next[key]
-      r.stranded = next
-    }
+  return typeof marker === 'number'
+    ? current === marker
+    : typeof current === 'object' && current !== null &&
+      current.before === marker.before && current.thread === marker.thread && current.turn === marker.turn
+}
 
-    return r
+/** Mutate only the completed marker, inside its owner's persistence transaction. */
+export function retireGroupTurnMarker(room: GroupChatRoom, member: GroupMember, marker: GroupTurnMarker) {
+  if (groupTurnMarkerMatches(room, member, marker)) {
+    room.stranded = { ...room.stranded }
+    delete room.stranded[groupMemberKey(member)]
+  }
+}
+
+function clearGroupTurnMarker(group: string, member: GroupMember, marker: GroupTurnMarker) {
+  updateGroupChat(group, (room: GroupChatRoom) => {
+    retireGroupTurnMarker(room, member, marker)
+
+    return room
   })
 }
 
@@ -1045,7 +1054,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     const roomDuringPoll = $groupChats.get()[context.group] || {}
 
     if ((roomDuringPoll.stoppedEpoch || 0) > dispatchEpoch) {
-      clearGroupTurnMarker(context.group, member, context.turn)
+      clearGroupTurnMarker(context.group, member, context)
 
       return null
     }
@@ -1184,7 +1193,8 @@ async function runGroupChatMemberTurnLeased(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  onSubmitted?: (marker: GroupTurnMarker) => void
 ): Promise<null | string> {
   const binding = followGroupChat(group, name => {
     group = name
@@ -1193,8 +1203,12 @@ async function runGroupChatMemberTurnLeased(
   try {
     const { runtime, stored } = await ensureGroupChatSession(group, member, thread)
 
-    if (!runtime || !binding.isLive()) {
+    if (!binding.isLive()) {
       return null
+    }
+
+    if (!runtime) {
+      throw new Error('Group member session was not created')
     }
 
     // #91868/#94569: remember the epoch this turn was dispatched under so the
@@ -1240,13 +1254,18 @@ async function runGroupChatMemberTurnLeased(
     // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
     const turn = `${liveRuntime}:${crypto.randomUUID()}`
     liveGroupTurns.add(turn)
-    markGroupTurnInFlight(group, member, {
+
+    const marker = {
       before,
       thread,
       turn
-    })
+    }
+
+    markGroupTurnInFlight(group, member, marker)
 
     try {
+      onSubmitted?.(marker)
+
       const reply = await pollGroupMemberTurn({
         get group() {
           return group
@@ -1263,16 +1282,15 @@ async function runGroupChatMemberTurnLeased(
         turn
       })
 
-      // A reply (or an explicit pass) ends the turn; null is a timeout or a dead
-      // binding, and the marker must outlive this poll for the harvest.
-      if (reply !== null) {
-        clearGroupTurnMarker(group, member, turn)
-      }
-
+      // The round owner retires completed replies with their answer/watermark.
+      // A timeout keeps this marker available to the existing harvest path.
       return reply
     } catch (error) {
       // The turn died on our prompt: nothing to harvest.
-      clearGroupTurnMarker(group, member, turn)
+      if (binding.isLive()) {
+        clearGroupTurnMarker(group, member, marker)
+      }
+
       throw error
     } finally {
       liveGroupTurns.delete(turn)
@@ -1280,6 +1298,16 @@ async function runGroupChatMemberTurnLeased(
   } finally {
     binding.dispose()
   }
+}
+
+/** Resolve the marker's session, never a sibling thread's transcript. */
+function strandedGroupSessionId(group: string, room: GroupChatRoom, member: GroupMember, thread: string) {
+  const sessions = room.sessions || {}
+  const memberKey = groupMemberKey(member)
+  const scoped = sessions[groupSessionKey(thread, member)]
+  const stored = scoped || (hasThreadScopedGroupSession(sessions, memberKey) ? null : sessions[memberKey])
+
+  return stored || `Group: ${room.roomId || group} · ${thread}`
 }
 
 /** Post a timed-out member's finished reply into the room, if it landed
@@ -1298,48 +1326,28 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const strandedBefore = typeof marker === 'number' ? marker : marker?.before
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
 
-    if (typeof strandedBefore !== 'number' || strandedMarkerIsLive(marker)) {
+    if (marker === undefined || typeof strandedBefore !== 'number' || strandedMarkerIsLive(marker)) {
       return // nothing stranded, or a poll in this process still owns the turn
     }
 
     let state: GroupSessionSnapshot | null = null
 
     try {
-      // The marker's own thread owns the session the reply is stranded in —
-      // the harvest must not resume a sibling thread's transcript and post
-      // its answer here.
-      const sessions = room.sessions || {}
-      const scoped = sessions[groupSessionKey(strandedThread, member)]
-      const stored = scoped || (hasThreadScopedGroupSession(sessions, memberKey) ? null : sessions[memberKey])
-      state = await requestForBot<GroupSessionSnapshot>(
-        member,
-        'session.resume',
-        {
-          session_id: stored || `Group: ${room.roomId || group} · ${strandedThread}`,
-          profile: member.name
-        },
-        GROUP_SESSION_BACKGROUND_RESUME_OPTIONS
-      )
+      state = await requestForBot<GroupSessionSnapshot>(member, 'session.resume', {
+        session_id: strandedGroupSessionId(group, room, member, strandedThread),
+        profile: member.name
+      }, GROUP_SESSION_BACKGROUND_RESUME_OPTIONS)
     } catch (error: any) {
       // A session that genuinely no longer exists has nothing to harvest, and a marker that can
       // never resolve would keep the member out of every round; only unreachability keeps it.
-      if (error?.code === 4007) {
-        updateGroupChat(group, (r: GroupChatRoom) => {
-          const next = {
-            ...(r.stranded || {})
-          }
-
-          delete next[memberKey]
-          r.stranded = next
-
-          return r
-        })
+      if (error?.code === 4007 && binding.isLive()) {
+        clearGroupTurnMarker(group, member, marker)
       }
 
       return
     }
 
-    if (!binding.isLive()) {
+    if (!binding.isLive() || !groupTurnMarkerMatches($groupChats.get()[group], member, marker)) {
       return
     }
 
@@ -1350,31 +1358,26 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return
     }
 
-    // Done (or dead): the marker is consumed either way.
-    updateGroupChat(group, (r: GroupChatRoom) => {
-      const next = {
-        ...(r.stranded || {})
-      }
-
-      delete next[memberKey]
-      r.stranded = next
-
-      return r
-    })
     const messages = Array.isArray(state?.messages) ? state.messages : []
     // A transcript that never grew is not proof of nothing: a turn that dies
     // before its prompt is committed leaves only the retained error behind.
     // The retained error is the stranded turn's own unless a later turn ran
     // after it; then it is that turn's error and the late reply still posts.
     // Text written before a failed tool step is no reply.
-    const retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
+    let retained: null | string = null
+    let pick: GroupTurnPick = null
 
-    const pick =
-      retained === null && messages.length > strandedBefore
-        ? pickStrandedGroupTurnReply(messages, strandedBefore)
-        : null
+    try {
+      retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
+      pick = retained === null && messages.length > strandedBefore
+        ? pickStrandedGroupTurnReply(messages, strandedBefore) : null
+    } catch (error) {
+      clearGroupTurnMarker(group, member, marker)
+      throw error
+    }
 
     const reply = typeof pick === 'string' ? pick : null
+    const spoke = reply !== null && !isGroupPassText(reply)
     const failedNotice = typeof pick === 'string' ? null : (pick?.failedNotice ?? null)
 
     if (reply === null) {
@@ -1394,19 +1397,25 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       }
     }
 
-    if (reply && !isGroupPassText(reply)) {
+    const commit = (r: GroupChatRoom) => {
+      retireGroupTurnMarker(r, member, marker)
+      const markKey = `${strandedThread}::${memberKey}`
+
+      if (spoke && r.watermarks[markKey] === r.log.length - 1) {
+        r.watermarks[markKey] = r.log.length
+      }
+    }
+
+    if (spoke) {
       recordGroupActivity(group, {
         kind: 'delivered',
         member: groupMemberKey(member),
         thread: strandedThread
       })
-      appendGroupChatEntry(group, groupMemberAuthor(member), reply, strandedThread)
+      appendGroupChatEntry(group, groupMemberAuthor(member), reply, strandedThread, undefined, commit)
+    } else {
       updateGroupChat(group, (r: GroupChatRoom) => {
-        const markKey = `${strandedThread}::${memberKey}`
-
-        if (r.watermarks[markKey] === r.log.length - 1) {
-          r.watermarks[markKey] = r.log.length
-        }
+        commit(r)
 
         return r
       })

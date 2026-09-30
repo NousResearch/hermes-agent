@@ -71,6 +71,36 @@ beforeEach(() => {
   runTimersInline()
 })
 
+describe('turn admission', () => {
+  it.each(['refused', 'unadmitted'])('a %s turn preserves the watermark and held messages', async failure => {
+    const room = await loadRoom({ failEverySubmitWith: new Error('permission denied') })
+    const member = MEMBERS[0]
+    room.chat.$groupChats.set({ Held: {
+      log: [
+        { at: 1, from: { kind: 'member', name: member.name }, id: 'own', text: 'previous reply', thread: 't' },
+        { at: 2, from: { kind: 'user', name: 'You' }, id: 'held', text: 'held context', thread: 't' }
+      ], watermarks: { 't::research': 0 }, heldMessages: { research: ['held'] }, epoch: 1
+    } })
+
+    if (failure === 'unadmitted') {
+      const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+      host.request = (method: string, params: Record<string, unknown>) =>
+        method === 'session.create' ? Promise.resolve({}) : request(method, params)
+    }
+
+    const { runGroupRoundMember } = await import('./group-round-members')
+    await runGroupRoundMember({ group: 'Held', members: [member], thread: 't', startEpoch: 1,
+      binding: { isLive: () => true }, isCurrent: () => true }, member)
+    room.chat.$groupChats.set({})
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(structuredClone(room.gateway.storage.get('group-chats'))))
+    const current = room.chat.$groupChats.get().Held
+    expect(current.watermarks).toEqual({ 't::research': 0 })
+    expect(current.heldMessages).toEqual({ research: ['held'] })
+    expect(current.log.map(entry => entry.id)).toEqual(['own', 'held'])
+    expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(failure === 'refused' ? 1 : 0)
+  })
+})
+
 describe('routing', () => {
   it('reads (pass), pass, pass. and empty as silence, but not real text', async () => {
     const { turns } = await loadRoom()

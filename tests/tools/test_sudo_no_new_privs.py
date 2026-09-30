@@ -9,6 +9,7 @@ unit outside that tree.
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -17,6 +18,33 @@ import sys
 import pytest
 
 import tools.terminal_tool_sudo as terminal_tool
+
+
+@functools.cache
+def _user_systemd_bus_usable() -> bool:
+    """A reachable user systemd manager — the capability the NNP escape rides on.
+
+    Probes with the same ``systemctl --user show-environment`` call the product
+    code's manager-env lookup (``_nnp_manager_keys_to_unset``) makes, so hosts
+    without a user bus (the CI Linux runner: ``failed to connect to bus:
+    no medium found``) skip the wrap harness instead of failing it. The product
+    code itself degrades the same way — no wrap escape exists without the bus —
+    so skipping the harness there mirrors the product's own capability gate.
+    """
+    ctl = "/usr/bin/systemctl"
+    if not os.path.isfile(ctl) or not os.path.isfile("/usr/bin/systemd-run"):
+        return False
+    try:
+        probe = subprocess.run(
+            [ctl, "--user", "show-environment"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
 
 
 @pytest.mark.platforms("linux")
@@ -69,8 +97,9 @@ def test_does_not_use_untrusted_systemd_run_on_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(
-    not shutil.which("setpriv") or not os.path.isfile("/usr/bin/systemd-run"),
-    reason="setpriv + /usr/bin/systemd-run required for the kernel-latch harness",
+    not shutil.which("setpriv") or not os.path.isfile("/usr/bin/systemd-run")
+    or not _user_systemd_bus_usable(),
+    reason="setpriv + /usr/bin/systemd-run + a reachable user systemd bus required for the kernel-latch harness",
 )
 def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
     """setpriv reproduces Electron's latch; wrap must actually reach sudo."""
@@ -237,3 +266,41 @@ def test_unit_for_kill_comes_from_proc_not_environment():
     proc_b._nnp_sudo_unit = "hermes-nnp-sudo-2-bbbbbbbb.service"
     assert terminal_tool._nnp_sudo_unit_from_proc(proc_a) == "hermes-nnp-sudo-1-aaaaaaaa.service"
     assert terminal_tool._nnp_sudo_unit_from_proc(proc_b) == "hermes-nnp-sudo-2-bbbbbbbb.service"
+
+
+@pytest.mark.skipif(
+    not os.path.isfile("/usr/bin/systemd-run") or not _user_systemd_bus_usable(),
+    reason="/usr/bin/systemd-run + a reachable user systemd bus required for a real wrapped execute()",
+)
+def test_execute_env_propagates_to_wrapped_sudo_child(monkeypatch, tmp_path):
+    """Real ``LocalEnvironment.execute()``: a late profile env reaches the wrapped unit.
+
+    Drives the unmocked execute() path — ``_prepare_command`` → ``_wrap_command``
+    → ``_run_bash`` (EnvironmentFile + systemd-run --user --pipe wrap) — with a
+    sentinel var set on the environment AFTER construction, so it is provably
+    absent from the init-session snapshot the wrapper sources. The command bears
+    a real ``sudo`` so the wrap fires, but the sentinel is printed BEFORE sudo:
+    sudo's own ``env_reset`` cannot scrub it, so the value seen inside the
+    transient unit can only have arrived through the per-process EnvironmentFile
+    the wrap writes (``--pipe`` gives the unit the user manager's env, NOT the
+    parent's). Removing the env-file handoff — or making it lossy — fails this.
+    """
+    from tools.environments.local import LocalEnvironment
+
+    monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
+
+    sentinel_value = "hermes-nnp-sentinel-from-execute"
+    local = LocalEnvironment(cwd=str(tmp_path))
+    local.env["HERMES_NNP_TEST_SENTINEL"] = sentinel_value
+    result = local.execute(
+        'printf "%s" "$HERMES_NNP_TEST_SENTINEL" && sudo -n true',
+        timeout=30,
+    )
+    output = result.get("output") or ""
+    combined = output.lower()
+    # The wrapper must have reached the transient unit — neither the kernel
+    # latch nor a bus failure is an acceptable outcome on a bus-capable host.
+    assert "no new privileges" not in combined, output
+    assert "failed to connect" not in combined, output
+    assert sentinel_value in output, output

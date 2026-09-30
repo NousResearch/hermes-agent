@@ -167,6 +167,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "mcp-tokens",                   # MCP OAuth tokens
     "vault",                        # vault.key + vault.json.enc
     "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
+    "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
     "cache/bws_cache.json", "cache/bws_cache.enc.json",

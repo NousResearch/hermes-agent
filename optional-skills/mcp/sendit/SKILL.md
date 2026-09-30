@@ -1,7 +1,7 @@
 ---
 name: sendit
 description: Use SendIt from Hermes Agent for social publishing, scheduling, platform connection, media upload, content validation, previews, and analytics through remote MCP OAuth.
-version: 0.2.1
+version: 0.3.0
 author: SendIt / Infinite Apps AI
 license: MIT
 licenseUrl: https://github.com/Shree-git/sendit-hermes-skills/blob/main/LICENSE
@@ -31,7 +31,7 @@ metadata:
 
 # SendIt
 
-## When To Use
+## When to use
 
 - Publishing or scheduling social posts to connected platforms.
 - Listing or connecting LinkedIn, Instagram, TikTok, Threads, X, and other
@@ -43,11 +43,11 @@ metadata:
 
 Do not use SendIt for local-only drafting.
 
-## Quick Reference
+## Quick reference
 
-Use `https://sendit.infiniteappsai.com/api/mcp` as the remote MCP URL. Do not
-use `https://sendit.infiniteappsai.com/mcp`; that endpoint is reserved for the
-ChatGPT app profile and exposes a reduced catalog.
+Use `https://sendit.infiniteappsai.com/api/mcp` as the remote MCP URL.
+`https://sendit.infiniteappsai.com/mcp` is a legacy alias for the full catalog.
+The smaller ChatGPT profile is `/api/mcp/chatgpt`.
 
 ```yaml
 mcp_servers:
@@ -56,18 +56,21 @@ mcp_servers:
     auth: oauth
 ```
 
-Hermes exposes tools as `mcp_<server>_<tool>`. Default SendIt tools include:
+Current Hermes exposes tools as `mcp__<server>__<tool>`.
+Older Hermes releases may use a single underscore prefix.
+Use the tool names Hermes actually discovers.
+Common SendIt tools include:
 
-- `mcp_sendit_list_connected_accounts`
-- `mcp_sendit_list_teams`
-- `mcp_sendit_connect_platform`
-- `mcp_sendit_get_platform_requirements`
-- `mcp_sendit_validate_content`
-- `mcp_sendit_create_upload_session`
-- `mcp_sendit_preview_content`
-- `mcp_sendit_publish_content`
-- `mcp_sendit_schedule_content`
-- `mcp_sendit_get_analytics`
+- `mcp__sendit__list_connected_accounts`
+- `mcp__sendit__list_teams`
+- `mcp__sendit__connect_platform`
+- `mcp__sendit__get_platform_requirements`
+- `mcp__sendit__validate_content`
+- `mcp__sendit__create_upload_session`
+- `mcp__sendit__preview_content`
+- `mcp__sendit__publish_content`
+- `mcp__sendit__schedule_content`
+- `mcp__sendit__get_analytics`
 
 - Remote VPS, Telegram, and OAuth callback replay: `references/remote-oauth.md`
 - Publishing and scheduling examples: `references/publishing-workflows.md`
@@ -76,22 +79,23 @@ Hermes exposes tools as `mcp_<server>_<tool>`. Default SendIt tools include:
 ## Permissions
 
 Helper scripts may copy this skill into `~/.hermes/skills/social-media/sendit`,
-read or update `~/.hermes/config.yaml` or `$HERMES_HOME/config.yaml`, run
+update `~/.hermes/config.yaml` or `$HERMES_HOME/config.yaml` through
+`hermes config set`, run
 `hermes mcp login sendit`, and write `/tmp/sendit-hermes` PID/log files.
 Callback replay only accepts `localhost` or `127.0.0.1` `/callback` URLs and
 redacts sensitive query parameters.
 
-## Core Workflows
+## Workflows
 
 ### Configure Hermes
 
-Run the installer to set up SendIt or repair an older `/mcp` URL:
+Run the installer to set up SendIt using Hermes config commands:
 
 ```bash
-node ${HERMES_SKILL_DIR}/scripts/install-sendit-hermes.mjs
+node "${HERMES_SKILL_DIR}/scripts/install-sendit-hermes.mjs"
 ```
 
-### Complete Remote OAuth
+### Complete remote OAuth
 
 For a VPS, Telegram-only handoff, or browser-on-another-device setup, follow
 `references/remote-oauth.md`.
@@ -99,28 +103,28 @@ For a VPS, Telegram-only handoff, or browser-on-another-device setup, follow
 Minimal sequence:
 
 ```bash
-node ${HERMES_SKILL_DIR}/scripts/start-oauth-login.mjs
-node ${HERMES_SKILL_DIR}/scripts/complete-oauth-callback.mjs '<PASTED_CALLBACK_URL>'
+node "${HERMES_SKILL_DIR}/scripts/start-oauth-login.mjs"
+node "${HERMES_SKILL_DIR}/scripts/complete-oauth-callback.mjs" '<PASTED_CALLBACK_URL>'
 ```
 
 Treat pasted callback URLs as sensitive because their `code` and `state` query
 parameters can complete OAuth.
 
-### Publish Or Schedule
+### Publish or schedule
 
 List accounts, choose the team when relevant, validate content, and preview
 when possible. Publish immediately only on clear user request. Confirm date,
 time, and timezone before scheduling. See
 `references/publishing-workflows.md`.
 
-### Connect A Platform
+### Connect a platform
 
-1. Call `mcp_sendit_list_connected_accounts`.
-2. For missing accounts, call `mcp_sendit_connect_platform`.
+1. Call `mcp__sendit__list_connected_accounts`.
+2. For missing accounts, call `mcp__sendit__connect_platform`.
 3. Send the returned platform OAuth URL to the user.
-4. Re-run `mcp_sendit_list_connected_accounts` after authorization.
+4. Re-run `mcp__sendit__list_connected_accounts` after authorization.
 
-## Safety Rules
+## Safety rules
 
 - Do not publish, schedule, delete, reply, or trigger scheduled posts unless the
   user clearly asks for that action.
@@ -140,5 +144,5 @@ After OAuth completes and MCP reloads, ask Hermes:
 Use the SendIt skill and list my connected social accounts.
 ```
 
-Hermes should call `mcp_sendit_list_connected_accounts` or the equivalent
+Hermes should call `mcp__sendit__list_connected_accounts` or the equivalent
 SendIt MCP tool for the configured server name.

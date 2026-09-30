@@ -18,9 +18,9 @@ Do not configure:
 https://sendit.infiniteappsai.com/mcp
 ```
 
-The `/mcp` endpoint is reserved for the ChatGPT app submission profile and has a
-reduced tool catalog. The `/api/mcp` endpoint exposes the standard SendIt MCP
-catalog, including team tools.
+The `/mcp` endpoint is a legacy alias for the full catalog.
+The `/api/mcp` endpoint is the recommended standard SendIt MCP endpoint, including team tools.
+The smaller ChatGPT profile is `/api/mcp/chatgpt`.
 
 ## Setup Sequence
 
@@ -30,19 +30,19 @@ contains the operator checklist. The full sequence is:
 1. Install the skill and repair/create Hermes MCP config:
 
    ```bash
-   node ${HERMES_SKILL_DIR}/scripts/install-sendit-hermes.mjs
+   node "${HERMES_SKILL_DIR}/scripts/install-sendit-hermes.mjs"
    ```
 
    If `${HERMES_SKILL_DIR}` was not substituted, run from the skill directory:
 
    ```bash
-   node scripts/install-sendit-hermes.mjs
+   node scripts/install-sendit-hermes.mjs"
    ```
 
 2. Start the OAuth listener on the VPS:
 
    ```bash
-   node ${HERMES_SKILL_DIR}/scripts/start-oauth-login.mjs
+   node "${HERMES_SKILL_DIR}/scripts/start-oauth-login.mjs"
    ```
 
 3. Send the printed SendIt authorization URL to the user.
@@ -51,7 +51,7 @@ contains the operator checklist. The full sequence is:
 5. Replay the callback URL on the VPS:
 
    ```bash
-   node ${HERMES_SKILL_DIR}/scripts/complete-oauth-callback.mjs '<PASTED_CALLBACK_URL>'
+   node "${HERMES_SKILL_DIR}/scripts/complete-oauth-callback.mjs" '<PASTED_CALLBACK_URL>'
    ```
 
 6. Ask the user to send `/reload-mcp`, or restart the Hermes gateway/session if

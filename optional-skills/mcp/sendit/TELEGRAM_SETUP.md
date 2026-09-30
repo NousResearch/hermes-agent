@@ -25,17 +25,17 @@ Run these commands from the directory that contains this file.
 ### 1. Install skill and MCP config
 
 ```bash
-node scripts/install-sendit-hermes.mjs
+node scripts/install-sendit-hermes.mjs"
 ```
 
 This also repairs older installs that used `https://sendit.infiniteappsai.com/mcp`.
-Hermes should use `https://sendit.infiniteappsai.com/api/mcp`; `/mcp` is the
-ChatGPT-specific app endpoint and has a reduced tool catalog.
+Hermes should use `https://sendit.infiniteappsai.com/api/mcp`.
+`/mcp` is a legacy alias for the full catalog; `/api/mcp/chatgpt` is the smaller ChatGPT profile.
 
 ### 2. Start OAuth login
 
 ```bash
-node scripts/start-oauth-login.mjs
+node scripts/start-oauth-login.mjs"
 ```
 
 Send the printed authorization URL to the user.
@@ -51,7 +51,7 @@ http://127.0.0.1:43879/callback?code=...&state=...
 run:
 
 ```bash
-node scripts/complete-oauth-callback.mjs '<PASTED_CALLBACK_URL>'
+node scripts/complete-oauth-callback.mjs" '<PASTED_CALLBACK_URL>'
 ```
 
 Do not echo the pasted URL back to the user. The helper validates the callback

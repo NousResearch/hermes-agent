@@ -85,7 +85,7 @@ async def test_event_read_uses_latest_valid_edit_and_keeps_original_thread_relat
         "event_id": "$child", "sender": SENDER, "body": "after", "msgtype": "m.text",
         "thread_id": "$root", "timestamp": None, "sender_authorized": True,
         "edited": True,
-    }], "errors": []}
+    }], "errors": [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -108,7 +108,7 @@ async def test_event_read_reports_original_redaction_without_exposing_bundled_ed
         "event_id": "$child", "sender": SENDER, "body": "[redacted]", "msgtype": None,
         "thread_id": None, "timestamp": None, "sender_authorized": True,
         "redacted": True,
-    }], "errors": []}
+    }], "errors": [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -135,7 +135,7 @@ async def test_invalid_replacement_keeps_original_content(invalid: str):
     assert result == {"events": [{
         "event_id": "$child", "sender": SENDER, "body": "before", "msgtype": "m.text",
         "thread_id": None, "timestamp": None, "sender_authorized": True,
-    }], "errors": []}
+    }], "errors": [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -184,11 +184,11 @@ async def test_encrypted_replacement_uses_owning_crypto_and_reports_missing_edit
     assert visible == {"events": [{
         "event_id": "$child", "sender": SENDER, "body": "after", "msgtype": "m.text",
         "thread_id": "$root", "timestamp": None, "sender_authorized": True, "edited": True,
-    }], "errors": []}
+    }], "errors": [], "skipped": 0}
     assert missing == {"events": [{
         "event_id": "$child", "sender": SENDER, "body": "before", "msgtype": "m.text",
         "thread_id": "$root", "timestamp": None, "sender_authorized": True,
-    }], "errors": [{"event_id": "$edit", "error": "missing decryption keys"}]}
+    }], "errors": [{"event_id": "$edit", "error": "missing decryption keys"}], "skipped": 0}
     assert [call.args[0] for call in decrypt.await_args_list] == [
         original, original["unsigned"]["m.relations"]["m.replace"],
         original, original["unsigned"]["m.relations"]["m.replace"],
@@ -673,7 +673,7 @@ async def test_bounded_read_rechecks_redaction_after_reactions(kind: str, replac
         expected["redacted"] = True
     assert result == {"events": [expected], "errors": [
         {"event_id": "$target", "error": "replacement was redacted"},
-    ] if replacement else []}
+    ] if replacement else [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -923,6 +923,7 @@ async def test_replacement_redaction_during_read_requires_current_bundle(kind: s
         "events": events,
         "errors": ([] if recovered else [{"event_id": "$earlier", "error": "missing decryption keys"}]
                    if recovery == "keys" else [{"event_id": "$target", "error": "replacement was redacted"}]),
+        "skipped": 0,
     }
 
 
@@ -1053,7 +1054,7 @@ async def test_reaction_redaction_filters_its_own_event_id(scope: str, boundary:
         assert result == {"events": [{
             "event_id": target, "sender": SENDER, "body": "retained text", "msgtype": "m.text",
             "thread_id": None, "timestamp": None, "sender_authorized": True,
-        }], "errors": []}
+        }], "errors": [], "skipped": 0}
     elif boundary == "format":
         assert result == "[History]\n[Alice] retained text"
     else:
@@ -1085,7 +1086,7 @@ async def test_bounded_read_observed_original_redaction_invalidates_shared_reply
     assert (result, reply) == ({"events": [{
         "event_id": target, "sender": SENDER, "body": "[redacted]", "msgtype": None,
         "thread_id": None, "timestamp": None, "sender_authorized": True, "redacted": True,
-    }], "errors": []}, None)
+    }], "errors": [], "skipped": 0}, None)
 
 
 @pytest.mark.asyncio
@@ -1226,7 +1227,7 @@ async def test_context_refreshes_edit_at_last_asynchronous_boundary(scope: str, 
             "event_id": target, "sender": SENDER, "body": "after", "msgtype": "m.text",
             "thread_id": "$thread" if scope == "thread-read" else None,
             "timestamp": None, "sender_authorized": True, "edited": True,
-        }], "errors": []}
+        }], "errors": [], "skipped": 0}
     assert result == expected
 
 
@@ -1318,7 +1319,7 @@ async def test_original_redaction_wins_over_failed_decryption_during_read(kind: 
         "event_id": "$target", "sender": SENDER, "body": "[redacted]", "msgtype": None,
         "thread_id": "$root" if kind == "thread" else None,
         "timestamp": None, "sender_authorized": True, "redacted": True,
-    }], "errors": []}
+    }], "errors": [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -1350,7 +1351,7 @@ async def test_validated_bounded_read_updates_reply_and_existing_formatting_snap
         {"events": [{
             "event_id": "$target", "sender": SENDER, "body": "after", "msgtype": "m.text",
             "thread_id": None, "timestamp": None, "sender_authorized": True, "edited": True,
-        }], "errors": []},
+        }], "errors": [], "skipped": 0},
         MatrixReplyContext("question", "$target", "after", SENDER, "Alice", False, True),
         "[History]\n[Alice] after",
     )
@@ -1414,7 +1415,7 @@ async def test_failed_read_remains_subject_to_redaction_after_later_reaction_awa
             started.set()
             await release.wait()
             return {"chunk": []}
-        return {"chunk": [failed, later]}
+        return {"chunk": [later, failed]}
 
     client = SimpleNamespace(
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
@@ -1439,7 +1440,7 @@ async def test_failed_read_remains_subject_to_redaction_after_later_reaction_awa
          "sender_authorized": True, "redacted": True},
         {"event_id": "$later", "sender": SENDER, "body": "readable", "msgtype": "m.text",
          "thread_id": "$root" if kind == "thread" else None, "timestamp": None, "sender_authorized": True},
-    ], "errors": []}
+    ], "errors": [], "skipped": 0}
 
 
 @pytest.mark.asyncio
@@ -1592,7 +1593,7 @@ async def test_active_context_keeps_effective_state_after_eviction(scope: str, c
         elif change == "original":
             event["redacted"] = True
         assert result == {"events": [event], "errors": [{"event_id": "$target", "error": "replacement was redacted"}]
-                          if change == "replacement" else []}
+                          if change == "replacement" else [], "skipped": 0}
     assert independent.recheck(ROOM, independent.history_entry(ROOM, "$target")).media_path == str(image)
     assert len(cache._entries) <= cache.max_entries
     current = cache.recheck(ROOM, parent)
@@ -1631,7 +1632,7 @@ async def test_active_consumers_retain_dependencies_from_intake(
 
     from gateway.config import GatewayConfig, Platform
     from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from gateway.session import SessionSource, SessionStore
     from plugins.platforms.matrix.room_context import format_history_context
     from tests.gateway.test_matrix import _make_adapter
 
@@ -1704,7 +1705,7 @@ async def test_active_consumers_retain_dependencies_from_intake(
 
             adapter._is_dm_room = AsyncMock(return_value=True)
             adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
-                display_name="Room", room_topic=None, server_name=None, members_digest=None,
+                display_name="Room", room_topic=None, server_name=None, room_state=None,
             ))
             adapter.set_message_handler(AsyncMock())
             adapter._text_batch_delay_seconds = 0
@@ -1754,7 +1755,7 @@ async def test_active_consumers_retain_dependencies_from_intake(
                 body,
                 {"body": body, "m.relates_to": relation},
                 relation,
-                ctx=(body, True, "dm", None, "Alice", source),
+                ctx=(body, True, "dm", None, "Alice", False, source),
             )
         if consumer == "queued-copy":
             event = replace(event, text="copied question")
@@ -1767,6 +1768,7 @@ async def test_active_consumers_retain_dependencies_from_intake(
         if consumer == "queued-command":
             runner = object.__new__(GatewayRunner)
             runner.config = GatewayConfig()
+            runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
             runner.adapters = {Platform.MATRIX: adapter}
             event = replace(event, text="/queue question")
             monkeypatch.setattr(
@@ -1805,6 +1807,7 @@ async def test_active_consumers_retain_dependencies_from_intake(
         event = adapter._pending_messages.pop("session")
         runner = object.__new__(GatewayRunner)
         runner.config = GatewayConfig()
+        runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
         runner.adapters = {Platform.MATRIX: adapter}
         if intake:
             monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: "native")
@@ -1885,18 +1888,13 @@ async def test_active_consumers_retain_dependencies_from_intake(
             "timestamp": None,
             "sender_authorized": True,
         }
-        events = [target_event]
-        if withdrawn:
-            events = (
-                [failed_event, target_event]
-                if kind == "room"
-                else [target_event, failed_event]
-            )
+        events = [target_event, failed_event] if withdrawn else [target_event]
         assert result == {
             "events": events,
             "errors": []
             if withdrawn
             else [{"event_id": "$failed", "error": "missing decryption keys"}],
+            "skipped": 0,
         }
         reference = lambda: None
         del pending, result

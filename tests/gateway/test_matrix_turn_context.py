@@ -86,7 +86,7 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
         content["body"],
         content,
         relation,
-        ctx=(content["body"], False, "group", source.thread_id, "Alice", source),
+        ctx=(content["body"], False, "group", source.thread_id, "Alice", True, source),
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
@@ -109,11 +109,11 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
             await release.wait()
         return text.replace("@file:notes", "expanded user reference")
 
-    async def room_state(_adapter, _room):
+    async def room_identity(_room):
         if boundary == "room-state":
             started.set()
             await release.wait()
-        return MatrixRoomState(None, None, None)
+        return SimpleNamespace(room_state=MatrixRoomState(None, None, None))
 
     async def enrich(
         _source: SessionSource, _key: str, text: str, _paths: list[str]
@@ -126,7 +126,7 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
         event.media_urls, event.media_types = ["/tmp/user-image.png"], ["image/png"]
         monkeypatch.setattr(runner, "_enrich_inbound_images", enrich)
     monkeypatch.setattr(runner, "_expand_inbound_context_references", expand)
-    monkeypatch.setattr(type(adapter), "resolve_turn_room_state", room_state)
+    monkeypatch.setattr(adapter, "_resolve_room_identity", room_identity)
 
     async def process():
         message = await runner._prepare_profile_scoped_inbound_message_text(
@@ -297,12 +297,13 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
         "question",
         {"body": "question"},
         {"m.in_reply_to": {"event_id": "$target"}},
-        ctx=("question", True, "dm", None, "Alice", source),
+        ctx=("question", True, "dm", None, "Alice", False, source),
         media_urls=[] if transform in {"pending", "parked", "photo", "text-batch"} else [str(authored_image)],
         media_types=[] if transform in {"pending", "parked", "photo", "text-batch"} else ["image/png"],
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner.adapters = {Platform.MATRIX: adapter}
     if transform == "rewrite":
         monkeypatch.setattr(
@@ -427,12 +428,13 @@ async def test_merged_quotes_refresh_each_parent_without_dropping_other_media(tm
         events.append(await adapter._build_inbound_event(
             ROOM, SENDER, f"$reply{index}", "question", {"body": "question"},
             {"m.in_reply_to": {"event_id": target}},
-            ctx=("question", True, "dm", None, "Alice", source),
+            ctx=("question", True, "dm", None, "Alice", False, source),
         ))
     pending = {"session": events[0]}
     merge_pending_message_event(pending, "session", events[1])
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner.adapters = {Platform.MATRIX: adapter}
     state = runner._session_state("session")
 
@@ -489,7 +491,7 @@ async def test_catch_up_preserves_only_current_quoted_pixels_at_model_input(tmp_
     content["m.relates_to"] = relation
     event = await adapter._build_inbound_event(
         ROOM, SENDER, "$current", "question", content, relation,
-        ctx=("question", False, "group", source.thread_id, "Alice", source),
+        ctx=("question", False, "group", source.thread_id, "Alice", True, source),
     )
     if change == "replacement":
         raw = _edited(raw, "replaced with text")
@@ -497,6 +499,7 @@ async def test_catch_up_preserves_only_current_quoted_pixels_at_model_input(tmp_
         raw = {**raw, "content": {}, "unsigned": {"redacted_because": {"event_id": "$redaction"}}}
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner.adapters = {Platform.MATRIX: adapter}
 
     async def native(_source, key, text, paths):
@@ -537,7 +540,6 @@ async def test_typed_edit_keeps_quoted_media_until_authoritative_content_changes
 ):
     import copy
     from unittest.mock import patch
-    from plugins.platforms.matrix.turn_context import MatrixTurnContext
     from tests.gateway.test_matrix_effective_event_state import _edit_store
 
     mautrix_types = pytest.importorskip("mautrix.types")
@@ -573,9 +575,9 @@ async def test_typed_edit_keeps_quoted_media_until_authoritative_content_changes
     source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
     event = await adapter._build_inbound_event(
         ROOM, SENDER, "$reply", "question", {"body": "question"}, {"m.in_reply_to": {"event_id": "$target"}},
-        ctx=("question", True, "dm", None, "Alice", source),
+        ctx=("question", True, "dm", None, "Alice", False, source),
     )
-    snapshot = await MatrixTurnContext.prepare(adapter, event, include_thread_history=False)
+    snapshot = await adapter.fetch_inbound_context(event)
     adapter._client.api.request.return_value = raw
     if change == "redaction":
         await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$target"))
@@ -633,12 +635,13 @@ async def test_native_conversion_revalidates_current_input_after_file_read(
         "question",
         {"body": "question"},
         {"m.in_reply_to": {"event_id": "$target"}},
-        ctx=("question", True, "dm", None, "Alice", source),
+        ctx=("question", True, "dm", None, "Alice", False, source),
         media_urls=[str(image)] if shared_path else [],
         media_types=["image/png"] if shared_path else [],
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner.adapters = {Platform.MATRIX: adapter}
     state = runner._session_state("session")
 
@@ -821,10 +824,11 @@ async def test_typed_edit_callback_resolves_current_native_input(
         "question",
         {"body": "question"},
         {"m.in_reply_to": {"event_id": "$target"}},
-        ctx=("question", True, "dm", None, "Alice", source),
+        ctx=("question", True, "dm", None, "Alice", False, source),
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner.adapters = {Platform.MATRIX: adapter}
     state = runner._session_state("session")
 
@@ -1017,10 +1021,11 @@ async def test_worker_thread_input_preparation_reads_matrix_state_on_the_loop(
         "question",
         {"body": "question"},
         {"m.in_reply_to": {"event_id": "$target"}},
-        ctx=("question", True, "dm", None, "Alice", source),
+        ctx=("question", True, "dm", None, "Alice", False, source),
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     runner.adapters = {Platform.MATRIX: adapter}
     state = runner._session_state("session")
 
@@ -1123,7 +1128,7 @@ async def test_reply_line_survives_a_parent_that_cannot_be_read(
         body,
         content,
         relation,
-        ctx=(body, False, "group", None, "Alice", source),
+        ctx=(body, False, "group", None, "Alice", True, source),
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()

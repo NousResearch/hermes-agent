@@ -76,7 +76,7 @@ def _client(adapter, raw, scope, barrier, started, release):
                         root="$root" if scope == "thread-child" else None,
                     )
                 )
-                chunk = [blocker, raw] if scope == "room-read" else [raw, blocker]
+                chunk = [raw, blocker]
             if barrier == "page" and path.endswith("/m.thread"):
                 await pause()
             return {"start": "page", "chunk": chunk}
@@ -245,6 +245,7 @@ async def test_uncached_original_withdrawal_remains_visible_during_resolution(
                 },
             ],
             "errors": [],
+            "skipped": 0,
         }
     elif scope == "reply":
         assert result is None
@@ -323,6 +324,7 @@ async def test_bundled_replacement_withdrawal_remains_visible_through_registrati
                 }
             ],
             "errors": [{"event_id": "$target", "error": "replacement was redacted"}],
+            "skipped": 0,
         }
     elif scope == "reply":
         assert result == unavailable

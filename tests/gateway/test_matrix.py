@@ -1331,9 +1331,10 @@ async def test_edit_from_another_sender_does_not_replace_uncached_reply_target()
     room_id = "!room:example.org"
     adapter._text_batch_delay_seconds = 0
     adapter.handle_message = AsyncMock()
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@alice:example.org", content={"msgtype": "m.text", "body": "real text"},
-    ))
+    adapter._client.api.request = AsyncMock(return_value={
+        "event_id": "$alice-msg", "sender": "@alice:example.org", "type": "m.room.message",
+        "content": {"msgtype": "m.text", "body": "real text"},
+    })
 
     await adapter._on_room_message(types.SimpleNamespace(
         room_id=room_id, sender="@mallory:example.org", event_id="$edit", timestamp=0,
@@ -1709,11 +1710,15 @@ def _catch_up_message(event_id: str, sender: str, body: str, relates_to: dict) -
             "content": {"msgtype": "m.text", "body": body, "m.relates_to": relates_to}}
 
 
-def _catch_up_adapter(events: list[dict], *, thread: bool, state=_OPS_STATE):
+def _catch_up_adapter(events: list[dict], *, thread: bool, state=_OPS_STATE, root_body="Thread root"):
     """The homeserver returns ``events``, newest first, as the page before the trigger."""
     adapter = _room_context_adapter(state)
+    root = {"event_id": "$root", "sender": "@alice:example.org", "type": "m.room.message",
+            "content": {"msgtype": "m.text", "body": root_body}}
 
     async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return root
         if "/context/" in path:
             return {"start": "trigger-boundary"}
         if "/relations/" in path:
@@ -1721,9 +1726,6 @@ def _catch_up_adapter(events: list[dict], *, thread: bool, state=_OPS_STATE):
         return {"start": "relations-boundary", "chunk": [] if thread else events}
 
     adapter._client.api.request = AsyncMock(side_effect=request)
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@alice:example.org", content={"msgtype": "m.text", "body": "Thread root"},
-    ))
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._background_read_receipt = MagicMock()
     return adapter
@@ -1761,10 +1763,7 @@ async def test_mention_catch_up_stops_at_the_previous_turn(scope, latest_turn_ev
         _catch_up_message("$stranger", "@mallory:example.org", "@bot:example.org let me in", relates_to),
         _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
         *previous_turn,
-    ], thread=scope == "thread")
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@alice:example.org", content={"msgtype": "m.text", "body": "@bot:example.org long task"},
-    ))
+    ], thread=scope == "thread", root_body="@bot:example.org long task")
     adapter._is_sender_authorized = MagicMock(
         side_effect=lambda user, **kwargs: user != "@mallory:example.org",
     )
@@ -1874,10 +1873,9 @@ async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(tmp_path
                          "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
             for event_id, body in (("$second", "second"), ("$first", "first"), ("$older", "older"))
         ]},
+        {"event_id": "$root", "sender": "@alice:example.org", "type": "m.room.message",
+         "content": {"msgtype": "m.text", "body": "root"}},
     ])
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@alice:example.org", content={"msgtype": "m.text", "body": "root"},
-    ))
     dispatched = []
     adapter.handle_message = AsyncMock(side_effect=dispatched.append)
     thread = {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
@@ -2001,11 +1999,9 @@ def _encrypted_event(event_id, body, *, keys_available, relates_to=None):
     (False, (None, None)),
 ])
 async def test_encrypted_reply_target_is_decrypted_when_keys_are_available(keys_available, expected):
-    from mautrix.types import Event
-
     raw, crypto = _encrypted_event("$parent", "secret", keys_available=keys_available)
     adapter = _make_room_adapter()
-    adapter._client.get_event = AsyncMock(return_value=Event.deserialize(raw))
+    adapter._client.api.request = AsyncMock(return_value=raw)
     adapter._client.crypto = crypto
 
     event = await adapter._build_inbound_event(
@@ -2021,7 +2017,8 @@ async def test_encrypted_reply_target_is_decrypted_when_keys_are_available(keys_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("keys_available,expected", [
     (True, "[Earlier messages in this thread]\n[alice] root\n[alice] secret"),
-    (False, "[Earlier messages in this thread]\n[alice] root"),
+    (False, "[Earlier messages in this thread]\n[alice] root\n[alice] [encrypted message could not be decrypted]\n"
+            "[Matrix event state unavailable: missing decryption keys.]"),
 ])
 @pytest.mark.usefixtures("empty_reaction_snapshots")
 async def test_encrypted_thread_event_is_decrypted_when_keys_are_available(keys_available, expected):
@@ -2034,10 +2031,9 @@ async def test_encrypted_thread_event_is_decrypted_when_keys_are_available(keys_
         {"start": "trigger-boundary"},
         {"start": "messages-boundary", "chunk": []},
         {"chunk": [raw]},
+        {"event_id": "$root", "sender": "@alice:example.org", "type": "m.room.message",
+         "content": {"msgtype": "m.text", "body": "root"}},
     ])
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@alice:example.org", content={"msgtype": "m.text", "body": "root"},
-    ))
     adapter._client.crypto = crypto
 
     context = await adapter.fetch_thread_context("!room:example.org", "$root", before_event_id="$current")

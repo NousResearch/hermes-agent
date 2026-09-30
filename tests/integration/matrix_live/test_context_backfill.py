@@ -17,7 +17,7 @@ import pytest
 from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse, UploadResponse
 
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
-from tests.integration.matrix_live.context_client import _send, _wait_for_final
+from tests.integration.matrix_live.context_client import _send, _wait_for_final, hand_off
 from tests.integration.matrix_live.context_client import group_gateway as group_gateway
 from tests.integration.matrix_live.context_client import group_member as group_member
 
@@ -183,17 +183,28 @@ def test_room_catch_up_shows_edits_and_redactions_to_model(
                 f"{live_room.bot.user_id} catch up @matrix-live:pause",
                 mention=live_room.bot.user_id, reply=edited_target,
             )
-            while not (tmp_path / "hermes" / "context-started").exists():
+            home = tmp_path / "hermes"
+            while not (home / "context-started").exists():
                 await asyncio.sleep(0.01)
+
+            async def observed(target: str) -> None:
+                observation = home / "media-change-observed"
+                while not observation.exists() or observation.read_text(encoding="utf-8") != target:
+                    await asyncio.sleep(0.01)
+
+            hand_off(home / "expected-media-change", edited_target)
             late_edit = await client.room_send(live_room.room_id, "m.room.message", {
                 "msgtype": "m.text", "body": "* Revised decision during enrichment",
                 "m.new_content": {"msgtype": "m.text", "body": "Revised decision during enrichment"},
                 "m.relates_to": {"rel_type": "m.replace", "event_id": edited_target},
             })
             assert isinstance(late_edit, RoomSendResponse), late_edit
+            await observed(edited_target)
+            hand_off(home / "expected-media-change", late_target)
             late_redaction = await client.room_redact(live_room.room_id, late_target)
             assert isinstance(late_redaction, RoomRedactResponse), late_redaction
-            (tmp_path / "hermes" / "context-release").write_text("release", encoding="utf-8")
+            await observed(late_target)
+            hand_off(home / "context-release", "release")
             await _wait_for_final(client, live_room, seen, "ok")
 
             requests = group_gateway.model.main_requests()
@@ -299,9 +310,9 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
             while not (home / "context-started").exists():
                 await asyncio.sleep(0.01)
             if change != "unchanged":
-                (home / "expected-media-change").write_text(target.event_id, encoding="utf-8")
+                hand_off(home / "expected-media-change", target.event_id)
                 if change.endswith("-eviction"):
-                    (home / "evict-media-state").write_text("evict", encoding="utf-8")
+                    hand_off(home / "evict-media-state", "evict")
                 if change in {"replacement", "sender", "missing-new-content"}:
                     edit_content = {
                         "msgtype": "m.text", "body": "* Replaced image with text",
@@ -319,7 +330,7 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
                 while not (home / "media-change-observed").exists():
                     await asyncio.sleep(0.01)
                 assert (home / "media-change-observed").read_text(encoding="utf-8") == target.event_id
-            (home / "context-release").write_text("release", encoding="utf-8")
+            hand_off(home / "context-release", "release")
             await _wait_for_final(client, live_room, seen, "ok")
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2

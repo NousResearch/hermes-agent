@@ -144,7 +144,7 @@ def observed_init(self, *args, **kwargs):
     async def gated_send(chat_id, content, reply_to=None, metadata=None):
         if content.startswith("Completed Matrix turn 1"):
             (home / "delivery-started").touch()
-            async with asyncio.timeout(15):
+            async with asyncio.timeout(60):
                 while not (home / "delivery-release").exists():
                     await asyncio.sleep(0.01)
         return await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)

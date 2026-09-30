@@ -1,8 +1,11 @@
 """Tests for hermes_cli.gateway_windows."""
 
+import json
 import logging
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -769,6 +772,306 @@ def test_start_on_tty_hands_both_answers_to_install_and_honours_the_env_opt_out(
     monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("env override must skip the prompt"))
     gateway_windows.start()
     assert installs == [] and spawns == [1]
+
+
+_ROOT_GATEWAY_CHILD_SCOPE_MARKERS = (
+    "HERMES_DELEGATED_CHILD_CONTEXT",
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_WORKTREE",
+    "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_GOAL_MODE",
+    "HERMES_KANBAN_GOAL_MAX_TURNS",
+)
+
+
+@pytest.mark.parametrize("with_overlay", [False, True])
+def test_root_gateway_subprocess_env_strips_scope_without_mutating_inputs(with_overlay):
+    parent = {marker: "parent-value" for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS}
+    parent.update({"ROOT_GATEWAY_KEEP_ME": "parent", "HERMES_KANBAN_NOTE": "unrelated"})
+    overlay = {marker: "overlay-value" for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS}
+    overlay.update({"HERMES_HOME": "target-home", "ROOT_GATEWAY_KEEP_ME": "overlay"})
+    parent_before, overlay_before = parent.copy(), overlay.copy()
+
+    child = gateway_windows.root_gateway_subprocess_env(parent, overlay if with_overlay else None)
+
+    assert all(marker not in child for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS)
+    assert child["ROOT_GATEWAY_KEEP_ME"] == ("overlay" if with_overlay else "parent")
+    assert child["HERMES_KANBAN_NOTE"] == "unrelated"
+    if with_overlay:
+        assert child["HERMES_HOME"] == "target-home"
+    assert parent == parent_before and overlay == overlay_before
+
+
+@pytest.mark.parametrize("launcher", ["cmd", "vbs"])
+def test_gateway_launchers_render_scope_removal_before_spawn(launcher, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        gateway_windows, "_resolve_detached_python",
+        lambda _path: (sys.executable, Path(sys.prefix), []),
+    )
+    builder = getattr(gateway_windows, f"_build_gateway_{launcher}_script")
+    content = builder(sys.executable, str(tmp_path), str(tmp_path), "")
+    launch_needle = " -m " if launcher == "cmd" else "sh.Run "
+    before_launch = content[:content.index(launch_needle)]
+
+    removal_sites = []
+    for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS:
+        removal = f'set "{marker}="' if launcher == "cmd" else f'env.Remove "{marker}"'
+        assert removal in before_launch
+        removal_sites.append(content.index(removal))
+    if launcher == "vbs":
+        # env.Remove raises on a missing key, so the guard must cover the removals and end
+        # before anything that must not run under suppressed errors (sh.Run).
+        guard_on = content.index("On Error Resume Next")
+        guard_off = content.index("On Error GoTo 0")
+        assert guard_on < min(removal_sites)
+        assert max(removal_sites) < guard_off < content.index("sh.Run ")
+    assert content.endswith("\r\n")
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("seed_mode", ["all", "none", "partial"])
+@pytest.mark.parametrize("launcher", ["cmd", "vbs"])
+def test_gateway_root_launcher_drops_child_scope_before_spawn(
+    launcher,
+    seed_mode,
+    monkeypatch,
+    tmp_path,
+):
+    """Generated root launchers must not inherit delegated-worker ownership."""
+    fake_root = tmp_path / "fake-root"
+    fake_package = fake_root / "hermes_cli"
+    fake_package.mkdir(parents=True)
+    (fake_package / "__init__.py").write_text("", encoding="utf-8")
+    output_path = tmp_path / f"{launcher}-child-env.json"
+    probe_source = (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        f"markers = {_ROOT_GATEWAY_CHILD_SCOPE_MARKERS!r}\n"
+        "payload = {\n"
+        "    'hermes_home': os.environ.get('HERMES_HOME'),\n"
+        "    'sentinel': os.environ.get('ROOT_GATEWAY_KEEP_ME'),\n"
+        "    'markers': {name: {'present': name in os.environ, 'value': os.environ.get(name)} for name in markers},\n"
+        "}\n"
+        "Path(os.environ['ROOT_GATEWAY_PROBE_OUTPUT']).write_text(json.dumps(payload), encoding='utf-8')\n"
+    )
+    (fake_package / "main.py").write_text(probe_source, encoding="utf-8")
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda _path: (sys.executable, Path(sys.prefix), []),
+    )
+    monkeypatch.setattr(gateway_windows, "_preserve_hermes_home_path", str)
+    monkeypatch.setattr(
+        gateway_windows, "__file__", str(fake_package / "gateway_windows.py")
+    )
+    monkeypatch.setenv("ROOT_GATEWAY_PROBE_OUTPUT", str(output_path))
+    monkeypatch.setenv("ROOT_GATEWAY_KEEP_ME", "preserved")
+    # A normal root launch carries none of these keys, so exercise all/none/partial seeding:
+    # env.Remove must tolerate absent keys without aborting the launcher before sh.Run.
+    if seed_mode == "all":
+        seeded = list(_ROOT_GATEWAY_CHILD_SCOPE_MARKERS)
+    elif seed_mode == "partial":
+        seeded = list(_ROOT_GATEWAY_CHILD_SCOPE_MARKERS[::2])
+    else:
+        seeded = []
+    for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS:
+        if marker in seeded:
+            monkeypatch.setenv(marker, f"inherited::{marker}")
+        else:
+            monkeypatch.delenv(marker, raising=False)
+    present = [marker for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS if marker in os.environ]
+    assert present == seeded
+
+    if launcher == "cmd":
+        content = gateway_windows._build_gateway_cmd_script(
+            sys.executable,
+            str(tmp_path),
+            str(hermes_home),
+            "",
+        )
+        script_path = tmp_path / "gateway.cmd"
+        argv = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(script_path)]
+        launch_needle = " -m "
+    else:
+        content = gateway_windows._build_gateway_vbs_script(
+            sys.executable,
+            str(tmp_path),
+            str(hermes_home),
+            "",
+        )
+        script_path = tmp_path / "gateway.vbs"
+        argv = ["cscript.exe", "//B", "//Nologo", str(script_path)]
+        launch_needle = "sh.Run "
+    script_path.write_bytes(content.encode("utf-8"))
+
+    completed = subprocess.run(
+        argv,
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    deadline = time.monotonic() + 10
+    while not output_path.is_file() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert output_path.is_file(), "launcher child did not write its environment probe"
+
+    observed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert observed["hermes_home"] == str(hermes_home)
+    assert observed["sentinel"] == "preserved"
+    assert all(
+        not row["present"] and row["value"] is None
+        for row in observed["markers"].values()
+    )
+    before_launch = content[: content.index(launch_needle)]
+    assert all(marker in before_launch for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS)
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_spawn_detached_scrubs_child_scope_env(monkeypatch, tmp_path, retry):
+    """The direct Windows launcher must not propagate worker ownership."""
+    captured = []
+
+    class _FakeProcess:
+        pid = 4242
+
+    def _fake_popen(argv, **kwargs):
+        captured.append((argv, kwargs))
+        if retry and len(captured) == 1:
+            raise OSError("parent job rejected breakaway")
+        return _FakeProcess()
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_build_gateway_argv",
+        lambda home=None: (
+            [sys.executable, "-c", "pass"],
+            str(tmp_path),
+            {"HERMES_HOME": str(tmp_path), "ROOT_GATEWAY_OVERLAY": "preserved"},
+        ),
+    )
+    monkeypatch.setattr(gateway_windows, "windows_detach_flags", lambda: 0)
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(
+        "hermes_cli.config.get_hermes_home", lambda: str(tmp_path)
+    )
+    monkeypatch.setenv("ROOT_GATEWAY_KEEP_ME", "preserved")
+    for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS:
+        monkeypatch.setenv(marker, "seeded-parent-value")
+
+    assert gateway_windows._spawn_detached() == 4242
+
+    assert len(captured) == (2 if retry else 1)
+    for _, kwargs in captured:
+        child_env = kwargs["env"]
+        assert child_env["HERMES_HOME"] == str(tmp_path)
+        assert child_env["ROOT_GATEWAY_OVERLAY"] == "preserved"
+        assert child_env["ROOT_GATEWAY_KEEP_ME"] == "preserved"
+        for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS:
+            assert marker not in child_env
+
+
+@pytest.mark.platforms("windows")
+def test_windows_update_restart_watcher_scrubs_child_scope_env(monkeypatch):
+    """The post-update watcher must receive a clean root-gateway environment."""
+    import hermes_cli._subprocess_compat as subprocess_compat
+    import hermes_cli.gateway as gateway
+
+    captured = []
+
+    def _fake_popen(argv, **kwargs):
+        captured.append((argv, kwargs))
+        return object()
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "windowless_gateway_restart_spec",
+        lambda argv: (list(argv), "C:/hermes", {"ROOT_GATEWAY_OVERLAY": "preserved"}),
+    )
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0},
+    )
+    monkeypatch.setattr(gateway.subprocess, "Popen", _fake_popen)
+    monkeypatch.setenv("ROOT_GATEWAY_KEEP_ME", "preserved")
+    for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS:
+        monkeypatch.setenv(marker, "seeded-parent-value")
+
+    assert gateway._spawn_gateway_restart_watcher(
+        4242,
+        [sys.executable, "-m", "hermes_cli.main", "gateway", "run"],
+    )
+
+    assert len(captured) == 1
+    watcher_env = captured[0][1]["env"]
+    assert watcher_env["ROOT_GATEWAY_KEEP_ME"] == "preserved"
+    for marker in _ROOT_GATEWAY_CHILD_SCOPE_MARKERS:
+        assert marker not in watcher_env
+
+
+@pytest.mark.platforms("windows")
+def test_windows_update_restart_watcher_fails_closed_when_helper_unimportable(monkeypatch):
+    """Mixed-version trees can lack the scrub helper: no watcher may be armed unscrubbed."""
+    spawned = []
+
+    def _fake_popen(argv, **kwargs):
+        spawned.append((argv, kwargs))
+        return object()
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "windowless_gateway_restart_spec",
+        lambda argv: (list(argv), "C:/hermes", {"ROOT_GATEWAY_OVERLAY": "preserved"}),
+    )
+    monkeypatch.setattr(gateway.subprocess, "Popen", _fake_popen)
+    monkeypatch.delattr(gateway_windows, "root_gateway_subprocess_env")
+
+    assert gateway._spawn_gateway_restart_watcher(
+        4242,
+        [sys.executable, "-m", "hermes_cli.main", "gateway", "run"],
+    ) is False
+    assert spawned == []
+
+
+@pytest.mark.platforms("windows")
+def test_windows_update_restart_watcher_does_not_swallow_helper_errors(monkeypatch):
+    """Only the missing-helper import is fail-closed; a real helper bug must reach the caller."""
+    spawned = []
+
+    def _fake_popen(argv, **kwargs):
+        spawned.append((argv, kwargs))
+        return object()
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("helper exploded")
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "windowless_gateway_restart_spec",
+        lambda argv: (list(argv), "C:/hermes", {"ROOT_GATEWAY_OVERLAY": "preserved"}),
+    )
+    monkeypatch.setattr(gateway_windows, "root_gateway_subprocess_env", _boom)
+    monkeypatch.setattr(gateway.subprocess, "Popen", _fake_popen)
+
+    with pytest.raises(RuntimeError, match="helper exploded"):
+        gateway._spawn_gateway_restart_watcher(
+            4242,
+            [sys.executable, "-m", "hermes_cli.main", "gateway", "run"],
+        )
+    assert spawned == []
 
 
 

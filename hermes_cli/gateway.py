@@ -1170,6 +1170,18 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     watcher_env = _host_gateway_watcher_env() if (
         _restart_argv_is_host_gateway(run_argv) if host is None else host
     ) else None
+    if sys.platform == "win32":
+        try:
+            from hermes_cli.gateway_windows import root_gateway_subprocess_env
+        except ImportError:
+            # Mid-update the two gateway modules can be mixed versions, so the helper may be
+            # absent. Fail closed rather than arm a watcher that would hand delegated-worker
+            # scope to the respawned root gateway; callers report the failed relaunch.
+            return False
+
+        watcher_env = root_gateway_subprocess_env(
+            os.environ if watcher_env is None else watcher_env,
+        )
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:

@@ -2570,7 +2570,40 @@ class TestFormatMessage:
         assert "> quote" in result
         assert "`code`" in result
 
+    # --- List markers -----------------------------------------------------------------
+    # Slack mrkdwn has no list syntax, so a markdown bullet shipped as a literal hyphen and the
+    # block read as running prose. The converter emits the bullet glyph Slack itself uses for
+    # rich_text lists; indentation survives as literal spaces.
 
+    def test_list_markers_render_as_bullets(self, adapter):
+        assert adapter.format_message("- item\n- second") == "• item\n• second"
+
+    def test_nested_list_indentation_is_kept(self, adapter):
+        assert adapter.format_message("- item\n  - nested") == "• item\n  • nested"
+
+    def test_asterisk_and_plus_markers_convert_too(self, adapter):
+        assert adapter.format_message("* item\n+ item") == "• item\n• item"
+
+    def test_ordered_list_markers_are_untouched(self, adapter):
+        # "1." already reads as a list; only the hyphen needs replacing.
+        assert adapter.format_message("1. item\n2. item") == "1. item\n2. item"
+
+    def test_dash_inside_a_sentence_is_untouched(self, adapter):
+        assert adapter.format_message("well-known fact") == "well-known fact"
+
+    def test_list_marker_inside_a_code_fence_is_untouched(self, adapter):
+        code = "```\n- not a list\n```"
+        assert adapter.format_message(code) == code
+
+    def test_inline_code_dash_is_untouched(self, adapter):
+        assert adapter.format_message("`- x`") == "`- x`"
+
+    def test_rule_line_and_bare_marker_are_untouched(self, adapter):
+        assert adapter.format_message("- - -") == "- - -"
+        assert adapter.format_message("- ") == "- "
+
+    def test_bullet_conversion_does_not_eat_markup(self, adapter):
+        assert adapter.format_message("- **bold** item") == "• *bold* item"
 
 
 # ---------------------------------------------------------------------------

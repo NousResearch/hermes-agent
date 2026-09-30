@@ -159,6 +159,13 @@ def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
 
 
+# Slack's mrkdwn has no list syntax: a markdown ``- item`` shipped as a literal hyphen, so a
+# bulleted block read as running prose. The converter swaps a line-start marker for the bullet
+# glyph Slack itself uses for rich_text lists (``•``); indentation is kept as literal spaces.
+_BULLET_LINE_RE = re.compile(r"^([ \t]*)[-*+][ \t]+(.*)$", re.MULTILINE)
+_BULLET_MARKER_ONLY_RE = re.compile(r"[-*+\s]*$")  # ``- - -`` horizontal rule: keep verbatim
+
+
 # GFM tables: Slack mrkdwn shows pipe tables as literal pipes, so they are wrapped in ```
 # fences (monospace) and cells padded to per-column display width (CJK-wide aware).
 
@@ -3203,11 +3210,21 @@ class SlackAdapter(BasePlatformAdapter):
             zw = "\u200b" if inner and not (inner[-1].isalnum() or inner[-1] == "_") else ""
             return _ph(f"*{inner}{zw}*")
 
+        def _convert_bullet(m):
+            """``- item`` → ``• item``: Slack mrkdwn has no list syntax, so the marker reached
+            Slack as a bare hyphen and the block read as running prose. A ``- - -`` rule line and
+            an empty marker stay verbatim."""
+            if _BULLET_MARKER_ONLY_RE.match(m.group(2)):
+                return m.group(0)
+            return f"{m.group(1)}• {m.group(2)}"
+
         # Ordered passes: protect code/links/entities/quotes, escape, then convert emphasis.
         # Escaping unescapes first in ONE regex pass (sequential replaces would decode
         # "&amp;lt;" twice). ``None`` marks the escape step.
         passes = (
             (r"(```(?:[^\n]*\n)?[\s\S]*?```)", _protect_fence, 0),
+            # List markers: only outside a fence, so an indented "- " inside code stays.
+            (_BULLET_LINE_RE.pattern, _convert_bullet, re.MULTILINE),
             (r"(`[^`]+`)", lambda m: _ph(m.group(0)), 0),
             (r"(?<!!)\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)", _convert_markdown_link, 0),
             (r"(<(?:[@#!]|(?:https?|mailto|tel):)[^>\n]+>)", lambda m: _ph(m.group(1)), 0),

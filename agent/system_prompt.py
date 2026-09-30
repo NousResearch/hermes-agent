@@ -370,6 +370,23 @@ def _ambient_file_safety_profile_name() -> str:
     return _resolve_active_profile_name()
 
 
+def _shared_skills_note() -> str:
+    """Tell the model a configured ``skills.create_dir`` is a writable shared dir,
+    overriding the "belongs to another profile" warning for that path."""
+    try:
+        from agent.skill_utils import get_skill_create_dir
+        create_dir = get_skill_create_dir()
+    except Exception:
+        return ""
+    if create_dir is None:
+        return ""
+    return (
+        f" Exception: {create_dir}/ is configured as skills.create_dir — a SHARED, "
+        f"writable skills directory this session owns; new and patched skills "
+        f"belong there even when it sits under another profile's home."
+    )
+
+
 def _active_profile_line(agent: Any) -> str:
     """Name the running profile so the agent doesn't conflate ``~/.hermes/skills``
     (default) with ``~/.hermes/profiles/<active>/skills``.  Resolved from the
@@ -388,7 +405,7 @@ def _active_profile_line(agent: Any) -> str:
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            "you to." + _shared_skills_note()
         )
     # A non-default name is only returned when the resolved home is ALREADY
     # <root>/profiles/<name>, so the profile home is the session home itself.
@@ -406,7 +423,7 @@ def _active_profile_line(agent: Any) -> str:
         f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
         f"different session run from a different shell. Do NOT modify "
         f"another profile's skills/plugins/cron/memories unless the user "
-        f"explicitly directs you to."
+        f"explicitly directs you to." + _shared_skills_note()
     )
 
 

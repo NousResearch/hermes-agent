@@ -425,8 +425,12 @@ class GatewayModelCommandsMixin:
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
+            # No `max_models`: the adapters bound their own rendering and report the remainder from
+            # `total_models` (Discord partitions across 3 selects, Slack renders 100, Telegram
+            # paginates, Matrix keys off its reaction budget). A cap here truncates below every one
+            # of those, and slices `total_models` to match so no "more available" hint can fire.
             providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
+                list_picker_providers, include_moa=True, **listing_kwargs
             )
         except Exception:
             providers = []

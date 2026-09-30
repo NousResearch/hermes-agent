@@ -47,7 +47,8 @@ def envelope_sender_id(event: Any) -> Optional[str]:
     """Envelope author id of *event*: the sender an adapter preserved when it re-scoped ``source``
     (``MessageEvent.envelope_sender``), else ``source.user_id``."""
     sender = getattr(event, "envelope_sender", None) or getattr(event, "source", None)
-    return getattr(sender, "user_id", None)
+    user_id = getattr(sender, "user_id", None)
+    return str(user_id) if isinstance(user_id, (str, int)) else None  # non-id stand-ins read as unknown
 
 
 def same_envelope_sender(a: Any, b: Any) -> bool:

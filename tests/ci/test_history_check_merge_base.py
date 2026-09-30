@@ -13,6 +13,7 @@ pull request head (for forks included) on the base repository.
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -61,10 +62,18 @@ def remote(tmp_path):
     _git(seed, "commit", "--allow-empty", "-qm", "feature work")
     feature = _git(seed, "rev-parse", "feature")
 
+    # A main-descended head that merged the orphan branch: merge-base finds
+    # a shared ancestor, but the head carries a second root.
+    _git(seed, "checkout", "-q", "-b", "graft", "main")
+    _git(seed, "merge", "--no-ff", "--allow-unrelated-histories", "-qm",
+         "merge unrelated work", "orphan")
+    graft = _git(seed, "rev-parse", "graft")
+
     _git(seed, "push", "-q", str(bare), "main:main")
     # GitHub publishes the PR head on the base repo for fork PRs as well.
     _git(seed, "push", "-q", str(bare), f"{orphan}:refs/pull/1/head")
     _git(seed, "push", "-q", str(bare), f"{feature}:refs/pull/2/head")
+    _git(seed, "push", "-q", str(bare), f"{graft}:refs/pull/3/head")
 
     # Synthetic merge refs, matching what refs/pull/<n>/merge carries.
     _git(seed, "checkout", "-q", "-b", "merge-1", "main")
@@ -73,12 +82,15 @@ def remote(tmp_path):
     _git(seed, "checkout", "-q", "-b", "merge-2", "main")
     _git(seed, "merge", "--no-ff", "-qm", "merge", "feature")
     _git(seed, "push", "-q", str(bare), "merge-2:refs/pull/2/merge")
+    _git(seed, "checkout", "-q", "-b", "merge-3", "main")
+    _git(seed, "merge", "--no-ff", "-qm", "merge", "graft")
+    _git(seed, "push", "-q", str(bare), "merge-3:refs/pull/3/merge")
 
     _git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
     return bare
 
 
-def _run_step(remote: Path, tmp_path: Path, pr_number: int):
+def _run_step(remote: Path, tmp_path: Path, pr_number: int, env_extra=None):
     """Clone the remote, check out the merge ref the way actions/checkout does
     under a pull_request caller, then run the workflow step's script."""
     work = tmp_path / f"work-{pr_number}"
@@ -99,9 +111,10 @@ def _run_step(remote: Path, tmp_path: Path, pr_number: int):
         **{key: str(value) for key, value in (step.get("env") or {}).items()},
         "PR_NUMBER": str(pr_number),
         "GITHUB_OUTPUT": str(output),
+        **(env_extra or {}),
     }
     result = subprocess.run(
-        ["bash", "-e", "-c", step["run"]],
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
         cwd=work,
         env=env,
         capture_output=True,
@@ -143,6 +156,53 @@ def test_related_history_pr_passes(remote, tmp_path):
     assert result.returncode == 0, result.stderr or result.stdout
     assert "review_status=[]" in output.read_text()
     assert "review_status=[]" in (work / "review-status.json").read_text()
+
+
+@pytest.mark.platforms("posix")
+def test_grafted_unrelated_root_is_rejected(remote, tmp_path):
+    """merge-base alone cannot see this: the head shares history with main
+    yet drags the orphan root along, which is the same #25045 damage the
+    check exists to prevent."""
+    result, work, output = _run_step(remote, tmp_path, 3)
+
+    assert result.returncode == 1, result.stderr or result.stdout
+    assert "root commit" in result.stdout
+    status_line = next(
+        line for line in output.read_text().splitlines() if line.startswith("review_status=")
+    )
+    status = json.loads(status_line.split("=", 1)[1])
+    assert status[0]["results"][0]["kind"] == "action_required"
+
+
+@pytest.mark.platforms("posix")
+def test_transient_fetch_failure_retries(remote, tmp_path):
+    """A fetch that fails once then succeeds must still pass: transient
+    transport errors should not take the check down. A PATH shim makes the
+    first `git fetch` in the run block exit 1, then delegates to real git."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    counter = tmp_path / "fetch-count"
+    real_git = shutil.which("git")
+    (shim_dir / "git").write_text(
+        "#!/bin/bash\n"
+        'if [ "$1" = "fetch" ]; then\n'
+        f'  n=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\n'
+        f'  echo "$n" > "{counter}"\n'
+        '  [ "$n" -eq 1 ] && exit 1\n'
+        "fi\n"
+        f'exec {real_git} "$@"\n'
+    )
+    os.chmod(shim_dir / "git", 0o755)
+
+    result, _, output = _run_step(
+        remote, tmp_path, 2,
+        env_extra={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "review_status=[]" in output.read_text()
+    # Two fetch calls: the first failed, the retry succeeded.
+    assert counter.read_text().strip() == "2"
 
 
 @pytest.mark.platforms("posix")

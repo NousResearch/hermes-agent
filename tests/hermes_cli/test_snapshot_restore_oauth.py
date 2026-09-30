@@ -538,7 +538,7 @@ def test_quick_snapshot_restore_keeps_the_later_issued_generation_of_one_grant(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    def store(token, issued):
+    def store(token, issued, nous):
         row = {**_oauth_row("openai-codex", token), "expires_at": issued}
         block = {
             "tokens": {"access_token": f"access-{token}", "refresh_token": f"refresh-{token}"},
@@ -546,16 +546,24 @@ def test_quick_snapshot_restore_keeps_the_later_issued_generation_of_one_grant(
         }
         return {
             "version": 1,
-            "providers": {"openai-codex": block},
+            "providers": {"openai-codex": block, "nous": nous},
             "credential_pool": {"openai-codex": [row]},
         }
 
     older, later = "2026-09-01T00:00:00+00:00", "2026-09-20T00:00:00+00:00"
     live_issued, snap_issued = (later, older) if newer == "live" else (older, later)
-    (home / "auth.json").write_text(json.dumps(store("live", live_issued)), encoding="utf-8")
+    # Nous moved from OAuth to an agent key after the snapshot: a different credential, which
+    # carries no timestamp and so must not lose a freshness comparison to the historical grant.
+    live_nous = {"agent_key": "live-agent-key"}
+    snap_nous = {"access_token": "access-old", "refresh_token": "refresh-old", "last_refresh": later}
+    (home / "auth.json").write_text(
+        json.dumps(store("live", live_issued, live_nous)), encoding="utf-8"
+    )
     snap_dir = home / "state-snapshots" / "snap"
     snap_dir.mkdir(parents=True)
-    (snap_dir / "auth.json").write_text(json.dumps(store("saved", snap_issued)), encoding="utf-8")
+    (snap_dir / "auth.json").write_text(
+        json.dumps(store("saved", snap_issued, snap_nous)), encoding="utf-8"
+    )
     (snap_dir / "manifest.json").write_text(
         json.dumps({"files": {"auth.json": 1}}), encoding="utf-8"
     )
@@ -566,3 +574,4 @@ def test_quick_snapshot_restore_keeps_the_later_issued_generation_of_one_grant(
     want = "refresh-live" if newer == "live" else "refresh-saved"
     assert [r["refresh_token"] for r in restored["credential_pool"]["openai-codex"]] == [want]
     assert restored["providers"]["openai-codex"]["tokens"]["refresh_token"] == want
+    assert restored["providers"]["nous"] == live_nous

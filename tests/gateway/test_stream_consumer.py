@@ -969,6 +969,7 @@ class TestFilterAndAccumulate:
         """<think> mentioned mid-line in prose should NOT trigger filtering."""
         c = _make_consumer()
         c._filter_and_accumulate("The <think> tag is used for reasoning")
+        c._flush_think_buffer()
         assert "<think>" in c._accumulated
         assert "used for reasoning" in c._accumulated
 
@@ -988,6 +989,41 @@ class TestFilterAndAccumulate:
         # Flush explicitly (simulates stream end)
         c._flush_think_buffer()
         assert c._accumulated == "<thi"
+
+    def test_midline_open_split_close_pair_is_discarded(self):
+        """#128294: a mid-line <think> whose close splits across deltas must not leak the
+        reasoning — the gateway filter had the same leak as the scrubber."""
+        c = _make_consumer()
+        c._filter_and_accumulate("hello <think>SECRET</thi")
+        c._filter_and_accumulate("nk> world")
+        c._flush_think_buffer()
+        assert "SECRET" not in c._accumulated
+        assert c._accumulated == "hello  world"
+
+    @pytest.mark.parametrize("name", THINK_TAG_NAMES)
+    def test_every_tag_name_split_close_pair_is_discarded(self, name):
+        close = f"</{name}>"
+        cut = len(close) - 2
+        c = _make_consumer()
+        c._filter_and_accumulate(f"lead <{name}>SECRET{close[:cut]}")
+        c._filter_and_accumulate(f"{close[cut:]} tail")
+        c._flush_think_buffer()
+        assert "SECRET" not in c._accumulated
+        assert c._accumulated == "lead  tail"
+
+    def test_midline_open_unpaired_released_at_flush(self):
+        """No close ever arrives: the prose mention must be released verbatim."""
+        c = _make_consumer()
+        c._filter_and_accumulate("Use the <think> element for reasoning")
+        c._flush_think_buffer()
+        assert c._accumulated == "Use the <think> element for reasoning"
+
+    def test_pathological_unclosed_pending_falls_back_to_discard(self):
+        c = _make_consumer()
+        c._filter_and_accumulate("hello <think>")
+        c._filter_and_accumulate("X" * 9000)
+        c._flush_think_buffer()
+        assert c._accumulated == "hello "
 
 
 class TestFilterAndAccumulateIntegration:

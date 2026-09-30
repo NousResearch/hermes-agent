@@ -92,7 +92,7 @@ async def edits(client, room_id: str, bot: str, ids: dict, foreign_original: str
 async def finish(client, room_id: str, bot: str, ids: dict, *, encrypted: bool, enabled: bool) -> list[dict]:
     expected = ["Second response"] + (["Correction response"] if enabled else [])
     relations = []
-    observed = set()
+    observed = []
     while len(relations) < len(expected):
         response = await client.sync(timeout=250)
         assert isinstance(response, SyncResponse), response
@@ -104,14 +104,14 @@ async def finish(client, room_id: str, bot: str, ids: dict, *, encrypted: bool, 
                     or event.body not in expected or event.event_id in observed):
                 continue
             assert event.decrypted is encrypted, event.source
-            observed.add(event.event_id)
             relation = event.source["content"].get("m.relates_to", {})
             expected_relation = {
-                "rel_type": "m.thread", "event_id": ids["root"], "is_falling_back": False,
-                "m.in_reply_to": {"event_id": ids["blocked"]},
+                "rel_type": "m.thread", "event_id": ids["root"], "is_falling_back": bool(observed),
+                "m.in_reply_to": {"event_id": observed[-1] if observed else ids["blocked"]},
             }
-            assert relation == expected_relation, {
+            assert (event.body, relation) == (expected[len(observed)], expected_relation), {
                 "response": event.body, "actual": relation, "expected": expected_relation,
             }
+            observed.append(event.event_id)
             relations.append(relation)
     return relations

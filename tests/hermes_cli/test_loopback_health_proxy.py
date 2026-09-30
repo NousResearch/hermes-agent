@@ -10,12 +10,18 @@ import pytest
 
 
 @contextmanager
-def http_fixture(*, reject=False, detailed_missing=False):
+def http_fixture(*, reject=False, detailed_missing=False, redirect=None):
     paths = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             paths.append(self.path)
+            if redirect:
+                self.send_response(302)
+                self.send_header('Location', redirect)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             status = 503 if reject else (404 if detailed_missing and self.path in {'/health/detailed', '/json/version'} else 200)
             body = json.dumps({'status': 'ok'}).encode()
             self.send_response(status)
@@ -100,4 +106,29 @@ def test_probe_failure_and_absent_config_remain_bounded(monkeypatch):
     assert all(call.kwargs['timeout'] == 0.125 for call in open_call.call_args_list)
     with pytest.raises(TimeoutError):
         urlopen_bypass_proxy_for_loopback('http://gateway.invalid', timeout=0.125)
+
+
+def test_loopback_redirect_reapplies_remote_proxy(monkeypatch):
+    from agent.proxy_bypass import urlopen_bypass_proxy_for_loopback
+    from urllib.error import URLError
+
+    import socket
+    with http_fixture() as (proxy, proxy_paths), http_fixture(redirect='http://remote.invalid/health') as (origin, paths):
+        real_getaddrinfo = socket.getaddrinfo
+        proxy_port = urlparse(proxy).port
+        def resolve(host, port, *args, **kwargs):
+            if host == 'remote.invalid':
+                host, port = '127.0.0.1', proxy_port
+            return real_getaddrinfo(host, port, *args, **kwargs)
+        monkeypatch.setattr(socket, 'getaddrinfo', resolve)
+        monkeypatch.setattr(urllib.request, 'getproxies', lambda: {'http': proxy})
+        monkeypatch.setattr(urllib.request, 'proxy_bypass', lambda host: False)
+        try:
+            with urlopen_bypass_proxy_for_loopback(origin, timeout=0.75) as response:
+                result = json.loads(response.read())
+        except URLError:
+            result = None
+        assert result == {'status': 'ok'}
+        assert paths == ['/']
+        assert proxy_paths == ['http://remote.invalid/health']
 

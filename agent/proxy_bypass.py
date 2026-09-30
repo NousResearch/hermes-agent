@@ -86,7 +86,15 @@ def urlopen_bypass_proxy_for_loopback(request, *, timeout):
 
     url = request.full_url if isinstance(request, urllib.request.Request) else request
     if is_loopback_host(split_host_port(url)[0]):
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        class LoopbackProxyHandler(urllib.request.ProxyHandler):
+            def proxy_open(self, req, proxy, scheme):
+                # Redirects reuse this opener: only bypass the current target,
+                # never carry a loopback exception onto a remote destination.
+                if is_loopback_host(split_host_port(req.full_url)[0]):
+                    return None
+                return super().proxy_open(req, proxy, scheme)
+
+        opener = urllib.request.build_opener(LoopbackProxyHandler())
         return opener.open(request, timeout=timeout)
     return urllib.request.urlopen(request, timeout=timeout)
 

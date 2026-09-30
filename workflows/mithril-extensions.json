@@ -1,0 +1,9 @@
+{
+  "id": "mithril-extensions",
+  "name": "Browse Mithril extensions",
+  "owner": "hosted page",
+  "steps": [
+    "Open https://app.mithril.fund/extensions for the extension catalog.",
+    "Install a skill, MCP, or workflow from the Desktop Discover screen when the item is already packaged there."
+  ]
+}

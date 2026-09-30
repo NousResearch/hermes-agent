@@ -237,6 +237,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'mithril',
+                  key: 'skills-bundled-mithril',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/mithril/mithril-mithril-surfaces',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'note-taking',
                   key: 'skills-bundled-note-taking',
                   collapsed: true,
@@ -276,6 +285,16 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/research/research-competitor-news-monitor',
                     'user-guide/skills/bundled/research/research-grounded-citations',
                     'user-guide/skills/bundled/research/research-llm-wiki',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'security',
+                  key: 'skills-bundled-security',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/security/security-security-assurance',
+                    'user-guide/skills/bundled/security/security-security-records',
                   ],
                 },
                 {

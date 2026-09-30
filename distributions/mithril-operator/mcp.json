@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mithril-fund": {
+      "command": "python3",
+      "args": ["mcp/mithril-fund/server.py"]
+    }
+  }
+}

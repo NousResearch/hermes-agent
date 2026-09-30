@@ -1,0 +1,15 @@
+name: mithril-operator
+version: 0.1.0
+description: "Operates Mithril hosted pages, security record checks, and read-only fund API calls."
+hermes_requires: ">=0.12.0"
+author: "jun (junkawasaki)"
+license: "MIT"
+env_requires:
+  - name: MITHRIL_API_TOKEN
+    description: "Bearer token for authenticated Mithril API reads. Omit for local record checks."
+    required: false
+    default: ""
+  - name: MITHRIL_API_ORIGIN
+    description: "API origin. Allowed values are https://api.mithril.fund and the local test origin."
+    required: false
+    default: "https://api.mithril.fund"

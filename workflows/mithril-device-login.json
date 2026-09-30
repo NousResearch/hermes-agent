@@ -1,0 +1,10 @@
+{
+  "id": "mithril-device-login",
+  "name": "Device login handoff",
+  "owner": "stays on the API",
+  "steps": [
+    "The operator starts the device code on the host that is signing in.",
+    "The operator approves that code in the browser session they already trust.",
+    "The agent does not call POST /v1/device/approve and does not read the device token."
+  ]
+}

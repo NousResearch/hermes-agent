@@ -1,0 +1,9 @@
+{
+  "id": "mithril-case-read",
+  "name": "Read Mithril cases",
+  "owner": "mithril-fund MCP",
+  "steps": [
+    "Call the list_cases tool on the mithril-fund MCP.",
+    "Report the returned cases. Creating or attaching evidence stays on the authenticated API until the operator asks for that write in the product UI."
+  ]
+}

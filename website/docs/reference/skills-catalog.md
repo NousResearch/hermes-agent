@@ -67,6 +67,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`songsee`](../user-guide/skills/bundled/media/media-songsee.md) | Audio spectrograms/features (mel, chroma, MFCC) via CLI. | `media/songsee` |
 | [`youtube-content`](../user-guide/skills/bundled/media/media-youtube-content.md) | YouTube transcripts to summaries, threads, blogs. | `media/youtube-content` |
 
+## mithril
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`mithril-surfaces`](../user-guide/skills/bundled/mithril/mithril-mithril-surfaces.md) | Open Studio, extensions, ontology, and download pages. | `mithril/mithril-surfaces` |
+
 ## note-taking
 
 | Skill | Description | Path |
@@ -100,6 +106,13 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`competitor-news-monitor`](../user-guide/skills/bundled/research/research-competitor-news-monitor.md) | Watch named companies for material news; cited digests. | `research/competitor-news-monitor` |
 | [`grounded-citations`](../user-guide/skills/bundled/research/research-grounded-citations.md) | Ground answers and documents in cited, verifiable sources. | `research/grounded-citations` |
 | [`llm-wiki`](../user-guide/skills/bundled/research/research-llm-wiki.md) | Karpathy's LLM Wiki: build/query interlinked markdown KB. | `research/llm-wiki` |
+
+## security
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`security-assurance`](../user-guide/skills/bundled/security/security-security-assurance.md) | Review MDM, SBOM, supply-chain, PPAP, and device evidence. | `security/security-assurance` |
+| [`security-records`](../user-guide/skills/bundled/security/security-security-records.md) | Check CMDB structure, mail attachment signals, and CSF fit. | `security/security-records` |
 
 ## social-media
 

@@ -1,0 +1,9 @@
+{
+  "id": "mithril-studio",
+  "name": "Open Mithril App Studio",
+  "owner": "hosted page",
+  "steps": [
+    "Open https://app.mithril.fund/studio/ when the operator wants to edit or compile a .mith application.",
+    "Leave POST /api/compile and /d/ deployment URLs on the Worker. Do not claim a local compile succeeded."
+  ]
+}

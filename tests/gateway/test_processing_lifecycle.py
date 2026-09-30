@@ -221,7 +221,8 @@ class _Walk:
     verb: str = "steer"            # steer | redirect | interrupt | queue
     leftovers: int = 0             # corrections that the model does not read in the opening turn
     turn: str = "tracked"          # tracked | untracked (no platform message) | hooks-done (completed early)
-    ack: str = "returned"          # returned | in-flight (/steer, acknowledgement held until after the drain)
+    ack: str = "returned"          # returned | in-flight (/steer, acknowledgement held until after the drain) |
+    #                                late (held until the copy's own model call has started)
     placement: str = "direct"      # direct | fifo | overflow | cap: where the leftover copy waits
     exit: str = "success"          # success | stop | new | reset (before the copy starts) | stop-turn |
     #                                stop-queued | new-queued | reset-queued (during a turn) | refused | exception
@@ -326,6 +327,10 @@ _WALKS = {
     **{f"untracked-in-flight-{exit}": _Walk((_started(_C1), _completed(_C1, outcome)), leftovers=1, turn="untracked",
                                             ack="in-flight", exit=exit)
        for exit, outcome in (("stop", _CANCELLED), ("refused", _FAILED), ("exception", _FAILED))},
+    # The copy waits behind a queued follow-up, and the acknowledgement returns during the copy's turn.
+    "untracked-late-ack-fifo-exception": _Walk(
+        (_started(_C1), _started(_Q1), _completed(_Q1, _OK), _completed(_C1, _FAILED)), leftovers=1,
+        turn="untracked", ack="late", placement="fifo", exit="exception"),
     # The running turn's hooks had already completed, so the correction completes with its handler.
     "hooks-done-leftover": _Walk((_S_OPEN, _completed(_OPENING, _OK), _started(_C1), _completed(_C1, _OK)), leftovers=1,
                                  turn="hooks-done"),
@@ -348,7 +353,7 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
     runner, _adapter = _priority_runner(
         monkeypatch, {"redirect": "interrupt", "interrupt": "interrupt", "queue": "queue"}.get(walk.verb, "steer"))
     adapter = (_WalkCompleteOnlyAdapter if walk.adapter == "complete-only" else _WalkAdapter)(
-        hold_ack=walk.ack == "in-flight")
+        hold_ack=walk.ack != "returned")
     adapter.platform = Platform.SLACK
     runner.adapters[Platform.SLACK] = adapter
     adapter.set_message_handler(runner._handle_message)
@@ -424,10 +429,10 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
         if walk.turn == "hooks-done":
             await adapter._run_processing_hook("on_processing_complete", opening, _OK)
         for index in range(1, max(walk.leftovers, 1) + 1):
-            text = f"/steer correction {index}" if walk.ack == "in-flight" else f"correction {index}"
+            text = f"correction {index}" if walk.ack == "returned" else f"/steer correction {index}"
             await adapter.handle_message(MessageEvent(text=text, source=source, message_id=f"corr-{index}"))
             correction_task = adapter._session_tasks[key]
-            if walk.ack == "in-flight":
+            if walk.ack != "returned":
                 await asyncio.wait_for(adapter.ack_sending.wait(), 30)
             else:
                 await asyncio.wait_for(correction_task, 30)
@@ -448,9 +453,13 @@ async def _walk_lifecycle(monkeypatch, tmp_path, walk: _Walk) -> list:
                 release.set()
             await asyncio.wait_for(copy_prepared.wait(), 30)
             await command(walk.exit, chain)
-        for release in run.model_release[1:]:
-            release.set()
         copy_release.set()
+        for index, release in enumerate(run.model_release[1:], 1):
+            if walk.ack == "late" and index == copy_call:
+                await asyncio.wait_for(run.model_started[copy_call].wait(), 30)
+                adapter.ack_release.set()
+                await asyncio.wait_for(correction_task, 30)
+            release.set()
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(chain, 30)
         if walk.placement == "cap":

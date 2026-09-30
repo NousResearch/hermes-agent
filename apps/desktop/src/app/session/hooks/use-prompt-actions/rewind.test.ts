@@ -139,6 +139,18 @@ describe('truncateSubmitParams', () => {
       confirm_empty_truncate: true
     })
   })
+
+  it("never sends a persisted row's renderer id as a gateway message id", () => {
+    // hydration.ts renders persisted rows as `row-<rowId>`; the gateway only
+    // knows the numeric row id, and a rebind can clear rowId while the
+    // renderer id stays, so that id must not become truncate_before_message_id.
+    expect(truncateSubmitParams(undefined, 'row-12')).toEqual({})
+    expect(truncateSubmitParams(2, 'row-12', 12)).toEqual({
+      confirm_truncate: true,
+      truncate_before_user_ordinal: 2,
+      truncate_before_row_id: 12
+    })
+  })
 })
 
 describe('survivorRowIdsFrom', () => {

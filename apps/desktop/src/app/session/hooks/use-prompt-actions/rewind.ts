@@ -143,9 +143,11 @@ export function durableRowIdsForRebind(messages: readonly ChatMessage[]): number
 }
 
 /**
- * Renderer-synthetic message ids (`${timestamp}-${index}-${role}` from
- * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
- * history never carries them — only durable `row_id` / platform message_id.
+ * Renderer-synthetic message ids (`row-<rowId>` and `${timestamp}-${index}-${role}`
+ * from chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes).
+ * Gateway history never carries them — only durable `row_id` / platform
+ * message_id. `row-<rowId>` names a durable row, but only `truncate_before_row_id`
+ * can address it, and a rebind can leave the id pointing at an archived row.
  */
 export function isSyntheticRendererId(messageId: string | undefined): boolean {
   return (
@@ -153,6 +155,7 @@ export function isSyntheticRendererId(messageId: string | undefined): boolean {
     (messageId.startsWith('user-') ||
       messageId.startsWith('assistant-') ||
       messageId.includes('-synthetic-') ||
+      /^row-\d+$/.test(messageId) ||
       /^\d+-\d+-(user|assistant|tools)\b/.test(messageId))
   )
 }

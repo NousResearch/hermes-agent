@@ -120,6 +120,7 @@ export function ChatBar({
   cwd,
   disabled,
   focusKey,
+  freshDraftKey,
   gateway,
   maxRecordingSeconds = 120,
   profile,
@@ -206,13 +207,12 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
-  // Parked on an approval/sudo/secret prompt: typing can't answer those, so the
-  // busy submit routes text to the queue instead of a steer (which would sit
-  // undelivered behind the blocked tool batch). Drives the button affordance.
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const storedSessionId = useStore(useSessionView().$storedId)
-  const codingWorkspace = useCodingWorkspace(activeQueueSessionKey, !sessionId && !storedSessionId)
+  // Coding workspace drafts stay on the shared pre-session key: submit and
+  // session.create resolve a fresh chat's scope as null ('__new__').
+  const codingWorkspace = useCodingWorkspace(queueSessionKey || sessionId || null, !sessionId && !storedSessionId)
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
@@ -304,6 +304,7 @@ export function ChatBar({
   const {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,
@@ -446,6 +447,7 @@ export function ChatBar({
     compacting,
     clearDraft,
     disabled,
+    draftScopeRef,
     draftRef,
     drainNextQueued,
     editorRef,

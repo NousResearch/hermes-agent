@@ -1038,6 +1038,42 @@ def _local_host_hints() -> list[str]:
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
 
+def bot_screen_note(running: bool, display: "str | None", holder: str) -> str:
+    """The one-line Bot Screen status the model sees — the prompt's ``_bot_screen_hint`` body,
+    parameterised so the display watcher can stage the same sentence as a per-turn note when a
+    screen starts or stops mid-session (#125830; the byte-stable prompt only converges at
+    compaction). ``holder`` is ``lease.AGENT``/``lease.HUMAN``; "" when there is nothing to say
+    (a stop with no display known, or an unknown holder on a running screen)."""
+    if running:
+        if not display:
+            return ""
+        held = ("a human holds it — do not drive the screen; ask them or wait" if holder == "human"
+                else "you hold it" if holder == "agent" else "")
+        if not held:
+            return ""
+        return (f"Bot Screen: this profile's own headless desktop is RUNNING on display {display} "
+                f"({held}). 'screen N' / ':N' / 'the bot screen' / 'your screen' means THIS screen: "
+                f"GUI apps you launch from the terminal already open there (their DISPLAY is routed "
+                f"to it), and display introspection (xrandr/xdotool/wmctrl) targets it. It is NOT "
+                f"the user's own display.")
+    return ("Bot Screen: this profile's own headless desktop is no longer running. Do not refer to "
+            "'the bot screen' or route GUI launches at it; GUI apps from the terminal open on the "
+            "user's own display again.")
+
+
+def _bot_screen_hint() -> str:
+    """One line naming this profile's running Bot Screen (#125830): the display, and who holds it.
+
+    Pure reads (``published_env`` + the lease file); never raises — a missing/unimportable
+    bot_desktop module or an unreadable lease must not break prompt construction. ``""`` when
+    no screen is running, so the block simply drops out of the environment hints."""
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
+    except Exception:
+        return ""
+
+
 def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
@@ -1086,6 +1122,10 @@ def build_environment_hints() -> str:
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
     hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
+    # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
+    if not is_remote_backend:
+        hints.append(_bot_screen_hint())
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 

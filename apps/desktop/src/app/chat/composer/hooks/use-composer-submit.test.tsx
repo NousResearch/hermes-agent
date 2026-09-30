@@ -65,6 +65,7 @@ function renderSubmitHook({
 }: SubmitHarnessOptions = {}) {
   const resolvedSurfaceId = surfaceId === undefined ? `test-surface-${++surfaceSequence}` : surfaceId
   const draftRef = { current: text }
+  const draftScopeRef = { current: sessionKey }
   const editor = window.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
@@ -121,6 +122,7 @@ function renderSubmitHook({
         compacting,
         clearDraft,
         disabled: false,
+        draftScopeRef,
         draftRef,
         drainNextQueued: vi.fn(async () => false),
         editorRef,
@@ -484,6 +486,18 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
+    )
   })
 })
 

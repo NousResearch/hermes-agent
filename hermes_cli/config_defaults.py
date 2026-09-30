@@ -820,6 +820,8 @@ DEFAULT_CONFIG = {
 
     "display": {
         "compact": False,
+        # Dashboard/desktop terminal font multiplier applied after responsive sizing.
+        "terminal_font_scale": 1.0,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume.

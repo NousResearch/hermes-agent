@@ -117,3 +117,20 @@ def test_all_path_drops_workspace_requirement():
 
 
 
+
+
+def test_explicit_approval_request_ends_turn():
+    """An ask-for-go response must not be converted into tool authorization."""
+    agent = _agent("auto", "codex_responses")
+    user = "check the current status of the server"
+    reply = "I will inspect it first. Give me a clear go for that check, or steer the scope."
+    assert not looks_like_codex_intermediate_ack(
+        agent, user, reply, [{"role": "user", "content": user}], require_workspace=True
+    )
+
+
+def test_unapproved_planning_reply_still_continues():
+    agent = _agent("auto", "codex_responses")
+    assert looks_like_codex_intermediate_ack(
+        agent, CODE_USER, CODE_ACK, [{"role": "user", "content": CODE_USER}], require_workspace=True
+    )

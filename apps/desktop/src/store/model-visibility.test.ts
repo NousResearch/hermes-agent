@@ -1,18 +1,50 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const requests: [string, Record<string, unknown>][] = []
+const { requests, getEventHandler, setEventHandler, getFakeGateway } = vi.hoisted(() => {
+  const requests: [string, Record<string, unknown>][] = []
+  type Handler = (event: { type: string; payload?: unknown }) => void
+  let currentHandler: Handler | null = null
 
-vi.mock('@/store/gateway', () => ({
-  $gateway: { get: () => null, listen: () => () => {}, subscribe: () => () => {} },
-  activeGateway: () => ({
+  const fake = {
     request: (method: string, params: Record<string, unknown>) => {
       requests.push([method, params])
-
       return Promise.resolve({})
+    },
+    onEvent: (handler: Handler) => {
+      currentHandler = handler
+      return () => {
+        if (currentHandler === handler) {
+          currentHandler = null
+        }
+      }
     }
-  })
-}))
+  }
+
+  return {
+    requests,
+    getEventHandler: () => currentHandler,
+    setEventHandler: (h: Handler | null) => { currentHandler = h },
+    getFakeGateway: () => fake
+  }
+})
+
+vi.mock('@/store/gateway', () => {
+  const fake = getFakeGateway()
+  return {
+    $gateway: {
+      get: () => fake,
+      listen: () => () => {},
+      subscribe: (fn: (gw: unknown) => (() => void) | void) => {
+        const cleanup = fn(fake)
+        return () => {
+          cleanup?.()
+        }
+      }
+    },
+    activeGateway: () => fake
+  }
+})
 
 import {
   collapseModelFamilies,
@@ -22,6 +54,7 @@ import {
   isProviderSentinel,
   $visibleModels,
   adoptVisibleModels,
+  initVisibleModelsGatewaySync,
   modelVisibilityKey,
   resolveVisibleKeys,
   setProviderVisibility,
@@ -525,5 +558,34 @@ describe('model visibility crosses surfaces', () => {
     adoptVisibleModels(null)
     expect($visibleModels.get()).toBeNull()
     expect(localStorage.getItem('hermes.desktop.visible-models')).toBeNull()
+  })
+
+  it('initVisibleModelsGatewaySync adopts live visible_models.changed events from other clients', () => {
+    const unbind = initVisibleModelsGatewaySync()
+    try {
+      const handler = getEventHandler()
+      expect(handler).toBeDefined()
+      // Simulate an incoming broadcast event when another client (or TUI) changes visible models
+      handler?.({
+        type: 'visible_models.changed',
+        payload: { value: ['nous::hermes-3-llama-3.1-405b'] }
+      })
+
+      expect($visibleModels.get()).toEqual(new Set(['nous::hermes-3-llama-3.1-405b']))
+      expect(localStorage.getItem('hermes.desktop.visible-models')).toBe(
+        JSON.stringify(['nous::hermes-3-llama-3.1-405b'])
+      )
+
+      // Null event clears customisation
+      handler?.({
+        type: 'visible_models.changed',
+        payload: { value: null }
+      })
+
+      expect($visibleModels.get()).toBeNull()
+      expect(localStorage.getItem('hermes.desktop.visible-models')).toBeNull()
+    } finally {
+      unbind()
+    }
   })
 })

@@ -15,18 +15,33 @@ interface StateDbPreflight {
    */
   launcher?: string | null
   /**
-   * Wall-clock cap for the snapshot subprocess. The previous synchronous
-   * `execFileSync(..., { timeout: 30_000 })` killed legitimately slow copies:
-   * `backup_sqlite.py` bounds only how long the source stays *locked*
-   * (`_safe_copy_db`'s 10 s busy deadline), not how long copying a large
-   * state.db takes, so healthy installs died at 30 s with
-   * `spawnSync ... ETIMEDOUT` and the update cancelled before it started
-   * (#124972).
+   * Cap for the snapshot subprocess BEFORE it reports progress. The runtime's
+   * snapshot helper (`backup_sqlite.py`) now throttles `PRFL-HB <detail>`
+   * stderr lines while a phase is alive; an older runtime prints none, so
+   * this window stays the whole budget for it. It replaces the previous flat
+   * 180 s cap, which sat ~6% above a healthy 14.40 GB copy measured on
+   * Windows (#124972, #124983): a progressing copy now outlives it via
+   * heartbeats while a wedged one is still killed.
    */
   timeoutMs?: number
+  /**
+   * Silence window AFTER the first heartbeat: no `PRFL-HB` line for this long
+   * means the copy is wedged (a slow-but-progressing one keeps heartbeating),
+   * and the subprocess is killed and the update cancelled.
+   */
+  stallMs?: number
 }
 
-/** SIGTERM first, then SIGKILL after a grace period, so the Python side can unlink its staging file. */
+/** Heartbeat prefix the runtime's `backup_sqlite.py` throttles while a phase makes progress. */
+const PROGRESS_PREFIX = 'PRFL-HB '
+/** No heartbeat may ever arrive before the process has even started: a generous fixed window. */
+const DEFAULT_STARTUP_MS = 180_000
+/** Default no-progress window once heartbeats have begun. */
+const DEFAULT_STALL_MS = 45_000
+
+/** SIGTERM first, then SIGKILL after a grace period. On Windows every signal is
+ * TerminateProcess, so the runtime's own watchdog is the kill path that
+ * matters there; this one is the belt-and-braces backstop. */
 function terminate(child: ReturnType<typeof spawn>): void {
   child.kill('SIGTERM')
 
@@ -35,6 +50,18 @@ function terminate(child: ReturnType<typeof spawn>): void {
       child.kill('SIGKILL')
     }
   }, 2_000).unref()
+}
+
+function cancelled(message: string, log: (message: string) => void): Error {
+  const full: string =
+    `${message}. ` +
+    'The snapshot could not complete in time (a large or busy state.db — this is not evidence of corruption). ' +
+    'Update cancelled before backend shutdown. Update the selected installation with its hermes update command, then retry.'
+
+  log(`[updates] ${full}`)
+  const error = new Error(full)
+
+  return error
 }
 
 /**
@@ -47,6 +74,11 @@ function terminate(child: ReturnType<typeof spawn>): void {
  * full probe duration and surfaced an opaque `spawnSync ... ETIMEDOUT`
  * (#124972, #103786). The snapshot still runs to completion or is cancelled
  * before the backend shutdown: nothing downstream observes a half-run probe.
+ *
+ * The child is killed only when it stops proving progress: the runtime's
+ * snapshot helper heartbeats on stderr while copying or quick-checking, so a
+ * legitimately slow multi-GB snapshot is never cut down by a fixed wall-clock
+ * cap again (#124983).
  */
 export async function preflightStateDb({
   python,
@@ -54,7 +86,8 @@ export async function preflightStateDb({
   home,
   log,
   launcher = null,
-  timeoutMs = 180_000
+  timeoutMs = DEFAULT_STARTUP_MS,
+  stallMs = DEFAULT_STALL_MS
 }: StateDbPreflight): Promise<void> {
   let command: string | null = launcher ?? python
 
@@ -93,12 +126,37 @@ export async function preflightStateDb({
   let stdout = ''
   let stderr = ''
 
+  // Heartbeats reset the no-progress window; they are progress telemetry, not
+  // error detail, so they are filtered out of the failure message.
+  let timer: NodeJS.Timeout | undefined = undefined
+  let progressed = false
+
+  const arm = (ms: number): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
+
+    timer = setTimeout((): void => {
+      terminate(child)
+    }, ms)
+    timer.unref?.()
+  }
+
+  const track = (chunk: Buffer): void => {
+    const text: string = chunk.toString('utf8')
+
+    if (text.includes(PROGRESS_PREFIX)) {
+      progressed = true
+      arm(stallMs)
+    }
+
+    stderr += text
+  }
+
   child.stdout?.on('data', (chunk: Buffer): void => {
     stdout += chunk
   })
-  child.stderr?.on('data', (chunk: Buffer): void => {
-    stderr += chunk
-  })
+  child.stderr?.on('data', track)
 
   const settled: Promise<number | null> = new Promise((resolve, reject): void => {
     child.once('error', reject)
@@ -109,37 +167,35 @@ export async function preflightStateDb({
   // unhandled rejection for the losing side of the race.
   settled.catch((): void => {})
 
-  let timer: NodeJS.Timeout | undefined = undefined
+  arm(timeoutMs)
 
   try {
-    const outcome: number | null | 'expired' = await Promise.race([
-      settled,
-      new Promise((resolve): void => {
-        timer = setTimeout((): void => {
-          terminate(child)
-          resolve('expired')
-        }, timeoutMs)
-      })
-    ])
+    const outcome: number | null = await settled
 
-    if (outcome === 'expired') {
-      const message: string =
-        `state.db pre-flight timed out after ${Math.round(timeoutMs / 1000)} s and was cancelled. ` +
-        'The snapshot could not complete in time (a large or busy state.db — this is not evidence of corruption). ' +
-        'Update cancelled before backend shutdown. Update the selected installation with its hermes update command, then retry.'
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
 
-      log(`[updates] ${message}`)
-      throw new Error(message)
+    if (child.exitCode !== null && child.exitCode !== 0) {
+      const detail: string = stderr
+        .split('\n')
+        .filter((line: string): boolean => line !== '' && !line.trimStart().startsWith(PROGRESS_PREFIX.trim()))
+        .join(' ')
+        .trim()
+
+      throw cancelled(
+        `state.db pre-flight failed: ${detail || `exit code ${child.exitCode}`}`,
+        log
+      )
     }
 
     if (outcome !== 0) {
-      const detail: string = stderr.trim() || `exit code ${outcome}`
       const message: string =
-        `state.db pre-flight failed: ${detail}. ` +
-        'Update cancelled before backend shutdown. Update the selected installation with its hermes update command, then retry.'
+        progressed
+          ? `state.db pre-flight made no progress for ${Math.round(stallMs / 1000)} s and was cancelled`
+          : `state.db pre-flight timed out after ${Math.round(timeoutMs / 1000)} s and was cancelled`
 
-      log(`[updates] ${message}`)
-      throw new Error(message)
+      throw cancelled(message, log)
     }
 
     log(`[updates] state.db pre-flight: ${stdout.trim()}`)

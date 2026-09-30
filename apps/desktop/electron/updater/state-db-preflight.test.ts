@@ -245,3 +245,90 @@ test('an expired snapshot reports a timeout with a retry path, not corruption (#
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('a snapshot that keeps heartbeating survives past the startup window (#124983)', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'progressing-preflight-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const logs: string[] = []
+
+  // A snapshot that outlives the startup window while proving progress: it
+  // heartbeats like `backup_sqlite.py` does while a phase runs, far past the
+  // old fixed 180 s cap, and must NOT be killed (#124972, #124983).
+  const probe: string = path.join(home, 'progressing-backup.py')
+  fs.writeFileSync(
+    probe,
+    'import sys, time\n' +
+    'for _ in range(6):\n' +
+    "    sys.stderr.write('PRFL-HB copying state.db: still going\\n')\n" +
+    '    sys.stderr.flush()\n' +
+    '    time.sleep(0.25)\n' +
+    "print('{\"path\": null, \"message\": \"done\"}')\n"
+  )
+
+  try {
+    await preflightStateDb({
+      python,
+      script: probe,
+      home,
+      timeoutMs: 300,
+      stallMs: 10_000,
+      log: (message: string): void => {
+        logs.push(message)
+      }
+    })
+    assert.equal(
+      logs.some((message: string): boolean => /state\.db pre-flight:/.test(message) && /done/.test(message)),
+      true,
+      logs.join('\n')
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a snapshot that heartbeats once and then goes silent is cancelled as wedged (#124983)', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'wedged-preflight-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const logs: string[] = []
+
+  // One heartbeat (so the no-progress watchdog is armed), then silence: the
+  // copy is wedged exactly like Dolverin's forced-kill scenario, and the
+  // updater must cancel it rather than wait out a fixed cap.
+  const probe: string = path.join(home, 'wedged-backup.py')
+  fs.writeFileSync(
+    probe,
+    'import sys, time\n' +
+    "sys.stderr.write('PRFL-HB copying state.db: 1 of 2 pages\\n')\n" +
+    'sys.stderr.flush()\n' +
+    'time.sleep(30)\n'
+  )
+
+  try {
+    await assert.rejects(
+      async (): Promise<void> => {
+        await preflightStateDb({
+          python,
+          script: probe,
+          home,
+          timeoutMs: 60_000,
+          stallMs: 300,
+          log: (message: string): void => {
+            logs.push(message)
+          }
+        })
+      },
+      (error: unknown): boolean =>
+        error instanceof Error &&
+        /made no progress for 0 s and was cancelled/.test(error.message) &&
+        /not evidence of corruption/.test(error.message) &&
+        /retry/i.test(error.message)
+    )
+    assert.equal(
+      logs.some((message: string): boolean => message.includes('made no progress') && message.includes('not evidence of corruption')),
+      true,
+      logs.join('\n')
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

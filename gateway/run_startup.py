@@ -37,6 +37,11 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger("gateway.run")
 
 
+def _resume_interruption_token(entry) -> tuple:
+    """Identity of one restart interruption: scheduling claims it, dispatch re-checks it."""
+    return entry.session_id, entry.last_resume_marked_at or entry.updated_at
+
+
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
@@ -75,10 +80,7 @@ class GatewayStartupMixin:
                 with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                     self.session_store._ensure_loaded_locked()  # noqa: SLF001
                     entry = self.session_store._entries.get(session_key)  # noqa: SLF001
-                    current = (
-                        (entry.session_id, entry.last_resume_marked_at or entry.updated_at)
-                        if entry is not None else None
-                    )
+                    current = _resume_interruption_token(entry) if entry is not None else None
                     valid = bool(entry and entry.resume_pending and not entry.suspended)
                 human_waiting = any(
                     not queued.internal
@@ -86,11 +88,12 @@ class GatewayStartupMixin:
                     for queued in getattr(self, "_startup_restore_queue", ())
                 )
                 state = self._peek_session_state(session_key)
-                if (not valid or current != token or human_waiting
-                        or not state or state.turn.agent is not _AGENT_PENDING_SENTINEL):
+                ours = bool(state) and state.turn.agent is _AGENT_PENDING_SENTINEL
+                if not valid or current != token or human_waiting or not ours:
                     logger.info(
-                        "Skipping superseded startup resume for %s (valid=%s human_waiting=%s)",
-                        session_key, valid, human_waiting,
+                        "Skipping superseded startup resume for %s (valid=%s same_interruption=%s "
+                        "human_waiting=%s slot_ours=%s)",
+                        session_key, valid, current == token, human_waiting, ours,
                     )
                     return
             await adapter.handle_message(event)
@@ -626,7 +629,7 @@ class GatewayStartupMixin:
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
             marker = entry.last_resume_marked_at or entry.updated_at
-            token = (entry.session_id, marker)
+            token = _resume_interruption_token(entry)
             if claims.get(entry.session_key) == token:
                 continue
             if not _is_fresh_gateway_interruption(marker, window_secs=window):

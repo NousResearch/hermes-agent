@@ -100,14 +100,14 @@ interface WorkArea {
 // 110% default zoom.
 const WINDOW_SIZES: Record<WindowSizeMode, { share: WorkArea; min: WorkArea; max: WorkArea }> = {
   normal: {
-    share: { width: 0.85, height: 0.85 },
-    min: { width: 1220, height: 800 },
-    max: { width: 1600, height: 1000 }
+    share: { width: 0.88, height: 0.88 },
+    min: { width: 1280, height: 820 },
+    max: { width: 1760, height: 1100 }
   },
   onboarding: {
-    share: { width: 0.45, height: 0.8 },
-    min: { width: 660, height: 700 },
-    max: { width: 820, height: 900 }
+    share: { width: 0.5, height: 0.85 },
+    min: { width: 760, height: 760 },
+    max: { width: 960, height: 1000 }
   }
 }
 

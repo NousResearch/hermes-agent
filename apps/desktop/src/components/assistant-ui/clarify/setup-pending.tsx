@@ -18,6 +18,7 @@ import {
   EMPTY_SETUP_STAGE,
   SETUP_CHOOSE_QID,
   setupChooseStage,
+  skipClarify,
   stageSetupChoose
 } from '@/store/clarify'
 import { notifyError } from '@/store/notifications'
@@ -161,8 +162,7 @@ export function SetupChoosePending({
     }
 
     onAnswered()
-    clearClarifyRequest(request.requestId, request.sessionId)
-    respondToServerRequest(request.requestId, {})
+    skipClarify(request)
   }, [onAnswered, request])
 
   const handleSubmit = useCallback(

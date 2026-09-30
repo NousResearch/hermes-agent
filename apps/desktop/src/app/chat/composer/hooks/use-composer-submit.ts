@@ -4,7 +4,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
-import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
+import { answerClarifyRequest, hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
@@ -244,24 +244,41 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    // A clarify card parked on this session owns the turn: the agent is blocked
-    // inside its tool batch waiting on `clarify.respond`, so a follow-up routed
-    // through steer/queue sits undelivered until the clarify's own timeout
-    // (default 5 min) — the message looks sent and nothing happens. Typing a
-    // real message instead of picking an option IS the answer "none of these":
-    // skip the question so the tool returns, then route the words normally.
+    // A clarify or setup card parked on this session owns the turn: the agent
+    // is blocked inside its tool batch waiting on the card's answer, so a
+    // follow-up routed through steer/queue sits undelivered until the card's
+    // own timeout (default 5 min) — the message looks sent and nothing
+    // happens. Typed words instead of a pick ARE the answer: they go back as
+    // the card's answer, the card settles showing them, and the turn carries
+    // on with no interrupt.
     //
-    // Fire-and-forget, not awaited: the skip clears the card synchronously and
-    // both RPCs ride the same socket in call order, so the gateway resolves the
-    // clarify before it sees the follow-up. Awaiting first would leave the draft
-    // live for a tick — long enough for a second Enter to send it twice.
+    // A slash command or attachments cannot be an answer: those skip the card
+    // so the tool returns, then route normally. The skip is fire-and-forget:
+    // it clears the card synchronously and both RPCs ride the same socket in
+    // call order, so the gateway resolves the card before it sees the
+    // follow-up.
     //
     // /btw and /bg run beside the turn (snapshot / separate session) and answer
     // neither parked card. With attachments the draft isn't routed as a slash
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
+    const cardParked = payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)
 
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)) {
+    if (
+      cardParked &&
+      !attachments.length &&
+      !SLASH_COMMAND_RE.test(text.trim()) &&
+      answerClarifyRequest(sessionId, text.trim())
+    ) {
+      triggerHaptic('submit')
+      resetBrowseState(sessionId)
+      clearDraft()
+      focusInput()
+
+      return
+    }
+
+    if (cardParked) {
       void skipClarifyRequest(sessionId)
     }
 

@@ -508,7 +508,7 @@
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
-    --conversation-text-font-size: 0.8125rem;
+    --conversation-text-font-size: 0.875rem;
     --conversation-tool-font-size: 0.6875rem;
     --conversation-caption-font-size: 0.75rem;
     --conversation-line-height: 1.125rem;
@@ -1106,6 +1106,15 @@
    the air back, and only in this thread. */
 [data-slot='aui_thread-content'][data-thread-type='onboarding'] {
   padding-top: calc(var(--titlebar-height) + 1rem);
+}
+
+/* The setup chat is a first conversation read at arm's length in a small
+   window, so its transcript, cards and composer run a size up. */
+[data-setup-chat] {
+  --conversation-text-font-size: 0.9375rem;
+  --conversation-tool-font-size: 0.75rem;
+  --conversation-caption-font-size: 0.8125rem;
+  --conversation-line-height: 1.375rem;
 }
 
 @keyframes arc-border {
@@ -2004,7 +2013,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-rich-input'] {
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--conversation-text-font-size);
 }
 
 [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {

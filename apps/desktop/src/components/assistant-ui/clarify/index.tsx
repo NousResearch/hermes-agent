@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
-import { normalizeSetupChoose, sessionClarifyRequest } from '@/store/clarify'
+import { $settledClarifyResults, normalizeSetupChoose, sessionClarifyRequest } from '@/store/clarify'
 
 import { selectMessageRunning } from '../tool/fallback-model'
 import { parseMaybeObject } from '../tool/fallback-model/format'
@@ -42,7 +42,25 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
-  const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered)
+  // The request this row asked, remembered past its clearing: a skip or a
+  // typed answer settles it in the store before (or without) `tool.complete`.
+  const [requestId, setRequestId] = useState<null | string>(null)
+  const settledResults = useStore($settledClarifyResults)
+  const settledResult = requestId && request?.requestId !== requestId ? settledResults[requestId] : undefined
+
+  if (request && !settledResult && request.requestId !== requestId) {
+    setRequestId(request.requestId)
+  }
+
+  const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)
+
+  if (settledResult) {
+    return setupCard ? (
+      <SetupChooseSettled {...props} result={settledResult} />
+    ) : (
+      <ClarifyToolSettled {...props} result={settledResult} />
+    )
+  }
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
   // `session.info` reports running=false while clarify is blocking, so the

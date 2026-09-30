@@ -3,7 +3,6 @@
 import type { ComponentProps } from 'react'
 
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
-import type { MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 // field-sizing on top of Textarea's shared chrome; kill min-h-16 for one-liners.
@@ -17,20 +16,6 @@ export function ClarifyShell({ children, className, ...props }: ComponentProps<'
   return (
     <div className={cn(CLARIFY_SHELL_CLASS, className)} data-slot="clarify-inline" {...props}>
       {children}
-    </div>
-  )
-}
-
-export function ClarifyLine({
-  children,
-  className,
-  icon: Icon,
-  ...props
-}: ComponentProps<'div'> & { icon: typeof MessageQuestion }) {
-  return (
-    <div className={cn('flex items-start gap-2', className)} {...props}>
-      <div className="min-w-0 flex-1">{children}</div>
-      <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
     </div>
   )
 }

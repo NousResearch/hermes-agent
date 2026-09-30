@@ -7,11 +7,17 @@ import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { MessageQuestion } from '@/lib/icons'
-import { bareChoice, type ClarifyQuestion, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import {
+  bareChoice,
+  type ClarifyQuestion,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  skipClarify
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
+import { forgetServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
 
 import { ClarifyConfirmBar } from './core/confirm-bar'
@@ -221,10 +227,8 @@ export function ClarifyToolPending({
     }
 
     onAnswered()
-    clearClarifyRequest(request.requestId, request.sessionId)
-
     // A response with no `answers` is the cancel-all (the plain Esc path).
-    respondToServerRequest(request.requestId, {})
+    skipClarify(request)
   }, [onAnswered, request])
 
   const handleSubmit = useCallback(

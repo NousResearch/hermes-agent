@@ -6,13 +6,12 @@ import { useStore } from '@nanostores/react'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { useI18n } from '@/i18n'
-import { CircleLetterA, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { normalizeSetupChoose } from '@/store/clarify'
 
 import { parseMaybeObject } from '../tool/fallback-model/format'
 
-import { ClarifyLine, ClarifyShell } from './core/shell'
+import { ClarifyShell } from './core/shell'
 import { useSetupLabel } from './setup-rows'
 
 const OUTCOMES = new Set(['cancelled', 'no_answer', 'submitted'])
@@ -48,21 +47,17 @@ export function SetupChooseSettled(props: ToolCallMessagePartProps) {
   return (
     <ClarifyShell className="my-1.5 grid gap-1" data-clarify-settled="">
       {question ? (
-        <ClarifyLine icon={MessageQuestion}>
-          <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
-        </ClarifyLine>
+        <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
       ) : null}
-      <ClarifyLine icon={CircleLetterA}>
-        <p
-          className={cn(
-            'whitespace-pre-wrap leading-(--conversation-line-height)',
-            answer ? 'text-(--ui-text-secondary)' : 'italic text-(--ui-text-tertiary)'
-          )}
-          data-clarify-answer=""
-        >
-          {answer || (result.outcome === 'no_answer' ? copy.noAnswer : copy.skipped)}
-        </p>
-      </ClarifyLine>
+      <p
+        className={cn(
+          'whitespace-pre-wrap leading-(--conversation-line-height)',
+          answer ? 'text-(--ui-text-secondary)' : 'italic text-(--ui-text-tertiary)'
+        )}
+        data-clarify-answer=""
+      >
+        {answer || (result.outcome === 'no_answer' ? copy.noAnswer : copy.skipped)}
+      </p>
     </ClarifyShell>
   )
 }

@@ -68,3 +68,25 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
         "SELECT COUNT(*) FROM messages WHERE session_id = 'sid' AND active = 1"
         " AND (role = 'tool' OR tool_calls IS NOT NULL)").fetchone()[0] == 0
     assert [c.split(" ")[0] for c in live[-2:]] == ["U15", "A15"]
+
+
+def test_the_repair_row_counts_stay_off_the_request_copy(session):
+    """The commit reads the counts off the live dict. A transport is handed the request copy, and
+    one that forwards unknown keys must not find them there."""
+    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+    from agent.turn_context import build_api_messages
+
+    db, agent = session
+    _turn(db, agent, SimpleNamespace(conversation_history=[]), "cli", 1, 5_000)
+    for role, content, fields in KILLED_TURN_LEFT["two_prompts_tool_call"]:
+        db.append_message("sid", role, content, **fields)
+    history = db.get_messages_as_conversation("sid", repair_alternation=True)
+    counts = {MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS}
+    assert counts <= set(history[-1])  # two prompts merged, and the tool call dropped behind them
+
+    request, _ = build_api_messages(
+        agent, history, current_turn_user_idx=len(history) - 1,
+        ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
+
+    assert not any(counts & set(message) for message in request)
+    assert counts <= set(history[-1])

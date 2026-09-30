@@ -86,4 +86,29 @@ describe('captured gateway file download', () => {
       suggestedName: 'file.md'
     })
   })
+
+  // The main-process bridge normalizes every failure to {saved: false, error}
+  // (an unhandled IPC rejection surfaces as the opaque "reply was never
+  // sent"); the renderer must toast the real cause, not a generic failure.
+  it('toasts the normalized error reason from the always-reply bridge', async () => {
+    const saveGatewayFile = vi.fn().mockResolvedValueOnce({
+      error: 'Timed out connecting to the gateway backend (is the remote backend up?)',
+      saved: false
+    })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
+
+    await captureGatewayFileDownload()('/persisted/informe final ñ.md', 'informe final ñ.md')
+
+    expect(lastToast()).toMatchObject({ kind: 'error', title: 'Download failed' })
+    expect(lastToast()?.message).toContain('Timed out connecting to the gateway backend')
+  })
+
+  it('stays silent when the normalized bridge outcome is a dialog cancel', async () => {
+    const saveGatewayFile = vi.fn().mockResolvedValueOnce({ canceled: true, saved: false })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
+
+    await captureGatewayFileDownload()('/persisted/file.md', 'file.md')
+
+    expect($notifications.get()).toEqual([])
+  })
 })

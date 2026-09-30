@@ -266,7 +266,8 @@ import {
   gatewayFilePath,
   gatewayFileRequestPaths,
   resolveGatewayFileBackend,
-  saveGatewayDownload
+  saveGatewayDownload,
+  toSerializableSaveFailure
 } from './gateway-file-download'
 import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway-file-download-transport'
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
@@ -8243,9 +8244,24 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
     throw new Error('Missing gateway file path')
   }
 
-  const { connection, connectionId, profile } = await resolveGatewayFileBackend<GatewayFileConnection>(payload, {
-    ensureLegacy: ensureBackend,
-    ensureRegistry: ensureRegistryBackend
+  const { connection, connectionId, profile } = await new Promise<Awaited<ReturnType<typeof resolveGatewayFileBackend<GatewayFileConnection>>>>((resolve, reject) => {
+    // ensureBackend/ensureRegistryBackend can wait unboundedly on a dead or
+    // still-spawning backend; the download phase itself is bounded by the
+    // transport's own request timeouts. 30s caps only this resolve phase.
+    const timer = setTimeout(() => reject(new Error('Timed out connecting to the gateway backend (is the remote backend up?)')), 30_000)
+    resolveGatewayFileBackend<GatewayFileConnection>(payload, {
+      ensureLegacy: ensureBackend,
+      ensureRegistry: ensureRegistryBackend
+    }).then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
   })
 
   const suggested = String(payload.suggestedName || '').trim()
@@ -8260,7 +8276,9 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
 
   const deps: GatewayFileSaveDeps = {
     showSaveDialog: (options: GatewaySaveDialogOptions): Promise<GatewaySaveDialogResult> =>
-      dialog.showSaveDialog(mainWindow, options)
+      mainWindow && !mainWindow.isDestroyed()
+        ? dialog.showSaveDialog(mainWindow, options)
+        : Promise.resolve({ canceled: true })
   }
 
   return saveGatewayDownload(requestPaths, ctx, {
@@ -17955,7 +17973,17 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 // canvas. The main process has no such gate.
 ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
-ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
+// Never let this handler reject: Electron cannot structured-clone arbitrary
+// rejection values, and an uncloneable rejection surfaces renderer-side as the
+// opaque "reply was never sent" instead of the real cause (401/404/timeout).
+// Every failure is normalized to a plain {saved, error} the renderer toasts.
+ipcMain.handle('hermes:saveGatewayFile', async (_event, payload) => {
+  try {
+    return await saveGatewayFile((payload ?? {}) as GatewayFileSavePayload)
+  } catch (error) {
+    return toSerializableSaveFailure(error)
+  }
+})
 
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 

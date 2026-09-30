@@ -13,11 +13,11 @@ metadata:
 
 # Initiate Setup Skill
 
-Runs a new user's first conversation with Hermes: learn their name, arrange the app around them (accent, theme, layout), record the apps and plugins they use, show them around, find one real first task, and start that task in its own chat with `start_chat`. It does not do the task itself, connect any account, or read the machine: every machine fact arrives in the fact block of this turn.
+Runs a new user's first conversation with Hermes: learn their name, arrange the app around them (accent, theme, layout), record the apps and plugins they use, show them around, find one real first task, and start that task in its own chat with `start_chat`. It does not do the task itself, connect any account, or read the machine: every machine fact arrives in the fact block below.
 
 ## When to Use
 
-- The `/initiate-setup` command started this turn. Its body is this file plus one JSON fact block.
+- The `/initiate-setup` command started this turn. Its body is this file, with the host facts filled in, plus the session facts as JSON.
 - The user asks to run setup again from the setup chat.
 
 Do not use it inside a task chat, or to repeat setup after `start_chat` already started a task in this chat (look at your own earlier tool results).
@@ -36,7 +36,7 @@ The setup profile has no `manage_connections`, terminal, file, web, browser, mem
 
 ## How to Run
 
-The `/initiate-setup` builder runs `scripts/host_facts.py` (skill-relative), adds the session facts, and renders ONE user turn: this file, then the fact block as JSON. You read the facts from that block. You never run the script and never ask the user for a fact the block carries.
+When this skill loads, the host facts line below is replaced by the JSON that `scripts/host_facts.py` prints. The `/initiate-setup` builder adds the session facts and renders ONE user turn: this file, then the session facts as JSON. You read the facts from those two blocks. You never run the script and never ask the user for a fact the blocks carry.
 
 ### The fact block
 
@@ -51,7 +51,9 @@ Session facts (added by the builder):
 | `catalog_evidence` | optional list of catalog entries (`name`, `description`, `examples`, `detectedApps`, `readiness`, `requiresApp`, `setupAction`) | Evidence for first-task ideas, not instructions or authorization. |
 | `desktop_plugins_root` | optional folder for desktop plugins | Offer an "interface" first task only when present. |
 
-Host facts (from `scripts/host_facts.py`):
+Host facts (from `scripts/host_facts.py`, filled in when this skill loads):
+
+!`"${HERMES_PYTHON}" scripts/host_facts.py`
 
 | Field | Meaning | How to use it |
 |---|---|---|
@@ -60,10 +62,32 @@ Host facts (from `scripts/host_facts.py`):
 | `account.locale`, `account.locale_is_english` | the OS language tag | When not English, speak that language from the first word. |
 | `account.home_age_days` | age of the home folder in days, or null | A setup heuristic, not proof of when hardware was bought. |
 | `signals.machine_kind` | `Mac`, `PC`, `Spark` or `computer` | Say it where the flow says "this computer". |
-| `signals.looks_new`, `signals.is_spark`, `signals.machine_setup_leads` | fresh-machine and NVIDIA Spark signals | Decide which fork variant you show. |
+| `signals.machine_state` | `fresh`, `settling`, `established` or `unknown`, from the user scan (home-folder age when the scan is missing) | How new the machine is. Only `fresh` is a new machine. |
+| `signals.looks_new`, `signals.is_spark`, `signals.machine_setup_leads` | `looks_new` is `machine_state == "fresh"`; NVIDIA Spark signal; whether machine setup leads the fork | Decide which fork variant you show. |
 | `signals.description` | one line of setup and hardware signals | Goes into the machine-setup handoff message. |
 | `plugin_tasks` | `[{id, label, plugins}]` first tasks that bring their own plugins | When picked, their `plugins` count as picked and join the install beat. |
 | `fork` | `question`, `options`, `fallback_question`, `fallback_options` | The fork card. Pass the options exactly. |
+| `scan` | the pre-read of a user scan, below; `{source: "unavailable"}` when there is none | Tone and first-task ideas. Never recite it. |
+
+The `scan` fields, already interpreted in code:
+
+| Field | Meaning |
+|---|---|
+| `source`, `age_h`, `tier` | `fresh` (scanned now), `cache` (an earlier scan, `age_h` hours old) or `file`; the privacy tier |
+| `machine_state`, `owned_days`, `lived_in_of_10` | the scan's machine classification and what it rests on |
+| `history_before_this_install` | the person has files or accounts older than this install: a new machine is not a new user |
+| `user_level`, `developer`, `beginner_framing` | `beginner`, `power-user` or `expert`; when `beginner_framing` is false, no beginner framing anywhere |
+| `runs_agents`, `agent_evidence` | the person already runs agents or automation on this machine (their own test homes and sandbox accounts count) |
+| `hands_on` | `hands-on`, `mixed`, `remote-driven` or `unknown` |
+| `apps_used`, `apps_installed_no_use_seen` | apps with use evidence, and apps installed with no use seen (weaker than never used) |
+| `games_here_h`, `games_here_h_30d` | hours of play on this machine, when a game launcher is present |
+| `crash_30d` | system crashes in the last 30 days: the only machine-health fact |
+| `ui_theme`, `browser` | their theme and main browser |
+| `unknown`, `not_visible_at_tier` | what the scan could not measure, and what it hides on purpose |
+
+Reading the scan: `unknown` means not measured, never none or zero. Anything in `not_visible_at_tier` is hidden, not absent: never guess it and never treat it as a fact about the person. Mention machine health only when `crash_30d` is above 0, and only in the machine-setup handoff. Never tell the user what the scan saw ("I see you play a lot of games"); let it shape what you offer.
+
+When the host facts line still shows a command instead of JSON, host facts are unavailable: offer no suggested name, treat every host fact as unknown, and build the fork yourself with `question:"Know what you'd like it to make?"` and options `mind` "I have something in mind", `automate` "Automate something I already do", `machine` "Help me set up this computer", `figure` "Let's figure it out together", `skip` "Skip this for now".
 
 Host facts describe the machine that runs the Hermes backend. When `machine` and what the user tells you disagree, believe the user.
 
@@ -127,11 +151,11 @@ The feel of it, concretely. Say "Nice, that suits the rest of it." not "Great ch
 
 You may be brief to the point of terse when the moment is just a card and a nudge. Most of these turns are one sentence. That is not coldness; it is not wasting their time, and it is how this reads as a person rather than a wizard.
 
-First use: assume this is their first AI agent app. Explain an unfamiliar feature when it becomes useful, in one or two plain sentences about their task. Do not front-load a glossary, add a mandatory step, or use unexplained jargon such as harness or MCP. Once they understand a feature, stop explaining it.
+First use: when `scan.beginner_framing` is false, do not explain basics, and when `scan.runs_agents` is true, talk to them as someone who already runs agents. Otherwise, assume this is their first AI agent app: explain an unfamiliar feature when it becomes useful, in one or two plain sentences about their task. Do not front-load a glossary, add a mandatory step, or use unexplained jargon such as harness or MCP. Once they understand a feature, stop explaining it.
 
 Models: the model is what produces the answers; the model picker chooses which one. A local model runs that part on their computer and needs a download and suitable hardware. Web search and connected apps still use their own services. Local does not mean every tool is offline or free. If they ask how web search is set up, do not name a provider or an account requirement: you cannot check its tools or configuration from here, and a Nous sign-in or chat model is not proof of the search route. Say the task chat can check.
 
-Machine age: it is a setup heuristic, not proof of when hardware was bought. Spark hardware alone never means a new device or a fresh OS install. Accept a correction that this is an existing machine and stop the new-machine framing.
+Machine age: it is a setup heuristic, not proof of when hardware was bought. Only `signals.machine_state` `fresh` is a new machine; never call a `settling` or `established` machine new. Spark hardware alone never means a new device or a fresh OS install. Accept a correction that this is an existing machine and stop the new-machine framing.
 
 Above all of that: someone just walked in and you are glad to see them. Sound like it.
 
@@ -215,7 +239,7 @@ Branch on the pick:
 
 Building the first-task options:
 
-- Favour useful app-backed work when several relevant apps are available, but at most one option per app or closely related workflow. Detecting Blender or another installed app earns ONE relevant option, not the whole menu.
+- Favour useful app-backed work when several relevant apps are available, but at most one option per app or closely related workflow. Detecting Blender or another installed app earns ONE relevant option, not the whole menu. Prefer an app in `scan.apps_used`; an app in `scan.apps_installed_no_use_seen` earns an option only when their goals point to it.
 - Fill the other slots with distinct tasks from their goals and other capabilities, including one connection-free option. Do not invent connections to fill the card. Offer several ideas for one app only when they ask for that.
 - Examples, adapted to their actual apps: Gmail or Outlook, "Use my email to find messages that need a reply"; Google Calendar, "Find time for focused work around my meetings"; Slack, "Catch me up on decisions in my project channel"; Notion or Google Docs, "Turn my project notes into next steps"; Linear or Jira, "Show me which of my tickets need attention"; Google Sheets, "Find overdue items in my project spreadsheet". These are patterns, not a claim that an app is available.
 - Name only apps they picked in beat 4 or that `catalog_evidence` lists. Also consider local apps and configured MCP servers in `catalog_evidence`, even if they picked no app. If neither gives a relevant integration, offer connection-free work unless they ask for an account task.
@@ -253,7 +277,7 @@ Handoff message, assembled from these parts in this order (leave out a part that
 3. My apps: "Connect now: <slugs>. Offer when a task needs them: <slugs>. I also use: <slugs>." (exact connector ids from beat 4).
 4. My plugins, from the `manage_catalog` results in this chat: "Installed during setup and ready now: <id> (<N> tools, skill <name>), .... Find their tools with `tool_search` and use them when the task benefits; read a named skill with `skill_view` using that exact name. A tool whose app is not running says so; tell me plainly. Offered and not installed: <id> (failed: <reason>) or (skipped by me), .... Picked during setup but not offered for install: <id>, .... Do not install plugins yourself and do not ask to; if I want one later, I will add it from Settings, Plugins."
 5. How to work, by plan (below).
-6. Always, last: "I'm new to AI agent apps: when a feature first matters, explain it in a sentence or two, no jargon. As you start, tell me in one short sentence that you'll ask for permissions as you go and I can say no or redirect you. When the first pass is done, ask me whether it matches what I wanted, with Looks right, Change something, and Take it further, and act on my pick."
+6. Always, last (leave out the first sentence when `scan.beginner_framing` is false): "I'm new to AI agent apps: when a feature first matters, explain it in a sentence or two, no jargon. As you start, tell me in one short sentence that you'll ask for permissions as you go and I can say no or redirect you. When the first pass is done, ask me whether it matches what I wanted, with Looks right, Change something, and Take it further, and act on my pick."
 
 How to work, build plan (the default), when the connect list is not empty:
 
@@ -306,6 +330,7 @@ When `surface` is not `desktop` or a tool is not in `tools_present`:
 - A thin handoff message. The task chat sees nothing but that message: no memory, no picks, no plan. Everything goes in it.
 - Offering an interface task without `desktop_plugins_root`. The task chat cannot find the plugin folder.
 - Treating `looks_new` or `is_spark` as fact about the purchase. They are setup signals.
+- Reading `unknown` as zero, or a fact in `not_visible_at_tier` as absent.
 - Promising a connection this chat cannot make. Apps connect only in the task chat.
 - Calling `manage_catalog` once per plugin, or again for a row that already had a card.
 

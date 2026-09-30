@@ -137,7 +137,7 @@ Directive parsing and `DATA_STEPS`/`STEP_CARDS`; `FUNNEL_STEPS` metrics (`record
 | Renderer (`electron/machine-profile.ts`, `store/machine.ts`) | Script (`scripts/host_facts.py`) | Source |
 |---|---|---|
 | `ageDays` (home birthtime) | `account.home_age_days` | `os.stat(home).st_birthtime`; home from the user database, not `HOME`. Linux: null (no birth time in `os.stat`) |
-| `machineLooksNew()` (<= 21 days) | `signals.looks_new` | same threshold |
+| `machineLooksNew()` (<= 21 days) | `signals.machine_state`, `signals.looks_new` | `looks_new` is `machine_state == "fresh"`, from the user scan's `install.install_state`; without a scan, home-folder age (<= 21 days fresh, < 120 settling) |
 | `username` + `machineUserName()` filter | `account.suggested_name` | `pwd` GECOS / `GetUserNameExW(NameDisplay)`; dropped when equal to the login |
 | `locale` (`app.getLocale()`) + `machineLanguageName()` | `account.locale`, `account.locale_is_english` | CoreFoundation preferred language / `GetUserDefaultLocaleName` / `/etc/locale.conf`. The model names the language from the tag |
 | `nvidia` (Chromium GPU list) | `machine.gpu_class`, `signals.has_nvidia_gpu` | `hermes_platform.host.facts.gpu_class()` |
@@ -148,6 +148,7 @@ Directive parsing and `DATA_STEPS`/`STEP_CARDS`; `FUNNEL_STEPS` metrics (`record
 | `platform`, `release`, `arch` | `machine.os_family`, `machine.os_release`, `machine.native_arch` | `facts.os_family()`, `platform.release()`, `facts.native_arch()` |
 | `forkOptions()`, `forkFallbackOptions()`, `pluginForkOptions()` | `fork`, `plugin_tasks` | same order and labels, plus stable ids |
 | (none) | `machine.cpu_model`, `ram_gb`, `wsl`, `container` | new context for ideas |
+| (none) | `scan` | the user scan in `scripts/userscan/` (T1 pass, cached in `HERMES_HOME/insights/profile.json` for 24 h while its L1 detectors match), interpreted in code |
 
 ## 6. Open questions
 

@@ -3726,13 +3726,14 @@ def _commit_compaction(
             # away whether or not the id rotates.
             agent.commit_memory_session(messages)
 
-            # Pop _compaction_tail tags before the size estimate / rotation: they must not
-            # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
-            _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
             compressed, _refused_sp = _salvage_or_refuse_grown_transcript(
                 agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
                 attempt_snapshot=attempt.snapshot,
             )
+
+            # Pop _compaction_tail tags before the size estimate / rotation: they must not
+            # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
+            _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
             if compressed is None:
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at

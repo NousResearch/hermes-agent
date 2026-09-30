@@ -247,11 +247,11 @@ _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
     r"hermes\s+"
     # Any global flags before the profile selector (each may carry a value).
-    r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
+    r"(?:-\S+(?:\s+(?!-)\S+)?\s+)*"
     # The selector: exactly the shapes the CLI's `_apply_profile_override` accepts.
     r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
     # Any global flags between the selector and the subcommand.
-    r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
+    r"(?:\s+-\S+(?:\s+(?!-)\S+)?)*"
     r"\s+gateway\s+(?:restart|stop)"
 )
 

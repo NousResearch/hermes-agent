@@ -219,9 +219,13 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
-            if adapters or not self._is_shared_bot_satellite(profile_name):
+            if not self._is_shared_bot_satellite(profile_name):
                 return adapters
-            return self._primary_adapters()
+            if not adapters:
+                return self._primary_adapters()
+            # Mixed: own bot on some platforms, route-only on others. Own adapters stay the boundary
+            # where they exist; a routed platform they lack borrows only the primary's transport for it.
+            return {**self._routed_primary_transports(profile_name), **adapters}
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:
@@ -229,13 +233,36 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
+    def _routed_primary_transports(self, profile_name: str) -> dict:
+        """The primary's live transport for each platform an enabled default-bot route sends to
+        *profile_name* (relay-aware via ``resolve_delivery_transport``). Unrouted platforms are absent."""
+        from gateway.delivery import resolve_delivery_transport
+        config = getattr(self, "config", None)
+        if config is None:
+            return {}
+        primary = self._primary_adapters()
+        borrowed = {}
+        for route in getattr(config, "profile_routes", None) or []:
+            if not (route.enabled and route.profile == profile_name and route.bot_profile is None):
+                continue
+            try:
+                transport = resolve_delivery_transport(Platform(route.platform), config, primary)
+            except ValueError:
+                continue
+            if transport is not None:
+                borrowed.setdefault(transport.transport_platform, transport.adapter)
+        return borrowed
+
     def _is_shared_bot_satellite(self, profile_name: str) -> bool:
-        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
-        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
-        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
-        platform is its own credential boundary and never borrows the primary. Restored/cached sources
-        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+        """A served profile that a ``profile_routes`` entry targets through the default profile's bot,
+        with no bot of its own queued for reconnect (gateway/AGENTS.md). The borrow is per platform
+        (``_adapters_for_profile``): an adapter the secondary owns is its credential boundary on THAT
+        platform; a routed platform it has no adapter for drains through the primary's transport, which
+        is the only bot those chats can reach and the one live replies already leave through. Live
+        replies keep the receiving bot via ``RoutingIdentity.transport_profile``; this rule governs
+        synthetic injections and restored/cached sources, which carry no transport ref — heartbeats,
+        completions and goal notices after a restart (the same rule ``kanban_watchers_notifier`` and
+        cron apply)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False

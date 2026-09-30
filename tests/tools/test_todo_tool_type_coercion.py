@@ -7,12 +7,14 @@ Covers three crash patterns:
 """
 
 import json
+from types import SimpleNamespace
 
+from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from tools.todo_tool import TodoStore, todo_tool
 
 
 class TestJsonStringCoercion:
-    """Guard 1: todo_tool() recovers when LLM sends todos as a JSON string."""
+    """Guard 1: the inline todo_list dispatch recovers when LLM sends todos as a JSON string."""
 
     def test_json_string_is_parsed_into_list(self):
         store = TodoStore()
@@ -20,11 +22,17 @@ class TestJsonStringCoercion:
             {"id": "t1", "content": "Do A", "status": "pending"},
             {"id": "t2", "content": "Do B", "status": "in_progress"},
         ])
-        result = json.loads(todo_tool(todos=todos_str, store=store))
+        agent = SimpleNamespace(_todo_store=store)
+        result = json.loads(INLINE_TOOL_EXECUTORS["todo_list"](
+            agent, {"todos": todos_str}, InlineToolContext(effective_task_id="t")))
         assert "error" not in result
         assert result["summary"]["total"] == 2
-        assert result["todos"][0]["id"] == "t1"
-        assert result["todos"][1]["status"] == "in_progress"
+        # Order-agnostic: TodoStore._normalize_order may lift the in_progress
+        # item ahead of earlier pending rows (#42649); this test only pins
+        # JSON-string coercion, not ordering.
+        by_id = {t["id"]: t for t in result["todos"]}
+        assert set(by_id) == {"t1", "t2"}
+        assert by_id["t2"]["status"] == "in_progress"
 
 
     def test_non_list_non_string_returns_error(self):

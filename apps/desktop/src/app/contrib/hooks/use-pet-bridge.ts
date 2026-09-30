@@ -5,7 +5,7 @@ import { setPetScale } from '@/store/pet-gallery'
 import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
 import { $attentionSessionIds } from '@/store/session-states'
-import { isSecondaryWindow } from '@/store/windows'
+import { isAuxiliaryWindow } from '@/store/windows'
 
 import type { GatewayRequester } from '../types'
 
@@ -31,7 +31,7 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
   requestGatewayRef.current = requestGateway
 
   useEffect(() => {
-    if (isSecondaryWindow()) {
+    if (isAuxiliaryWindow()) {
       return
     }
 

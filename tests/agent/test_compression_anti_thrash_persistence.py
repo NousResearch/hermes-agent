@@ -144,13 +144,19 @@ class TestResetSemanticsPreserved:
 
 
 class TestStrikesPersistFromEveryVerdictSite:
-    def test_no_op_compaction_branches_write_through(self, tmp_path):
-        """The insufficient-messages no-op branch records its strike durably."""
+    def test_no_op_compaction_branch_does_not_strike(self, tmp_path):
+        """The insufficient-messages branch is a structural no-op (#93022).
+
+        Nothing was eligible to compress, so no ineffective strike is
+        recorded — durable or in-memory. The transient structural backoff
+        arms instead; the breaker must stay untouched so a short session
+        can still auto-compact once it grows real compressible material.
+        """
         db = _db(tmp_path)
         db.create_session("s1", source="cli")
 
         cc = _compressor(db, "s1")
-        # 3 tiny messages < minimum window → the #40803 no-op branch.
+        # 3 tiny messages < minimum window → the #40803/#93022 no-op branch.
         msgs = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
@@ -158,8 +164,9 @@ class TestStrikesPersistFromEveryVerdictSite:
         ]
         out = cc.compress(msgs, current_tokens=10**9)
         assert out == msgs
-        assert cc._ineffective_compression_count == 1
-        assert db.get_compression_ineffective_count("s1") == 1
+        assert cc._ineffective_compression_count == 0
+        assert db.get_compression_ineffective_count("s1") == 0
+        assert cc._structural_no_op_backoff_until > 0.0
 
     def test_persist_failure_is_swallowed_and_memory_still_advances(self, tmp_path):
         """A DB write failure must not break the in-memory guard."""

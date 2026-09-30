@@ -14,7 +14,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `::onboarding{step="look" value="#hex"}` (custom colour in text) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"` with one `{id:"#rrggbb"}` option (open question 4) | Beat 2 |
 | (none) | - | `setup_choose kind:"theme"` (new beat) | Beat 3 |
 | `::onboarding{step="connectors"}` (one card: connectors + plugins; summary sent as `[setup] apps I use...`) | `cards/setup.tsx::ConnectorsCard` | Two cards: `setup_choose kind:"connectors"` (`multi_select`, `intent`; the result only feeds the handoff message) and `kind:"plugins"` (`multi_select`, no intent, as today: a pick only records it) | Beats 4, 5 |
-| `manage_connections` status + connect in the setup chat when asked | runbook "CONNECTING, IF THEY ASK" | Removed from the setup chat. The app gets intent `now`; the task chat connects first | Beat 4, Beat 10 build plan |
+| `manage_connections` status + connect in the setup chat when asked | runbook "CONNECTING, IF THEY ASK" | Kept: the setup profile has the `connections` toolset; the setup chat connects only apps the user asks to connect now, the rest wait for the task chat | Beat 4 |
 | `::onboarding{step="layout"}` (LayoutCard: preset + interface mode + window grow) | `cards/setup.tsx::LayoutCard`, `assembly.ts::assembleChatOnboarding` | `setup_choose kind:"layout"`; `apply_layout` only for a layout asked for in words | Beat 6 |
 | Step 4 model-picker explanation | runbook | Dropped; the tour's model picker stop covers it, in both presets | - |
 | `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"question"` + one `gui_tour` `start` with `preset` `quick` or `full` (the app's own tour) | Beat 7 |

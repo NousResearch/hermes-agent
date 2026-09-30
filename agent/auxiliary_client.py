@@ -4304,8 +4304,16 @@ def _try_main_agent_model_fallback(
     if _is_provider_unhealthy(main_provider, main_base_url):
         _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
+    # An anonymous ``custom`` main (a named provider resolved at runtime) carries no base_url/api_key of
+    # its own: reuse the live endpoint set_runtime_main() recorded, as the vision route does. Without it
+    # the bare ``custom`` arm resolves some other configured credential (a keyless AI Gateway: 403).
+    explicit = {}
+    if main_provider == "custom" and _runtime_main_value("base_url"):
+        explicit = {"explicit_base_url": _runtime_main_value("base_url"),
+                    "explicit_api_key": _runtime_main_value("api_key") or None,
+                    "api_mode": _runtime_main_value("api_mode") or None}
     try:
-        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model, **explicit)
     except Exception:
         client, resolved_model = None, None
     if client is None:

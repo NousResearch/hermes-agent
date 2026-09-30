@@ -334,6 +334,23 @@ class TestMoaAggregatorSharedResolution:
         assert mock_resolve.call_args.kwargs["provider"] == "openrouter"
         assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
 
+    def test_main_agent_fallback_reuses_live_custom_endpoint(self):
+        """A named custom main reaches aux as bare ``custom``: the last-resort fallback must reuse the
+        live runtime endpoint + key, not let the bare arm pick another credential (a keyless gateway)."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback, set_runtime_main
+
+        set_runtime_main("custom", "glm-5.3", base_url="https://llm.example/v1",
+                         api_key="sk-live", api_mode="chat_completions")
+        with patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "glm-5.3")
+            client, model, label = _try_main_agent_model_fallback(
+                "gemini", task="compression", failed_model="gemini-flash-latest")
+
+        assert label == "main-agent(custom)"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == "https://llm.example/v1"
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "sk-live"
+
 
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).

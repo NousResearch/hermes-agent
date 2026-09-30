@@ -119,10 +119,12 @@ def _archive_answer(archive: str) -> str | None:
             return None
         answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
     elif "## Response" not in archive:
-        # Failed agent runs have an error document but no reusable response.
-        # Keep headingless script-mode archives whole-document for continuity.
-        if "## Error" in archive:
+        # A failed agent run has no reusable answer. The writer marks it in the title,
+        # while script- and monitor-mode payloads may quote error headings themselves.
+        title = archive.split("\n", 1)[0].rstrip()
+        if title.startswith("# Cron Job:") and title.endswith("(FAILED)"):
             return None
+        # Keep headingless script-mode archives whole-document for continuity.
         return archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()

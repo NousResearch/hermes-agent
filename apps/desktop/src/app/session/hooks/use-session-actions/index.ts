@@ -378,12 +378,12 @@ async function desktopSessionCreateParams(
  * `cwd_explicit` is a newer session.create field, so retry only that narrow
  * contract mismatch without dropping the workspace cwd itself.
  */
-function omitUnsupportedCwdExplicit(params: Record<string, unknown>): Record<string, unknown> {
+export function omitUnsupportedCwdExplicit(params: Record<string, unknown>): Record<string, unknown> {
   const { cwd_explicit: _cwdExplicit, ...compatible } = params
   return compatible
 }
 
-async function requestSessionCreate<T>(
+export async function requestSessionCreate<T>(
   params: Record<string, unknown>,
   request: (requestParams: Record<string, unknown>) => Promise<T>
 ): Promise<T> {

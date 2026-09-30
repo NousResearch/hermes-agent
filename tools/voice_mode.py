@@ -117,7 +117,10 @@ def _audio_unavailable_reason(*, allow_install: bool = True) -> str:
 
 def _audio_available(*, allow_install: bool = True) -> bool:
     try:
-        _import_audio(allow_install=allow_install)
+        if allow_install:
+            _import_audio()
+        else:
+            _import_audio(allow_install=False)
         return True
     except (ImportError, OSError):
         return False
@@ -271,7 +274,7 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
             warnings.append(warning)
 
     try:
-        sd, _ = _import_audio(allow_install=allow_install)
+        sd, _ = (_import_audio() if allow_install else _import_audio(allow_install=False))
     except ImportError as exc:
         return outcome("Termux:API microphone recording available (sounddevice not required)",
                        f"Audio libraries not installed ({_voice_capture_install_hint(exc)})", import_failed=True)

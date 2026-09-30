@@ -253,6 +253,22 @@ class TestDetectAudioEnvironment:
 # ============================================================================
 
 class TestCheckVoiceRequirements:
+    def test_status_probe_does_not_install_audio_extra(self, monkeypatch):
+        """Passive status checks must not rebuild the environment."""
+        from tools import voice_mode
+
+        calls = []
+
+        def fake_import_audio(*, allow_install=True):
+            calls.append(allow_install)
+            if allow_install:
+                raise AssertionError("status probe attempted an install")
+            raise ImportError("audio-io extra is not installed")
+
+        monkeypatch.setattr(voice_mode, "_import_audio", fake_import_audio)
+        assert voice_mode._audio_available(allow_install=False) is False
+        assert calls == [False]
+
     def test_all_requirements_met(self, monkeypatch):
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",

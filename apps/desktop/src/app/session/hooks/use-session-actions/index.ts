@@ -157,6 +157,7 @@ import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE }
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
+import { isSessionNotOwnedError } from '../use-prompt-actions/utils'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
@@ -2327,6 +2328,18 @@ export function useSessionActions({
           return
         }
 
+        // Another surface holds this session's active-session lease (4090 /
+        // SESSION_NOT_OWNED, the refusal `hermes_cli/active_sessions.py`
+        // logs as "Refused active session …: already held by pid=…").
+        // The chat is NOT gone and retrying is deterministic — the owner
+        // must let go first — so this must not fall into the gone-draft
+        // branch (which yanks the window to a blank chat, #118061's
+        // "session not found" symptom) nor arm the stranded auto-retry.
+        // The REST fallback below still paints history: the lease fences
+        // writing, not reading, so the chat opens with its transcript and
+        // the honest "open somewhere else" message.
+        const resumeNotOwned = isSessionNotOwnedError(err)
+
         // The gateway resume RPC failed. Try the REST transcript as a fallback
         // so the window at least shows history. CRITICAL: this fallback must be
         // wrapped in its own try — if it ALSO throws (wedged/unreachable backend,
@@ -2418,7 +2431,7 @@ export function useSessionActions({
         // instead of toasting an error and hot-looping the bounded retry on a
         // permanently-dead id. (Booting straight into a no-longer-existent
         // last-session id is the common trigger.)
-        if (viewMessagesForReconcile().length === 0 && isSessionGoneError(fallbackError)) {
+        if (!resumeNotOwned && viewMessagesForReconcile().length === 0 && isSessionGoneError(fallbackError)) {
           // A 404 is only trustworthy from the backend that OWNS the session.
           // A cross-profile open (Bots pane) races the gateway swap, so both
           // lookups can land on a backend that never heard of the id (#88540).
@@ -2467,7 +2480,7 @@ export function useSessionActions({
           return
         }
 
-        if (viewMessagesForReconcile().length === 0) {
+        if (!resumeNotOwned && viewMessagesForReconcile().length === 0) {
           // Arm the self-heal ONLY when the window is still empty: the gateway
           // resume rejected AND the REST fallback failed to paint a transcript.
           // A durable cached-tail paint counts as EMPTY here — it's provisional
@@ -2480,6 +2493,20 @@ export function useSessionActions({
           // once retries exhaust, blank that visible transcript behind the
           // exhausted-state error overlay (a regression vs. plain fallback success).
           setResumeFailedSessionId(storedSessionId)
+        }
+
+        if (resumeNotOwned) {
+          // Name the real condition instead of the generic "Resume failed" —
+          // the reporter's "session not found" (#118061). Deterministic, so no
+          // retry action; the owner surface holds the live chat.
+          notify({
+            kind: 'warning',
+            title: copy.resumeNotOwnedTitle,
+            message: copy.resumeNotOwnedBody,
+            detail: err instanceof Error ? err.message : undefined
+          })
+
+          return
         }
 
         notifyError(err, copy.resumeFailed)

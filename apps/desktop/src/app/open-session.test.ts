@@ -247,4 +247,23 @@ describe('openSession', () => {
     expect(navigate).not.toHaveBeenCalled()
     expect(focusOpenSession).not.toHaveBeenCalled()
   })
+
+  describe('outcome', () => {
+    // #118061: the sidebar's resume arming must distinguish "already on
+    // screen, just focused" from a real open, so a click on the ACTIVE
+    // session never re-runs the resume/recovery path against the live chat.
+    it('reports focused when the session was already on screen', () => {
+      focusOpenSession.mockReturnValue('main')
+      expect(openSession('s1', navigate)).toBe('focused')
+
+      focusOpenSession.mockReturnValue('tile')
+      expect(openSession('s1', navigate, 'tab')).toBe('focused')
+    })
+
+    it('reports opened when the session was not on screen', () => {
+      focusOpenSession.mockReturnValue(null)
+      expect(openSession('s1', navigate)).toBe('opened')
+      expect(openSession('s1', navigate, 'tab')).toBe('opened')
+    })
+  })
 })

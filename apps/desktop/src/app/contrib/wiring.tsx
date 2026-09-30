@@ -1132,14 +1132,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const openStoredSession = (sessionId: string, session?: SessionInfo) => {
     const ownerRoute = sessionOwnerRouteFromRow(session)
 
+    // Focus, then arm recovery only when the chat wasn't already on screen.
+    // The sidebar's "All sessions" list includes the ACTIVE conversation:
+    // clicking it is a focus jump (openSession fronts the tile/main), and a
+    // pre-armed resume request on top re-runs the full resume/recovery path
+    // against a chat this window is already showing — the re-resume races the
+    // live runtime and its lease, and the renderer surfaced the resulting
+    // refusal as a generic failure (#118061). Already-on-screen means nothing
+    // to recover; the row's owner hint stays untouched either way.
+    if (openSession(sessionId, navigate) === 'focused') {
+      return
+    }
+
     if (ownerRoute) {
       requestSessionResume(sessionId, ownerRoute)
     } else {
       forgetSessionOwnerHintsForSession(sessionId)
       requestSessionResume(sessionId)
     }
-
-    openSession(sessionId, navigate)
   }
 
   // The controller's entire callback surface, gathered into the stable

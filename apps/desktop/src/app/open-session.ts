@@ -31,6 +31,12 @@ import { $workspaceIsPage, sessionRoute } from './routes'
 
 export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
+/** What {@link openSession} ended up doing — callers that arm recovery
+ * machinery (a resume request) use `'focused'` to skip it: a chat that is
+ * already on screen was jump-to-focused, not opened, so re-resuming it just
+ * re-runs recovery against a live surface (#118061). */
+export type OpenSessionOutcome = 'focused' | 'opened'
+
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
 export interface OpenSessionWorkspaceScope {
@@ -96,15 +102,18 @@ export function openSessionFromPicker(
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
+ * @returns `'focused'` when the session was already on screen (open tile, or
+ *   the main session) and was only jump-to-focused; `'opened'` otherwise. A
+ *   caller that pre-armed recovery (a resume request) skips it on `'focused'`.
  */
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
   intent: OpenSessionIntent = 'in-place',
   workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
-): void {
+): OpenSessionOutcome {
   if (!storedSessionId) {
-    return
+    return 'opened'
   }
 
   // Any explicit open/focus means the user has seen the finished-turn marker.
@@ -121,7 +130,7 @@ export function openSession(
     if (canOpenSessionWindow()) {
       void openSessionInNewWindow(storedSessionId)
 
-      return
+      return 'opened'
     }
 
     // No pop-out support → treat like a new tab.
@@ -134,7 +143,7 @@ export function openSession(
     // that redundant tile when the main surface binds.
     navigate(sessionRoute(storedSessionId))
 
-    return
+    return 'opened'
   }
 
   // A `stack` open arrives from outside the workspace, so unlike a sidebar
@@ -166,7 +175,7 @@ export function openSession(
         navigate(sessionRoute(storedSessionId))
       }
 
-      return
+      return 'focused'
     }
 
     // Nothing to jump to, but an open tab may still be an empty "New session" —
@@ -178,7 +187,7 @@ export function openSession(
         ? reuseBlankDraftTile(storedSessionId, botWorkspaceScope)
         : reuseBlankDraftTile(storedSessionId))
     ) {
-      return
+      return 'opened'
     }
 
     if (botWorkspaceScope) {
@@ -189,14 +198,18 @@ export function openSession(
 
     focusOpenSession(storedSessionId, workspaceScope)
 
-    return
+    return 'opened'
   }
 
   // Already on screen (open tile, or the main session)? Jump to its tab;
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+  if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
+
+  return focused ? 'focused' : 'opened'
 }

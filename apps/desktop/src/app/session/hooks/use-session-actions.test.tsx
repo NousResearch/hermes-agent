@@ -1,4 +1,4 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { JsonRpcGatewayError, registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -31,6 +31,7 @@ import {
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $notifications } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $newChatConnectionId,
@@ -1622,6 +1623,43 @@ describe('resumeSession failure recovery', () => {
     // The window is no longer silently stranded: the failure latch is armed for
     // the stored session, which use-route-resume consumes to retry.
     expect($resumeFailedSessionId.get()).toBe('stored-1')
+  })
+
+  it('surfaces a live-owner lease refusal as "open somewhere else", not stranded (#118061)', async () => {
+    // Another surface holds this session's active-session lease. The resume
+    // rejects with the deterministic refusal; the REST transcript still reads.
+    const refusal = new JsonRpcGatewayError(
+      'This chat is open in another Hermes window/terminal. Use it there, or start a new chat here.',
+      { code: 4090, data: { reason: 'SESSION_NOT_OWNED' } }
+    )
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw refusal
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'question', role: 'user', timestamp: 1 },
+        { content: 'answer', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    await runResume(requestGateway)
+
+    // The history painted — the lease fences writing, not reading.
+    expect(JSON.stringify($messages.get())).toContain('answer')
+
+    // Deterministic refusal: never armed as stranded (no auto-retry loop)…
+    expect($resumeFailedSessionId.get()).toBeNull()
+
+    // …and the toast names the real condition instead of a generic failure.
+    const toast = $notifications.get().find(n => n.kind === 'warning')
+    expect(toast?.title).toBe('This chat is open somewhere else')
   })
 
   it('does NOT arm the failure latch when the resume RPC fails but the REST fallback paints history', async () => {

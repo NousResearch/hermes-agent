@@ -285,12 +285,21 @@ export function isSessionBusyError(error: unknown): boolean {
 // prompt.submit refused because another surface (TUI, messaging gateway)
 // holds this session's lease (4090 / SESSION_NOT_OWNED, #106217). The gateway
 // stamps the machine reason in `error.data.reason`; the prose fallback covers
-// backends older than that contract. Deterministic until the owner lets go —
-// Retry reproduces it, so the card offers "Start new session" instead.
+// backends older than that contract — including the refusal copy itself
+// (`session_already_owned_message`: "This chat is open in another Hermes
+// window/terminal …", #118061), not just the "already has a live owner"
+// wording. Deterministic until the owner lets go — Retry reproduces it, so
+// the card offers "Start new session" instead.
 export function isSessionNotOwnedError(error: unknown): boolean {
   const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
 
-  return reason === 'SESSION_NOT_OWNED' || /already has a live owner/i.test(error instanceof Error ? error.message : '')
+  if (reason === 'SESSION_NOT_OWNED') {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : ''
+
+  return /already has a live owner/i.test(message) || /open in another hermes (?:window|terminal)/i.test(message)
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))

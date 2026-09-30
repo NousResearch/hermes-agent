@@ -1,4 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -16,6 +17,7 @@ import {
   isSessionBusyError,
   isSessionIdCandidate,
   isSessionNotFoundError,
+  isSessionNotOwnedError,
   isSessionRecentlyInterrupted,
   isSubmitInFlight,
   isTargetSessionBusy,
@@ -136,6 +138,27 @@ describe('session error classifiers', () => {
     expect(isSessionBusyError(new Error('session busy'))).toBe(true)
     expect(isSessionNotFoundError(new Error('other'))).toBe(false)
     expect(isSessionBusyError(new Error('other'))).toBe(false)
+  })
+
+  it('detects a live-owner refusal from the machine reason', () => {
+    const error = new JsonRpcGatewayError('refused', { code: 4090, data: { reason: 'SESSION_NOT_OWNED' } })
+    expect(isSessionNotOwnedError(error)).toBe(true)
+  })
+
+  it('detects the already-owned refusal copy without machine data (#118061)', () => {
+    // The first line of hermes_cli.active_sessions.session_already_owned_message —
+    // the prose a backend without the reason contract (or an error unwrapped
+    // off the frame) carries.
+    expect(
+      isSessionNotOwnedError(new Error('This chat is open in another Hermes window/terminal. Use it there.'))
+    ).toBe(true)
+    expect(isSessionNotOwnedError(new Error('Session x already has a live owner'))).toBe(true)
+  })
+
+  it('does not classify an ordinary resume failure as a lease refusal', () => {
+    expect(isSessionNotOwnedError(new Error('Session not found'))).toBe(false)
+    expect(isSessionNotOwnedError(new Error('connect ECONNREFUSED'))).toBe(false)
+    expect(isSessionNotOwnedError(null)).toBe(false)
   })
 })
 

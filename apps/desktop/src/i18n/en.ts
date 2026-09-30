@@ -5541,6 +5541,9 @@ export const en: Translations = {
     editFailed: 'Edit failed',
     editTurnUnavailable: 'This turn is no longer in server history (it may have been compressed away).',
     resumeFailed: 'Resume failed',
+    resumeNotOwnedTitle: 'This chat is open somewhere else',
+    resumeNotOwnedBody:
+      'Another Hermes window or terminal is running this chat. Continue it there, or start a new chat here.',
     readOnlyTranscriptTitle: 'Opened read-only',
     readOnlyTranscriptBody:
       'No connected backend claims this older chat yet, so it opened as a read-only transcript. Its history is intact; sending is disabled until a backend claims it.',

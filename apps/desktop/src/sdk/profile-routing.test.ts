@@ -1011,11 +1011,13 @@ describe('profile-aware plugin session opens', () => {
     // later tests via the shared afterEach's vi.clearAllMocks(), which clears
     // call history but not a standing implementation.
     vi.mocked(openSessionCore)
-      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => 'opened')
       .mockImplementationOnce(() => {
         setMockAtom($selectedStoredSessionId, 'waking-bot-chat')
         setMockAtom($activeSessionId, 'runtime-waking')
         setMockAtom($messages, [{ id: 'history-waking', parts: [], role: 'assistant' }] as never)
+
+        return 'opened'
       })
 
     await host.openSession('waking-bot-chat', {

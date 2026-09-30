@@ -1424,6 +1424,8 @@
     "desktop.restartToUseSaveImage",
     "desktop.restored",
     "desktop.resumeFailed",
+    "desktop.resumeNotOwnedBody",
+    "desktop.resumeNotOwnedTitle",
     "desktop.resumeRetry",
     "desktop.resumeStrandedBody",
     "desktop.resumeStrandedTitle",

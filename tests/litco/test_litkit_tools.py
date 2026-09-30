@@ -12,7 +12,7 @@ import pytest
 from litco.litkit import tools as T
 from litco.litkit.client import LitKitClient, LitKitConfig, set_default_client
 from litco.litkit.context import TurnIdentity, bind_turn, current_turn, reset_turn
-from tests.litco._litkit_fake import HOST_SECRET, MATTER_ID, TOKEN, USER_ID, FakeLitKit, ndjson
+from tests.litco._litkit_fake import HOST_SECRET, MATTER_ID, TOKEN, USER_ID, FakeLitKit, FakeReview, ndjson
 
 M = MATTER_ID
 
@@ -45,7 +45,7 @@ def env(fake, tmp_path, monkeypatch):
     client.close()
 
 
-def call(name: str, **args):
+def call(name: str, /, **args):
     out = T.HANDLERS[name](args)
     try:
         return json.loads(out)
@@ -250,9 +250,9 @@ def test_notify_defaults_to_the_acting_user(fake, env):
 
 def test_private_memory_needs_a_lawyer(fake, env):
     fake.route("POST", r"/api/agent/actions", lambda r: (200, {"ok": True, "echo": r.json()}))
-    out = call("litkit_remember", content="prefers short memos", scope="user", kind="style")
+    out = call("litkit_remember", content="prefers short memos", scope="user", kind="strategy")
     assert out["echo"] == {"action": "remember", "matterId": M,
-                           "args": {"kind": "style", "content": "prefers short memos", "acl": {"scope": "user"}}}
+                           "args": {"kind": "strategy", "content": "prefers short memos", "acl": {"scope": "user"}}}
     token = bind_turn(TurnIdentity(acting_user=None, cwd=env["cwd"]))
     try:
         out = call("litkit_remember", content="x", scope="user")
@@ -463,3 +463,167 @@ def test_channel_history_needs_a_channel_and_a_valid_before(fake, env):
     fake.route("GET", rf"/api/matters/{M}/channels/nope/history", (404, {"error": "channel_not_found"}))
     out = call("litkit_channel_history", channel="nope")
     assert out["status"] == 404 and "error" in out
+
+
+# ---------------------------------------------------------------------------
+# review & tag: Ana registers the structure and proposes the run herself
+
+
+CRITERIA = [{"title": "Pricing communications", "description": "Any discussion of list or net price.",
+             "tagName": "Pricing"},
+            "Board materials"]
+
+
+def test_review_structure_is_registered_then_proposed(fake, env):
+    review = FakeReview(fake)
+    made = call("litkit_review", action="criteria", criteriaAction="create", name="Part 11 requests",
+                criteria=CRITERIA, description="RFP set 2")
+    set_id = made["set"]["id"]
+    sent = fake.calls("POST", rf"/api/matters/{M}/criteria-sets")[-1].json()
+    assert sent == {"name": "Part 11 requests", "description": "RFP set 2",
+                    "criteria": [CRITERIA[0], {"title": "Board materials"}]}
+    assert call("litkit_review", action="criteria")["mine"][0]["id"] == set_id
+    assert call("litkit_review", action="criteria", criteriaAction="get", criteriaSetId=set_id)["set"]["id"] == set_id
+    work_sets = call("litkit_review", action="work_sets")["workSets"]
+    out = call("litkit_review", action="create", criteriaSetId=set_id, scope={"workSetId": work_sets[0]["id"]},
+               tags=["Pricing", "Board", "Pricing"], createMissingTags=True, name="Part 11 first pass")
+    assert out["proposalId"] and out["estimatedCount"] == 1234 and out["criteriaSetVersion"] == 1
+    assert "card in this thread" in out["next"] and "Review screen" in out["next"]
+    assert review.proposals[0]["request"] == {"scope": {"workSetId": work_sets[0]["id"]}, "criteriaSetId": set_id,
+                                              "tags": ["Pricing", "Board"], "createMissingTags": True,
+                                              "name": "Part 11 first pass"}
+    req = fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1]
+    assert req.headers["x-litkit-acting-user"] == USER_ID
+
+
+def test_review_criteria_change_is_a_new_version_then_reproposed(fake, env):
+    review = FakeReview(fake)
+    set_id = call("litkit_review", action="criteria", criteriaAction="create", name="Part 11",
+                  criteria=CRITERIA)["set"]["id"]
+    added = CRITERIA + [{"title": "REV-NR", "tagName": "REV-NR", "description": "Part 11 item 6"}]
+    out = call("litkit_review", action="criteria", criteriaAction="update", criteriaSetId=set_id, criteria=added,
+               changeNote="add REV-NR as Part 11 item 6", baseVersion=1)
+    assert out["version"] == 2
+    patch = fake.calls("PATCH", rf"/api/matters/{M}/criteria-sets/{set_id}")[-1].json()
+    assert patch["changeNote"] == "add REV-NR as Part 11 item 6" and patch["baseVersion"] == 1
+    assert patch["criteria"][-1] == {"title": "REV-NR", "tagName": "REV-NR", "description": "Part 11 item 6"}
+    assert call("litkit_review", action="criteria", criteriaAction="publish", criteriaSetId=set_id)["ok"] is True
+    assert fake.calls("POST", rf"/api/matters/{M}/criteria-sets/{set_id}/publish")[-1].json() == {}
+    versions = call("litkit_review", action="criteria", criteriaAction="versions", criteriaSetId=set_id)
+    assert [v["version"] for v in versions["versions"]] == [1, 2]
+    again = call("litkit_review", action="create", criteriaSetId=set_id, scope={"batesRange": {
+        "start": " ABC0000001", "end": "ABC0004000"}}, tags=["Pricing", "REV-NR"])
+    assert again["criteriaSetVersion"] == 2
+    assert review.proposals[-1]["request"]["scope"] == {"batesRange": {"start": "ABC0000001", "end": "ABC0004000"}}
+
+
+def test_review_create_billing_quote_then_confirm(fake, env):
+    review = FakeReview(fake, price_usd=41.5)
+    base = {"action": "create", "criteria": CRITERIA, "tags": ["Pricing"],
+            "scope": {"filter": {"custodian": "Doe, Jane", "dateFrom": "2021-01-01"}}}
+    quoted = call("litkit_review", **base)
+    assert quoted["requiresApproval"] is True and quoted["quote"]["amountEstUsd"] == 41.5
+    assert "Nothing is proposed yet" in quoted["next"] and "quoteId=q1" in quoted["next"]
+    assert review.proposals == []
+    first = fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1].json()
+    assert "quoteId" not in first and "userConfirmed" not in first
+    assert first["criteria"] == [CRITERIA[0], {"title": "Board materials"}]
+    # userConfirmed without the quote id never reaches LitKit
+    n = len(fake.requests)
+    assert "quoteId" in call("litkit_review", **base, userConfirmed=True)["error"]
+    assert len(fake.requests) == n
+    done = call("litkit_review", **base, quoteId="q1", userConfirmed=True)
+    assert done["proposalId"] and "card in this thread" in done["next"]
+    second = fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")[-1].json()
+    assert second["quoteId"] == "q1" and second["userConfirmed"] is True
+    assert review.quotes == {"q1": "consumed"} and len(review.proposals) == 1
+
+
+def test_review_create_second_approver_is_explained(fake, env):
+    fake.route("POST", rf"/api/matters/{M}/review-jobs/propose",
+               {"proposed": False, "requiresApproval": True, "needsSecondApprover": True,
+                "quote": {"id": "q9", "amountEstUsd": 9000, "docCount": 90000}})
+    out = call("litkit_review", action="create", criteriaSetId="builtin:privilege", tags=["Privileged"],
+               scope={"documentIds": [_id(1)]}, quoteId="q9", userConfirmed=True)
+    assert "different matter admin" in out["next"] and "q9" in out["next"]
+
+
+@pytest.mark.parametrize("args,message", [
+    ({"tags": ["P"], "criteriaSetId": _id(1)}, "'scope' must be an object"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "scope": {}}, "exactly one of"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "scope": {"workSetId": _id(2), "documentIds": [_id(3)]}},
+     "exactly one of"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "scope": {"workSetId": "../../admin"}}, "uuid"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "scope": {"documentIds": [_id(1), "ABC0001"]}}, "uuid"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "scope": {"batesRange": {"start": "ABC1"}}}, "{start, end}"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "scope": {"filter": "custodian=Doe"}}, "scope.filter"),
+    ({"tags": ["P"], "scope": {"workSetId": _id(2)}}, "exactly one of criteriaSetId"),
+    ({"tags": ["P"], "criteriaSetId": _id(1), "criteria": CRITERIA, "scope": {"workSetId": _id(2)}},
+     "exactly one of criteriaSetId"),
+    ({"tags": ["P"], "criteriaSetId": "../x", "scope": {"workSetId": _id(2)}}, "criteria set id"),
+    ({"tags": ["P"], "criteria": [], "scope": {"workSetId": _id(2)}}, "non-empty list"),
+    ({"tags": ["P"], "criteria": [{"description": "no title"}], "scope": {"workSetId": _id(2)}}, "needs a title"),
+    ({"tags": ["P"], "criteria": [{"title": "t", "disposition": "maybe"}], "scope": {"workSetId": _id(2)}},
+     "disposition"),
+    ({"criteriaSetId": _id(1), "scope": {"workSetId": _id(2)}}, "'tags' must be a non-empty list"),
+    ({"tags": [" "], "criteriaSetId": _id(1), "scope": {"workSetId": _id(2)}}, "at least one tag"),
+    ({"tags": [f"t{i}" for i in range(26)], "criteriaSetId": _id(1), "scope": {"workSetId": _id(2)}}, "at most 25"),
+])
+def test_review_create_rejects_bad_arguments_before_any_request(fake, env, args, message):
+    out = call("litkit_review", action="create", **args)
+    assert message in out["error"], out
+    assert fake.requests == []
+
+
+@pytest.mark.parametrize("args,message", [
+    ({"criteriaAction": "create", "criteria": CRITERIA}, "'name' is required"),
+    ({"criteriaAction": "create", "name": "x"}, "non-empty list"),
+    ({"criteriaAction": "get"}, "'criteriaSetId' is required"),
+    ({"criteriaAction": "update", "criteriaSetId": _id(1)}, "non-empty list"),
+    ({"criteriaAction": "publish", "criteriaSetId": "a/b"}, "criteria set id"),
+    ({"criteriaAction": "delete", "criteriaSetId": _id(1)}, "criteriaAction must be one of"),
+])
+def test_review_criteria_rejects_bad_arguments_before_any_request(fake, env, args, message):
+    out = call("litkit_review", action="criteria", **args)
+    assert message in out["error"], out
+    assert fake.requests == []
+
+
+def test_review_accept_tags_and_unknown_actions(fake, env):
+    FakeReview(fake)
+    out = call("litkit_review", action="accept_tags", jobId="job1", includeRationaleNotes=True)
+    assert out == {"action": "accept_tags", "jobId": "job1", "result": {"ok": True, "accepted": 17, "jobId": "job1"}}
+    assert fake.calls("POST", rf"/api/matters/{M}/review-jobs/job1/accept-all-tags")[-1].json() == {
+        "includeRationaleNotes": True}
+    call("litkit_review", action="accept_tags", jobId="job2")
+    assert fake.requests[-1].json() == {}
+    n = len(fake.requests)
+    assert "'jobId' is required" in call("litkit_review", action="accept_tags")["error"]
+    assert "action must be one of" in call("litkit_review", action="launch", jobId="job1")["error"]
+    assert len(fake.requests) == n
+
+
+def test_review_create_permission_refusal_is_plain(fake, env):
+    fake.route("POST", rf"/api/matters/{M}/review-jobs/propose", (403, {"error": "forbidden"}))
+    out = call("litkit_review", action="create", criteriaSetId=_id(1), tags=["P"], scope={"workSetId": _id(2)})
+    assert out["permission_denied"] is True and out["error"].startswith("not permitted")
+    assert len(fake.calls("POST", rf"/api/matters/{M}/review-jobs/propose")) == 1
+
+
+# ---------------------------------------------------------------------------
+# memory: the "memory failed" pill. LitKit's remember accepts five kinds; the tool used to
+# default to "note", which LitKit answers 400 `remember: invalid kind "note"`.
+
+
+def test_remember_defaults_to_a_kind_litkit_accepts(fake, env):
+    fake.route("POST", r"/api/agent/actions", lambda r: (200, {"ok": True, "echo": r.json()}))
+    out = call("litkit_remember", content="Jane Doe left Acme in March 2022")
+    assert out["echo"]["args"] == {"kind": "fact", "content": "Jane Doe left Acme in March 2022"}
+    assert set(T.SCHEMAS["litkit_remember"]["parameters"]["properties"]["kind"]["enum"]) == set(T.REMEMBER_KINDS)
+
+
+def test_remember_rejects_a_kind_litkit_would_refuse_before_any_request(fake, env):
+    for kind in ("note", "style"):
+        out = call("litkit_remember", content="x", kind=kind)
+        assert "kind must be one of fact, strategy" in out["error"], out
+    assert fake.requests == []

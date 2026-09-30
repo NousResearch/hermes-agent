@@ -1,1 +1,1 @@
-Legal procedures for the LitCo matter host: corpus pulls from LitKit, deposition packages, discovery letters, docket retrieval, cite-checks, data productions, and gated delivery of work product.
+Legal procedures for the LitCo matter host: corpus pulls from LitKit, Review & Tag runs, deposition packages, discovery letters, docket retrieval, cite-checks, data productions, and gated delivery of work product.

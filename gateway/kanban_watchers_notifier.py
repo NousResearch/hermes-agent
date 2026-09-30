@@ -511,6 +511,7 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self.settled = False
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -521,6 +522,7 @@ class _KanbanNotification:
 
     async def advance(self) -> None:
         await _to_thread_process_service(self.runner._kanban_advance, self.sub, self.d["cursor"], self.board_slug)
+        self.settled = True
 
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
@@ -733,6 +735,25 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        """Deliver the claim; an unexpected error rewinds it so the next tick retries.
+
+        Every subscription is claimed before any delivery runs, so an escaping error
+        would otherwise consume this claim and skip the rest of the tick's claims.
+        """
+        try:
+            await self._deliver()
+        except Exception as exc:
+            logger.warning("kanban notifier: delivery for %s on %s failed: %s", self.task_id, self.platform_str, exc,
+                           exc_info=True)
+            if self.settled:
+                return
+            try:
+                await self.rewind()
+            except Exception as rewind_exc:
+                logger.warning("kanban notifier: could not rewind claim for %s on %s: %s",
+                               self.task_id, self.platform_str, rewind_exc)
+
+    async def _deliver(self) -> None:
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:

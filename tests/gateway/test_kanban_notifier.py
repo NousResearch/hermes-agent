@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 
 
 from gateway.config import Platform
@@ -796,3 +797,50 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_notifier_unexpected_delivery_error_keeps_other_subscriptions(tmp_path, monkeypatch):
+    """An error escaping one subscription's delivery must not drop the rest of the tick.
+
+    Every subscription is claimed (cursor advanced) before any delivery runs, so an
+    exception that aborted the delivery loop consumed the later claims for good.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "delivery-isolation.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid_bad = kb.create_task(conn, title="bad task", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid_bad, platform="telegram", chat_id="chat-bad")
+        kb.complete_task(conn, tid_bad, summary="done")
+        tid_good = kb.create_task(conn, title="good task", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid_good, platform="telegram", chat_id="chat-good")
+        kb.complete_task(conn, tid_good, summary="done")
+    finally:
+        conn.close()
+
+    original_list = kbn.list_notify_subs
+    monkeypatch.setattr(kbn, "list_notify_subs", lambda conn, task_id=None, **kw: sorted(
+        original_list(conn, task_id, **kw), key=lambda s: 0 if s["task_id"] == tid_bad else 1))
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    original_advance = runner._kanban_advance
+
+    def locked_advance(sub, cursor, board=None):
+        if sub["task_id"] == tid_bad:
+            raise sqlite3.OperationalError("database is locked")
+        return original_advance(sub, cursor, board)
+
+    runner._kanban_advance = locked_advance
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert [s["chat_id"] for s in adapter.sent] == ["chat-bad", "chat-good"]
+    conn = kbc.connect()
+    try:
+        unseen = {tid: kbn.unseen_events_for_sub(conn, task_id=tid, platform="telegram", chat_id=chat)[1]
+                  for tid, chat in ((tid_bad, "chat-bad"), (tid_good, "chat-good"))}
+    finally:
+        conn.close()
+    assert unseen[tid_good] == []
+    # The failed settle is retried next tick instead of being silently consumed.
+    assert "completed" in [e.kind for e in unseen[tid_bad]]

@@ -389,11 +389,10 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 return content, 0, None, drift_err
 
         effective_new = _maybe_unescape_new_string(new_string, content, matches)
-        if strategy_name == "unicode_normalized":
-            effective_new = _preserve_unicode_in_replacement(content, matches, old_string, effective_new)
         new_content = _apply_replacements(
             content, matches, effective_new,
-            old_string=old_string if strategy_name != "exact" else None)
+            old_string=old_string if strategy_name != "exact" else None,
+            preserve_unicode=strategy_name == "unicode_normalized")
         _note_edit_match(strategy_name)
         return new_content, len(matches), strategy_name, None
 
@@ -575,14 +574,20 @@ def _preserve_unicode_in_replacement(content: str, matches: list[Span],
 
 
 def _apply_replacements(content: str, matches: list[Span],
-                        new_string: str, old_string: Optional[str] = None) -> str:
+                        new_string: str, old_string: Optional[str] = None,
+                        preserve_unicode: bool = False) -> str:
     """Splice ``new_string`` over each span (end-to-start so offsets stay valid);
     ``old_string`` non-None (non-exact match) re-indents it per region."""
     result = content
     for start, end in sorted(matches, key=lambda x: x[0], reverse=True):
         adjusted = new_string
         if old_string is not None:
-            adjusted = _reindent_replacement(content[start:end], old_string, new_string)
+            if preserve_unicode:
+                # Each occurrence may use different typographic characters even
+                # though all normalize to the same old_string.
+                adjusted = _preserve_unicode_in_replacement(
+                    content, [(start, end)], old_string, adjusted)
+            adjusted = _reindent_replacement(content[start:end], old_string, adjusted)
         result = result[:start] + adjusted + result[end:]
     return result
 

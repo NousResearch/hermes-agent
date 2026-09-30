@@ -1,4 +1,3 @@
-import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { requestGatewayForAgent } from '@/store/gateway'
 import type { AgentProfileRoute } from '@/store/profile'
 import type { SessionCreateResponse } from '@/types/hermes'
@@ -10,11 +9,13 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
  *  code 4000, handler never runs) — e.g. a Hermes Cloud backend behind a
  *  Desktop that updates from main (#128971). Those backends always honoured the
  *  client `cwd`, so resending without the flag reproduces their behaviour.
+ *  Matched on the stable prefix, not `isOutOfSyncRpcParams`: v0.21.3 already
+ *  rejects but predates the "out of sync" suffix.
  *  Delete once no supported backend predates #122899. */
-function rejectsCwdExplicit(params: Record<string, unknown>, error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
+const CWD_EXPLICIT_REJECTED = /invalid params for session\.create: cwd_explicit:/
 
-  return 'cwd_explicit' in params && isOutOfSyncRpcParams(message) && /:\s*cwd_explicit:/.test(message)
+function rejectsCwdExplicit(params: Record<string, unknown>, error: unknown): boolean {
+  return 'cwd_explicit' in params && CWD_EXPLICIT_REJECTED.test(error instanceof Error ? error.message : String(error))
 }
 
 /** `session.create` on the captured owner route (or the window's gateway). */

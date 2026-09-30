@@ -10,6 +10,7 @@ import { type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { ModelBrandIcon } from '@/components/model-brand-icon'
+import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ArrowUpRight, Brain, Check, ChevronDown, Cpu, Loader2, Sparkles, Users, Zap } from '@/lib/icons'
@@ -29,6 +30,8 @@ import type { ModelOptionProvider } from '@/types/hermes'
 
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
 
+import { CHATGPT_PROVIDER_SLUG, chatGptWorkModel } from './chatgpt-connect'
+import { ChatGptQuickConnect } from './chatgpt-quick-connect'
 import { LiveModelPicker } from './live-model-picker'
 import {
   JARVIS_WORK_MODES,
@@ -113,6 +116,11 @@ export interface JarvisModelCardProps {
   requestGateway?: GatewayRequest
 }
 
+const CHATGPT_COPY = {
+  en: { heading: 'ChatGPT subscription', model: 'ChatGPT — your subscription' },
+  pl: { heading: 'Subskrypcja ChatGPT', model: 'ChatGPT — Twoja subskrypcja' }
+} as const
+
 const MODE_ICONS = { balanced: Sparkles, deep: Brain, fast: Zap } as const
 
 function shortModel(model: string): string {
@@ -157,7 +165,7 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
     }
   }
 
-  const pick = async (model: string) => {
+  const pick = async (model: string, providerSlug: string = OPENROUTER_PROVIDER_SLUG) => {
     if (!onSelectModel || pending) {
       return
     }
@@ -165,13 +173,16 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
     setPending(model)
 
     try {
-      await onSelectModel({ model, provider: OPENROUTER_PROVIDER_SLUG, sessionId: activeSessionId })
+      await onSelectModel({ model, provider: providerSlug, sessionId: activeSessionId })
     } finally {
       setPending(null)
     }
   }
 
   const presetLabel = (id: OpenRouterPresetId) => copy.presets[id]
+  const chatGptModel = chatGptWorkModel(providers)
+  const chatGptActive = chatGptModel !== undefined && currentProvider === CHATGPT_PROVIDER_SLUG && currentModel === chatGptModel
+  const chatGpt = locale === 'pl' ? CHATGPT_COPY.pl : CHATGPT_COPY.en
 
   return (
     <RailCard
@@ -220,6 +231,46 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
           </button>
         ))}
       </div>
+
+      <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-(--ui-text-tertiary)">{chatGpt.heading}</p>
+      {chatGptModel ? (
+        <button
+          aria-pressed={chatGptActive}
+          className={cn(
+            'jarvis-choice mb-3 flex min-h-12 w-full min-w-0 items-center gap-3 rounded-xl px-2.5 py-2 text-left text-xs outline-none focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
+            chatGptActive ? 'jarvis-choice-on text-(--ui-text-primary)' : 'jarvis-well'
+          )}
+          disabled={!connected || !onSelectModel || pending !== null}
+          onClick={() => void pick(chatGptModel, CHATGPT_PROVIDER_SLUG)}
+          title={chatGptModel}
+          type="button"
+        >
+          <ModelBrandIcon hints={[CHATGPT_PROVIDER_SLUG]} model={chatGptModel} />
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium leading-snug">{chatGpt.model}</span>
+            <span className="block truncate text-xs text-(--ui-text-secondary)">{shortModel(chatGptModel)}</span>
+          </span>
+          {pending === chatGptModel ? (
+            <Loader2 className="size-4 animate-spin text-(--ui-accent)" />
+          ) : chatGptActive ? (
+            <Check className="size-4 text-(--ui-accent)" />
+          ) : null}
+        </button>
+      ) : (
+        <div className="jarvis-well mb-3 p-3">
+          <ChatGptQuickConnect
+            loadOptions={scope => getGlobalModelOptions({ refresh: true }, scope)}
+            onConnected={result => {
+              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+
+              if (result.model) {
+                void pick(result.model, CHATGPT_PROVIDER_SLUG)
+              }
+            }}
+            setDefault
+          />
+        </div>
+      )}
 
       <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-(--ui-text-tertiary)">
         {copy.openRouter}

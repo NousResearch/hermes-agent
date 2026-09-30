@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import type { LiveVoiceProviderId } from '@/api/voice-realtime'
 import logoUrl from '@/assets/czesiek-logo.png'
+import { ModelBrandIcon } from '@/components/model-brand-icon'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import {
@@ -36,6 +37,8 @@ import type { HermesConfigRecord, ModelAssignmentResponse, ModelOptionsResponse 
 
 import { getNested, setNested } from '../settings/helpers'
 
+import { CHATGPT_PROVIDER_SLUG, type ChatGptConnectResult, chatGptWorkModel } from './chatgpt-connect'
+import { ChatGptQuickConnect } from './chatgpt-quick-connect'
 import {
   applyJarvisToolsetPlan,
   JARVIS_DEFAULT_COMPUTER_MODE,
@@ -74,7 +77,7 @@ import {
 } from './onboarding-transaction'
 import { WelcomeStep } from './onboarding-welcome'
 import { OPENROUTER_ENV_KEY, type OpenRouterConnectResult } from './openrouter-connect'
-import { OPENROUTER_PROVIDER_SLUG } from './openrouter-presets'
+import { OPENROUTER_PROVIDER_SLUG, resolveOpenRouterPresets } from './openrouter-presets'
 import { OpenRouterQuickConnect } from './openrouter-quick-connect'
 import { withPersonality } from './personality'
 import { setupCopy } from './setup-copy'
@@ -550,6 +553,28 @@ export function JarvisOnboarding({
     persistState({
       ...invalidateModelDependentState(
         updatedState(state, { selections: { engine: OPENROUTER_PROVIDER_SLUG, model: nextModel } })
+      ),
+      completedSteps: Array.from(new Set([...state.completedSteps, 'engine' as JarvisOnboardingStep])),
+      currentStep: 'model'
+    })
+  }
+
+  // Same shape as the OpenRouter path: the catalog is refreshed, the model is only committed by finish().
+  const adoptChatGpt = (result: Extract<ChatGptConnectResult, { ok: true }>) => {
+    const nextProviders = normalizeProviders(result.options)
+    const chatGpt = nextProviders.find(item => item.slug === CHATGPT_PROVIDER_SLUG)
+    const nextModel = result.model ?? firstModel(chatGpt)
+
+    setProviders(nextProviders)
+    requestToken.current += 1
+    selectedModelRef.current = { provider: CHATGPT_PROVIDER_SLUG, model: nextModel }
+    setConfigurationStatus('idle')
+    setConfigurationMessage('')
+    setAccessStatus('idle')
+    setAccessMessage('')
+    persistState({
+      ...invalidateModelDependentState(
+        updatedState(state, { selections: { engine: CHATGPT_PROVIDER_SLUG, model: nextModel } })
       ),
       completedSteps: Array.from(new Set([...state.completedSteps, 'engine' as JarvisOnboardingStep])),
       currentStep: 'model'
@@ -1170,20 +1195,33 @@ export function JarvisOnboarding({
                 otherProvidersLabel={guide.alternatives}
                 providers={providers}
                 quickConnect={
-                  providers.some(
-                    item => item.slug === OPENROUTER_PROVIDER_SLUG && item.authenticated !== false
-                  ) ? null : (
-                    <OpenRouterQuickConnect
-                      deps={{
-                        loadOptions: () => loadModelOptions(scope),
-                        saveKey: key => setEnvVar(OPENROUTER_ENV_KEY, key, scope),
-                        validate: key => validateProviderCredential(OPENROUTER_ENV_KEY, key, undefined, scope)
-                      }}
-                      onConnected={adoptOpenRouter}
-                      scope={scope}
-                      tone="dark"
-                    />
-                  )
+                  <>
+                    {providers.some(item => item.slug === CHATGPT_PROVIDER_SLUG && item.authenticated !== false) ? null : (
+                      <div className="grid gap-2 rounded-md border border-[#10A37F]/40 bg-[#10A37F]/8 p-4">
+                        <ChatGptQuickConnect
+                          loadOptions={() => loadModelOptions(scope)}
+                          onConnected={adoptChatGpt}
+                          scope={scope}
+                          tone="dark"
+                        />
+                      </div>
+                    )}
+                    {providers.some(item => item.slug === OPENROUTER_PROVIDER_SLUG && item.authenticated !== false) ? null : (
+                      <div className="grid gap-2 rounded-md border border-[#00B7FF]/40 bg-[#00B7FF]/8 p-4">
+                        <p className="text-sm font-semibold">{copy.engine.quickStartTitle}</p>
+                        <OpenRouterQuickConnect
+                          deps={{
+                            loadOptions: () => loadModelOptions(scope),
+                            saveKey: key => setEnvVar(OPENROUTER_ENV_KEY, key, scope),
+                            validate: key => validateProviderCredential(OPENROUTER_ENV_KEY, key, undefined, scope)
+                          }}
+                          onConnected={adoptOpenRouter}
+                          scope={scope}
+                          tone="dark"
+                        />
+                      </div>
+                    )}
+                  </>
                 }
                 selected={selectedProvider}
                 title={copy.engine.title}
@@ -1198,6 +1236,7 @@ export function JarvisOnboarding({
                 models={provider?.models ?? []}
                 onCheck={() => void runConfigurationCheck()}
                 onSelect={chooseModel}
+                providerSlug={selectedProvider}
                 selected={selectedModel}
                 status={configurationStatus}
                 successLabel={copy.model.success}
@@ -1376,12 +1415,7 @@ function EngineStep({
     <div className="grid gap-4">
       <p className="text-lg font-semibold">{title}</p>
       <p className="max-w-2xl text-sm leading-6 text-(--ui-text-secondary)">{body}</p>
-      {quickConnect ? (
-        <div className="grid gap-2 rounded-md border border-[#00B7FF]/40 bg-[#00B7FF]/8 p-4">
-          <p className="text-sm font-semibold">{copy.quickStartTitle}</p>
-          {quickConnect}
-        </div>
-      ) : null}
+      {quickConnect ? <div className="grid gap-3">{quickConnect}</div> : null}
       <Button onClick={onOtherProviders} variant="secondary">
         {otherProvidersLabel}
       </Button>
@@ -1399,15 +1433,41 @@ function EngineStep({
             onClick={() => onSelect(provider.slug)}
             type="button"
           >
-            <span className="block text-sm font-medium">{provider.name}</span>
-            <span className="mt-1 block text-xs text-(--ui-text-tertiary)">
-              {copy.modelCount(provider.models.length)}
+            <span className="flex items-center gap-3">
+              <ModelBrandIcon hints={[provider.slug, provider.name]} />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">{provider.name}</span>
+                <span className="mt-0.5 block text-xs text-(--ui-text-tertiary)">
+                  {copy.modelCount(provider.models.length)}
+                </span>
+              </span>
             </span>
           </button>
         ))}
       </div>
     </div>
   )
+}
+
+/** The few models worth a card: the presets the provider serves, else its first handful. */
+function quickModels(providerSlug: string, models: string[]): string[] {
+  const listed = [{ authenticated: true, models, name: providerSlug, slug: providerSlug }]
+
+  if (providerSlug === OPENROUTER_PROVIDER_SLUG) {
+    return resolveOpenRouterPresets(listed).presets.map(preset => preset.model)
+  }
+
+  if (providerSlug === CHATGPT_PROVIDER_SLUG) {
+    const best = chatGptWorkModel(listed)
+
+    return [best, ...models.filter(model => model !== best)].filter((model): model is string => Boolean(model)).slice(0, 4)
+  }
+
+  return models.slice(0, 4)
+}
+
+function shortModelName(model: string): string {
+  return model.includes('/') ? model.slice(model.indexOf('/') + 1) : model
 }
 
 function ModelStep({
@@ -1418,6 +1478,7 @@ function ModelStep({
   models,
   onCheck,
   onSelect,
+  providerSlug,
   selected,
   status,
   successLabel,
@@ -1428,6 +1489,7 @@ function ModelStep({
   checkLabel: string
   message: string
   models: string[]
+  providerSlug: string
   onCheck: () => void
   onSelect: (model: string) => void
   selected: string
@@ -1439,6 +1501,27 @@ function ModelStep({
     <div className="grid gap-4">
       <p className="text-lg font-semibold">{title}</p>
       <p className="max-w-2xl text-sm leading-6 text-(--ui-text-secondary)">{body}</p>
+      <div className="grid gap-2 sm:grid-cols-2" data-testid="jarvis-model-cards">
+        {quickModels(providerSlug, models).map(model => (
+          <button
+            aria-pressed={selected === model}
+            className={cn(
+              'jarvis-choice flex min-h-14 items-center gap-3 rounded-xl px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50',
+              selected === model ? 'jarvis-choice-on' : 'jarvis-well'
+            )}
+            key={model}
+            onClick={() => onSelect(model)}
+            type="button"
+          >
+            <ModelBrandIcon hints={[providerSlug]} model={model} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{shortModelName(model)}</span>
+              <span className="block truncate text-xs text-(--ui-text-tertiary)">{model.includes('/') ? model.slice(0, model.indexOf('/')) : providerSlug}</span>
+            </span>
+            {selected === model ? <Check className="size-4 shrink-0 text-(--ui-accent)" /> : null}
+          </button>
+        ))}
+      </div>
       <select
         className="min-h-11 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-input) px-3 text-sm text-(--ui-text-primary) focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50"
         onChange={event => onSelect(event.target.value)}

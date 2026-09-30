@@ -106,3 +106,48 @@ def test_endpoint_requires_token():
     from hermes_cli.web_server import app
 
     assert TestClient(app).get("/api/news").status_code == 401
+
+
+def _items(source, n, start=0):
+    return [{"source": source, "link": f"https://{source}/{i}", "title": str(i), "published": 1000 - start - i}
+            for i in range(n)]
+
+
+def test_a_chatty_source_cannot_crowd_out_the_others_but_a_quiet_day_still_fills_the_page():
+    loud, quiet = _items("loud", 30), _items("quiet", 5, start=100)
+    merged = sorted(loud + quiet, key=lambda i: -i["published"])
+
+    page = news.cap_per_source(merged, 20)
+
+    assert sum(1 for i in page if i["source"] == "quiet") == 5
+    assert sum(1 for i in page if i["source"] == "loud") == 15 and len(page) == 20
+    # one source alone still returns a full page
+    assert len(news.cap_per_source(loud, 20)) == 20
+    # and the page stays newest-first
+    assert [i["published"] for i in page] == sorted((i["published"] for i in page), reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_same_host_feeds_never_overlap_while_other_hosts_run_in_parallel(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(news, "_SAME_HOST_GAP_S", 0.05)
+    running, overlap, started = {}, [], []
+
+    async def fake_fetch(client, feed):
+        host = feed["url"].split("/")[2]
+        running[host] = running.get(host, 0) + 1
+        if running[host] > 1:
+            overlap.append(host)
+        started.append(host)
+        await asyncio.sleep(0.05)
+        running[host] -= 1
+        return [], {"name": feed["name"], "url": feed["url"], "ok": True, "count": 0, "error": None}
+
+    monkeypatch.setattr(news, "_fetch_feed", fake_fetch)
+    feeds = [{"name": n, "url": u} for n, u in (("a", "https://r.com/a"), ("b", "https://r.com/b"),
+                                                 ("c", "https://other.com/c"))]
+
+    data = await news.collect_news(feeds)
+
+    assert overlap == [] and started[:2] == ["r.com", "other.com"]
+    assert [f["name"] for f in data["feeds"]] == ["a", "b", "c"]

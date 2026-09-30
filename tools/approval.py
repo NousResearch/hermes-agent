@@ -879,7 +879,9 @@ def _user_deny_block(command: str) -> dict | None:
     agent may DO, not what it can reach, so they are evaluated before the container fast path."""
     deny_pattern = _match_user_deny_rule(command)
     if deny_pattern is None:
-        return None
+        # Integration trust levels ("read only", "read and propose") are the same kind of rule.
+        from tools.approval_integrations import integration_block
+        return integration_block(command)
     logger.warning("User deny rule %r blocked command: %s", deny_pattern, command[:200])
     return _user_deny_block_result(deny_pattern)
 
@@ -994,6 +996,16 @@ def _tirith_scan(command: str) -> dict:
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
+    """The combined guard, plus a record of what happened to any write to a connected service."""
+    result = _check_all_command_guards(command, env_type, approval_callback, has_host_access)
+    from tools.approval_integrations import record_outcome
+    record_outcome(command, result)
+    return result
+
+
+def _check_all_command_guards(command: str, env_type: str,
+                              approval_callback=None,
+                              has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
@@ -1006,7 +1018,11 @@ def check_all_command_guards(command: str, env_type: str,
         return blocked
 
     approval_mode = approval_context._get_approval_mode()
-    if _yolo_active() or approval_mode == "off":
+    # A write to a connected service at trust level "ask" is asked even under yolo / mode off: the user
+    # chose that level for this integration, and "auto" is how they say they do not want to be asked.
+    from tools.approval_integrations import integration_ask
+    integration = integration_ask(command)
+    if (_yolo_active() or approval_mode == "off") and integration is None:
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
@@ -1017,6 +1033,11 @@ def check_all_command_guards(command: str, env_type: str,
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
             result = _unattended_deny(command, ctx)
+            if result is None and integration is not None and ctx.mode() == "deny":
+                # Level "ask" with nobody to ask: fail closed rather than write to the user's account unseen.
+                result = {"approved": False, "message": ctx.block_message(
+                    integration.describe(), noun="writes to connected services",
+                    advice="Ask the user to do it, or set this integration's trust level to 'auto'.")}
             if result is not None:
                 return result
         return _approved()
@@ -1035,6 +1056,9 @@ def check_all_command_guards(command: str, env_type: str,
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
     if is_dangerous and not is_approved(session_key, pattern_key):
         warnings.append((pattern_key, description, False))
+    if integration is not None and not is_approved(session_key, integration.key):
+        from agent.i18n import get_language
+        warnings.append((integration.key, integration.describe(get_language()), False))
     if not warnings:
         return _approved()
 
@@ -1049,7 +1073,8 @@ def check_all_command_guards(command: str, env_type: str,
         _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
+        # A guardian model never answers for the user on a write to their own accounts.
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart" and integration is None,
         permanent_capable=any(not is_t for _, _, is_t in warnings),
     )
 

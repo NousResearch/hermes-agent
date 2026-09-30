@@ -42,6 +42,11 @@ _FETCH_TIMEOUT_S = 8.0
 _MAX_FEED_BYTES = 2 * 1024 * 1024
 _MAX_FEEDS = 12
 _MAX_ITEMS_PER_FEED = 25
+# In the returned page no single source may fill more than this many slots while others have items.
+_MAX_ITEMS_PER_SOURCE_IN_RESULT = 8
+# Pause between two fetches to the SAME host (two subreddits, two blogs on one domain): fired together they
+# trip burst rate limits (HTTP 429). Different hosts still run in parallel.
+_SAME_HOST_GAP_S = 1.5
 _SUMMARY_CHARS = 280
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
@@ -172,13 +177,28 @@ async def _fetch_feed(client: httpx.AsyncClient, feed: Dict[str, str]) -> Tuple[
     return items, meta
 
 
+async def _fetch_host_group(client: httpx.AsyncClient, group: List[Tuple[int, Dict[str, str]]]):
+    """One host's feeds, one after another with a short gap; returns ``(original_index, result)`` pairs."""
+    out = []
+    for position, (index, feed) in enumerate(group):
+        if position:
+            await asyncio.sleep(_SAME_HOST_GAP_S)
+        out.append((index, await _fetch_feed(client, feed)))
+    return out
+
+
 async def collect_news(feeds: List[Dict[str, str]]) -> Dict[str, Any]:
+    groups: Dict[str, List[Tuple[int, Dict[str, str]]]] = {}
+    for index, feed in enumerate(feeds):
+        groups.setdefault(urlparse(feed["url"]).hostname or feed["url"], []).append((index, feed))
     async with httpx.AsyncClient(
         timeout=_FETCH_TIMEOUT_S,
         follow_redirects=True,
         headers={"User-Agent": "HermesAgent-Dashboard/1.0 (+news)"},
     ) as client:
-        results = await asyncio.gather(*(_fetch_feed(client, f) for f in feeds))
+        gathered = await asyncio.gather(*(_fetch_host_group(client, group) for group in groups.values()))
+    # Feeds keep the order they were configured in, whatever order their hosts finished.
+    results = [result for _index, result in sorted((pair for batch in gathered for pair in batch), key=lambda p: p[0])]
 
     seen: set = set()
     items: List[Dict[str, Any]] = []
@@ -194,6 +214,29 @@ async def collect_news(feeds: List[Dict[str, str]]) -> Dict[str, Any]:
         "feeds": [meta for _items, meta in results],
         "fetched_at": time.time(),
     }
+
+
+def cap_per_source(items: List[Dict[str, Any]], limit: int, per_source: int = _MAX_ITEMS_PER_SOURCE_IN_RESULT
+                   ) -> List[Dict[str, Any]]:
+    """The newest ``limit`` items with no source over ``per_source`` while others still have some.
+
+    ``items`` is newest-first. Sources under the cap fill the page in date order; any slots left
+    are backfilled from the overflow (still newest-first), so a quiet day, or a single source,
+    still returns a full page.
+    """
+    counts: Dict[str, int] = {}
+    picked: List[Dict[str, Any]] = []
+    overflow: List[Dict[str, Any]] = []
+    for item in items:
+        source = item.get("source", "")
+        if counts.get(source, 0) < per_source:
+            counts[source] = counts.get(source, 0) + 1
+            picked.append(item)
+        else:
+            overflow.append(item)
+    if len(picked) < limit:
+        picked = sorted(picked + overflow[: limit - len(picked)], key=lambda i: i.get("published") or 0, reverse=True)
+    return picked[:limit]
 
 
 @router.get("/api/news")
@@ -213,4 +256,4 @@ async def get_news(
         _cache[key] = (time.time(), data)
     else:
         data = cached[1]
-    return {**data, "items": data["items"][:limit], "total": len(data["items"])}
+    return {**data, "items": cap_per_source(data["items"], limit), "total": len(data["items"])}

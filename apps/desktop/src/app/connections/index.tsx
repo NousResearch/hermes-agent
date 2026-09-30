@@ -37,6 +37,7 @@ import { navigateToWorkspacePage, NEW_CHAT_ROUTE } from '../routes'
 import { DriveMemoryPanel } from './drive-memory-panel'
 import { GoogleConnectDialog } from './google-connect-dialog'
 import { SecretsAuditCard } from './secrets-audit-card'
+import { TrustCard } from './trust-card'
 
 const TABS = ['connections', 'keys', 'api'] as const
 
@@ -334,7 +335,12 @@ export function ConnectionsView() {
               <p className="max-w-3xl text-sm text-(--ui-text-secondary)">{copy.subtitle}</p>
             ) : null}
           </header>
-          {tab === 'connections' ? <ConnectionsGrid query={query} /> : null}
+          {tab === 'connections' ? (
+            <>
+              <TrustCard />
+              <ConnectionsGrid query={query} />
+            </>
+          ) : null}
           {tab === 'keys' ? (
             <>
               <SecretsAuditCard />

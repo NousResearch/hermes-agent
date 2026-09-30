@@ -71,7 +71,8 @@ def pick_headlines(items: List[Dict[str, Any]], since: float, limit: int) -> Lis
     """Newest-first headlines published since ``since``; undated items only fill a short list."""
     dated = [i for i in items if i.get("published") and i["published"] >= since]
     undated = [i for i in items if not i.get("published")]
-    chosen = (dated + undated)[:limit]
+    # A chatty source must not fill the whole briefing: same per-source cap as the news ticker.
+    chosen = news.cap_per_source(dated + undated, limit)
     return [{"title": i["title"], "source": i["source"], "summary": i.get("summary", ""),
              "published": i.get("published"), "link": i["link"]} for i in chosen]
 

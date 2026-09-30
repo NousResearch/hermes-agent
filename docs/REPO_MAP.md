@@ -131,3 +131,18 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - `apps/desktop/src/app/jarvis/setup-progress.ts` + `rail-start-card.tsx` — "Zacznij tutaj" card at the top of the dashboard rail: progress from real state (model, Google, vault, browser login, first task, daily report), hides itself when done or dismissed.
 - `playbook-extras.ts` + `tips.tsx` — connection-aware tips ("with what you have connected": mail/calendar need Google, file search needs the vault, the "Tatuś wrócił" voice tip) shown above the regular playbook; the launcher asks what is connected each time the window opens.
 - Onboarding wizard (`onboarding.tsx`, `onboarding-welcome.tsx`): glass panel, gradient step markers and progress bar, per-step entrance animation.
+
+## Trust levels and the action log
+
+- `agent/integration_trust.py` — four levels per integration (`read` | `propose` | `ask` | `auto`, config `approvals.integrations.<id>`, default `ask`), `classify_command` (which `google_api.py` calls *write*, with a recipient/subject preview, never the body), and the decision log `HERMES_HOME/integration_actions.jsonl` (`read_log`).
+- `tools/approval_integrations.py` — the gate hooks: `integration_block` is part of `_user_deny_block` (same floor as `approvals.deny`: not bypassable by yolo/mode off), `integration_ask` forces the human prompt at level `ask` even under yolo and skips the guardian model, `record_outcome` writes the log. Unattended contexts (cron) fail closed at `ask`.
+- `web_routers/trust.py` (`/api/trust`), desktop `connections/trust-card.tsx` (Połączenia tab). Only Google writes are classified today.
+
+## News ticker fairness
+
+- `web_routers/news.py`: `cap_per_source` (no source over 8 of a page while others have items, backfilled on quiet days; also used by the briefing) and same-host feeds fetched one after another with a 1.5 s gap (issue #24).
+
+## ChatGPT subscription and model logos in setup
+
+- `apps/desktop/src/app/jarvis/chatgpt-connect.ts` (+ `chatgpt-quick-connect.tsx`) — "Sign in with ChatGPT": the engine's existing `openai-codex` device-code login (`/api/providers/oauth/openai-codex/*`) driven from the wizard's engine step and the rail's model card; `chatGptWorkModel` picks the newest GPT the subscription lists (`gpt-6` first). OpenRouter (DeepSeek) stays as the alternative.
+- Model cards with maker logos: wizard model step (`quickModels`), provider cards, rail model card (ChatGPT row). Logos: `components/model-brand-icon.tsx`.

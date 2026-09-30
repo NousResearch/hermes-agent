@@ -29,6 +29,7 @@ let cdp: CDPSession | null = null
 
 /** Must match JARVIS_ONBOARDING_STATE_KEY / _VERSION in src/app/jarvis/onboarding-state.ts. */
 const ONBOARDING_KEY_PREFIX = 'ai-evolution-jarvis-onboarding-v1'
+
 const ONBOARDING_STEPS = [
   'welcome',
   'profile',
@@ -40,6 +41,7 @@ const ONBOARDING_STEPS = [
   'connections',
   'approvals'
 ]
+
 /** Must match JARVIS_TIPS_STATE_KEY in src/app/jarvis/tips-state.ts. */
 const TIPS_KEY_PREFIX = 'ai-evolution-jarvis-tips-v1'
 
@@ -119,6 +121,7 @@ async function completeOnboardingAndReload(): Promise<void> {
   // The generic provider picker may open after the gateway connects. This
   // suite tests the Jarvis shell, so use its persistent first-run escape.
   const chooseLater = page.getByRole('button', { name: /Wybiorę dostawcę później|I'll choose a provider later/ })
+
   if (
     await chooseLater.waitFor({ state: 'visible', timeout: 45_000 }).then(
       () => true,
@@ -176,13 +179,17 @@ test.describe('Jarvis product shell', () => {
     await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(true)
     const overlay = app.windows().find(window => window.url().includes('win=overlay'))!
     await expect(overlay.locator('.desktop-orb')).toBeVisible()
+
     const before = await app.evaluate(({ BrowserWindow }) => {
       const windows = BrowserWindow.getAllWindows()
+
       const orb = windows.find((window: import('electron').BrowserWindow) =>
         window.webContents.getURL().includes('win=overlay')
       )!
+
       return { bounds: orb.getBounds(), top: orb.isAlwaysOnTop() }
     })
+
     expect(before.top).toBe(true)
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
       const main = BrowserWindow.getAllWindows().find(
@@ -204,6 +211,7 @@ test.describe('Jarvis product shell', () => {
           const orb = BrowserWindow.getAllWindows().find((window: import('electron').BrowserWindow) =>
             window.webContents.getURL().includes('win=overlay')
           )!
+
           return orb.getBounds().x
         })
       )
@@ -241,6 +249,7 @@ test.describe('Jarvis product shell', () => {
       const main = BrowserWindow.getAllWindows().find(
         (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
       )
+
       main?.restore()
       main?.show()
     })
@@ -382,6 +391,7 @@ test.describe('Jarvis product shell', () => {
     // The budget is one full tab cycle of a busy home screen (rail cards,
     // composer, status bar), not a claim about where the nav sits in it.
     let reached = false
+
     for (let press = 0; press < 120 && !reached; press += 1) {
       await page.keyboard.press('Tab')
       reached = await page.evaluate(() => Boolean(document.activeElement?.closest('nav[data-jarvis-nav]')))
@@ -408,6 +418,7 @@ test.describe('Jarvis product shell', () => {
       .evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height))
 
     expect(heights.length).toBeGreaterThanOrEqual(MAIN_VIEWS.length)
+
     for (const height of heights) {
       expect(height).toBeGreaterThanOrEqual(44)
     }
@@ -461,10 +472,11 @@ test.describe('Jarvis product shell', () => {
     const page = fixture!.page
 
     await page.locator('[data-jarvis-nav-view="connections"]').click()
-    await expect(page.locator('[data-connection-card="google"]')).toBeVisible()
+    await expect(page.locator('[data-connection-card="github"]')).toBeVisible()
 
-    // First button on an agent-driven card starts the guided setup.
-    await page.locator('[data-connection-card="google"] button').first().click()
+    // First button on an agent-driven card starts the guided setup. (Google has its own
+    // in-app wizard instead of a prompt, so GitHub is the card that exercises this path.)
+    await page.locator('[data-connection-card="github"] button').first().click()
     await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#/')
 
     const composer = page.locator('textarea, [contenteditable="true"]').first()
@@ -472,7 +484,7 @@ test.describe('Jarvis product shell', () => {
     await expect(composer).toBeVisible()
     await expect
       .poll(async () => (await composer.inputValue().catch(() => composer.textContent())) ?? '')
-      .toContain('google-workspace')
+      .toContain('github')
   })
 
   test('shell screenshot', async () => {

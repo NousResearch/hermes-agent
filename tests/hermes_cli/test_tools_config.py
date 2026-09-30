@@ -27,6 +27,24 @@ from hermes_cli.tools_config import (
 
 
 
+def test_tools_summary_bypasses_tty_guard(monkeypatch):
+    """The explicit summary mode is usable from non-interactive automation."""
+    from hermes_cli import main_agent_cmds
+
+    args = SimpleNamespace(tools_action=None, summary=True)
+    called = []
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda command: (_ for _ in ()).throw(
+        AssertionError(f"unexpected TTY guard for {command}")))
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.tools_command",
+        lambda received: called.append(received),
+    )
+
+    main_agent_cmds.cmd_tools(args)
+
+    assert called == [args]
+
+
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
     (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an

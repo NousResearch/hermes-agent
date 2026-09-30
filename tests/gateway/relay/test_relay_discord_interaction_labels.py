@@ -35,26 +35,49 @@ def _pinned_prompt(source):
     return runner._pinned_session_context_prompt(build_session_context(source, config), False, "k")
 
 
+def _message(chat, user="u1", chat_name="Hermes Server / #ops", chat_topic="Incident triage"):
+    return _event_from_wire({"text": "hi", "message_type": "text", "source": {
+        "platform": "discord", **chat, "scope_id": "g1",
+        "user_id": user, "user_name": "ben", "user_display_name": "Ben D",
+        "chat_name": chat_name, "chat_topic": chat_topic, "message_id": f"{user}:{chat_name}"}})
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("restart, nick, thread", [
-    (False, "Benny", False), (True, "Ben D", False), (False, "Benny", True),
-], ids=["warm", "restart", "thread"])
-async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, restart, nick, thread):
+@pytest.mark.parametrize("restart, nick, thread, renamed_by", [
+    (False, "Benny", False, None), (True, "Ben D", False, None), (False, "Benny", True, None),
+    (True, "Ben D", False, "u1"), (True, "Ben D", False, "u2"),
+], ids=["warm", "restart", "thread", "rename", "peer-rename"])
+async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, restart, nick, thread, renamed_by):
     """``restart``: the gateway restarted after the message, so the slash command is the first
     event the new process sees in that chat; the chat labels come from the persisted session origin.
     ``thread``: both events happen inside a thread, which the text lane keys on chat_type "thread" +
-    thread_id; the slash command must land in that session, not in a per-user "group" one."""
+    thread_id; the slash command must land in that session, not in a per-user "group" one.
+    ``renamed_by``: the channel was renamed before the restart and that user's message carried the
+    new labels. An origin is written when its session is created and inherited by a reset, so the
+    rename must reach the origin of every session in the chat: in ``peer-rename`` another user's
+    message carried it and this user's session was reset since."""
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
+    store = SessionStore(tmp_path, config)
     adapter, _stub = _adapter(platform="discord")
+    adapter.set_session_store(store)
     adapter.handle_message = AsyncMock()
     chat = ({"chat_id": "th1", "chat_type": "thread", "thread_id": "th1", "parent_chat_id": "ch1"}
             if thread else {"chat_id": "ch1", "chat_type": "group"})
-    message = _event_from_wire({"text": "hi", "message_type": "text", "source": {
-        "platform": "discord", **chat, "scope_id": "g1",
-        "user_id": "u1", "user_name": "ben", "user_display_name": "Ben D",
-        "chat_name": "Hermes Server / #ops", "chat_topic": "Incident triage", "message_id": "m1"}})
-    await adapter._on_inbound(message)
-    SessionStore(tmp_path, config).get_or_create_session(message.source)
+
+    async def relay(event):
+        await adapter._on_inbound(event)
+        return store.get_or_create_session(event.source)
+
+    if renamed_by == "u2":
+        await relay(_message(chat, "u2"))
+    message = _message(chat)
+    entry = await relay(message)
+    if renamed_by:
+        renamed = {"chat_name": "Hermes Server / #triage", "chat_topic": "Renamed"}
+        await relay(_message(chat, renamed_by, **renamed))
+        message = _message(chat, **renamed)
+        if renamed_by == "u2":
+            store.reset_session(entry.session_key)
     if restart:
         adapter, _stub = _adapter(platform="discord")
         adapter.set_session_store(SessionStore(tmp_path, config))

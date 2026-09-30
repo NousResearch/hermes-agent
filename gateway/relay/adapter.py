@@ -910,7 +910,16 @@ class RelayAdapter(BasePlatformAdapter):
             return
         scope = str(source.scope_id or "")
         if source.chat_name or source.chat_topic:
-            self._discord_chat_labels[(scope, str(source.chat_id))] = (source.chat_name, source.chat_topic)
+            key, labels = (scope, str(source.chat_id)), (source.chat_name, source.chat_topic)
+            store = getattr(self, "_session_store", None)
+            if store is not None and self._discord_chat_labels.get(key) != labels:
+                # New to this process or renamed: the persisted origins are what the interaction
+                # lane falls back to after a restart, and they still hold the creation-time labels.
+                try:
+                    store.refresh_origin_labels(source)
+                except Exception:
+                    logger.debug("relay: Discord origin labels not refreshed", exc_info=True)
+            self._discord_chat_labels[key] = labels
             self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
         if source.user_id and source.user_name:
             self._discord_user_labels[(scope, str(source.user_id))] = source.user_name

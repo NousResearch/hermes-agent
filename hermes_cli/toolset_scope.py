@@ -9,6 +9,7 @@ _TOOLSET_PLATFORM_RESTRICTIONS = {
     "discord_admin": {"discord"},
     "matrix_read": {"matrix"},
     "matrix_admin": {"matrix"},
+    "matrix_image_packs": {"matrix"},
 }
 
 

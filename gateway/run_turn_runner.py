@@ -1471,10 +1471,26 @@ class TurnRunner:
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
+                # Stamp request_id into metadata so the adapter can resolve
+                # only the tapped card (not the session's FIFO head). v1 base
+                # lost this propagation; the inline logic lived here for 2
+                # commits and was extracted into the pure helper at
+                # gateway/run_turn_runner_approval_metadata.py so it can be
+                # tested without importing the runner module (the runner
+                # transitively imports agent.replay_cleanup → hermes_cli.config
+                # which reads ~/.hermes/manifest.json under scripts/run_tests.sh
+                # pm activation, tripping the conftest home guard — see
+                # approval follow-up #5863117294 for the bug class).
+                from gateway.run_turn_runner_approval_metadata import (
+                    stamp_request_id_into_metadata,
+                )
+                merged_metadata = stamp_request_id_into_metadata(
+                    ctx._status_thread_metadata, approval_data,
+                )
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=merged_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )

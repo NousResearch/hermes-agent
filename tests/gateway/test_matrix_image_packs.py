@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from contextlib import ExitStack
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pytest
 from typing import Any
@@ -17,6 +17,8 @@ StateEvent = matrix_types.StateEvent
 RoomEncryptionStateEventContent = matrix_types.RoomEncryptionStateEventContent
 RoomID = matrix_types.RoomID
 MemoryStateStore = pytest.importorskip("mautrix.client.state_store").MemoryStateStore
+ClientAPI = pytest.importorskip("mautrix.client.api").ClientAPI
+MNotFound = pytest.importorskip("mautrix.errors").MNotFound
 
 from agent.secret_scope import is_multiplex_active, set_multiplex_active
 from gateway.run import _profile_runtime_scope
@@ -38,6 +40,15 @@ PACK: dict[str, Any] = {
             "info": {"mimetype": "image/png", "size": 20, "w": 1, "h": 2},
         }
     },
+}
+CREATE = {
+    "type": "m.room.create",
+    "state_key": "",
+    "room_id": ROOM,
+    "sender": USER,
+    "event_id": "$create",
+    "origin_server_ts": 1000,
+    "content": {"room_version": "10"},
 }
 SENT = {"success": True, "event_id": "$sent"}
 UNAVAILABLE = {"error": "Matrix image selection is unavailable; list packs again"}
@@ -77,28 +88,36 @@ def make_adapter(home, event_type="m.room.image_pack"):
         "content": deepcopy(PACK),
     })
 
-    async def get_state_event(room_id, kind, state_key="", **kwargs):
-        if str(kind) in {"m.room.image_pack", "im.ponies.room_emotes"}:
-            return StateEvent.deserialize_content({
-                **deepcopy(PACK),
-                "__mautrix_event_type": kind,
-            })
-        if str(kind) == "m.room.create":
-            return {"sender": USER, "content": {"room_version": "10"}}
-        return {}
+    async def state_event(room_id, kind, state_key="", query=None):
+        if kind in {"m.room.image_pack", "im.ponies.room_emotes"}:
+            return deepcopy(PACK)
+        if kind == "m.room.create":
+            return deepcopy(CREATE if query == {"format": "event"} else CREATE["content"])
+        raise MNotFound(404, "no state")
 
+    async def request(method, path, content=None, *, query_params=None, **kwargs):
+        if str(method) != "GET":
+            return await api.send(method, path, content, **kwargs)
+        room_id, _, state = str(path).partition("/rooms/")[2].partition("/state/")
+        kind, _, state_key = state.partition("/")
+        return await api.state(
+            unquote(room_id), unquote(kind), unquote(state_key), query=query_params
+        )
+
+    api = SimpleNamespace(
+        get_txn_id=lambda: "txn",
+        request=request,
+        state=AsyncMock(side_effect=state_event),
+        send=AsyncMock(return_value={"event_id": "$sent"}),
+    )
     client = SimpleNamespace(
         mxid=BOT,
         crypto=None,
         get_state=AsyncMock(return_value=[state]),
-        get_state_event=AsyncMock(side_effect=get_state_event),
         get_account_data=AsyncMock(return_value={}),
-        send_message_event=AsyncMock(return_value="$sent"),
-        api=SimpleNamespace(
-            get_txn_id=lambda: "txn",
-            request=AsyncMock(return_value={"event_id": "$sent"}),
-        ),
+        api=api,
     )
+    client.get_state_event = MethodType(ClientAPI.get_state_event, client)
     adapter._client = client
     return adapter, client
 
@@ -235,7 +254,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
             }
             assert not any(
                 call.args[0] in ("!denied:example.org", "!empty:example.org")
-                for call in client.get_state_event.await_args_list
+                for call in client.api.state.await_args_list
             )
             item = catalog["packs"][0]["items"][0]
             assert {**item, "selection_id": "selected"} == {
@@ -275,7 +294,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
                 thread_id="$root",
             )
             assert result == {"success": True, "event_id": "$sent"}
-            call = client.api.request.await_args
+            call = client.api.send.await_args
             assert (
                 str(call.args[0]),
                 str(call.args[1]),
@@ -437,7 +456,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
         )
         selected = selected_pack["items"][0]["selection_id"]
         entered, release = asyncio.Event(), asyncio.Event()
-        original = client.get_state_event.side_effect
+        original = client.api.state.side_effect
         original_api = client.api
         pack_reads = [0]
 
@@ -481,7 +500,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
                 }
             return await original(room_id, kind, state_key, **kwargs)
 
-        client.get_state_event.side_effect = paused
+        client.api.state.side_effect = paused
         sending = asyncio.create_task(
             adapter.matrix_image_packs(
                 "send", ROOM, requester=USER, selection_id=selected
@@ -495,7 +514,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
         if change == "expired":
             clock[0] += image_packs.SELECTION_TTL + 1
         if change == "server":
-            client.api.request.side_effect = RuntimeError(
+            client.api.send.side_effect = RuntimeError(
                 "M_FORBIDDEN: server refused sticker"
             )
         if change == "after-write-owner":
@@ -504,7 +523,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
                 adapter._client = SimpleNamespace(mxid=BOT)
                 return {"event_id": "$sent"}
 
-            client.api.request.side_effect = accepted
+            client.api.send.side_effect = accepted
         if change == "reference-removed":
             references["rooms"].clear()
         if change.startswith("late-encryption"):
@@ -525,16 +544,16 @@ async def test_send_rechecks_selection_and_admission_after_await(
         result = await asyncio.wait_for(sending, timeout=2)
         assert result == expected
         if change == "late-encryption":
-            assert str(client.api.request.await_args.args[1]).endswith(
+            assert str(client.api.send.await_args.args[1]).endswith(
                 "/send/m.room.encrypted/txn"
             )
-            assert client.api.request.await_args.args[2] == {"ciphertext": "encrypted"}
+            assert client.api.send.await_args.args[2] == {"ciphertext": "encrypted"}
             client.encrypt.assert_awaited_once()
             return
         if change in ("server", "after-write-owner"):
-            original_api.request.assert_awaited_once()
+            original_api.send.assert_awaited_once()
             return
-        original_api.request.assert_not_awaited()
+        original_api.send.assert_not_awaited()
     finally:
         clear_session_vars(tokens)
         reset_hermes_home_override(scope)
@@ -589,7 +608,7 @@ async def test_crypto_preparation_revalidates_source_and_live_conversation(
     try:
         catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
         selected = catalog["packs"][1]["items"][0]["selection_id"]
-        original = client.get_state_event.side_effect
+        original = client.api.state.side_effect
         pack_reads = 0
         removed = False
         decisions = []
@@ -619,7 +638,7 @@ async def test_crypto_preparation_revalidates_source_and_live_conversation(
             await release.wait()
             return {"ciphertext": "encrypted"}
 
-        client.get_state_event.side_effect = state
+        client.api.state.side_effect = state
         adapter._is_dm_room = admit
         client.encrypt = AsyncMock(side_effect=encrypt)
         sending = asyncio.create_task(
@@ -643,7 +662,7 @@ async def test_crypto_preparation_revalidates_source_and_live_conversation(
         release.set()
         result = await asyncio.wait_for(sending, 2)
         assert result == expected
-        client.api.request.assert_not_awaited()
+        client.api.send.assert_not_awaited()
     finally:
         release.set()
         clear_session_vars(tokens)
@@ -720,7 +739,7 @@ async def test_selections_follow_conversation_identity_not_route(
                     selection_id=listed["packs"][0]["items"][0]["selection_id"],
                 )
             )
-        assert (stale, fresh, client.api.request.await_count) == expected
+        assert (stale, fresh, client.api.send.await_count) == expected
     finally:
         clear_session_vars(tokens)
         reset_hermes_home_override(scope)
@@ -797,7 +816,7 @@ async def test_gateway_rebinds_conversation_for_cached_turns_across_profiles(
                 assert json.loads(sent) == {"success": True, "event_id": "$sent"}
             finally:
                 runner._clear_session_env(tokens)
-            assert client.api.request.await_args.args[2] == PACK["images"]["fox"]
+            assert client.api.send.await_args.args[2] == PACK["images"]["fox"]
 
 
 @pytest.mark.asyncio
@@ -967,7 +986,7 @@ async def test_list_reads_each_account_source_once_until_the_catalog_is_full(
     )
     reference_reads = [
         (call.args[0], str(call.args[1]), call.args[2])
-        for call in client.get_state_event.await_args_list
+        for call in client.api.state.await_args_list
     ]
     assert (
         account_reads,
@@ -991,41 +1010,54 @@ async def test_list_reads_each_account_source_once_until_the_catalog_is_full(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "creator,expected",
+    "create,content_only,power,expected",
     [
-        (BOT, SENT),
-        (USER, {"error": "Matrix bot cannot send m.sticker in this room"}),
+        pytest.param(
+            {"sender": BOT, "content": {"room_version": "12"}},
+            False,
+            {"users": {USER: 100}, "events": {"m.sticker": 100}},
+            SENT,
+            id="v12-bot-creator",
+        ),
+        pytest.param(
+            {"sender": USER, "content": {"room_version": "12"}},
+            False,
+            {"users": {}, "events": {"m.sticker": 100}},
+            {"error": "Matrix bot cannot send m.sticker in this room"},
+            id="v12-user-creator",
+        ),
+        pytest.param(
+            {"content": {"room_version": "10", "creator": USER}},
+            True,
+            None,
+            SENT,
+            id="v10-content-only",
+        ),
+        pytest.param(
+            {"content": {"room_version": "12"}},
+            True,
+            None,
+            SENT,
+            id="v12-content-only",
+        ),
     ],
 )
-async def test_send_reads_the_typed_create_event_for_creator_power(
-    tmp_path, creator, expected
+async def test_send_reads_the_create_event_for_creator_power(
+    tmp_path, create, content_only, power, expected
 ):
     scope = set_hermes_home_override(tmp_path)
     adapter, client = make_adapter(tmp_path)
-    create = StateEvent.deserialize({
-        "type": "m.room.create",
-        "state_key": "",
-        "room_id": ROOM,
-        "sender": creator,
-        "event_id": "$create",
-        "origin_server_ts": 1000,
-        "content": {"room_version": "12"},
-    })
-    power = StateEvent.deserialize_content({
-        "users": {USER: 100} if creator == BOT else {},
-        "events": {"m.sticker": 100},
-        "__mautrix_event_type": "m.room.power_levels",
-    })
-    packs = client.get_state_event.side_effect
+    create = {**CREATE, **create}
+    packs = client.api.state.side_effect
 
-    async def get_state_event(room_id, kind, state_key="", **kwargs):
-        if str(kind) == "m.room.create":
-            return create
-        if str(kind) == "m.room.power_levels":
-            return power
+    async def state_event(room_id, kind, state_key="", **kwargs):
+        if kind == "m.room.create":
+            return deepcopy(create["content"] if content_only else create)
+        if kind == "m.room.power_levels" and power is not None:
+            return deepcopy(power)
         return await packs(room_id, kind, state_key, **kwargs)
 
-    client.get_state_event.side_effect = get_state_event
+    client.api.state.side_effect = state_event
     tokens = set_session_vars(
         platform="matrix",
         chat_id=ROOM,

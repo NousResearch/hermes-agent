@@ -147,3 +147,17 @@ def test_save_config_set_bridges_every_cli_terminal_key():
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "
         f"hermes_cli/config.py (set_config_value bridges through it)."
     )
+
+
+def test_cli_config_defaults_do_not_override_unset_terminal_env_values(tmp_path):
+    """A partial terminal section must not erase machine-specific .env values."""
+    import json
+    import os
+    from unittest.mock import patch
+
+    from hermes_cli.cli_config_load import _mirror_config_to_env
+
+    defaults = {"terminal": {"backend": "docker", "docker_volumes": []}}
+    with patch.dict(os.environ, {"TERMINAL_DOCKER_VOLUMES": json.dumps(["/host:/work"])}, clear=False):
+        _mirror_config_to_env(defaults, {"backend"})
+        assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"]) == ["/host:/work"]

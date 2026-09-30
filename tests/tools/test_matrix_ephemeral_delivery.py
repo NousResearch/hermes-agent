@@ -329,6 +329,87 @@ os._exit(0)
     assert (worker.is_alive(), outcome) == (False, ["TimeoutError"])
 
 
+@pytest.mark.parametrize("gateway_loop", [False, True])
+def test_cancelled_caller_sends_no_further_chunks(monkeypatch, gateway_loop):
+    """A caller cancelled while the first chunk is being sent gets that chunk's receipt with an
+    error, and the chunks that had not started are not sent."""
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.session_identity import replace_source
+    from tools import send_message_tool
+
+    started, hold = threading.Event(), threading.Event()
+    sent = []
+
+    class ChunkAdapter:
+        gateway_runner = None
+
+        def __init__(self, _config=None):
+            pass
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            return None
+
+        async def resolve_delivery_target(self, source, *, refresh=False):
+            return replace_source(source, chat_type="group")
+
+        async def send(self, chat_id, content, metadata=None):
+            started.set()
+            while not hold.is_set():
+                await asyncio.sleep(0.01)
+            sent.append(content)
+            return SendResult(success=True, message_id=f"$chunk{len(sent)}")
+
+    loop = None
+    gateway = None
+    live = (None, None)
+    if gateway_loop:
+        loop = asyncio.new_event_loop()
+        gateway = threading.Thread(target=loop.run_forever, daemon=True)
+        gateway.start()
+        live = (SimpleNamespace(_gateway_loop=loop), ChunkAdapter())
+    monkeypatch.setattr(matrix, "MatrixAdapter", ChunkAdapter)
+    monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: live)
+    monkeypatch.setattr(send_message_tool, "_platform_max_length", lambda platform: 40)
+    message = "word " * 30
+    chunks = len(BasePlatformAdapter.truncate_message(message, 40))
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            _send_to_platform(
+                Platform.MATRIX,
+                PlatformConfig(enabled=True),
+                "!room:example.org",
+                message,
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        hold.set()
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return "cancelled"
+
+    try:
+        result = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    finally:
+        hold.set()
+        if loop is not None and gateway is not None:
+            _finish_gateway_loop(loop, gateway)
+    assert chunks > 1
+    assert (result, len(sent)) == (
+        {
+            "error": f"send cancelled after 1 of {chunks} chunks were delivered",
+            "message_id": "$chunk1",
+        },
+        1,
+    )
+
+
 def test_send_matrix_via_adapter_forwards_alias_after_connect():
     calls = []
 

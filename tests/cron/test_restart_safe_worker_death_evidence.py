@@ -10,7 +10,8 @@ import pytest
 
 @pytest.mark.parametrize("manual", [False, True])
 @pytest.mark.parametrize(
-    "death", ["hard_exit", "payload_exception", "concurrent_recovery"]
+    "death", ["hard_exit", "payload_exception", "concurrent_recovery",
+              "timeout_hard_exit", "timeout_payload_exception"]
 )
 def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death):
     import cron.executions as executions
@@ -32,6 +33,24 @@ def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death)
             return terminalize(*args, **kwargs)
 
         monkeypatch.setattr(scheduler, "terminalize_dead_owner", sweep_first)
+    if death.startswith("timeout_"):
+        wait_body = scheduler._wait_for_external_cron_worker_body
+
+        def timeout_after_recovery(process, **kwargs):
+            real_wait = process.wait
+
+            def race_wait(timeout=None):
+                # Force the ordering: timeout, child death, concurrent recovery,
+                # then the waiter's ledger read. The child and stores are real.
+                real_wait(timeout=30)
+                assert executions.recover_interrupted_executions() == 1
+                monkeypatch.setattr(process, "wait", real_wait)
+                raise subprocess.TimeoutExpired(process.args, timeout)
+
+            monkeypatch.setattr(process, "wait", race_wait)
+            return wait_body(process, **kwargs)
+
+        monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", timeout_after_recovery)
     delivered = []
     monkeypatch.setattr(
         scheduler, "_deliver_result", lambda *a, **k: delivered.append(True)
@@ -61,7 +80,7 @@ else:
     sys.stderr.write("worker-probe-startup-sentinel\\n")
     sys.stderr.flush()
     os._exit(9)
-""".replace("DEATH", repr(death)),
+""".replace("DEATH", repr(death.removeprefix("timeout_"))),
         encoding="utf-8",
     )
 
@@ -93,7 +112,7 @@ else:
         }
         print("PROBE", json.dumps(result), flush=True)
         assert row["status"] == "unknown"
-        if death != "concurrent_recovery":
+        if death != "concurrent_recovery" and not death.startswith("timeout_"):
             assert "Scheduler restarted" not in row["error"]
         assert result["claim_released"], result
         assert "worker-probe-startup-sentinel" in (result["job_error"] or ""), result

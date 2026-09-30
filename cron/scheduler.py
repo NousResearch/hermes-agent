@@ -3450,12 +3450,17 @@ def _wait_for_external_cron_worker_body(
         try:
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            if _is_terminal():
+            if not _is_terminal():
+                continue
+            # Recovery can win between the timeout and this ledger read. If
+            # the worker has since exited, consume its diagnostics below before
+            # cleanup; only a still-live terminal worker needs background reaping.
+            returncode = process.poll()
+            if returncode is None:
                 from cron.scheduler_detached_worker import reap_terminal_worker_in_background
 
                 reap_terminal_worker_in_background(process)
                 return True
-            continue
         # The worker can commit its terminal row and exit between the first
         # read and wait(). Re-read the exact attempt before declaring that
         # it died without terminalizing.

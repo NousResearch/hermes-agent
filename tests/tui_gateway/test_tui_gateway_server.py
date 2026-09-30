@@ -7932,7 +7932,7 @@ def test_run_prompt_submit_binds_exact_steer_authority_and_resets_contextvars(
     transport_token = bind_transport(previous_transport)
     record_token = server._current_runtime_session_record.set(previous_record)
     try:
-        server._run_prompt_submit("rid-owner", "sid-owner", session, "commission")
+        server._run_prompt_submit("rid-owner", "sid-owner", session, "commission", turn_claim=server._claim_session_turn(session))
 
         assert observed == {"transport": owner_transport, "record": session}
         assert current_transport() is previous_transport
@@ -7984,7 +7984,7 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     server._sessions[sid] = session
     dispatch_thread = threading.Thread(
         target=lambda: dispatch_results.append(
-            server._run_prompt_submit("rid", sid, session, "turn")
+            server._run_prompt_submit("rid", sid, session, "turn", turn_claim=server._claim_session_turn(session))
         )
     )
 
@@ -8039,7 +8039,7 @@ def test_run_prompt_submit_requeues_foreign_completion(
     server._sessions["sid_b"] = session_b
 
     try:
-        server._run_prompt_submit("rid-b", "sid_b", session_b, "session-b-turn")
+        server._run_prompt_submit("rid-b", "sid_b", session_b, "session-b-turn", turn_claim=server._claim_session_turn(session_b))
 
         assert turns == ["session-b-turn"]
         assert isolated_queue.get_nowait() == event
@@ -8078,7 +8078,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
     server._sessions["sid_a"] = session
 
     try:
-        server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
+        server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn", turn_claim=server._claim_session_turn(session))
 
         assert turns[0] == "session-a-turn"
         assert len(turns) == 2
@@ -8147,7 +8147,7 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
     server._sessions["sid_a"] = session
 
     try:
-        server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
+        server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn", turn_claim=server._claim_session_turn(session))
 
         assert nested_started.wait(timeout=5)
         threads[0].join(timeout=5)
@@ -8227,7 +8227,7 @@ def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage
     server._sessions["sid_b"] = session
 
     try:
-        server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn")
+        server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn", turn_claim=server._claim_session_turn(session))
 
         assert turns[0] == "session-b-turn"
         assert len(turns) == 2
@@ -8276,7 +8276,7 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
     server._sessions["sid_b"] = session
 
     try:
-        server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn")
+        server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn", turn_claim=server._claim_session_turn(session))
 
         assert turns[0] == "session-b-turn"
         assert len(turns) == 2
@@ -13068,6 +13068,7 @@ def test_turn_admission_carries_synthetic_display_metadata_into_inflight_snapsho
 
     assert server._admit_prompt_turn(
         "sid", session, "process completed", None, None, "process_complete", display_metadata,
+        turn_claim=server._claim_session_turn(session),
     ) == ([], agent)
 
     snapshot = server._inflight_snapshot(session)
@@ -14506,7 +14507,7 @@ def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
-        server._run_prompt_submit("1", "sid", session, "hello")
+        server._run_prompt_submit("1", "sid", session, "hello", turn_claim=server._claim_session_turn(session))
 
         assert session.get("_run_thread") is not None
         resp = server.handle_request(
@@ -19462,10 +19463,11 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     turns = []
     emitted = []
 
-    def _fake_run_prompt_submit(rid, sid, session, text):
+    def _fake_run_prompt_submit(rid, sid, session, text, **_kw):
         turns.append(text)
         with session["history_lock"]:
             session["running"] = False
+        return True
 
     sess = _session()
     server._sessions["sid_watch_dedup"] = sess

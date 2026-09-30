@@ -108,6 +108,36 @@ def test_stale_record_is_never_attachable(host_dir, pid, create_time):
     assert hr.read_record(hr.ROLE_SERVE, include_stale=True) is not None
 
 
+@pytest.mark.platforms("linux")
+def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkeypatch):
+    """WSL can shift psutil.create_time() for the same live PID while /proc start ticks stay fixed.
+
+    The host record must keep recognizing that owner, but a changed stable start fingerprint must
+    still be rejected as PID reuse.
+    """
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None
+
+    # Model the exact WSL failure family: the legacy epoch check says the same PID changed,
+    # while a liveness-only PID probe still proves the process itself is alive.
+    monkeypatch.setattr(
+        hr, "_pid_incarnation_matches",
+        lambda _pid, create_time: True if create_time is None else False,
+    )
+    assert hr.record_is_stale(record) is False
+    assert hr.liveness_is_proven(record) is True
+    assert hr.read_record(hr.ROLE_GATEWAY) is not None
+
+    assert record.start_time is not None
+    from gateway import status
+
+    monkeypatch.setattr(
+        status, "get_process_start_time",
+        lambda _pid: record.start_time + status.START_TIME_DRIFT_TOLERANCE + 1,
+    )
+    assert hr.record_is_stale(record) is True
+
+
 @pytest.mark.platforms("posix")  # POSIX signal disposition
 def test_sigterm_removes_the_record_and_its_live_session_token(host_dir):
     """SIGTERM is the NORMAL stop (systemd stop, docker stop, the update relaunch) and it does not

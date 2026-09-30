@@ -285,6 +285,7 @@ export const ar = defineLocale({
     desktopOutOfDateTitle: 'التطبيق قديم',
     desktopOutOfDateMessage: 'تطبيق Hermes أقدم من الخلفية المتصل بها وقد لا يعمل كما يجب. حدّث التطبيق ليتوافقا.',
     updateDesktopApp: 'تحديث التطبيق',
+    backendRunningOldCodeTitle: 'الخلفية تشغل كودا قديما',
     updateHermes: 'تحديث Hermes',
     updateReadyTitle: 'التحديث جاهز',
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,

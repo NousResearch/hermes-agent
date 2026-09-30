@@ -1384,6 +1384,13 @@ export interface PlatformStatus {
 export interface StatusResponse {
   shared_profile_warning?: boolean
   active_sessions: number
+  /**
+   * This backend process runs pre-update code while the checkout on disk moved
+   * on (an external `hermes update` skipped it because the app owns it).
+   * Absent when there is no skew. Surfaced proactively by the app so the user
+   * can recycle the backend instead of discovering it via a 503 later (#118998).
+   */
+  code_skew?: { boot_rev: string; disk_rev: string }
   config_path: string
   config_version: number
   env_path: string

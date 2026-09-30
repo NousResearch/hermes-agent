@@ -6,6 +6,7 @@ import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/run
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
+import { reportBackendCodeSkew } from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -113,6 +114,12 @@ export function useStatusSnapshot(
 
         if (statusResult.status === 'fulfilled') {
           const next = statusResult.value
+          // Proactive code skew (#118998): an external `hermes update` advances the
+          // checkout but leaves this app-owned backend on the old code, and until now
+          // the only signal was a guarded endpoint refusing with 503. The backend
+          // publishes the same truth on every status poll; report it here so the toast
+          // (with the existing one-click recycle) appears without any settings visit.
+          reportBackendCodeSkew(next.code_skew)
           // Preserve reference identity on a no-op: the 60s tick re-reads a
           // usually-unchanged snapshot, and a fresh object for the same content
           // re-renders every consumer for nothing.

@@ -584,6 +584,7 @@ export const en: Translations = {
     desktopOutOfDateMessage:
       'This Hermes app is older than the backend it is connected to and may not work correctly. Update the app to align them.',
     updateDesktopApp: 'Update app',
+    backendRunningOldCodeTitle: 'Backend is running old code',
     installMethodUnsupportedTitle: 'Unsupported install method',
     updateHermes: 'Update Hermes',
     updateReadyTitle: 'Update ready',

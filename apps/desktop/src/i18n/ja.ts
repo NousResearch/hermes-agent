@@ -285,6 +285,7 @@ export const ja = defineLocale({
     desktopOutOfDateMessage:
       'この Hermes アプリは接続先のバックエンドより古く、正常に動作しない場合があります。アプリを更新して揃えてください。',
     updateDesktopApp: 'アプリを更新',
+    backendRunningOldCodeTitle: 'バックエンドが古いコードを実行しています',
     installMethodUnsupportedTitle: 'サポート対象外のインストール方法',
     updateHermes: 'Hermes を更新',
     updateReadyTitle: '更新の準備ができました',

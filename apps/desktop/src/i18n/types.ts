@@ -607,6 +607,7 @@ export interface Translations {
     desktopOutOfDateTitle: string
     desktopOutOfDateMessage: string
     updateDesktopApp: string
+    backendRunningOldCodeTitle: string
     installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string

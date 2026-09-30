@@ -307,6 +307,7 @@ export const zh = defineLocale({
     desktopOutOfDateTitle: '应用版本过旧',
     desktopOutOfDateMessage: '此 Hermes 应用早于所连接的后端，可能无法正常工作。请更新应用以保持一致。',
     updateDesktopApp: '更新应用',
+    backendRunningOldCodeTitle: '后端仍在运行旧代码',
     installMethodUnsupportedTitle: '不受支持的安装方式',
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',

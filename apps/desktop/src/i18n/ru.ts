@@ -285,6 +285,7 @@ export const ru = defineLocale({
     desktopOutOfDateMessage:
       'Это приложение Hermes старше подключённого бэкенда и может работать некорректно. Обновите приложение, чтобы они совпали.',
     updateDesktopApp: 'Обновить приложение',
+    backendRunningOldCodeTitle: 'Бэкенд выполняет старый код',
     installMethodUnsupportedTitle: 'Неподдерживаемый способ установки',
     updateHermes: 'Обновить Hermes',
     updateReadyTitle: 'Обновление готово',

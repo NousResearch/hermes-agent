@@ -274,6 +274,7 @@ export const zhHant = defineLocale({
     desktopOutOfDateTitle: '應用程式版本過舊',
     desktopOutOfDateMessage: '此 Hermes 應用程式早於所連接的後端，可能無法正常運作。請更新應用程式以保持一致。',
     updateDesktopApp: '更新應用程式',
+    backendRunningOldCodeTitle: '後端仍在執行舊程式碼',
     installMethodUnsupportedTitle: '不受支援的安裝方式',
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',

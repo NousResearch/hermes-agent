@@ -6,7 +6,6 @@ import functools
 import importlib.util
 import inspect
 import logging
-import os
 import shutil
 import subprocess
 from typing import Any, Dict, Optional
@@ -18,7 +17,7 @@ from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-from tools.terminal_tool_config import _get_plugin_env_provider
+from tools.terminal_tool_config import _get_plugin_env_provider, _probe_timeout
 from tools.tool_backend_helpers import (has_direct_modal_credentials, managed_nous_tools_enabled,
                                         nous_tool_gateway_unavailable_message, resolve_modal_backend_state)
 
@@ -323,33 +322,6 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
 }
-
-
-_DEFAULT_PROBE_TIMEOUT = 20.0
-
-
-def _probe_timeout() -> float:
-    """Seconds to wait for a backend's executable probe (e.g. ``docker version``).
-
-    A Docker daemon that has just started, or is under load, can take well over
-    five seconds to answer. A timeout here makes the requirements check fail,
-    which removes the terminal and file tools from the session, so the default
-    is generous. ``TERMINAL_PROBE_TIMEOUT`` overrides it; a missing, unparsable
-    or non-positive value falls back to the default.
-    """
-    raw = os.getenv("TERMINAL_PROBE_TIMEOUT", "").strip()
-    if not raw:
-        return _DEFAULT_PROBE_TIMEOUT
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: not a number; using %ss", raw, _DEFAULT_PROBE_TIMEOUT)
-        return _DEFAULT_PROBE_TIMEOUT
-    if not value > 0 or value == float("inf"):
-        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: must be a positive number; using %ss",
-                       raw, _DEFAULT_PROBE_TIMEOUT)
-        return _DEFAULT_PROBE_TIMEOUT
-    return value
 
 
 _PROBE_FAILED_REASONS = {

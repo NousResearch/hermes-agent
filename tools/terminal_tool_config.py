@@ -18,6 +18,33 @@ from typing import Any, overload
 logger = logging.getLogger("tools.terminal_tool")
 
 
+_DEFAULT_PROBE_TIMEOUT = 20.0
+
+
+def _probe_timeout() -> float:
+    """Seconds to wait for a backend's executable probe (e.g. ``docker version``).
+
+    A Docker daemon that has just started, or is under load, can take well over
+    five seconds to answer. A timeout here makes the requirements check fail,
+    which removes the terminal and file tools from the session, so the default
+    is generous. ``TERMINAL_PROBE_TIMEOUT`` overrides it; a missing, unparsable
+    or non-positive value falls back to the default.
+    """
+    raw = os.getenv("TERMINAL_PROBE_TIMEOUT", "").strip()
+    if not raw:
+        return _DEFAULT_PROBE_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: not a number; using %ss", raw, _DEFAULT_PROBE_TIMEOUT)
+        return _DEFAULT_PROBE_TIMEOUT
+    if not value > 0 or value == float("inf"):
+        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: must be a positive number; using %ss",
+                       raw, _DEFAULT_PROBE_TIMEOUT)
+        return _DEFAULT_PROBE_TIMEOUT
+    return value
+
+
 @contextmanager
 def _quiet(label: str, *args, exc=Exception, level: int = logging.DEBUG):
     """Best-effort block: swallow *exc*, log *label* (``%``-formatted with *args*)

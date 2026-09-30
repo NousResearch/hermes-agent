@@ -23,7 +23,7 @@ from typing import Optional
 
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
 from tools.terminal_tool_config import (
-    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
+    _host_path_key, _is_windows_drive_path, _probe_timeout, cwd_follows_host_mount,
 )
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -440,7 +440,7 @@ def _ensure_docker_available() -> None:
                   "Install Docker and ensure the 'docker' command is available.",
             hint="Install Docker (or fix PATH) and retry, or run `hermes setup terminal` to switch to Local.")
     try:
-        result = run_capture([docker_exe, "version"], timeout=5)
+        result = run_capture([docker_exe, "version"], timeout=_probe_timeout())
     except FileNotFoundError:
         raise _docker_unavailable(
             "Docker backend selected but the resolved docker executable '%s' could not be executed.",

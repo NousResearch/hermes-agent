@@ -66,6 +66,7 @@ def complete_source_checkout(
         had_desktop_app_before_update=desktop,
         pre_update_version=pre_update_version,
         completion_message=completion_message,
+        maintenance_phase="install",
     )
     if complete:
         from hermes_cli.source_stamp import write_source_stamp

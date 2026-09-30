@@ -13,6 +13,7 @@ from hermes_cli import update_cmd_maint as maint
 
 HEADER = "→ Finishing post-update maintenance (notices, self-heals; this can take a while)..."
 MARKER = "✓ Post-update maintenance finished."
+WARNING_MARKER = "⚠ Post-update maintenance finished with warnings."
 
 ALL_STEPS = {
     "fts_notice", "fhs_guard", "curator_first", "curator_recent", "expose_cli",
@@ -48,10 +49,10 @@ def tail(monkeypatch):
     monkeypatch.setattr(launchers, "expose_cli", lambda root: ran.append("expose_cli"))
     monkeypatch.setattr(repair, "migrate_windows_bin_path", lambda root, **kw: ran.append("windows_bin"))
 
-    def run(**overrides):
+    def run(*, phase="post-update", **overrides):
         for name, step in overrides.items():
             monkeypatch.setattr(maint, name, step)
-        maint._print_post_update_notices_and_self_heals()
+        maint._print_post_update_notices_and_self_heals(phase=phase)
         return ran
 
     return run
@@ -74,4 +75,12 @@ def test_tail_marker_prints_when_a_step_raises(tail, capsys):
     tail(_refresh_cua_driver_after_update=broken)
     out = capsys.readouterr().out
     assert HEADER in out
-    assert MARKER in out, "best-effort steps must never swallow the terminal marker"
+    assert WARNING_MARKER in out, "best-effort failures must not produce a success marker"
+    assert MARKER not in out
+
+
+def test_tail_accepts_install_phase(tail, capsys):
+    tail(phase="install")
+    out = capsys.readouterr().out
+    assert "→ Finishing install maintenance" in out
+    assert "✓ Install maintenance finished." in out

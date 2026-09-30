@@ -37,7 +37,8 @@ def _completion_dependencies(monkeypatch, maintenance):
 def test_successful_source_completion_writes_checkout_identity(tmp_path, monkeypatch):
     root = _repo(tmp_path)
 
-    def maintenance(**_kwargs):
+    def maintenance(**kwargs):
+        assert kwargs["maintenance_phase"] == "install"
         assert not (root / "install-stamp.json").exists()
         return True
 

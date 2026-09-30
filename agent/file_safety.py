@@ -186,7 +186,8 @@ def build_write_denied_paths(home: str) -> set[str]:
     # root: overwriting the root .env leaks credentials across every profile that
     # inherits it, and the root Anthropic PKCE store is still read by default /
     # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
+    # token store; the Bitwarden and 1Password caches hold secret values
+    # that load into the environment at startup.
     #
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
@@ -197,6 +198,7 @@ def build_write_denied_paths(home: str) -> set[str]:
         os.path.join("auth", "google_oauth.json"),
         os.path.join("cache", "bws_cache.json"),
         os.path.join("cache", "bws_cache.enc.json"),
+        os.path.join("cache", "op_cache.json"),
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
@@ -337,18 +339,33 @@ _DID_SUFFIX = (
     " (Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
 )
 
-# Exact-file credential stores under HERMES_HOME / <root>. The agent never
-# needs these directly — provider tools consume them through internal channels.
-# bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
-_CREDENTIAL_FILE_NAMES = (
+# Exact-file secret stores Hermes writes under HERMES_HOME / <root>. The agent never needs
+# these directly — provider tools consume them through internal channels. This and
+# SECRET_STORE_DIRS are the ONE list the read guard, gateway chat file delivery
+# (gateway.platforms.base) and the dashboard Files API (hermes_cli.web_routers.files) derive
+# from: hand-kept copies drifted, and the 1Password cache was blocked on none of them.
+# bws_cache.json / op_cache.json are the Bitwarden / 1Password disk caches: plaintext secret values.
+SECRET_STORE_FILES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
-    os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
+    os.path.join("auth", "google_oauth.json"),
+    os.path.join("cache", "bws_cache.json"), os.path.join("cache", "bws_cache.enc.json"),
+    os.path.join("cache", "op_cache.json"),
+    # Also denied as the vault/ tree; named so basename-only consumers catch them too.
+    os.path.join("vault", "vault.key"), os.path.join("vault", "vault.json.enc"),
+)
+# Whole trees of secret material under HERMES_HOME / <root>. browser-profile/ is a copy of the
+# user's Cookies / Login Data; the platform session stores are logged-in messaging accounts.
+# Stores resolved by get_hermes_dir() list both the current and the legacy location.
+SECRET_STORE_DIRS = (
+    "mcp-tokens", "browser-profile", "vault",
+    os.path.join("platforms", "pairing"), "pairing",
+    os.path.join("platforms", "whatsapp", "session"), os.path.join("whatsapp", "session"),
+    os.path.join("platforms", "matrix", "store"), os.path.join("matrix", "store"),
 )
 
-# Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
-# the directory itself, message for a file inside). browser-profile/ is a copy
-# of the user's Cookies / Login Data — the same credential class as auth.json.
-_READ_DENIED_DIRS = (
+# Directory-prefix read denies: (subdir, message for the directory itself, message for a file
+# inside). Stores without a tailored message below get the generic one.
+_READ_DENIED_DIR_MESSAGES = (
     ("mcp-tokens",
      "is the Hermes MCP token directory and cannot be read directly.",
      "is a Hermes MCP token file and cannot be read directly."),
@@ -359,6 +376,12 @@ _READ_DENIED_DIRS = (
     ("vault",
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
      "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
+)
+_READ_DENIED_DIRS = (
+    *_READ_DENIED_DIR_MESSAGES,
+    *((d, "is a Hermes credential store directory and cannot be read directly.",
+       "is inside a Hermes credential store and cannot be read directly.")
+      for d in SECRET_STORE_DIRS if d not in {m[0] for m in _READ_DENIED_DIR_MESSAGES}),
 )
 
 
@@ -390,7 +413,7 @@ def get_read_block_error(path: str) -> Optional[str]:
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in _CREDENTIAL_FILE_NAMES):
+    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in SECRET_STORE_FILES):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX

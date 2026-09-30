@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.file_safety import SECRET_STORE_DIRS, SECRET_STORE_FILES
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -788,18 +789,17 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 
 
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
-# files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
-# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
-# recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
+# files stay deliverable (cache subdirs are allowlisted BEFORE this). Built on the read guard's own
+# SECRET_STORE_FILES / SECRET_STORE_DIRS so exfil never trails it. google_token.json's mtime bumps
+# every turn (defeats the recency window); the store directories are denied as whole trees.
 _ROOT_CREDENTIAL_PATHS = (
-    ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
-    "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
-    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
-    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
-    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
-    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
+    *SECRET_STORE_FILES, *SECRET_STORE_DIRS, "credentials", "config.yaml",
+    # Per-service tokens a skill may read or mount (tools.credential_files), never sent to chat.
+    "google_token.json", "google_oauth_pending.json",
+    # Whole conversation history (every secret ever pasted into a chat); sessions/ is the legacy
+    # transcript dir. SQLite sidecars are listed too: WAL mode touches state.db-wal on every
+    # write, so recency trust alone would leak them.
+    "sessions", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:

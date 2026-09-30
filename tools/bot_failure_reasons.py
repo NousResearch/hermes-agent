@@ -28,9 +28,7 @@ PROVIDER_SERVER_ERROR = "provider_server_error"
 CONTEXT_OVERFLOW = "context_overflow"
 MISSING_CONFIG = "missing_config"
 MODEL_UNAVAILABLE = "model_unavailable"
-# A relay delivery (or a local Bot Chat spawn) could not resolve the target PROFILE's secret scope,
-# so the delivery turn was never created. Distinct from a provider failure: nothing was ever sent to
-# a model, and the remedy is at the spawn site, not on the sender's gateway.
+# A spawn site could not resolve the target profile's secret scope: no turn ran, no provider was called.
 TARGET_SCOPE_UNRESOLVED = "target_scope_unresolved"
 UNKNOWN = "unknown"
 
@@ -75,12 +73,11 @@ _STATUS = r"(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)"
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pat, re.IGNORECASE), code)
     for pat, code in (
-        # FIRST: the message text itself mentions an "API key" and a restart, so it must be claimed
-        # before the auth/status rules can read it as a provider verdict. Two spellings reach here —
-        # the generic ``UnscopedSecretError`` copy (secret name empty, so the lede is a stand-in) and
-        # ``served_profile_child_env``'s detailed one.
-        (r"could not read this profile's api key|served_profile_child_env\(inherit_credentials=true\)",
-         TARGET_SCOPE_UNRESOLVED),
+        # FIRST: the copy says "API key" and "restart", so it must be claimed before the auth rules.
+        # ``UnscopedSecretError`` names the secret when it has one ("this profile's OPENROUTER_API_KEY");
+        # the ``served_profile_child_env`` detail rides in tracebacks.
+        (r"could not read this profile's [^(]+\(an internal profile-scoping bug"
+         r"|served_profile_child_env\(inherit_credentials=true\)", TARGET_SCOPE_UNRESOLVED),
         (rf"authentication_error|invalid api key|{_STATUS}(?:401|403)\b", PROVIDER_AUTH_OR_ACCESS),
         (rf"{_STATUS}402\b|out of funds|quota|balance", PROVIDER_QUOTA_LIMIT),
         (rf"{_STATUS}429\b|rate.?limit", PROVIDER_RATE_LIMIT),

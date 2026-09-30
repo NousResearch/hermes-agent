@@ -49,7 +49,7 @@ export function ArtLines({ lines }: { lines: BannerRow[] }) {
       {lines.map((row, i) => (
         <Text key={i} wrap="truncate-end">
           {row.map(([c, text], j) => (
-            <Text key={j} color={c || undefined}>
+            <Text color={c || undefined} key={j}>
               {text}
             </Text>
           ))}

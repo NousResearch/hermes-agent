@@ -23,15 +23,19 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 
 
 def _detect_gpu_vendor() -> str | None:
-    """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
-    probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
-    vulkan/cpu); anything else defers to select_backend's fallback ladder."""
+    """Best-effort GPU vendor for backend selection.
+
+    Preserve NVIDIA's detailed name when nvidia-smi is available, then use the
+    platform host facts so Intel and AMD do not silently demote ``auto`` to CPU.
+    """
     from hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
+    from hermes_platform.host.facts import gpu_class
 
     query = _cached_nvidia_gpu_query()
     if query is not None and query.get("gpu_name"):
         return "nvidia " + query["gpu_name"]
-    return None
+    detected = gpu_class()
+    return detected if detected in {"nvidia", "amd", "intel"} else None
 
 
 def models_dir() -> Path:

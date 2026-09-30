@@ -203,6 +203,22 @@ def test_backend_selection(vendor, os_name, expected):
     assert select_backend(vendor, os_name=os_name) == expected
 
 
+@pytest.mark.parametrize(("gpu_class", "expected"), [
+    ("intel", "intel"),
+    ("amd", "amd"),
+    ("none", None),
+    ("unknown", None),
+])
+def test_auto_vendor_detection_uses_host_gpu_class(monkeypatch, gpu_class, expected):
+    from hermes_cli.local_runtime import bootstrap, hardware
+    from hermes_platform.host import facts
+
+    monkeypatch.setattr(hardware, "_cached_nvidia_gpu_query", lambda: None)
+    monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)
+
+    assert bootstrap._detect_gpu_vendor() == expected
+
+
 # ── supervisor contracts (stubbed; no GPU) ───────────────────
 
 

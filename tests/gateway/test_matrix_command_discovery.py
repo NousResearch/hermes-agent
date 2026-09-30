@@ -38,7 +38,6 @@ def installed_skill_commands(
     home = tmp_path / "hermes-home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
     expected = {}
     for index in range(12):
         name = f"research-{index:02d}"

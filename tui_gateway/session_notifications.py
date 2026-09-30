@@ -140,37 +140,32 @@ _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
 
 
-def _notif_release_turn(session: dict) -> None:
-    with session["history_lock"]:
-        session["running"] = False
-
-
-def _notif_claim_turn(session: dict) -> bool:
-    """Claim the idle session (running=True) under history_lock; False if a turn is live.
+def _notif_claim_turn(session: dict) -> int | None:
+    """Claim the idle session under history_lock and return the claim; None if a turn is live.
     After the user's Stop no automatic turn starts: the cancel latch holds notifications
     (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
         if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
-            return False
-        session["running"] = True
-        return True
+            return None
+        return _claim_session_turn(session)
 
 
 def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
-    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, *, turn_claim: int, **kwargs) -> bool:
+    """message.start + _run_prompt_submit for the claimed turn; whether the turn started. Releases the claim on
+    failure."""
     try:
         from gateway.warning_notifications import render_notification
         with _session_profile_runtime_scope(session):
             render_notification(lambda: _emit("message.start", sid), platform="tui",
                                 diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        return bool(_run_prompt_submit(rid, sid, session, text, turn_claim=turn_claim, **kwargs))
     except Exception as exc:
         _notif_log_failure(what, exc)
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         raise
 
 
@@ -178,11 +173,11 @@ def _notif_loop_status(sid: str, text: str) -> None:
     _emit("status.update", sid, {"kind": "loop", "text": text})
 
 
-def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) -> None:
+def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str, turn_claim: int) -> None:
     """Slash-command /loop wakeup: route through the slash pipeline, not the model. No model reply to evaluate, so the
     tick completes immediately — unless the command resolves to a prompt (skill command etc.), which runs as a normal
     turn whose post-turn hook completes the tick."""
-    _notif_release_turn(session)
+    _release_session_turn(session, turn_claim)
     try:
         parts = wakeup.lstrip()[1:].split(None, 1)
         resp = _methods["command.dispatch"](
@@ -191,11 +186,13 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         if out := str(payload.get("output") or "").strip():
             _notif_loop_status(sid, out)
         if payload.get("type") == "send" and payload.get("message"):
-            if not _notif_claim_turn(session):
+            if (send_claim := _notif_claim_turn(session)) is None:
                 mgr.abandon_tick()
                 return
             # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
-            _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
+            if not _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed",
+                                 turn_claim=send_claim):
+                mgr.abandon_tick()
             return
     except Exception:
         pass
@@ -244,20 +241,21 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     mgr = HeartbeatManager(session_id=sid_key)
     if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
         return  # not due, or the gateway poller owns the routed conversation — stays due there
-    if not _notif_claim_turn(session):
+    if (turn_claim := _notif_claim_turn(session)) is None:
         return  # busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         return
     started = False
     try:
         _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
-        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
+        started = bool(_run_prompt_submit(
+            f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt, turn_claim=turn_claim))
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
-        # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
-        _notif_release_turn(session)
+        # _run_prompt_submit releases the claim itself when it refuses the turn, but not when it raises.
+        _release_session_turn(session, turn_claim)
         with contextlib.suppress(Exception):
             mgr.abandon_fire()
 
@@ -304,22 +302,23 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     mgr = LoopManager(session_id=sid_key)
     if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or _loop_route_is_gateway_chat(mgr.state):
         return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
-    if not _notif_claim_turn(session):
+    if (turn_claim := _notif_claim_turn(session)) is None:
         return  # busy — stays due, next poll retries
     if not (wakeup := mgr.fire_tick()):
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         return
     rid = f"__loop__{int(time.time() * 1000)}"
     try:
         _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
         if wakeup.lstrip().startswith("/"):
-            _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
+            _notif_slash_loop_tick(rid, sid, session, mgr, wakeup, turn_claim)
         else:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            if not _run_prompt_submit(rid, sid, session, wakeup, turn_claim=turn_claim):
+                mgr.abandon_tick()
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         with contextlib.suppress(Exception):
             mgr.abandon_tick()
 
@@ -465,7 +464,7 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
-    if not session.get("_kanban_pending") or not _notif_claim_turn(session):
+    if not session.get("_kanban_pending") or (turn_claim := _notif_claim_turn(session)) is None:
         return
     with session["history_lock"]:
         pending = session.get("_kanban_pending") or []
@@ -476,7 +475,7 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
     with contextlib.suppress(Exception):
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
-                      "kanban notification dispatch failed",
+                      "kanban notification dispatch failed", turn_claim=turn_claim,
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
@@ -489,8 +488,8 @@ def _background_notifications_off(session: dict) -> bool:
     return raw is False or str(raw or "").strip().lower() == "off"
 
 
-def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
-    """Run the claimed (running=True) agent turn for one notification event."""
+def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str, turn_claim: int) -> None:
+    """Run the claimed agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
     try:
         claim = claim_event_delivery(evt, "tui-poller")
@@ -501,7 +500,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
         # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         return
     evt_type = evt.get("type")
     kwargs: dict = {}
@@ -517,11 +516,12 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
+        started = _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+                                "notification poller dispatch failed", turn_claim=turn_claim, **kwargs)
     except Exception:
-        release_event_delivery(evt, claim)
-        return
-    complete_event_delivery(evt, claim)
+        started = False
+    # A turn that did not start (a Stop ended its claim, or the session refused it) has not delivered the event.
+    (complete_event_delivery if started else release_event_delivery)(evt, claim)
 
 
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
@@ -580,13 +580,13 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
-    if not _notif_claim_turn(session):
+    if (turn_claim := _notif_claim_turn(session)) is None:
         queue.put(evt)
         if deferred is not None:
             return False
         time.sleep(0.25)  # back off: the re-queued event keeps the queue non-empty, else this loop spins at 100% CPU
         return True
-    _notif_dispatch_event(sid, session, evt, text)
+    _notif_dispatch_event(sid, session, evt, text, turn_claim)
     return True
 
 
@@ -596,7 +596,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
 
     if not notifications:
         return
-    if not _notif_claim_turn(session):
+    if (turn_claim := _notif_claim_turn(session)) is None:
         for event, _text in notifications:
             (deferred.append if deferred is not None else registry.completion_queue.put)(event)
         if deferred is None:
@@ -611,23 +611,21 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         text = batch.render(registry)
     except Exception as exc:
         _notif_log_failure("completion batch preparation failed", exc)
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
         return
     if text is None:
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
     try:
-        if text is not None:
-            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                          "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
-                          display_metadata={"display_text": batch.display_text(registry)})
+        started = text is None or _notif_submit(
+            f"__notif__{int(time.time() * 1000)}", sid, session, text, "completion batch dispatch failed",
+            turn_claim=turn_claim, display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
+            display_metadata={"display_text": batch.display_text(registry)})
     except Exception:
-        for event, _text, claim in claimed:
-            release_event_delivery(event, claim)
-        return
+        started = False
     for event, _text, claim in claimed:
-        complete_event_delivery(event, claim)
+        (complete_event_delivery if started else release_event_delivery)(event, claim)
 
 
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):
@@ -672,7 +670,7 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
         claimed = claim_pending_delivery(home, owner)
         if claimed is None:
             return False
-        session["running"] = True
+        turn_claim = _claim_session_turn(session)
 
     delivery_id = str(claimed["id"])
 
@@ -691,15 +689,15 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     try:
         started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
                                      image_paths=[], terminal_callback=terminal_receipt,
-                                     turn_author=claimed.get("author") or None,
+                                     turn_author=claimed.get("author") or None, turn_claim=turn_claim,
                                      **({"display_metadata": {"notification_category": "diagnostic"}}
                                         if claimed.get("notification_category") == "diagnostic" else {}))
     except Exception as exc:
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         terminal_receipt({"status": "failed", "error": str(exc)})
         raise
     if not started:
-        _notif_release_turn(session)
+        _release_session_turn(session, turn_claim)
         terminal_receipt({"status": "failed", "error": "live session owner could not start the delivery turn"})
     return started
 

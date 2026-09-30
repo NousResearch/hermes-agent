@@ -90,7 +90,7 @@ def _finished(caplog):
 
 
 def _run(session, prompt="go"):
-    server._run_prompt_submit("rid", "ui-sid", session, prompt)
+    server._run_prompt_submit("rid", "ui-sid", session, prompt, turn_claim=server._claim_session_turn(session))
 
 
 def _agent_returning(result):

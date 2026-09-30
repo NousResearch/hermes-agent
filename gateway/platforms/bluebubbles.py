@@ -1186,6 +1186,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.exception("[bluebubbles] failed to hand off inbound message")
             return web.Response(text="handoff unavailable", status=503)
 
+        if event._gateway_accepted is not True:
+            self._finish_inbound_claim(message_id, claim, accepted=False)
+            return web.Response(text="handoff unavailable", status=503)
         self._finish_inbound_claim(message_id, claim, accepted=True)
 
         # Fire-and-forget read receipt

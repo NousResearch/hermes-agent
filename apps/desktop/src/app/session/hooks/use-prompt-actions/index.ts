@@ -5,8 +5,9 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { transcribeAudio } from '@/hermes'
+import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
@@ -15,6 +16,7 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
+import { setSessionCompacting } from '@/store/compaction'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -52,6 +54,7 @@ import type {
   ImageAttachResponse,
   SessionRedirectResponse
 } from '../../../types'
+import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 
 import {
   appendMidTurnUserMessage,
@@ -89,29 +92,6 @@ interface HandoffResult {
   error?: string
 }
 
-const WINDOWS_ABSOLUTE_PATH_RE = /^(?:[A-Za-z]:[\\/]|\\\\)/
-const POSIX_ABSOLUTE_PATH_RE = /^\/(?!\/)/
-
-// Terminal backends whose execution environment has its own filesystem
-// (docker/ssh/singularity/modal/...) cannot see the desktop's host paths —
-// they must be crossed as bytes, like remote attachments. Mirrors the
-// container_backend set in tools/terminal_tool.py::_get_env_config.
-const CONTAINER_TERMINAL_BACKENDS = new Set(['docker', 'ssh', 'singularity', 'modal', 'daytona', 'vercel_sandbox'])
-
-// `mode: local` means the gateway was launched locally, not necessarily that
-// Electron and the gateway share a filesystem. Windows Desktop can front a
-// WSL/Docker backend whose cwd is POSIX, so a Windows host path must cross the
-// boundary as bytes just like a remote attachment. Container terminal backends
-// (docker, ssh, ...) always need bytes: the sandbox has its own filesystem and
-// the host path would dangle inside it (#76577).
-function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, terminalBackend?: string): boolean {
-  if (CONTAINER_TERMINAL_BACKENDS.has((terminalBackend || '').trim().toLowerCase())) {
-    return true
-  }
-
-  return WINDOWS_ABSOLUTE_PATH_RE.test(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
-}
-
 /**
  * Stage one file/image attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Attachments upload their
@@ -143,16 +123,17 @@ export async function uploadComposerAttachment(
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session
-  // id would double the disk/IPC cost of every recovered attach. For images,
-  // the chip's previewUrl already holds the full file as a base64 data URL,
-  // so passing it avoids re-reading the same bytes off disk at submit.
+  // id would double the disk/IPC cost of every recovered attach. Images are
+  // always read fresh from disk here: the chip's cached `previewUrl` is
+  // dropped once a thumbnail exists, so it cannot be trusted to hold the
+  // full-resolution bytes the model needs.
   let imagePayload: Awaited<ReturnType<typeof readImageForRemoteAttach>> | null = null
   let fileDataUrl: null | string = null
 
   if (uploadBytes) {
     try {
       if (attachment.kind === 'image') {
-        imagePayload = await readImageForRemoteAttach(path, attachment.previewUrl)
+        imagePayload = await readImageForRemoteAttach(path)
       } else {
         fileDataUrl = await readFileDataUrlForAttach(path)
       }
@@ -238,7 +219,7 @@ interface PromptActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: CreateBackendSessionForSend
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
@@ -661,7 +642,7 @@ export function usePromptActions({
   )
 
   const transcribeVoiceAudio = useCallback(
-    async (audio: Blob) => {
+    async (audio: Blob, owner?: ResolvedOwner) => {
       if (!sttEnabled) {
         throw new Error(copy.sttDisabled)
       }
@@ -671,15 +652,17 @@ export function usePromptActions({
       // the desktop→gateway audio hop. `null` = provider not client-callable
       // (local whisper, command providers, older backend) → relay unchanged.
       // Provider REJECTIONS surface — re-running the same request through
-      // the relay would fail identically, just slower.
-      const direct = await transcribeAudioClientDirect(audio)
+      // the relay would fail identically, just slower. `owner` is the
+      // recording's owner, resolved when the mic opened: the config lookup and
+      // the relay decode on the backend its STT warm-up targeted.
+      const direct = await transcribeAudioClientDirect(audio, owner)
 
       if (direct !== null) {
         return direct
       }
 
       const dataUrl = await blobToDataUrl(audio)
-      const result = await transcribeAudio(dataUrl, audio.type)
+      const result = await transcribeAudio(dataUrl, audio.type, owner)
 
       return result.transcript
     },
@@ -739,6 +722,11 @@ export function usePromptActions({
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
     setSessionDraftingTool(sessionId, '')
+    // Auto-compaction sets a per-session flag that only clears on message.start
+    // / message.complete / error. A hung compaction emits none of those, so the
+    // "Summarizing thread" overlay sticks and Stop is the user's only recourse —
+    // clear it here too so cancelling actually dismisses the panel.
+    setSessionCompacting(sessionId, false)
     // Stop ends the turn, so the gateway is no longer blocked on any prompt it
     // raised. Drop this session's pending clarify / approval / sudo / secret so
     // a dead panel (and the sidebar "needs input" dot) can't linger and accept

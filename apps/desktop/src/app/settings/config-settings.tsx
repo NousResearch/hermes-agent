@@ -20,7 +20,9 @@ import {
   refreshDataUrlReadMaxMb,
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
+import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
+import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
@@ -51,6 +53,9 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { SharedMetricsSettings } from './shared-metrics-settings'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 export function ConfigSettings({
   activeSectionId,
@@ -99,6 +104,7 @@ function ConfigSettingsInner({
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
   const disableF12 = useStore($disableF12)
+  const alwaysExternalLinks = useStore($alwaysExternalLinks)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -227,6 +233,9 @@ function ConfigSettingsInner({
           // Mirror the saved record into the shared cache so MCP/model surfaces
           // reflect the edit without their own refetch.
           writeConfigCache(snapshot)
+          const savedScope = writeScope ?? scopeProfile
+
+          recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
 
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
@@ -296,11 +305,14 @@ function ConfigSettingsInner({
 
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
+  const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
   const [searchParams, setSearchParams] = useSearchParams()
   const targetField = searchParams.get('field')
+
+  useSettingDeepLink(`config:${activeSectionId}`, page => subpage === undefined || page === subpage)
 
   useEffect(() => {
     if (!targetField || !config || !schema) {
@@ -426,7 +438,7 @@ function ConfigSettingsInner({
     visibleFields.length === 0 &&
     (subpage === undefined
       ? activeSectionId !== 'chat'
-      : !showModelSettings && !showDesktopSettings && !showAttachments)
+      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics)
 
   return renderPage(
     <>
@@ -438,14 +450,22 @@ function ConfigSettingsInner({
           <ToggleRow
             checked={keepAwake}
             description={c.keepAwakeDesc}
+            id={settingElementId(SETTING_IDS.advanced.keepAwake)}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
           />
           <ToggleRow
             checked={disableF12}
             description={c.disableF12Desc}
+            id={settingElementId(SETTING_IDS.advanced.disableF12)}
             label={c.disableF12Title}
             onChange={setDisableF12}
+          />
+          <ToggleRow
+            checked={alwaysExternalLinks}
+            description={c.alwaysExternalLinksDesc}
+            label={c.alwaysExternalLinksTitle}
+            onChange={setAlwaysExternalLinks}
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />
@@ -455,6 +475,9 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
+      {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
+          go through their own RPC rather than the generic field autosave. */}
+      {showSharedMetrics ? <SharedMetricsSettings /> : null}
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}
@@ -561,6 +584,7 @@ function AttachmentSizeSetting() {
         </div>
       }
       description={c.attachmentSizeDesc}
+      id={settingElementId(SETTING_IDS.chat.attachmentSize)}
       title={c.attachmentSizeTitle}
     />
   )

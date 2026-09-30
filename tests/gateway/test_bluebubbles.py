@@ -621,6 +621,7 @@ class TestBlueBubblesReplyUX:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         async def fake_mark_read(chat_id):
             marked.append(chat_id)
@@ -683,6 +684,7 @@ class TestBlueBubblesReplyUX:
 
         async def handler(event):
             handled.append(event)
+            event._gateway_accepted = True
             handler_started.set()
             await release_handler.wait()
             return "first paragraph\n\nsecond paragraph"
@@ -787,6 +789,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
         app = web.Application()
@@ -837,6 +840,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
         payload = {
@@ -876,6 +880,7 @@ class TestBlueBubblesDuplicateDelivery:
             if attempts == 1:
                 raise RuntimeError("transient handoff failure")
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "handle_message", flaky_handle_message)
         payload = {
@@ -907,6 +912,7 @@ class TestBlueBubblesDuplicateDelivery:
             attempts += 1
             if attempts == 1:
                 raise asyncio.CancelledError
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "handle_message", cancelled_once)
         payload = {
@@ -943,6 +949,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "_download_attachment", failed_download)
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -990,6 +997,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "_download_attachment", transient_download)
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -1033,6 +1041,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "_download_attachment", partial_download)
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -1074,6 +1083,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "_download_attachment", successful_download)
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -1114,6 +1124,7 @@ class TestBlueBubblesDuplicateDelivery:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "_download_attachment", failed_download)
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -1155,6 +1166,7 @@ class TestBlueBubblesMentionGating:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
         response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
@@ -2161,6 +2173,7 @@ class TestBlueBubblesGateBeforeDownload:
 
         async def fake_handle_message(event):
             handled.append(event)
+            event._gateway_accepted = True
 
         download = AsyncMock(return_value="/tmp/cached.jpg")
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -2205,3 +2218,60 @@ async def test_listener_failure_preserves_gateway_hook(monkeypatch, outbound_onl
         await adapter.disconnect()
         unregister.assert_not_awaited()
     assert adapter.client is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["missing_handler", "busy_refusal", "inline", "debounce"])
+async def test_webhook_uses_actual_gateway_admission_receipt(monkeypatch, path):
+    adapter = _make_adapter(monkeypatch, send_read_receipts=True)
+    adapter.mark_read = AsyncMock(return_value=True)
+    adapter.send_typing = AsyncMock()
+    handler = AsyncMock(return_value=None)
+    owner = None
+    if path != "missing_handler":
+        adapter.set_message_handler(handler)
+        source = adapter.build_source(chat_id="user@example.com", user_id="user@example.com")
+        key = adapter._event_session_key(MessageEvent(text="hello", source=source))
+        owner = asyncio.create_task(asyncio.Event().wait())
+        adapter._active_sessions[key] = asyncio.Event()
+        adapter._session_tasks[key] = owner
+    if path == "busy_refusal":
+        async def refuse(event, session_key):
+            return True  # rejected by the runner, no admission receipt
+        adapter.set_busy_session_handler(refuse)
+    adapter._busy_text_mode = "queue"
+    adapter._busy_text_debounce_seconds = 60
+    payload = {"type": "new-message", "data": {
+        "guid": "admission-guid", "text": "/status" if path == "inline" else "hello",
+        "chatIdentifier": "user@example.com",
+        "handle": {"address": "user@example.com"}, "isFromMe": False,
+    }}
+    try:
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        if path in {"missing_handler", "busy_refusal"}:
+            assert first.status == 503
+            adapter.mark_read.assert_not_awaited()
+            handler.assert_not_awaited()
+            if owner:
+                owner.cancel()
+                await asyncio.gather(owner, return_exceptions=True)
+            adapter._session_tasks.clear()
+            adapter._active_sessions.clear()
+            adapter.set_busy_session_handler(None)
+            adapter.set_message_handler(handler)
+            assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))).status == 200
+            for _ in range(20):
+                if handler.await_count:
+                    break
+                await asyncio.sleep(0)
+            handler.assert_awaited_once()
+        else:
+            assert first.status == 200
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))).status == 200
+        if path == "debounce":
+            assert adapter._text_debounce[key].event.message_id == "admission-guid"
+            handler.assert_not_awaited()
+        else:
+            handler.assert_awaited_once()
+    finally:
+        await adapter.disconnect()

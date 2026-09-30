@@ -8,8 +8,8 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
-an installed Hermes sees new entries and removals without updating. Any fetch failure falls back to the
-in-tree copy silently.
+an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
+cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,7 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
-# Past this age an offline cache no longer supplies PINS (the in-tree catalog does); its removals
-# still count — a kill-list entry never expires.
+# Offline pins expire, but cached removals remain a permanent kill list.
 LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
@@ -92,6 +91,7 @@ class PluginCatalogEntry:
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
+    known_issues: List[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
     @property
     def install_identifier(self) -> str:
@@ -111,6 +111,7 @@ class PluginCatalogEntry:
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
             },
+            "known_issues": list(self.known_issues),
         }
 
 
@@ -168,6 +169,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
+        known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -177,7 +179,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception as exc:
         logger.warning("Plugin catalog: failed to read %s: %s", path, exc)
         return None
@@ -310,6 +312,22 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
+def invalidate_live_cache_for_home(home: Path) -> None:
+    """Best-effort removal of the cached live catalog under *home* (any profile's home).
+
+    ``hermes update`` drops it for every profile after the checkout changes: a snapshot fetched
+    before the bump would otherwise out-vote the newer in-tree catalog (pins the update just
+    changed, entries it just added) for the rest of :data:`LIVE_CATALOG_TTL_SECONDS` (#119340).
+    The next :func:`fetch_live_catalog` re-fetches the published doc, or falls back to the
+    in-tree catalog while the network is down — both newer than what was deleted. Safe when the
+    cache is absent (first run, other profiles that never opened the plugins hub).
+    """
+    try:
+        (Path(home) / "cache" / "plugin-catalog.json").unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("Plugin catalog: could not drop the live cache under %s: %s", home, exc)
+
+
 # Wall-clock deadline of the last failed live fetch. Without it a dead catalog host costs one
 # full request timeout PER CALL (the plugins hub and ``plugins list`` used to ask once per
 # installed plugin), so the dashboard event loop stalled for minutes.
@@ -324,7 +342,7 @@ def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
     try:
         if not cache.is_file():
             return None
-        data = json.loads(cache.read_text(encoding="utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8-sig"))
         if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
             data = {**data, "entries": []}
         return data
@@ -342,7 +360,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8"))
+            return json.loads(cache.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:
@@ -386,7 +404,7 @@ def in_tree_catalog_time() -> Optional[float]:
         try:
             import subprocess
             out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL)
             resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
@@ -483,4 +501,9 @@ def entry_capability_summary(entry: PluginCatalogEntry) -> str:
         bits.append(f"Platforms: {', '.join(entry.platforms)}.")
     if entry.requires_hermes:
         bits.append(f"Requires Hermes {entry.requires_hermes}.")
+    if entry.known_issues:
+        # #124058: informational — the catalog documents traps (unsupported
+        # install-method/mode combinations); surface them at install prompts
+        # without blocking the install.
+        bits.append(f"Known issues: {'; '.join(entry.known_issues)}.")
     return " ".join(bits)

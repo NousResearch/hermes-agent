@@ -1,6 +1,7 @@
 """Tests for Nous subscription feature detection."""
 
 import shutil
+import sys
 
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
@@ -219,7 +220,7 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     ns.prompt_enable_tool_gateway(config)
 
     blob = " ".join(captured["items"]).lower()
-    assert "firecrawl" in blob  # web offered
+    assert "web search & extract" in blob  # web offered
     assert "video" not in blob  # video NOT offered to a pool user
 
 
@@ -419,6 +420,12 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
 
 
 
+
+
+
+
+
+
 def _block_legacy_agent_browser_checks(monkeypatch):
     """Make the legacy checks (PATH lookup + local node_modules/.bin) find nothing."""
     real_which = shutil.which
@@ -432,42 +439,21 @@ def _block_legacy_agent_browser_checks(monkeypatch):
     monkeypatch.setattr("hermes_constants.agent_browser_runnable", lambda path: False)
 
 
-def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
-    """No PATH binary and no runnable node_modules copy, but the browser_tool
-    cascade resolves the npx fallback: browser capability is available."""
+def test_has_agent_browser_uses_passive_runtime_resolution(monkeypatch):
+    """Readiness shares the runtime resolver without acquiring a package."""
     _block_legacy_agent_browser_checks(monkeypatch)
 
     calls = []
 
     def fake_find_agent_browser(*, validate=True):
         calls.append({"validate": validate})
-        return "npx agent-browser"
+        return "/prepared/agent-browser"
 
     monkeypatch.setattr(bt_install, "_find_agent_browser", fake_find_agent_browser)
-    monkeypatch.setattr(
-        "tools.browser_tool_install._requires_real_termux_browser_install", lambda cmd: False
-    )
 
     assert ns._has_agent_browser() is True
     # A readiness probe must resolve without spawning the daemon.
     assert calls and all(call["validate"] is False for call in calls)
-
-
-def test_has_agent_browser_false_for_termux_local_bare_npx(monkeypatch):
-    """On Termux in local mode the bare npx fallback is not a usable install."""
-    _block_legacy_agent_browser_checks(monkeypatch)
-
-    monkeypatch.setattr(
-        bt_install,
-        "_find_agent_browser",
-        lambda *, validate=True: "npx agent-browser",
-    )
-    monkeypatch.setattr(
-        "tools.browser_tool_install._requires_real_termux_browser_install",
-        lambda cmd: cmd.strip() == "npx agent-browser",
-    )
-
-    assert ns._has_agent_browser() is False
 
 
 def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
@@ -481,7 +467,22 @@ def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
     assert ns._has_agent_browser() is False
 
 
+def test_has_agent_browser_import_failure_does_not_run_another_resolver(monkeypatch):
+    """A broken runtime resolver cannot advertise an unchecked fallback."""
+    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *args, **kwargs: (
+            "/fake/bin/agent-browser"
+            if cmd == "agent-browser"
+            else real_which(cmd, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_constants.agent_browser_runnable",
+        lambda path: path == "/fake/bin/agent-browser",
+    )
 
-
-
-
+    assert ns._has_agent_browser() is False

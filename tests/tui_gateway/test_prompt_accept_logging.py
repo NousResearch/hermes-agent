@@ -27,7 +27,6 @@ import pytest
 
 from tui_gateway import server
 
-
 class _InlineThread:
     """Run the turn synchronously so tests observe its final state."""
 
@@ -45,7 +44,6 @@ class _InlineThread:
 
     def join(self, timeout=None):
         return None
-
 
 def _session(agent=None, **extra):
     return {
@@ -65,7 +63,6 @@ def _session(agent=None, **extra):
         **extra,
     }
 
-
 @pytest.fixture()
 def turn_env(monkeypatch, tmp_path):
     """Neutralize the turn pipeline's environment-heavy side paths."""
@@ -79,13 +76,10 @@ def turn_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
 
-
 def _records(caplog, needle):
     return [r for r in caplog.records if needle in r.getMessage()]
 
-
 SECRETISH_PROMPT = "please rotate QDRANT_API_KEY=hunter2-super-secret now"
-
 
 def test_accepted_and_finished_records_on_success(turn_env, caplog):
     agent = types.SimpleNamespace(
@@ -110,9 +104,3 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
 
     fin = finished[0].getMessage()
     assert "hunter2" not in fin
-
-
-
-
-
-

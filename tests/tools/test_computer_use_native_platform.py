@@ -21,8 +21,8 @@ def backend(monkeypatch):
 
 
 @pytest.mark.parametrize("host_platform", [
-    pytest.param("win32", marks=pytest.mark.windows_only),
-    pytest.param("darwin", marks=pytest.mark.macos_only),
+    pytest.param("win32", marks=pytest.mark.platforms("windows")),
+    pytest.param("darwin", marks=pytest.mark.platforms("macos")),
 ])
 @pytest.mark.parametrize("args, expected_call", [
     ({"action": "capture", "mode": "ax"}, "capture"),

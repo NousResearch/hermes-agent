@@ -161,7 +161,6 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
-    from agent.skill_commands import _inject_skill_config
     from agent.skill_utils import normalize_skill_lookup_name
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
@@ -204,11 +203,11 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
 
         if parts:
             parts.append("")
+        description = str(loaded.get("description") or "").strip()
         parts.extend([
-            f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
-            "",
-            str(loaded.get("content") or "").strip()])
-        _inject_skill_config(loaded, parts)
+            f'[The "{skill_name}" skill is available for this job. Use skill_view(name="{normalize_skill_lookup_name(skill_name)}") to load its instructions when needed.]',
+            f"Description: {description}" if description else "",
+        ])
 
     if skipped:
         parts.insert(0, (

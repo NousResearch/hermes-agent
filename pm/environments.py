@@ -91,18 +91,48 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
-def payload_venv(project_root: Path) -> Path | None:
-    """The environment a sealed payload ships beside its tree, or ``None``."""
-    root = Path(project_root).resolve()
+def _payload_manifest(root: Path) -> dict | None:
+    """The manifest of the sealed payload whose tree is the resolved *root*, or ``None``."""
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         if (root.parent / manifest.get("repo", "")).resolve() == root:
-            venv = (root.parent / manifest["venv"]).resolve()
-            if not venv.is_relative_to(root.parent):
-                raise RuntimeError("payload environment escapes its root")
-            return venv
+            return manifest
     return None
+
+
+def payload_venv(project_root: Path) -> Path | None:
+    """The environment a sealed payload ships beside its tree, or ``None``."""
+    root = Path(project_root).resolve()
+    manifest = _payload_manifest(root)
+    if manifest is None:
+        return None
+    venv = (root.parent / manifest["venv"]).resolve()
+    if not venv.is_relative_to(root.parent):
+        raise RuntimeError("payload environment escapes its root")
+    return venv
+
+
+def _payload_hermes_command(root: Path) -> Path | None:
+    manifest = _payload_manifest(root)
+    command = manifest.get("runtime", {}).get("commands", {}).get("hermes") if manifest else None
+    return root.parent / command if command else None
+
+
+def payload_command_dir(project_root: Path) -> Path | None:
+    """The directory holding a sealed payload's own launchers (``<payload>/bin``), or ``None``."""
+    command = _payload_hermes_command(Path(project_root).resolve())
+    return command.parent if command else None
+
+
+def cli_command_name(project_root: Path) -> str:
+    """The name a person types to run this install's CLI.
+
+    A desktop channel build publishes its launcher under a qualified name
+    (``hermes-canary``) so it never shadows another install's ``hermes``.
+    """
+    command = _payload_hermes_command(Path(project_root).resolve())
+    return command.name.removesuffix(".exe") if command else "hermes"
 
 
 def base_venv(project_root: Path) -> Path:
@@ -115,14 +145,12 @@ def store_root(project_root: Path) -> Path:
     if override:
         return Path(override).resolve()
     root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        if (root.parent / manifest.get("repo", "")).resolve() == root:
-            store = (root.parent / manifest["store"]).resolve()
-            if not store.is_relative_to(root.parent):
-                raise RuntimeError("payload store escapes its root")
-            return store
+    manifest = _payload_manifest(root)
+    if manifest is not None:
+        store = (root.parent / manifest["store"]).resolve()
+        if not store.is_relative_to(root.parent):
+            raise RuntimeError("payload store escapes its root")
+        return store
     from pm.paths import install_stamp_path
 
     for directory in (root, *root.parents):
@@ -353,12 +381,16 @@ def activate_dependencies(project_root: Path) -> None:
                    *[entry for entry in sys.path if Path(entry).resolve() != selected.resolve()]]
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
     os.environ.pop("VIRTUAL_ENV", None)
-    executable_dir = venv_bin_dir(environment)
     # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
     # the build-time source snapshot, not this checkout (#124627): a child that resolves
     # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
-    prefix = [str(path) for path in (project_root.resolve() / ".hermes" / "bin", executable_dir)
-              if path.is_dir()]
+    # A sealed payload's launchers live in <payload>/bin instead.
+    directories = [payload_command_dir(project_root) or project_root.resolve() / ".hermes" / "bin"]
+    # A shipped venv's Windows redirectors read pyvenv.cfg `home`, which still names the
+    # build machine, so every executable in its Scripts fails on the user's machine.
+    if not (os.name == "nt" and environment == payload_venv(project_root)):
+        directories.append(venv_bin_dir(environment))
+    prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 

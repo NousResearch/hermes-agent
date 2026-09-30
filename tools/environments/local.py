@@ -601,11 +601,20 @@ _HERMES_BIN_DIR: "str | None | object" = _SENTINEL
 def _resolve_hermes_bin_dir() -> str | None:
     """Directory holding the ``hermes`` console-script, or None (cached). A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
-    ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
-    hermes executable; ``sys.executable``'s dir if it holds the shim."""
+    ``hermes`` exits 127. Order: a sealed payload's own launcher dir; ``which``; absolute
+    ``sys.argv[0]`` naming a real hermes executable; ``sys.executable``'s dir if it holds
+    the shim."""
     global _HERMES_BIN_DIR
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
+    from pm.environments import payload_command_dir
+
+    # A payload's venv also holds a `hermes`, but on Windows its redirector names the
+    # build machine's interpreter, so PATH order must not decide which copy children get.
+    payload_dir = payload_command_dir(Path(__file__).resolve().parents[2])
+    if payload_dir is not None and payload_dir.is_dir():
+        _HERMES_BIN_DIR = str(payload_dir)
+        return _HERMES_BIN_DIR
     which = shutil.which("hermes")
     argv0 = sys.argv[0] if sys.argv else ""
     base = os.path.basename(argv0).lower()

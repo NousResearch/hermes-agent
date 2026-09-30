@@ -352,9 +352,12 @@ def _install_plugin_core(
         _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
 
         if target.exists() and not force:
+            from pm.environments import cli_command_name
+            from pm.paths import repo_root
+
             raise _pc().PluginOperationError(
                 f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                f"or run `hermes plugins update {plugin_name}`.")
+                f"or run `{cli_command_name(repo_root())} plugins update {plugin_name}`.")
         prior = old_metadata.get(plugin_name)
         if target.exists() and requested_revision is None and isinstance(prior, dict) and prior.get("pinned") is True:
             raise _pc().PluginOperationError(

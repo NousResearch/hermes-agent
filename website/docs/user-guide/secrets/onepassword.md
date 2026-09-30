@@ -153,6 +153,8 @@ Successful, complete pulls are cached in-process and on disk under `<hermes_home
 - is **not** written when a pull had any per-reference error, so a transient auth failure isn't frozen in for the TTL;
 - is fully disabled — reads *and* writes — when `cache_ttl_seconds: 0`.
 
+The file holds secret values in plain text, so the agent's file tools cannot read or write it, chat file delivery never sends it, and the dashboard Files tab does not list it. The `terminal` tool runs as your OS user and can still read it; see [Security](../security.md).
+
 ## Security notes
 
 - A 1Password service-account token can read every secret the account has access to. Store it in `~/.hermes/.env` (not `config.yaml`), and revoke + regenerate from 1Password if it leaks.

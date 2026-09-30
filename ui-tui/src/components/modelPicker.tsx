@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { fuzzyRank } from '@hermes/shared/fuzzy'
+import { fuzzyRank, searchFold } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
@@ -56,6 +56,39 @@ export function modelPickerCommand(
   const effort = reasoning ? ` --reasoning ${reasoning}` : ''
 
   return `${model} --provider ${providerSlug}${effort} ${scope}`
+}
+
+type ProviderStageRow = ({ kind: 'provider' } | { kind: 'model'; model: string }) & ProviderRow
+
+/** Step-1 rows. With a query, each authenticated provider's models rank alongside the provider
+ *  rows (matched on their own id, like step 2), so a typed model is one Enter away; a provider
+ *  whose name or slug contains the query stays on top. An empty query is the plain provider list. */
+export function providerStageRows(providerRows: ProviderRow[], filter: string): ProviderStageRow[] {
+  const rows: ProviderStageRow[] = providerRows.map(row => ({ kind: 'provider' as const, ...row }))
+  const query = searchFold(filter.trim())
+
+  if (!query) {
+    return rows
+  }
+
+  const named = rows.filter(row => searchFold(`${row.name} ${row.provider.slug}`).includes(query))
+
+  // Current provider first, so an id several providers serve stays on the current route on a score tie.
+  const byCurrent = [...providerRows].sort((a, b) => Number(!!b.provider.is_current) - Number(!!a.provider.is_current))
+
+  const models = byCurrent.flatMap(({ name, provider }) =>
+    provider.authenticated === false
+      ? []
+      : (provider.models ?? []).map(model => ({ kind: 'model' as const, model, name, provider }))
+  )
+
+  const ranked = fuzzyRank([...rows.filter(row => !named.includes(row)), ...models], filter, row =>
+    row.kind === 'model'
+      ? modelSearchText(row.model)
+      : `${row.name} ${row.provider.slug} ${(row.provider.models ?? []).join(' ')}`
+  )
+
+  return [...named, ...ranked.map(r => r.item)]
 }
 
 export function providerIndexAfterClearingFilter(
@@ -163,20 +196,14 @@ export function ModelPicker({
     [providers, names]
   )
 
-  // providerIdx / modelIdx always index into the *displayed* (filtered) lists.
+  // providerIdx / modelIdx always index into the *displayed* (filtered) lists;
+  // a step-1 query can interleave model rows (see providerStageRows).
   // With an empty filter the filtered list equals the full list, so navigation
   // behaves exactly as before. Filtering only applies on the relevant stage.
-  const filteredProviderRows = useMemo(() => {
-    if (stage !== 'provider' || !filter.trim()) {
-      return providerRows
-    }
-
-    return fuzzyRank(
-      providerRows,
-      filter,
-      row => `${row.name} ${row.provider.slug} ${(row.provider.models ?? []).join(' ')}`
-    ).map(r => r.item)
-  }, [providerRows, filter, stage])
+  const filteredProviderRows = useMemo(
+    () => providerStageRows(providerRows, stage === 'provider' ? filter : ''),
+    [providerRows, filter, stage]
+  )
 
   const provider = filteredProviderRows[providerIdx]?.provider
   const allModels = useMemo(() => provider?.models ?? [], [provider])
@@ -448,6 +475,15 @@ export function ModelPicker({
 
     if (key.return) {
       if (stage === 'provider') {
+        const row = filteredProviderRows[providerIdx]
+
+        // A model hit switches directly, like step 2's "keep current effort" pick (no --reasoning).
+        if (row?.kind === 'model') {
+          onSelect(modelPickerCommand(row.model, row.provider.slug, allowPersistGlobal && persistGlobal))
+
+          return
+        }
+
         if (!provider) {
           return
         }
@@ -542,8 +578,9 @@ export function ModelPicker({
       return
     }
 
-    // Any other printable single character extends the filter.
-    if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+    // Any other printable single character extends the filter — once the list has loaded, so the
+    // selection restored on load can't point at an arbitrary row of an already-filtered list.
+    if (!loading && ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
       setFilter(v => v + ch)
       setSel(0)
     }
@@ -659,7 +696,12 @@ export function ModelPicker({
 
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
-    const rows = filteredProviderRows.map(({ provider: p, name }) => {
+    const rows = filteredProviderRows.map(row => {
+      if (row.kind === 'model') {
+        return `${row.provider.is_current && row.model === currentModel ? '*' : ' '} ${row.name} · ${row.model}`
+      }
+
+      const { provider: p, name } = row
       const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
       const modelCount = p.total_models ?? p.models?.length ?? 0
 
@@ -709,14 +751,15 @@ export function ModelPicker({
           Array.from({ length: VISIBLE }, (_, i) => {
             const row = items[i]
             const idx = offset + i
-            const p = filteredProviderRows[idx]?.provider
+            const entry = filteredProviderRows[idx]
+            const p = entry?.provider
             const dimmed = p?.authenticated === false
 
             return row ? (
               <Text
                 color={dimmed ? t.color.label : t.color.muted}
                 {...chipRowProps(t, providerIdx === idx)}
-                key={p?.slug ?? `row-${idx}`}
+                key={entry?.kind === 'model' ? `${p?.slug}:${idx}:${entry.model}` : (p?.slug ?? `row-${idx}`)}
                 wrap="truncate-end"
               >
                 {providerIdx === idx ? '▸ ' : '  '}

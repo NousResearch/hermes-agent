@@ -10,15 +10,11 @@ from urllib.parse import quote
 from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageEvent
 from plugins.platforms.matrix.adapter_feedback import ReadReceiptMode
+from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.effective_event import (
     _decrypt, _encrypted_replacement_content, event_content,
 )
 from plugins.platforms.matrix.relations import MatrixRelation
-
-try:
-    from mautrix.api import Method
-except ImportError:
-    from plugins.platforms.matrix.read_context import Method
 
 logger = logging.getLogger(__name__)
 

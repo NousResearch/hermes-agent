@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli._subprocess_compat import kill_process_tree
+from hermes_cli._subprocess_compat import kill_process_tree, noninteractive_git_env
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -107,7 +107,8 @@ def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str
         if wt_path.exists():
             shutil.rmtree(wt_path, ignore_errors=True)
         # `remove` needs the dir; `prune` drops the admin entry when it is already gone.
-        _git_quiet(["worktree", "prune"], repo_root, timeout=15)
+        _git_quiet(["worktree", "prune"], repo_root, timeout=15,
+                   stdin=subprocess.DEVNULL, env=noninteractive_git_env())
         _git_quiet(["branch", "-D", branch_name], repo_root, timeout=15)
     except Exception as e:
         logger.debug("cleanup after failed worktree add: %s", e)
@@ -200,7 +201,8 @@ def _maintain_pack_health(repo_root: str) -> None:
         logger.info("git pack sprawl (%d packs) — repacking in background", packs)
         _run_bounded_repack(repo_root)
         # Repacking can strand now-duplicated admin files; prune on the same pass.
-        _git(["worktree", "prune"], repo_root, timeout=60, check=False)
+        _git(["worktree", "prune"], repo_root, timeout=60, check=False,
+             stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     except Exception as e:
         logger.debug("pack maintenance skipped: %s", e)
 
@@ -557,7 +559,9 @@ def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
         try:
             for extra in (["--filter=blob:none"], []):
                 try:
-                    result = _git(["fetch", remote, "--unshallow", *extra], repo_root, timeout=timeout)
+                    # Unattended fetch: a repo-level core.sshCommand / credential.helper must not run.
+                    result = _git(["fetch", remote, "--unshallow", *extra], repo_root, timeout=timeout,
+                                  stdin=subprocess.DEVNULL, env=noninteractive_git_env())
                 except subprocess.TimeoutExpired:
                     return False
                 if result.returncode == 0:
@@ -706,7 +710,9 @@ def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Di
     remote-tracking ref and would read as unpushed forever.
     """
     try:
-        result = _git(["ls-remote", "--heads", "origin"], repo_root, timeout=timeout)
+        # Runs from the reclaim sweep, unattended: same transport pins as the base fetch.
+        result = _git(["ls-remote", "--heads", "origin"], repo_root, timeout=timeout,
+                      stdin=subprocess.DEVNULL, env=noninteractive_git_env())
         if result.returncode != 0:
             return None
         pairs = (line.split("\t", 1) for line in result.stdout.splitlines())

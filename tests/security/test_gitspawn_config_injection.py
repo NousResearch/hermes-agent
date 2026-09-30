@@ -251,6 +251,30 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 
+def test_worktree_reclaim_transport_calls_ignore_repo_ssh_command(tmp_path, monkeypatch):
+    """The reclaim sweep's ``ls-remote`` and the shallow-repo ``fetch --unshallow`` run unattended;
+    a repository-level ``core.sshCommand`` must not run on either."""
+    from hermes_cli import worktree_ops
+    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    clean.pop("GIT_SSH_COMMAND", None)
+    src, repo, marker = tmp_path / "src", tmp_path / "repo", (tmp_path / "SSH").as_posix()
+    subprocess.run(["git", "init", "-q", str(src)], check=True, env=clean)
+    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
+    for n in ("1", "2"):  # two commits, so a depth-1 clone is shallow
+        (src / "f").write_text(n)
+        subprocess.run(["git", "-C", str(src), "add", "f"], check=True, env=clean)
+        subprocess.run(["git", "-C", str(src), *ident, "commit", "-qm", n], check=True, env=clean)
+    subprocess.run(["git", "clone", "-q", "--depth", "1", src.as_uri(), str(repo)], check=True, env=clean)
+    for key, value in {"remote.origin.url": "ssh://git@example.invalid/x.git",
+                       "core.sshCommand": f"touch '{marker}'; false"}.items():
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=clean)
+
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    worktree_ops._fetch_remote_branch_heads(str(repo), timeout=20)
+    worktree_ops._deepen_shallow_repo(str(repo), timeout=20)
+    assert not Path(marker).exists()
+
+
 def test_noninteractive_env_pins_fsmonitor_and_hooks():
     env = noninteractive_git_env({})
     values = {

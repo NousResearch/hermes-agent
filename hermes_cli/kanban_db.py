@@ -496,14 +496,18 @@ def _dir_holds_board(d: Path) -> bool:
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
-        override = os.environ.get(env_var, "").strip()
-        if override:
-            return Path(override).expanduser()
+    """Shared resolver for an explicit board or the implicit active board.
+
+    A path env override pins only implicit calls. An explicit board must route
+    to its own files so a dispatcher-pinned worker can make one cross-board
+    call without mutating process-global environment state.
+    """
     slug = _normalize_board_slug(board)
     if slug is None:
+        if env_var:
+            override = os.environ.get(env_var, "").strip()
+            if override:
+                return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)

@@ -16,14 +16,12 @@ logger = logging.getLogger(__name__)
 _DELIVERY_KEYS = ("incoming_webhook_url", "access_token", "team_id", "channel_id", "chat_id")
 
 
-def _teams_delivery_is_configured(teams_extra: dict[str, Any], teams_delivery: dict[str, Any]) -> bool:
-    def pick(key: str) -> Any:
-        return teams_delivery.get(key) or teams_extra.get(key)
-    delivery_mode = str(teams_delivery.get("mode") or pick("delivery_mode") or "").strip().lower()
+def _teams_delivery_is_configured(teams_delivery: dict[str, Any]) -> bool:
+    delivery_mode = teams_delivery.get("delivery_mode")
     if delivery_mode == "incoming_webhook":
-        return bool(pick("incoming_webhook_url"))
+        return bool(teams_delivery.get("incoming_webhook_url"))
     if delivery_mode == "graph":
-        return bool(pick("chat_id") or (pick("team_id") and pick("channel_id")))
+        return bool(teams_delivery.get("chat_id") or (teams_delivery.get("team_id") and teams_delivery.get("channel_id")))
     return False
 
 
@@ -35,14 +33,21 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
     pipeline_config = dict(teams_extra.get("meeting_pipeline") or {})
     if teams_config and teams_config.enabled:
         teams_delivery = dict(pipeline_config.get("teams_delivery") or {})
-        if delivery_mode := str(teams_extra.get("delivery_mode") or "").strip():
-            teams_delivery["mode"] = delivery_mode
+        delivery_mode = str(
+            teams_delivery.get("delivery_mode") or teams_delivery.get("mode")
+            or teams_extra.get("delivery_mode") or ""
+        ).strip().lower()
+        if delivery_mode:
+            # The writer prefers delivery_mode; normalize both aliases before gating.
+            teams_delivery["mode"] = teams_delivery["delivery_mode"] = delivery_mode
         for key in _DELIVERY_KEYS:
             value = teams_extra.get(key)
             if value not in {None, ""}:
-                teams_delivery[key] = value
+                teams_delivery.setdefault(key, value)
+        if teams_config.home_channel:
+            teams_delivery.setdefault("channel_id", teams_config.home_channel.chat_id)
         if teams_delivery:
-            teams_delivery["enabled"] = _teams_delivery_is_configured(teams_extra, teams_delivery)
+            teams_delivery["enabled"] = bool(teams_delivery.get("enabled", True)) and _teams_delivery_is_configured(teams_delivery)
             pipeline_config["teams_delivery"] = teams_delivery
     return pipeline_config
 

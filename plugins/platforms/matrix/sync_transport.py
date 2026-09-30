@@ -276,10 +276,12 @@ class SyncCheckpoints:
             await asyncio.wait({self._task})
 
     async def cancel(self) -> None:
-        self._pending.clear()
+        # A requested cursor write is shielded and reads the queue for its keep set, so the
+        # queue is cleared only after the drain has finished.
         if self._task is not None and not self._task.done():
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
+        self._pending.clear()
 
 
 class SyncDispatch:

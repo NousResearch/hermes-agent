@@ -148,7 +148,9 @@ async def test_registry_uses_each_receiving_adapter_and_native_sdk_types(action,
     tool = f"matrix_poll_{action}"
     assert (any(tool in resolve_toolset(name) for name in _get_platform_tools({}, "matrix")),
             any(tool in resolve_toolset(name) for name in _get_platform_tools({}, "telegram"))) == (True, False)
-    assert await dispatch(tool, args) == {"error": "Matrix polls require a live Matrix session"}
+    assert (await dispatch(tool, args), await dispatch_as(SimpleNamespace(), "@alice:server", tool, args)) == (
+        {"error": "Matrix polls require a live Matrix session"},
+    ) * 2
 
 
 @pytest.mark.asyncio

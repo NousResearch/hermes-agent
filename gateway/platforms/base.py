@@ -433,7 +433,11 @@ from gateway.platforms.base_exec_approval import (
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.base_pending import (
-    _PendingDispatchReservation, pending_dispatch_scope, release_pending_dispatch,
+    PendingWithdrawalMixin,
+    merge_recorded,
+    _PendingDispatchReservation,
+    pending_dispatch_scope,
+    release_pending_dispatch,
     reserve_pending_dispatch,
     pending_dispatch_needs_snapshot,
 )
@@ -1862,7 +1866,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
+class BasePlatformAdapter(PendingWithdrawalMixin, BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare

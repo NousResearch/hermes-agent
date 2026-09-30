@@ -22,7 +22,7 @@ import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
 import { cn } from '@/lib/utils'
 import { type ConnectorCatalog, useConnectorCatalog } from '@/store/connector-catalog'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
-import { type OnboardingPlugin, pluginNeedsApp, useOnboardingPlugins } from '@/store/onboarding-plugins'
+import { type OnboardingPlugin, pluginNeedsApp, useOnboardingPluginList } from '@/store/onboarding-plugins'
 import { useTheme } from '@/themes'
 import { setAccentOverride } from '@/themes/accent-override'
 import { normalizeHex } from '@/themes/color'
@@ -33,7 +33,7 @@ export function ConnectorsCard({ locked }: CardProps) {
   const runtimeId = useStore(view.$runtimeId)
   const { commit, done } = useCardCommit('connectors')
   const catalog = useConnectorCatalog(storedId, runtimeId)
-  const plugins = useOnboardingPlugins(storedId)
+  const plugins = useOnboardingPluginList(storedId) ?? []
 
   return <ConnectorPicks catalog={catalog} commit={commit} done={done} locked={locked} plugins={plugins} />
 }

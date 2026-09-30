@@ -18,8 +18,7 @@ import { notifyError } from '@/store/notifications'
 import { $profiles, profileLabel } from '@/store/profile'
 import { setSessionOwnerHint } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
-import { isSessionInForeground } from '@/store/session-states'
-import { readStartChatResult, takeLiveStartChat } from '@/store/start-chat'
+import { isStartChatCallerWatched, readStartChatResult, takeLiveStartChat } from '@/store/start-chat'
 
 const TITLE_LIMIT = 40
 
@@ -61,7 +60,7 @@ export function StartChatTool(props: ToolCallMessagePartProps) {
       return
     }
 
-    const watching = () => Boolean(callerId) && isSessionInForeground(callerId!)
+    const watching = () => Boolean(callerId) && isStartChatCallerWatched(callerId!)
 
     void openStartedChat(started, callerId, navigate, watching).catch(error => notifyError(error, copy.openFailed))
   }, [callerId, copy.openFailed, navigate, props.toolCallId, started])

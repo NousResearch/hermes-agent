@@ -5,8 +5,8 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
-import { $sessionStates, isSessionInForeground, storedSessionIdForRuntimeId } from '@/store/session-states'
-import { markLiveStartChat, readStartChatResult } from '@/store/start-chat'
+import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { isStartChatCallerWatched, markLiveStartChat, readStartChatResult } from '@/store/start-chat'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
@@ -105,7 +105,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
         !event.replayed &&
         payload?.name === 'start_chat' &&
         readStartChatResult(payload.result)?.status === 'started' &&
-        isSessionInForeground(storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+        isStartChatCallerWatched(storedSessionIdForRuntimeId(sessionId) ?? sessionId)
       ) {
         markLiveStartChat(payload.tool_id || payload.tool_call_id || payload.id || '')
       }

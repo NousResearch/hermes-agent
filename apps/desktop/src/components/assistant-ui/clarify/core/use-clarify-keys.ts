@@ -12,6 +12,7 @@ interface ClarifyKeysOptions {
   onToggle: (question: ClarifyQuestion, choice: string) => void
   other?: boolean
   questions: ClarifyQuestion[]
+  shortcuts?: number
 }
 
 export function useClarifyKeys({
@@ -22,13 +23,15 @@ export function useClarifyKeys({
   onConfirm,
   onToggle,
   other = true,
-  questions
+  questions,
+  shortcuts
 }: ClarifyKeysOptions) {
   const [cursor, setCursor] = useState({ question: 0, row: 0 })
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
   const otherRows = other ? 1 : 0
+  const shortcutRows = shortcuts ?? choices.length
   const row = Math.min(cursor.row, choices.length - 1 + otherRows)
 
   const focusQuestion = useCallback(
@@ -142,7 +145,7 @@ export function useClarifyKeys({
     }
 
     const pickByIndex = (event: globalThis.KeyboardEvent, index: number) => {
-      if (index < choices.length) {
+      if (index < shortcutRows) {
         event.preventDefault()
         pick(questionIndex, index)
       } else if (other && index === choices.length) {
@@ -214,7 +217,7 @@ export function useClarifyKeys({
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activate, active, choices.length, enabled, focusOther, formRef, move, other, pick, questionIndex])
+  }, [activate, active, choices.length, enabled, focusOther, formRef, move, other, pick, questionIndex, shortcutRows])
 
   return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, onOtherFocus, pick }
 }

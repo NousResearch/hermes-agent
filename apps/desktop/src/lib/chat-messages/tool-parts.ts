@@ -464,7 +464,7 @@ interface PendingClarifyLocation {
 function findPendingClarifyLocation(
   messages: ChatMessage[],
   payload: GatewayEventPayload,
-  toolName = 'clarify'
+  toolNames: ReadonlySet<string>
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -477,7 +477,7 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
+      if (part.type !== 'tool-call' || !toolNames.has(part.toolName) || part.result !== undefined) {
         continue
       }
 
@@ -530,8 +530,11 @@ export function settlePendingClarifyToolCall(
   keepMessageRunning: boolean,
   occurredAt = Date.now() / 1000
 ): SettledClarifyProjection {
-  const clarifyPayload = { name: 'clarify', ...payload }
-  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
+  const location = findPendingClarifyLocation(
+    messages,
+    payload,
+    payload.name ? new Set([payload.name]) : QUESTION_CARD_TOOLS
+  )
 
   if (!location) {
     return { messages, streamId: null }
@@ -626,7 +629,7 @@ export function restorePendingBlockingToolCall(
   clarifyPayload: GatewayEventPayload & { name: string },
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
+  const location = findPendingClarifyLocation(messages, clarifyPayload, new Set([clarifyPayload.name]))
 
   if (location) {
     const message = messages[location.messageIndex]

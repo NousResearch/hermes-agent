@@ -18,7 +18,7 @@ import { ClarifyConfirmBar } from './core/confirm-bar'
 import { QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
-import { SETUP_PICKERS, SetupIntentRows } from './setup-pickers'
+import { pickerShortcutCount, SETUP_PICKERS, SetupIntentRows } from './setup-pickers'
 import { LIVE_APPLY, useSetupRows } from './setup-rows'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
@@ -168,6 +168,7 @@ export function SetupChoosePending({
 
   const formRef = useRef<HTMLFormElement | null>(null)
   const questions = useMemo(() => [question], [question])
+  const shortcuts = pickerKind === null ? (question.choices?.length ?? 0) : pickerShortcutCount(rows ?? [])
 
   const keys = useClarifyKeys({
     enabled: ready,
@@ -177,7 +178,8 @@ export function SetupChoosePending({
     onConfirm: confirm,
     onToggle: toggle,
     other: freeText,
-    questions
+    questions,
+    shortcuts
   })
 
   const cursor = ready ? keys.cursorRow : null
@@ -191,7 +193,7 @@ export function SetupChoosePending({
       className="my-1.5 grid gap-4"
       data-clarify-batch={1}
       data-clarify-batch-preview={ready ? undefined : ''}
-      data-clarify-choices={ready ? question.choices?.length || undefined : undefined}
+      data-clarify-choices={ready ? shortcuts || undefined : undefined}
       data-clarify-other={freeText ? undefined : 'false'}
       data-setup-choose={kind}
       onKeyDownCapture={handleClarifySubmitShortcut}

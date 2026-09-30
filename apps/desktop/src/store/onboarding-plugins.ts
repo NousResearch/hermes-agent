@@ -51,7 +51,3 @@ export function useOnboardingPluginList(storedId: null | string): null | Onboard
 
   return query.data ?? null
 }
-
-export function useOnboardingPlugins(storedId: null | string): OnboardingPlugin[] {
-  return useOnboardingPluginList(storedId) ?? []
-}

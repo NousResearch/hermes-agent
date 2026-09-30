@@ -28,6 +28,10 @@ const SEARCH_THRESHOLD = 12
 
 const INTENTS: readonly SetupChooseIntent[] = ['now', 'later', 'save']
 
+export function pickerShortcutCount(rows: SetupRow[]): number {
+  return rows.length > SEARCH_THRESHOLD ? 0 : rows.length
+}
+
 function PickerItem({
   active,
   children,
@@ -37,11 +41,11 @@ function PickerItem({
   active: boolean
   children: ReactNode
   className?: string
-  index: number
+  index: null | number
 }) {
   return (
     <div
-      aria-keyshortcuts={`${letterFor(index)} ${index + 1}`}
+      aria-keyshortcuts={index === null ? undefined : `${letterFor(index)} ${index + 1}`}
       className={cn('min-w-0', active && 'ring-2 ring-primary/40', className)}
       data-highlighted={active || undefined}
       onMouseDown={event => event.preventDefault()}
@@ -120,6 +124,7 @@ function ChipPicker({
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const search = query.trim().toLowerCase()
+  const shortcuts = pickerShortcutCount(rows)
 
   return (
     <div className="grid gap-2">
@@ -129,7 +134,12 @@ function ChipPicker({
       <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto p-1" role="group">
         {rows.map((row, index) =>
           search && !row.label.toLowerCase().includes(search) ? null : (
-            <PickerItem active={cursor === index} className="rounded-[6px]" index={index} key={row.id}>
+            <PickerItem
+              active={cursor === index}
+              className="rounded-[6px]"
+              index={index < shortcuts ? index : null}
+              key={row.id}
+            >
               <Chip
                 className="w-full"
                 icon={icon(row)}

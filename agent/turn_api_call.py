@@ -49,6 +49,10 @@ def _should_stream(agent: Any) -> bool:
     checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
     external-process provider profile), MoA without a display consumer, or Mock clients in
     tests (SimpleNamespace, not stream iterators)."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(agent.provider)
+    if profile is not None and profile.requires_streaming:
+        return True
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()

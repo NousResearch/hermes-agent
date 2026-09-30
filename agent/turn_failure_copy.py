@@ -437,6 +437,11 @@ def nonretryable_copy(
     )
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
                            relogin=oauth_relogin_command(provider))
+    # A provider's classifier can explain an account-specific refusal without
+    # changing the original exception/body used for diagnostics and recovery.
+    guidance = (getattr(classified, "error_context", None) or {}).get("user_guidance")
+    if isinstance(guidance, str) and guidance:
+        body = guidance
     return f"{body}\n\nProvider said: {summary}"
 
 

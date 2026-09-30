@@ -1553,7 +1553,7 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
-    """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
+    """Generic live fetch for a registered API-key, pooled OAuth, or process provider.
 
     Live results are merged with the curated list so models the live endpoint omits still appear:
     curated-first by default so the newest curated models lead when the live API lags;
@@ -1568,8 +1568,6 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return None
     # external_process providers (ACP agent CLIs) have no api_key/base_url credentials: the
     # profile's fetch_models drives its own subprocess (kwargs are ignored per the base contract).
-    # Every non-api-key profile falls back to its own fallback_models (OAuth plugins have no
-    # static _PROVIDER_MODELS row), exactly as api_key plugins do below.
     if profile.auth_type == "external_process":
         try:
             live = profile.fetch_models()
@@ -1579,6 +1577,13 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
         # `hermes model` offer one list: live ids plus any pinned id the probe omitted.
         return merge_profile_catalog(normalized, profile, list(live) if live else None)
+    if profile.auth_type in {"oauth_external", "oauth_device_code"}:
+        from agent.credential_pool import load_pool
+        entry = load_pool(normalized).select()
+        return probe_profile_catalog(
+            normalized, profile, entry.runtime_api_key if entry else None,
+            (entry.runtime_base_url if entry else "") or profile.base_url or None,
+        )
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)

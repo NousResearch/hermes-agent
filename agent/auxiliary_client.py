@@ -1570,6 +1570,11 @@ class _CodexCompletionsAdapter:
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
+        is_chatgpt = getattr(self._client, "_hermes_aux_effective_provider", "") == "openai-chatgpt"
+        if is_chatgpt:
+            from agent.chatgpt_responses import prepare_chatgpt_request, validate_chatgpt_base_url
+            validate_chatgpt_base_url(self._client.base_url)
+            resp_kwargs = prepare_chatgpt_request(resp_kwargs)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
@@ -1578,6 +1583,9 @@ class _CodexCompletionsAdapter:
             from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            if is_chatgpt:
+                from hermes_cli.auth_chatgpt import assert_active_access_token
+                assert_active_access_token(getattr(self._client, "api_key", ""))
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1588,10 +1596,13 @@ class _CodexCompletionsAdapter:
                 # Some Codex-compatible hosts accept ``stream=True`` but return a completed
                 # Responses object (not iterable) — don't hand it to the consumer.
                 if hasattr(event_stream, "output"):
+                    if is_chatgpt:
+                        raise RuntimeError("ChatGPT auxiliary Responses requires a response.completed stream event")
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=str(resp_kwargs.get("model") or model), on_event=guard.on_event
+                        event_stream, model=str(resp_kwargs.get("model") or model), on_event=guard.on_event,
+                        **({"require_completed": True} if is_chatgpt else {}),
                     )
             finally:
                 guard.release_stream(event_stream)
@@ -5380,11 +5391,7 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     elif auth_type == "aws_sdk":
         client, final_model = _build_bedrock_client(provider, req.model, raw_codex=req.raw_codex)
     elif auth_type in {"oauth_device_code", "oauth_external"}:
-        # nous / openai-codex / xai-oauth already returned from their explicit branches.
-        _log_once_debug(_LOGGED_UNSUPPORTED_OAUTH_KEYS, provider,
-                        "resolve_provider_client: OAuth provider %s not "
-                        "directly supported, try 'auto'", provider)
-        return None, None
+        return _resolve_pooled_oauth_branch(req)
     else:
         # The first occurrence surfaces a real schema-drift bug; per-call retries stay silent.
         _log_once_debug(_LOGGED_UNHANDLED_AUTHTYPE_KEYS, (auth_type, provider),
@@ -5392,6 +5399,34 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
                         auth_type, provider)
         return None, None
     return _route_client(req, client, final_model) if client is not None else (None, None)
+
+
+def _resolve_pooled_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
+    """Provider-owned OAuth uses the same credential and endpoint as the main loop."""
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=req.provider, target_model=req.model,
+            explicit_api_key=req.explicit_api_key, explicit_base_url=req.explicit_base_url,
+        )
+    except AuthError:
+        logger.debug("Auxiliary OAuth provider %s has no usable credential", req.provider)
+        return None, None
+    base_url, api_key = runtime["base_url"], runtime["api_key"]
+    model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(req.provider), req.provider)
+    if not model:
+        return None, None
+    headers = _endpoint_default_headers(base_url, req.provider, is_vision=req.is_vision)
+    client = _create_openai_client(api_key=api_key, base_url=base_url,
+                                   **({"default_headers": headers} if headers else {}))
+    client._hermes_aux_effective_provider = req.provider
+    from providers import get_provider_profile
+    profile = get_provider_profile(req.provider)
+    api_mode = runtime["api_mode"] if profile and profile.fixed_api_mode else req.api_mode or runtime["api_mode"]
+    routed = req._replace(api_mode=api_mode)
+    return _route_client(routed, _wrap_transport(routed, client, model, base_url, api_key), model)
 
 
 # Explicit providers with a dedicated branch; anything else falls through to named custom
@@ -7800,6 +7835,16 @@ def _aux_recovery_ladder(
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
     Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
+    from providers import get_provider_profile
+    effective_provider = _effective_provider_for_client(client, resolved_provider)
+    profile = get_provider_profile(effective_provider)
+    if profile is not None and profile.classify_api_error is not None:
+        from agent.error_classifier import classify_api_error
+        classified = classify_api_error(first_err, provider=effective_provider,
+                                        model=final_model or "", base_url=base_info)
+        if not (classified.retryable or classified.should_rotate_credential
+                or classified.should_fallback or classified.should_compress):
+            raise first_err
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,

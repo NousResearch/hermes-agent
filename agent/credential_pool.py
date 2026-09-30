@@ -1983,6 +1983,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
+        if plugin_refresh_hook(self.provider) is not None and entry.expires_at_ms is not None:
+            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
         # Nous refresh can require network access and happens when runtime
         # credentials are actually resolved, not on enumeration/selection.
         return False
@@ -2048,6 +2050,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         if entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
             return entry
+        if plugin_refresh_hook(self.provider) is not None:
+            synced = self._sync_entry_from_pool_store(entry)
+            if synced is not entry:
+                return synced
         cleared_at = self._reset_cleared_after(entry)
         if cleared_at is not None:
             return self._adopt(entry, persist=False, **_MARK_OK, status_cleared_at=cleared_at)
@@ -2077,6 +2083,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         available: List[PooledCredential] = []
         pending_refresh: List[PooledCredential] = []
         sole_credential = self._is_sole_credential()
+        from providers import get_provider_profile
+        profile = get_provider_profile(self.provider)
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
@@ -2087,6 +2095,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if synced is not entry:
                 entry = synced
                 cleared_any = True
+            if profile is not None and not profile.credential_is_eligible(entry):
+                continue
             if entry.last_status == STATUS_DEAD:
                 # Manual DEAD credentials are pruned after a 24h quiet window;
                 # singleton-seeded ones stay (audit trail, and the seeder would
@@ -2133,6 +2143,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 # A borrowed OAuth row that failed to hydrate (or a sanitized
                 # row read straight off disk); leasing it would send an empty
                 # bearer. The API-key guard above does not cover it.
+                continue
+            # Refresh and external re-auth can change the grant after the initial gate.
+            if profile is not None and not profile.credential_is_eligible(entry):
                 continue
             available.append(entry)
         if entries_to_prune:

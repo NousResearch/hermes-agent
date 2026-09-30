@@ -81,6 +81,11 @@ def recover_failed_plugin_refresh(
         logger.debug("%s refresh failed but the pool store has newer tokens — adopting", pool.provider)
         return True, pool._adopt(synced, **_MARK_OK)
     if is_terminal_plugin_refresh_error(exc):
+        from providers import get_provider_profile
+        profile = get_provider_profile(pool.provider)
+        if profile is not None and profile.clear_credential is not None:
+            cleared = apply_plugin_refresh_result(entry, profile.clear_credential(entry))
+            pool._replace_entry(entry, cleared)
         # WARNING, not debug: this is the moment a login is lost. Benching for a TTL would replay
         # the dead token every cooldown at DEBUG with no trace for the user.
         logger.warning(

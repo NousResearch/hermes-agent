@@ -985,7 +985,7 @@ class _CodexResponseAssembler:
 
 def _consume_codex_event_stream(
     event_iter: Any, *, model: str, on_text_delta=None, on_reasoning_delta=None, on_commentary_message=None,
-    on_first_delta=None, on_event=None, interrupt_check=None,
+    on_first_delta=None, on_event=None, interrupt_check=None, require_completed: bool = False,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
     :class:`_CodexResponseAssembler`; ``status`` is ``completed`` when the stream ended with content but no
@@ -1009,6 +1009,12 @@ def _consume_codex_event_stream(
                 logger.debug("Codex stream on_event hook raised", exc_info=True)
         if (interrupt_check is not None and interrupt_check()) or assembler.feed(event):
             break
+    if require_completed:
+        if assembler.terminal_error is not None:
+            _raise_stream_error({"error": assembler.terminal_error})
+        if not assembler.saw_response_completed or assembler.terminal_status != "completed":
+            raise RuntimeError("ChatGPT plan stream ended without response.completed "
+                               f"(status={assembler.terminal_status if assembler.saw_terminal else 'interrupted'}).")
     return assembler.result()
 
 
@@ -1017,6 +1023,10 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     middleware / ``request_overrides``): a late ``prompt_cache_retention``, top-level or nested in
     ``extra_body``, would otherwise HTTP 400 a valid follow-up."""
     sanitized = dict(request)
+    if getattr(agent, "provider", None) == "openai-chatgpt":
+        from agent.chatgpt_responses import prepare_chatgpt_request
+
+        return prepare_chatgpt_request(sanitized)
     # getattr: run_codex_stream is also driven with stand-in agents carrying only the attrs a path needs.
     backend_predicate = getattr(agent, "_is_codex_backend", None)
     if not (callable(backend_predicate) and bool(backend_predicate())):
@@ -1043,6 +1053,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     from agent import relay_llm
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
+    require_completed = getattr(agent, "provider", None) == "openai-chatgpt"
+    if require_completed:
+        from agent.chatgpt_responses import validate_chatgpt_base_url
+        from hermes_cli.auth_chatgpt import assert_active_access_token
+        validate_chatgpt_base_url(active_client.base_url)
+        assert_active_access_token(active_client.api_key)
     max_stream_retries, model = 1, api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
@@ -1132,6 +1148,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
+        if require_completed:
+            assert_active_access_token(active_client.api_key)
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
@@ -1230,7 +1248,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     dict(api_kwargs), _open_codex_stream,
                     session_id=str(getattr(agent, "session_id", "") or ""),
                     name=str(getattr(agent, "provider", "") or "codex"), model_name=str(model or ""),
-                    finalizer=lambda: _consume_codex_event_stream(list(intercepted_events), model=model),
+                    finalizer=lambda: _consume_codex_event_stream(
+                        list(intercepted_events), model=model, require_completed=require_completed),
                     on_stream_created=_codex_stream_created, on_chunk=intercepted_events.append,
                     chunk_adapter=lambda chunk: chunk,
                     completed_response_predicate=lambda r: bool(hasattr(r, "output") and not hasattr(r, "__iter__")),
@@ -1243,6 +1262,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_reasoning_delta=_live(agent._fire_reasoning_delta), on_commentary_message=on_commentary_message,
                     on_first_delta=_live(on_first_delta) if on_first_delta is not None else None,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
+                    require_completed=require_completed,
                 )
             except transport_errors as exc:
                 if attempt >= max_stream_retries:
@@ -1258,7 +1278,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 continue
             except RuntimeError:
                 # "No terminal response"; Relay may still hold a finalizer-assembled response.
-                if event_stream is not None and event_stream.final_response is not None:
+                if not require_completed and event_stream is not None and event_stream.final_response is not None:
                     return event_stream.final_response
                 raise
             except _APIConnectionError as exc:

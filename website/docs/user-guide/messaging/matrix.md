@@ -548,8 +548,8 @@ retrying. Enabling tools does not rebuild the system prompt or rewrite the
 history of an existing conversation.
 
 The adapter also uses reactions and redactions internally to power approval prompts and pickers.
+The `matrix_read`, `matrix_reaction` and `matrix_followup` toolsets are enabled for Matrix sessions. Turn any of them off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
 
-The `matrix_read` and `matrix_reaction` toolsets are enabled for Matrix sessions. Turn either off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 

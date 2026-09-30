@@ -39,14 +39,22 @@ def is_managed_provider(provider: str, base_url: str = "") -> bool:
 
 def _props_modalities(model_id: str) -> "bool | None":
     """Ask the running server whether this loaded child sees images. None when the server is down,
-    the model isn't loaded, or the build doesn't report modalities."""
+    the model isn't loaded, or the build doesn't report modalities.
+
+    ``autoload=false`` is load-bearing: the router runs with ``--models-autoload``, so a bare
+    ``/props?model=`` for an unloaded child LOADS it (tens of GB) just to answer a capability
+    question, and the short timeout gives up long before the load finishes. With the flag the
+    router answers an unloaded child with a 400 and the catalog answers instead."""
     with suppress(Exception):
+        from urllib.parse import quote
+
         from hermes_cli.local_runtime.endpoint import managed_get_json, managed_root
 
         ep = managed_root()
         if ep is None:
             return None
-        modalities = managed_get_json(*ep, f"/props?model={model_id}", timeout_s=3).get("modalities")
+        route = f"/props?model={quote(model_id, safe='')}&autoload=false"
+        modalities = managed_get_json(*ep, route, timeout_s=3).get("modalities")
         if isinstance(modalities, dict) and "vision" in modalities:
             return bool(modalities["vision"])
     return None

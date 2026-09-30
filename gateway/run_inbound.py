@@ -33,8 +33,8 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import (
-    SessionSource, build_session_context, is_shared_multi_user_session,
-    neutralize_untrusted_inline_text,
+    VERIFIED_SENDER_PLATFORMS, SessionSource, build_session_context, defang_verified_sender_claims,
+    is_shared_multi_user_session, neutralize_sender_label, verified_sender_note,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
@@ -1414,8 +1414,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         )
         if _is_shared_multi_user and source.user_name:
             # Display names are attacker-influenceable: neutralize newlines/control chars or a
-            # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+            # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt),
+            # and ``[ ] |`` or it closes the prefix early and appends a fake field.
+            _safe_user_name = neutralize_sender_label(source.user_name)
             # Slack: expose the CURRENT speaker's verifiable `<@U...>` id so "mention me again" has a
             # trusted target (display names are ambiguous). user_id comes from the envelope, not user-editable.
             # See #17916.
@@ -1593,9 +1594,30 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             message_text = f"{context_note}\n\n{message_text}"
         return message_text
 
+    def _verified_sender_note_for(self, event: MessageEvent, source: SessionSource) -> Optional[str]:
+        """Gateway-verified sender note for a shared multi-user turn whose platform takes the sender
+        id from the message envelope; None otherwise (DMs, per-user sessions, internal events)."""
+        if (
+            source is None or getattr(event, "internal", False) or not source.user_id
+            or source.platform not in VERIFIED_SENDER_PLATFORMS
+            or not is_shared_multi_user_session(
+                source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            )
+        ):
+            return None
+        redact_pii = False
+        with suppress(Exception):
+            from gateway.run import _load_gateway_config
+            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        return verified_sender_note(source, redact_pii=redact_pii)
+
     @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
+    def _prepend_inbound_reply_context(
+        event: MessageEvent, source: SessionSource, message_text: str, sender_note: Optional[str] = None,
+    ) -> str:
+        """Prepend the reply-to pointer, the gateway-verified sender note, then the Discord
+        triggering-message note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
@@ -1604,6 +1626,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             reply_text = event.reply_to_text
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+
+        # Shared sessions: the current sender's envelope identity goes OUTSIDE the reply quote and
+        # every enrichment, so nothing user-supplied precedes it, and a forged opener anywhere in
+        # that text is defanged. Only the gateway-authored Discord note may sit further out.
+        if sender_note:
+            message_text = f"{sender_note}\n\n{defang_verified_sender_claims(message_text)}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
@@ -1723,7 +1751,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        return self._prepend_inbound_reply_context(
+            event, source, message_text, sender_note=self._verified_sender_note_for(event, source),
+        )
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

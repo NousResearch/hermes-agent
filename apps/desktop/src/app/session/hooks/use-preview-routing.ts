@@ -8,6 +8,8 @@ import {
   $previewTabs,
   beginPreviewServerRestart,
   closeAgentPreviews,
+  closeBrowserPreviewMatchingLiveUrl,
+  closeDockedPreviewMatching,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
@@ -125,10 +127,6 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           return
         }
 
-        if (closeAgentPreviews(target)) {
-          return
-        }
-
         void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
           async resolved => {
             const candidates = [target]
@@ -141,7 +139,9 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               }
             }
 
-            closeAgentPreviews(...candidates)
+            if (!closeBrowserPreviewMatchingLiveUrl(...candidates)) {
+              closeDockedPreviewMatching(...candidates)
+            }
           }
         )
 

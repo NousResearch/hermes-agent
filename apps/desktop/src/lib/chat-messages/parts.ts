@@ -94,13 +94,28 @@ const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*
 // closer is not swallowed. Apostrophes stay legal inside the path.
 const _MEDIA_PATH_BARE = '[^\\s`"]+'
 
+// Sentence punctuation that can trail a bare capture when the tag sits in
+// prose (`open MEDIA:/tmp/a.pdf.`).
+const _MEDIA_TRAILING_PUNCTUATION = '.,;:!?'
+
+/**
+ * Whether a capture can name a real deliverable: a path separator, or a dot
+ * with file content after it (an extension or a dotfile — `report.md`,
+ * `.env`, `../a.png`). Anything else (`...`, a lone quote, a bare English
+ * word) renders as prose: a dead `#media:` link for a non-path is worse
+ * than no link (#84361).
+ */
+function isPlausibleMediaPath(value: string): boolean {
+  return value.includes('/') || value.includes('\\') || /\.[^.]/.test(value)
+}
+
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
   'g'
 )
 
 const MEDIA_TAG_RE = new RegExp(
-  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
+  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
   'g'
 )
 
@@ -119,24 +134,75 @@ function unquoteMediaPath(value: string): string {
   return last === '`' || last === '"' ? trimmed.slice(0, -1) : trimmed
 }
 
-function mediaLink(value: string): string {
-  const path = unquoteMediaPath(value)
+/**
+ * Split a bare (unquoted) capture into its path and the sentence punctuation
+ * that trailed it in prose: `open MEDIA:/tmp/a.pdf.` captures `/tmp/a.pdf.` —
+ * the period belongs to the sentence, not the path. Punctuation is only
+ * prose while what precedes it still names a path, so an ellipsis
+ * (`MEDIA:...`) is never split into a degenerate capture. Quoted captures are
+ * exempt (quotes are the documented escape hatch for odd names:
+ * `MEDIA:'/tmp/stop!.md'` keeps its `!`).
+ */
+function splitTrailingPunctuation(value: string): { path: string; punctuation: string } {
+  let end = value.length
 
-  return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
+  while (end > 0 && _MEDIA_TRAILING_PUNCTUATION.includes(value[end - 1] ?? '')) {
+    if (!isPlausibleMediaPath(value.slice(0, end - 1))) {
+      break
+    }
+
+    end -= 1
+  }
+
+  return { path: value.slice(0, end), punctuation: value.slice(end) }
+}
+
+function mediaLink(value: string): string | null {
+  const raw = value.trim()
+  const quote = raw[0]
+  const quoted = quote && quote === raw.at(-1) && ['"', "'", '`'].includes(quote)
+
+  // Quoted captures are the escape hatch for odd names — punctuation inside
+  // the quotes is part of the path, so only a BARE capture is split.
+  const { path, punctuation } = quoted
+    ? { path: unquoteMediaPath(raw), punctuation: '' }
+    : splitTrailingPunctuation(unquoteMediaPath(raw))
+
+  return isPlausibleMediaPath(path)
+    ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}`
+    : null
 }
 
 export function renderMediaTags(text: string): string {
   return text
     .replace(
       MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
+      (match, lead: string, value: string, trailer: string) => {
+        const link = mediaLink(value)
+
+        return link ? `${lead}${link}${trailer}` : match
+      }
     )
-    .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
+    .replace(MEDIA_TAG_RE, (match, value: string) => mediaLink(value) ?? match)
 }
 
-/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */
+/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share.
+ *  Bare captures shed trailing sentence punctuation (same rule as
+ *  {@link renderMediaTags}); degenerate non-path captures are dropped. */
 export function mediaTagValues(text: string): string[] {
-  return [...text.matchAll(MEDIA_TAG_RE)].map(match => match[1] ?? '')
+  return [...text.matchAll(MEDIA_TAG_RE)]
+    .map(match => match[1] ?? '')
+    .flatMap(value => {
+      const { path, punctuation } = splitTrailingPunctuation(unquoteMediaPath(value))
+
+      if (!isPlausibleMediaPath(path)) {
+        return []
+      }
+
+      // Bare captures shed the prose punctuation (it trails the raw value
+      // too); quoted captures keep every character inside their quotes.
+      return [punctuation ? value.slice(0, -punctuation.length || undefined) : value]
+    })
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
@@ -385,6 +451,35 @@ export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt:
       ? ({ ...part, completedAt } as ChatMessagePart)
       : part
   )
+}
+
+/** Settle a turn that ended without its terminal message: drop empty
+ *  pending/stream placeholders and un-pend the rest. Shared by Stop, the
+ *  running=false edge, and the store's silent-turn settle. */
+export function finalizeInterruptedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  return messages
+    .filter(
+      message =>
+        !(
+          (message.pending || message.id === streamId) &&
+          message.parts.length === 0 &&
+          !chatMessageText(message).trim()
+        )
+    )
+    .map(message =>
+      message.pending || message.id === streamId
+        ? {
+            ...message,
+            completedAt: occurredAt,
+            parts: completeOpenTimelineParts(message.parts, occurredAt),
+            pending: false
+          }
+        : message
+    )
 }
 
 // Coalesce only adjacent deltas of the same channel. Switching between text

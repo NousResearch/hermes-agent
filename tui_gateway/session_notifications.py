@@ -147,9 +147,11 @@ def _notif_release_turn(session: dict, *, queued_prompt_generation: int | None =
 
 
 def _notif_claim_turn(session: dict) -> bool:
-    """Claim the idle session (running=True) under history_lock; False if a turn is live."""
+    """Claim the idle session (running=True) under history_lock; False if a turn is live.
+    After the user's Stop no automatic turn starts: the cancel latch holds notifications
+    (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running"):
+        if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["_running_prompt_generation"] = int(session.get("_queued_prompt_generation", 0))
         session["running"] = True
@@ -632,6 +634,8 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     if not has_mailbox(home):
         return False
     with _session_turn_admission(session) as admitted:
+        # No _turn_cancel_requested here: a delivery is a person's message, not an automatic turn,
+        # and only a local prompt clears the latch, so gating it would park the sender until then.
         if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
                 "_auto_continue_scheduled")) or session.get("agent") is None:
@@ -915,7 +919,13 @@ def _hud_surface_note(session: dict) -> str:
     surface = session.get("client_surface")
     if surface == "hud":
         from agent.prompt_builder import hud_surface_note
-        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+        from tools.tool_search_catalog import TOOL_CALL_NAME
+        agent = session.get("agent")
+        direct = getattr(agent, "valid_tool_names", None) or set()
+        if TOOL_CALL_NAME not in direct:
+            return hud_surface_note(direct)
+        from agent.tool_executor import _tool_search_scoped_names
+        return hud_surface_note(direct, _tool_search_scoped_names(agent))
     if surface == "voice-live":
         from tools.voice_live import voice_live_turn_note
         return voice_live_turn_note(session.get("voice_live_context") or "")

@@ -796,8 +796,13 @@ prompt to the agent as a user turn, off-screen: no bubble takes up the
 transcript, the widget updating is the visible response. The turn is still
 real — it wakes the agent, rides the composer's steer/queue rules, and
 persists (typed `hidden`) so resume and the session DB keep the full record.
-Prompts are trimmed, capped at 500 chars, and throttled to one per second
-per frame.
+Prompts are trimmed, capped at 500 chars (`window.hermes.maxLength`), and
+throttled to one per second per frame. Nothing is truncated or dropped
+silently: `send()` returns a Promise that resolves `{ ok: true }` once the
+prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
+`too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
+or `undelivered` (no visible composer took it). Check it before showing a
+widget as saved.
 
 ### Mount-scoped chrome (`Contribute`)
 

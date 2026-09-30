@@ -492,7 +492,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.scan_skill_commands().items()):
+    for k, info in sorted(sc.get_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -1112,8 +1112,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        keys = ("hash", "timestamp", "message")
-        rows = [{k: c.get(k, "") for k in keys} for c in mgr.list_checkpoints(cwd)]
+        # The TUI renders ``message``; the manager calls it ``reason``.
+        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", "")}
+                for c in mgr.list_checkpoints(cwd)]
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 
@@ -1347,8 +1348,29 @@ def _skills_search(rid, params, query):
 
 
 def _skills_install(rid, params, query):
-    quiet = _tools_mod("types").SimpleNamespace(print=lambda *a, **k: None)
-    _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=quiet)
+    """Install via `do_install(skip_confirm=True)`; the profile-scoped console is a sink, so the
+    RPC must carry the outcome itself. The install path prints a full scan report before the
+    gate (skills_hub._scan_quarantined); a blocked or failed install returned `installed: True`
+    before, which read as success to every caller (#63307 Part B)."""
+    class _Capture:
+        """Console stand-in: collect lines so the verdict travels with the response."""
+
+        def __init__(self):
+            self.lines = []
+
+        def print(self, *args, **kwargs):
+            self.lines.append(" ".join(str(a) for a in args))
+
+    captured = _Capture()
+    verdict = _tools_mod("hermes_cli.skills_hub").do_install(
+        query, skip_confirm=True, console=captured)
+    installed = verdict is True
+    if not installed:
+        # The tail carries the reason the CLI user would have seen: the scan-block message,
+        # the "Multiple skills named" candidate table, or the fetch failure.
+        log = "\n".join(captured.lines[-12:]).strip()
+        return _err(rid, 5031, log.splitlines()[-1] if log else "skill install failed",
+                    data={"installed": False, "name": query, "log": log or None})
     return _ok(rid, {"installed": True, "name": query})
 
 

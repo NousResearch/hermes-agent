@@ -30,6 +30,7 @@ from rich.panel import Panel
 from hermes_constants import display_hermes_home
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
+from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.browser_connect import (
@@ -190,7 +191,8 @@ _BUSY_MODES = ("queue", "steer", "interrupt")
 # /fast argument -> (service_tier value, persisted config value)
 _FAST_TIERS = {
     "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
-    "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
+    "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold"),
+    "ultrafast": ("ultrafast", "ultrafast")}
 
 # /reasoning display toggles: arg -> (attr, value, headline key, follow-up note key or None);
 # the keys resolve under ``cli.commands.reasoning.*`` at call time.
@@ -1427,7 +1429,7 @@ class CLICommandsMixin:
             self._session_db.append_messages_batch(new_session_id, [
                 {"role": msg.get("role", "user"), "tool_name": msg.get("tool_name") or msg.get("name"),
                  "api_content": extract_api_content_sidecar(msg),
-                 **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}}
+                 **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}, **message_identity(msg, with_tool_uids=True)}
                 for msg in self.conversation_history], chunk_rows=500)
         with suppress(Exception):
             self._session_db.set_session_title(new_session_id, branch_title)
@@ -2644,11 +2646,16 @@ class CLICommandsMixin:
         raw = _command_arg(cmd)
         usage = _dim_line(_t("fast.usage"))
         if not raw or raw.lower() == "status":
-            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
+            from agent.fast_mode import service_tier_word
+            status = service_tier_word(self.service_tier)
             return _cp(_accent_line(_t("fast.status", feature=feature_name, status=status)), usage)
         arg, explicit_global = _split_scope_flags(raw)
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(_t("shared.unknown_argument", arg=arg)), usage)
+        if arg == "ultrafast":
+            if not _probe("hermes_cli.models", "model_supports_ultrafast", False, model):
+                return _cp(_dim_line(_t("fast.ultrafast_not_supported", model=model or "?")), usage)
+            feature_name = _t("fast.feature_ultrafast")
         self.service_tier, saved_value = _FAST_TIERS[arg]
         _retire_agent(self)  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)

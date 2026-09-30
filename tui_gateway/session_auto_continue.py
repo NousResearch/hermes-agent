@@ -313,20 +313,39 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 if db is None:
                     return
                 try:
-                    db.set_user_message_content(session.get("session_key"), staged["_row_id"], envelope["text"])
+                    # The staged dict records the session its row was written under; a rotated-away
+                    # ``session_key`` misses that row's session_id and the merge update no-ops. An
+                    # in-place compaction of the live turn may also have re-sequenced the row to a
+                    # new id (the original was deactivated and cloned): follow it or the update
+                    # no-ops against the dead original (#123675).
+                    key = _submit_row_owner_key(staged, session)
+                    live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                    updated = live_id is not None and bool(
+                        db.set_user_message_content(key, live_id, envelope["text"]))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
-            staged["content"] = envelope["text"]
+            if not updated:
+                # No live row carries the prompt any more (compaction re-sequenced it away):
+                # drop the staged row so the drained turn writes its own, rather than letting
+                # the envelope claim a durable row that no longer exists.
+                envelope.pop("_submit_user_row", None)
+                return
+            staged["_row_id"], staged["content"] = live_id, envelope["text"]
         return
-    staged = _write_submit_user_row(session, envelope.get("text"), display_kind)
+    # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
+    # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
+    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+    staged = _write_submit_user_row(
+        session, envelope.get("text"), display_kind,
+        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
     if staged is not None:
         envelope["_submit_user_row"] = staged
         if display_kind:
             envelope["_queued_display_kind"] = display_kind
 
 
-def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | None:
+def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatching: bool = False) -> dict | None:
     """Re-place a queued prompt's accept-time row at the transcript END before dispatching its turn.
 
     The accept-time write lands BEFORE the in-flight turn's assistant rows (raw ``[uA, uB, aA]``), and
@@ -342,7 +361,15 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
         return None  # no accept-time row (write failed / pre-feature envelope): the turn persists as before
     # Append the replacement FIRST: if that write fails nothing is deactivated, the accept-time row
     # stays active (the message stays visible) and the turn's crash persist persists it as before.
-    _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
+    # The DISPATCHING envelope's replacement carries no marker (its turn adopts the row immediately);
+    # still-queued envelopes keep the never-drained marker (#125577) so a restart between drains
+    # retires the row rather than gluing the never-run prompt into the previous turn.
+    if is_dispatching:
+        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
+    else:
+        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
+                                 accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
@@ -351,7 +378,16 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
         if db is None:
             return
         try:
-            db.deactivate_message(session.get("session_key"), early["_row_id"])
+            # The accept-time dict records the session its row was written under; a rotated-away
+            # ``session_key`` would miss it and leave that row ACTIVE beside its replacement in the
+            # continuation — the [uA, uB, aA] shape this function exists to prevent. An in-place
+            # compaction of the live turn may also have re-sequenced the row to a new id: deactivate
+            # the row that is live NOW, or the clone stays active beside its replacement and the
+            # queued prompt is active twice after the drain (#123675).
+            key = _submit_row_owner_key(early, session)
+            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            if live_id is not None:
+                db.deactivate_message(key, live_id)
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.
@@ -451,7 +487,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     # prompt before the earlier one. Under history_lock so a concurrent submit can't interleave
     # its own row write between the re-append and the deactivation.
     with session["history_lock"]:
-        dispatch_row = _replace_queued_user_row_for_turn(session, queued)
+        dispatch_row = _replace_queued_user_row_for_turn(session, queued, is_dispatching=True)
         still_queued = (([session["queued_prompt"]] if session.get("queued_prompt") else [])
                         + list(session.get("queued_prompts") or []))
         for envelope in still_queued:

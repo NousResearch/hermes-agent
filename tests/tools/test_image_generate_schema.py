@@ -118,22 +118,19 @@ class TestDynamicParamGating(unittest.TestCase):
         )
         self.assertIn("upscale", props)
 
-    def test_managed_krea_model_advertises_creative_controls(self):
-        with patch.object(ig, "_read_configured_image_provider",
-                          return_value="nous"), \
-             patch.object(ig, "_read_configured_image_model",
-                          return_value="krea-2-medium"):
-            props = _build_dynamic_image_schema()["parameters"]["properties"]
-        self.assertEqual(props["creativity"]["enum"], ["raw", "low", "medium", "high"])
-        for name in ("intensity", "complexity", "movement"):
-            self.assertEqual(props[name]["type"], "integer", name)
-            self.assertEqual((props[name]["minimum"], props[name]["maximum"]), (-100, 100), name)
+    def test_creative_controls_follow_the_active_backend(self):
+        """A managed Krea model renders exactly the controls the Krea plugin declares; FAL renders none."""
+        from plugins.image_gen.krea import KreaImageGenProvider
 
-    def test_fal_models_hide_creative_controls(self):
+        with patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
+             patch.object(ig, "_read_configured_image_model", return_value="krea-2-medium"):
+            props = _build_dynamic_image_schema()["parameters"]["properties"]
+        declared = KreaImageGenProvider().capabilities()["creative_controls"]
+        self.assertTrue(declared)
+        self.assertEqual(set(declared) & set(props), set(declared))
         for model in (self._t2i_only(), self._edit_multi_ref()):
-            props = self._schema_for(model)["parameters"]["properties"]
-            for name in ("creativity", "intensity", "complexity", "movement"):
-                self.assertNotIn(name, props, model)
+            self.assertFalse(set(ig._CREATIVE_CONTROL_PARAMS) & set(self._schema_for(model)["parameters"]["properties"]))
+
 
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic

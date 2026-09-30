@@ -616,6 +616,20 @@ def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model
     return kwargs
 
 
+def _declared_controls(provider, controls: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The subset of ``controls`` that ``provider`` declares in ``creative_controls``.
+
+    A model can still send a control the current schema no longer offers (it copies earlier turns
+    after the backend changed), and a third-party ``generate()`` without ``**kwargs`` would raise."""
+    if not controls:
+        return None
+    try:
+        declared = (provider.capabilities() or {}).get("creative_controls") or ()
+    except Exception:  # noqa: BLE001 - a broken capabilities() declares nothing, like the schema path
+        return None
+    return {name: value for name, value in controls.items() if name in declared} or None
+
+
 def _dispatch_to_plugin_provider(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
@@ -645,7 +659,7 @@ def _dispatch_to_plugin_provider(
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
         _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
-                             model=_read_configured_image_model(), controls=controls)
+                             model=_read_configured_image_model(), controls=_declared_controls(provider, controls))
         result = provider.generate(**kwargs)
     except Exception as exc:
         # A TypeError from generate() predating image_url support (third-party plugin not yet
@@ -725,7 +739,8 @@ def _maybe_route_managed_model(
             f"available. Pick another model via `hermes tools` → Image Generation.", "provider_not_registered")
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio, "model": model_id}
     try:
-        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, controls=controls)
+        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
+                             controls=_declared_controls(provider, controls))
         result = provider.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Managed %s routing failed: %s", plugin_name, exc)
@@ -851,7 +866,8 @@ _IMAGE_URL_PARAM = {
     ),
 }
 
-# Krea 2 exposes these; a provider advertises the ones it honors via ``creative_controls``.
+# Creative-control vocabulary (Krea 2 today); a provider advertises the names it honors via
+# ``capabilities()["creative_controls"]`` and only those reach the schema and its ``generate()``.
 _CREATIVE_CONTROL_PARAMS = {
     "creativity": {
         "type": "string", "enum": ["raw", "low", "medium", "high"],

@@ -17,7 +17,9 @@ def _reset_registry():
 class TestPluginDispatch:
 
 
-    def test_handler_forwards_creative_controls_to_the_plugin(self, monkeypatch, tmp_path):
+    def test_handler_forwards_only_the_creative_controls_the_plugin_declares(self, monkeypatch, tmp_path):
+        """Declared controls reach generate(); an undeclared one the model sent anyway is dropped, so a
+        plugin whose generate() lacks **kwargs never sees it."""
         from agent.image_gen_provider import ImageGenProvider
         from hermes_cli import plugins as plugins_module
         from tools import image_generation_tool
@@ -28,6 +30,9 @@ class TestPluginDispatch:
             @property
             def name(self):
                 return "recorder"
+
+            def capabilities(self):
+                return {"modalities": ["text"], "creative_controls": ["intensity"]}
 
             def generate(self, prompt, aspect_ratio="landscape", **kwargs):
                 seen.update(kwargs)
@@ -47,7 +52,8 @@ class TestPluginDispatch:
 
         assert result["success"] is True
         assert seen["intensity"] == 80
-        assert seen["creativity"] == "raw"
+        assert "creativity" not in seen
+
 
     def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
         """DeepInfra chat credentials do not imply consent to image billing."""

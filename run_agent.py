@@ -14,19 +14,19 @@ except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
+import os
 
 # `hermes-agent` runs this module without hermes_cli.main, which repairs a `hermes update` killed
 # while git wrote the new tree; do it here, before importing anything else from the checkout.
 if "hermes_cli.main" not in sys.modules:
     from hermes_cli import _early_recovery
 
-    if _early_recovery.restore_interrupted_pull():
+    if _early_recovery.restore_interrupted_pull() and not os.environ.get("HERMES_DISABLE_LAZY_INSTALLS"):
         _early_recovery.relaunch_after_restore()
 
 import json
 import logging
 logger = logging.getLogger(__name__)
-import os
 import re
 import time
 import threading

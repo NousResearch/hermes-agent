@@ -133,7 +133,7 @@ TOUR_SCHEMA = {
             "preset": {
                 "type": "string",
                 "enum": list(PRESETS),
-                "description": "start without steps: 'quick' (three essentials) or 'full'.",
+                "description": "start without steps: 'quick' (four essentials) or 'full'.",
             },
             "step_index": {
                 "type": "integer",

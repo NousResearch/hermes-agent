@@ -31,16 +31,16 @@ const SELECTORS: Record<StopId, string> = {
 }
 
 /** Where their conversations live, where they ask for a job, how to start a
- *  fresh one. */
-const ESSENTIALS: StopId[] = ['sessions', 'composer', 'newSession']
+ *  fresh one, which model answers. */
+const ESSENTIALS: StopId[] = ['sessions', 'composer', 'newSession', 'model']
 
-/** Full adds the model picker and what the interface mode puts on screen:
+/** Full adds what the interface mode puts on screen:
  *  Simple is for talking to Hermes, Advanced has the working pane. */
 const SIMPLE_EXTRAS: StopId[] = ['capabilities', 'messaging']
 const ADVANCED_EXTRAS: StopId[] = ['rightPane', 'capabilities']
 
 const PRESET_STOPS: Record<BuiltInTourPreset, () => StopId[]> = {
-  full: () => [...ESSENTIALS, 'model', ...($interfaceMode.get() === 'simple' ? SIMPLE_EXTRAS : ADVANCED_EXTRAS)],
+  full: () => [...ESSENTIALS, ...($interfaceMode.get() === 'simple' ? SIMPLE_EXTRAS : ADVANCED_EXTRAS)],
   quick: () => ESSENTIALS
 }
 

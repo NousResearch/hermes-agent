@@ -502,14 +502,17 @@ def _count_unnamed_row(survivor: Dict[str, Any], retired: Dict[str, Any]) -> Non
     recorded so the commit can name its row."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.conversation_compression_archive import (
-        RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
+        OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
 
     def loaded(message: Dict[str, Any]) -> bool:
         return bool(message.get(_DB_PERSISTED_MARKER) or message.get(UNNAMED_DURABLE_ROWS))
 
     if loaded(survivor) and loaded(retired) and not isinstance(retired.get("_row_id"), int):
         survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
-        survivor.setdefault(RETIRED_DURABLE_ROWS, []).append(retired_row_payload(retired))
+        # A previously folded dict already records its original row. The transfer in
+        # _remember_absorbed_row retires that record; its synthetic text/calls never existed in storage.
+        if not any(row.get(OWN_ROW) for row in retired.get(RETIRED_DURABLE_ROWS) or ()):
+            survivor.setdefault(RETIRED_DURABLE_ROWS, []).append(retired_row_payload(retired))
 
 
 def _remember_own_row(survivor: Dict[str, Any]) -> None:

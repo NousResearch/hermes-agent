@@ -1037,7 +1037,7 @@ class SessionMessagesMixin:
         Only rows at or below *watermark*: the repair ran on a load taken before the snapshot, so a
         run appended later that joins to the same text is another surface's, not the merged one.
         """
-        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS
 
         content, width = message.get("content"), message.get(MERGED_DURABLE_ROWS)
         if message.get("role") != "user" or not isinstance(content, str) or type(width) is not int or width < 2:
@@ -1049,6 +1049,17 @@ class SessionMessagesMixin:
                 f"SELECT id, role, content FROM messages WHERE session_id = ? AND active = 1"
                 f"{' AND id <= ?' if bound else ''} ORDER BY id",
                 (session_id, *((int(watermark),) if bound else ()))).fetchall()]
+        # Dropping an orphan can make user rows adjacent only in the repaired view.
+        # Skip only uniquely proved retired originals, never arbitrary intervening rows.
+        retired_ids = set()
+        for retired in message.get(RETIRED_DURABLE_ROWS) or ():
+            if retired.get(OWN_ROW):
+                continue
+            matches = self._matching_retired_ids(conn, session_id, retired, watermark)
+            if len(matches) != 1:
+                return None
+            retired_ids.update(matches)
+        rows = [row for row in rows if row[0] not in retired_ids]
         runs: List[List[int]] = []
         for start in range(len(rows)):
             merged = ""

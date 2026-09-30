@@ -536,9 +536,8 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     process.poll.return_value = 9
     process.wait.return_value = 9
 
-    assert scheduler._wait_for_external_cron_worker(
-        process, execution_id="exec-1"
-    ) is True
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
+        scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
     recover.assert_called_once_with()
     assert get.call_count == 2
 

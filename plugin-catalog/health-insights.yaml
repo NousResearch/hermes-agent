@@ -1,6 +1,6 @@
 name: health-insights
 repo: https://github.com/mwdearing/hermes-health-insights
-sha: 79f3104b0a252438d102ceadb82538f404e8221e
+sha: a4df1055e5153e9f0fd4eb0a668332b120e2788a
 description: Deterministic, local-first analysis of your own Apple Health data - weekly trends, rule-based
   concern checks, nutrition versus Dietary Reference Intakes, an IOM energy target, lab results and opt-in modules
   (GLP-1 monitoring, medication adherence; all off by default). Portable
@@ -13,7 +13,7 @@ tier: community
 category: tools
 requires_hermes: '>=0.20'
 docs_url: https://github.com/mwdearing/hermes-health-insights#readme
-version: 0.3.0
+version: 0.3.1
 platforms: []
 capabilities:
   provides_tools: []

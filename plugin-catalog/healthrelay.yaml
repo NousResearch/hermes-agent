@@ -1,6 +1,6 @@
 name: healthrelay
 repo: https://github.com/mwdearing/hermes-healthrelay
-sha: 373a0170408aa83c3bb2a7fbb4eeca2ff163a780
+sha: fa8c31d67c01e28223b047191b26866faafb4a43
 description: Read-only access to your own Apple Health data through a self-hosted HealthRelay receiver.
   Portable Agent Plugins v1 package with one stdio MCP server (nine read-only tools, no raw SQL, no write
   tools) and three skills for setup, review and troubleshooting. Requires your own HealthRelay receiver
@@ -11,7 +11,7 @@ tier: community
 category: tools
 requires_hermes: '>=0.20'
 docs_url: https://github.com/mwdearing/hermes-healthrelay#readme
-version: 0.2.1
+version: 0.2.2
 platforms: []
 capabilities:
   provides_tools: []

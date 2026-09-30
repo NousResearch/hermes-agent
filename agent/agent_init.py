@@ -1350,7 +1350,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
                     from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
+                    if recover_at_startup(_mem_provider_name, say=getattr(agent, "_emit_startup_warning", None)):
                         _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
@@ -1360,7 +1360,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                     with suppress(Exception, SystemExit):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(
-                        _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
+                        _mem_provider_name, _unavailable_reason, say=getattr(agent, "_emit_startup_warning", None))
                 if agent._memory_manager.providers:
                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)

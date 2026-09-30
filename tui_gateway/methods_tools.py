@@ -611,7 +611,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
 
 @contextlib.contextmanager
 def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
-    """Bind HERMES_HOME and the logical cwd to the session for the block.
+    """Bind the session's full runtime profile scope and logical cwd for interactive resolution.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
     ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
@@ -620,22 +620,21 @@ def _session_home_scope(session, cwd: str | None = None, profile: str | None = N
     thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
     record (a session-less catalog request binds the workspace a new session would be seeded with).
-    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
-    hc = _tools_mod("hermes_constants")
+    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651).
+    Plugin discovery may execute ``register()`` and read profile secrets or terminal policy, so home
+    alone is insufficient; use the same full scope as a session turn and always reset cwd before it."""
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
     if not session and profile:
         profile_home = str(_profile_home(profile) or "") or None
     cwd = cwd or (str(session.get("cwd") or "") if session else "")
-    token = hc.set_hermes_home_override(profile_home) if profile_home else None
-    cwd_token = rc.set_session_cwd(cwd) if cwd else None
-    try:
-        yield
-    finally:
-        if cwd_token is not None:
-            rc.reset_session_cwd(cwd_token)
-        if token is not None:
-            hc.reset_hermes_home_override(token)
+    with _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None}):
+        cwd_token = rc.set_session_cwd(cwd) if cwd else None
+        try:
+            yield
+        finally:
+            if cwd_token is not None:
+                rc.reset_session_cwd(cwd_token)
 
 
 def _profile_skill_command(session: dict, base: str) -> bool | None:

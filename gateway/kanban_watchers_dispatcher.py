@@ -42,6 +42,8 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    respawn_guard_success_window_seconds: int
+    respawn_guard_pr_window_seconds: int
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -92,6 +94,15 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
                        "disabling stale detection", raw_stale)
         stale_timeout_seconds = 0
 
+    # Respawn-guard windows: non-positive or unparseable values fall back to
+    # the built-in defaults rather than disabling the guard (a 0s window would
+    # release a card the instant its prior run finished). Resolved here at
+    # boot, where the served profile's config is the one bound, and threaded
+    # into dispatch_once as parameters — never re-read per row.
+    guard_success_window, guard_pr_window = _kbd().resolve_respawn_guard_windows(
+        kanban_cfg=kanban_cfg
+    )
+
     # Fallback profile for tasks created without an assignee (e.g. via the
     # dashboard). Empty (the schema default) keeps skipping them.
     # When set, the dispatcher applies it to unassigned ready tasks instead of skipping them indefinitely
@@ -115,6 +126,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        respawn_guard_success_window_seconds=guard_success_window,
+        respawn_guard_pr_window_seconds=guard_pr_window,
     )
 
 

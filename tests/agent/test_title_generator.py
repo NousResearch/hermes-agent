@@ -846,105 +846,128 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "hi", [])
         assert db.get_session_title("sess-1") is None
 
-    def test_titles_session_with_technical_user_entries(self, tmp_path):
-        """Persisted technical role=user markers must not suppress a real title."""
-        db = SessionDB(tmp_path / "state.db")
-        db.create_session(session_id="sess-technical", source="cli")
-        history = [
-            {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY]"},
-            {"role": "user", "content": "[IMPORTANT: Background process exited]"},
-            {"role": "user", "content": "[The user attached an image: image.png]"},
-            {"role": "user", "content": "model switched", "display_kind": "model_switch"},
-        ]
+    @pytest.mark.parametrize("deferred", [False, True])
+    @pytest.mark.parametrize("model_failure", [False, True])
+    def test_concurrent_title_calls_are_serialized_and_release_after_failure(self, tmp_path, deferred, model_failure):
+        """Real workers and title persistence share one active model call per session."""
+        from agent import title_generator as tg
 
-        with patch("agent.title_generator.auto_title_session"):
-            maybe_auto_title(
-                db,
-                "sess-technical",
-                "fix the flaky auth test",
-                history,
-            )
-        assert db.get_session_title("sess-technical") == "fix the flaky auth test"
+        entered, release = threading.Event(), threading.Event()
+        response = MagicMock()
+        response.choices[0].message.content = '{"title": "Debug scheduler failures"}'
 
-    def test_does_not_start_duplicate_worker_while_title_is_in_flight(self):
-        db = MagicMock()
-        db.get_session_title.return_value = None
-        history = [{"role": "user", "content": "hello"}]
-        started = threading.Event()
-        release = threading.Event()
-        finished = threading.Event()
+        def call_title(**_kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("test worker was not released")
+            if model_failure:
+                raise RuntimeError("title provider unavailable")
+            return response
 
-        def _blocked_worker(*_args, **_kwargs):
-            started.set()
-            release.wait(timeout=10)
-            finished.set()
+        runtime = {"provider": "local" if deferred else "openrouter"}
+        history = [{"role": "user", "content": "debug the scheduler"}]
+        workers = []
+        with SessionDB(tmp_path / "state.db") as db, \
+                patch.object(tg, "_title_config", return_value={}), \
+                patch.object(tg, "call_llm", side_effect=call_title) as model:
+            db.create_session(session_id="sess-concurrent", source="cli")
+            try:
+                first = maybe_auto_title(db, "sess-concurrent", "debug the scheduler", history, main_runtime=runtime)
+                assert isinstance(first, threading.Thread)
+                workers.append(first)
+                if deferred:
+                    assert first.ident is None and not entered.is_set()
+                    tg.start_title_upgrade(first)
+                assert entered.wait(5), "first title request never reached the model"
+                second = maybe_auto_title(db, "sess-concurrent", "debug the scheduler", history, main_runtime=runtime)
+                assert isinstance(second, threading.Thread)
+                workers.append(second)
+                if deferred:
+                    tg.start_title_upgrade(second)
+                second.join(5)
+                assert not second.is_alive(), "duplicate title request did not retire"
+                assert model.call_count == 1
+                assert db.get_session_title_source("sess-concurrent") == "derived"
+                release.set()
+                first.join(5)
+                assert not first.is_alive()
+                if model_failure:
+                    assert db.get_session_title_source("sess-concurrent") == "derived"
+                    model.side_effect = None
+                    model.return_value = response
+                    retry = maybe_auto_title(db, "sess-concurrent", "debug the scheduler", history, main_runtime=runtime)
+                    assert isinstance(retry, threading.Thread)
+                    workers.append(retry)
+                    if deferred:
+                        tg.start_title_upgrade(retry)
+                    retry.join(5)
+                    assert not retry.is_alive()
+                    assert model.call_count == 2, "failed worker retained the session claim"
+                assert db.get_session_title("sess-concurrent") == "Debug scheduler failures"
+                assert db.get_session_title_source("sess-concurrent") == "llm"
+            finally:
+                release.set()
+                for worker in workers:
+                    if worker is not None and worker.ident is not None:
+                        worker.join(5)
 
-        with patch("agent.title_generator.auto_title_session", side_effect=_blocked_worker) as mock_auto:
-            maybe_auto_title(db, "sess-in-flight", "hello", history)
-            assert started.wait(timeout=10), "first auto-title worker never ran"
+    @pytest.mark.parametrize("interruption", ["factory", "start", "abandoned"])
+    def test_unstarted_title_workers_never_block_later_upgrades(self, tmp_path, interruption):
+        """Failed starts and abandoned deferred jobs cannot claim a session permanently."""
+        from agent import title_generator as tg
 
-            maybe_auto_title(db, "sess-in-flight", "hello again", history)
-            mock_auto.assert_called_once()
-
-            release.set()
-            assert finished.wait(timeout=10), "auto-title worker never finished"
-
-    def test_releases_in_flight_claim_when_worker_cannot_start(self):
-        db = MagicMock()
-        db.get_session_title.return_value = None
-        history = [{"role": "user", "content": "hello"}]
-
-        with patch(
-            "agent.memory_provider.spawn_context_thread",
-            side_effect=RuntimeError("thread limit reached"),
-        ), pytest.raises(RuntimeError, match="thread limit reached"):
-            maybe_auto_title(db, "sess-start-failure", "hello", history)
-
-        called = threading.Event()
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
-            mock_auto.side_effect = lambda *a, **k: called.set()
-            maybe_auto_title(db, "sess-start-failure", "hello", history)
-            assert called.wait(timeout=10), "auto-title retry never ran"
-
-    @pytest.mark.parametrize("existing_title", [None, "Existing title"])
-    def test_repeated_real_exchanges_respect_title_state(self, tmp_path, existing_title):
-        """Repeated turns skip named sessions but still title a nameless one."""
-        db = SessionDB(tmp_path / "state.db")
-        db.create_session(session_id="sess-repeated-turn", source="cli")
-        if existing_title is not None:
-            db.set_session_title("sess-repeated-turn", existing_title)
-        history = [
-            {"role": "user", "content": "repeat"},
-            {"role": "assistant", "content": "response 1"},
-            {"role": "user", "content": "repeat"},
-            {"role": "assistant", "content": "response 2"},
-            {"role": "user", "content": "repeat"},
-            {"role": "assistant", "content": "response 3"},
-        ]
-
-        with patch("agent.title_generator.threading.Thread") as mock_thread, patch(
-            "agent.title_generator.generate_title", return_value="Repeated conversation"
-        ) as mock_generate:
-            maybe_auto_title(db, "sess-repeated-turn", "repeat", history)
-            if existing_title is not None:
-                mock_thread.assert_not_called()
-                mock_generate.assert_not_called()
-                assert db.get_session_title("sess-repeated-turn") == existing_title
-                return
-
-            assert db.get_session_title("sess-repeated-turn") == "repeat"
-            assert db.get_session_title_source("sess-repeated-turn") == "derived"
-            mock_thread.assert_called_once()
-            mock_thread.return_value.start.assert_called_once_with()
-            # Run the actual worker synchronously; only scheduling and the model
-            # response are controlled, while title guards and persistence are real.
-            worker = mock_thread.call_args.kwargs
-            worker["target"](*worker.get("args", ()), **worker.get("kwargs", {}))
-            mock_generate.assert_called_once_with(
-                "repeat", failure_callback=None, main_runtime=None, runtime_validator=None
-            )
-        assert db.get_session_title("sess-repeated-turn") == "Repeated conversation"
-        assert db.get_session_title_source("sess-repeated-turn") == "llm"
+        response = MagicMock()
+        response.choices[0].message.content = '{"title": "Debug scheduler failures"}'
+        runtime = {"provider": "local" if interruption == "abandoned" else "openrouter"}
+        history = [{"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY]"}] * 3
+        history += [{"role": "user", "content": "repeat"}] * 3
+        workers = []
+        with SessionDB(tmp_path / "state.db") as db, \
+                patch.object(tg, "_title_config", return_value={}), \
+                patch.object(tg, "call_llm", return_value=response) as model:
+            db.create_session(session_id="sess-retry", source="cli")
+            try:
+                if interruption == "abandoned":
+                    abandoned = maybe_auto_title(db, "sess-retry", "repeat", history, main_runtime=runtime)
+                    assert isinstance(abandoned, threading.Thread)
+                    workers.append(abandoned)
+                    assert abandoned.ident is None
+                else:
+                    target = "agent.memory_provider.spawn_context_thread" if interruption == "factory" else "threading.Thread.start"
+                    with patch(target, autospec=True, side_effect=RuntimeError("thread limit reached")) as interrupted, \
+                            pytest.raises(RuntimeError, match="thread limit reached"):
+                        maybe_auto_title(db, "sess-retry", "repeat", history, main_runtime=runtime)
+                    if interruption == "start":
+                        failed = interrupted.call_args.args[0]
+                        assert failed.ident is None
+                        assert failed not in tg._UPGRADE_THREADS
+                        tg.wait_for_title_upgrades(0)
+                model.assert_not_called()
+                assert db.get_session_title_source("sess-retry") == "derived"
+                retry = maybe_auto_title(db, "sess-retry", "repeat", history, main_runtime=runtime, title_preview="Scheduler failures")
+                assert isinstance(retry, threading.Thread)
+                workers.append(retry)
+                if interruption == "abandoned":
+                    tg.start_title_upgrade(retry)
+                retry.join(5)
+                assert not retry.is_alive()
+                model.assert_called_once()
+                assert "Scheduler failures" in model.call_args.kwargs["messages"][1]["content"]
+                assert db.get_session_title("sess-retry") == "Debug scheduler failures"
+                assert db.get_session_title_source("sess-retry") == "llm"
+                if interruption == "abandoned":
+                    tg.start_title_upgrade(abandoned)
+                    abandoned.join(5)
+                    assert not abandoned.is_alive()
+                    model.assert_called_once()
+                db.set_session_title("sess-retry", "Manual title")
+                assert maybe_auto_title(db, "sess-retry", "repeat", history, main_runtime=runtime) is None
+                assert db.get_session_title("sess-retry") == "Manual title"
+                model.assert_called_once()
+            finally:
+                for worker in workers:
+                    if worker is not None and worker.ident is not None:
+                        worker.join(5)
 
 
 class TestAutoTitleDuplicateHandling:

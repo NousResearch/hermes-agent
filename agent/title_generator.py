@@ -270,8 +270,8 @@ def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:
     """Start a (deferred) title upgrade thread; joinable via ``wait_for_title_upgrades`` only once started."""
     if upgrade is None or upgrade.ident is not None:
         return
-    _UPGRADE_THREADS.add(upgrade)
     upgrade.start()
+    _UPGRADE_THREADS.add(upgrade)
 
 
 def strip_control_wrappers(text: str) -> str:
@@ -840,10 +840,6 @@ def maybe_auto_title(
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
     from agent.memory_provider import spawn_context_thread
-    upgrade_kwargs = dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
-                          runtime_validator=runtime_validator)
-    if isinstance(title_preview, str) and title_preview.strip():
-        upgrade_kwargs["title_preview"] = title_preview
 
     def _run() -> None:
         # Claim only while executing: deferred or failed-to-start threads
@@ -853,7 +849,11 @@ def maybe_auto_title(
                 return
             _title_in_flight.add(session_id)
         try:
-            auto_title_session(session_db, session_id, user_message, **upgrade_kwargs)
+            auto_title_session(
+                session_db, session_id, user_message, failure_callback=failure_callback,
+                main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator,
+                title_preview=title_preview if isinstance(title_preview, str) and title_preview.strip() else None,
+            )
         finally:
             with _title_in_flight_lock:
                 _title_in_flight.discard(session_id)

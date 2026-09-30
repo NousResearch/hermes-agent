@@ -24,19 +24,12 @@ def rehome_inbound_media(event: MessageEvent) -> None:
     """
     if not event.media_urls:
         return
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
-    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
-    if hermes_home_key(active) == hermes_home_key(launch):
-        return
     from tools.credential_files import to_agent_visible_cache_path
     rewritten = list(event.media_urls)
     for i, raw in enumerate(event.media_urls):
-        src = Path(raw)
-        try:
-            rel = src.relative_to(launch / "cache")
-        except ValueError:
+        src, dest = Path(raw), Path(rehomed_media_path(raw))
+        if dest == src:
             continue
-        dest = active / "cache" / rel
         try:
             if not src.is_file():
                 continue
@@ -49,3 +42,17 @@ def rehome_inbound_media(event: MessageEvent) -> None:
         if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
             event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
     event.media_urls = rewritten
+
+
+def rehomed_media_path(raw: str) -> str:
+    """Return where ``rehome_inbound_media`` puts the attachment at *raw* for the active profile."""
+    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
+    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
+    if hermes_home_key(active) == hermes_home_key(launch):
+        return raw
+    try:
+        return str(active / "cache" / Path(raw).relative_to(launch / "cache"))
+    except ValueError:
+        return raw
+
+

@@ -109,7 +109,13 @@ def _ok_turn(agent):
     return {"final_response": "hello", "failed": False}
 
 
-def _interrupted_turn(_agent):
+def _interrupted_turn(agent):
+    # Simulate usage already accrued by completed provider calls before Ctrl-C.
+    agent.session_input_tokens = 111
+    agent.session_output_tokens = 22
+    agent.session_total_tokens = 222
+    agent.session_cache_read_tokens = 89
+    agent.session_cache_write_tokens = 0
     raise KeyboardInterrupt
 
 
@@ -125,6 +131,14 @@ def test_chat_stream_json_implies_quiet_and_closes_with_result(monkeypatch, caps
     assert code == exit_code
     assert [e["type"] for e in events] == types
     assert events[-1]["exit_code"] == exit_code and events[-1]["session_id"] == "session-123"
+    if turn is _interrupted_turn:
+        assert events[-1]["tokens"] == {
+            "input": 111,
+            "output": 22,
+            "total": 222,
+            "cache_read": 89,
+            "cache_write": 0,
+        }
 
 
 @pytest.mark.parametrize("argv, message", [

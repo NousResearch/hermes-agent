@@ -39,8 +39,8 @@ MANAGE_CATALOG_SCHEMA = {
         "Find and install Hermes catalog plugins and hub skills for the user. 'search' lists matches "
         "(id, kind, display, tier, platforms, installed) and changes nothing. 'install' shows the user "
         "one approval card with a row per item and blocks until every row is installed, skipped, or "
-        "the card is closed; the host installs each approved row into this chat's profile (from the setup chat, into "
-        "the user's main profile) at the catalog's reviewed version. Pass only catalog ids exactly as 'search' returns them; the "
+        "the card is closed; the host installs each approved row into this chat's profile at "
+        "the catalog's reviewed version. Pass only catalog ids exactly as 'search' returns them; the "
         "host decides the source, version, profile and settings, and the user can change them on the "
         "card. Offer an install only for something the user asked for or agreed to."
     ),
@@ -145,9 +145,10 @@ def install(items: List[Dict[str, str]], *, session_id: Optional[str], tool_call
 
 
 def search(query: str, kind: Optional[str], *, installer: Any = None) -> Dict[str, Any]:
-    from tools.connectors.catalog import default_target_profile, target_scope
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    from tools.connectors.catalog import target_scope
 
-    profile = default_target_profile()
+    profile = profile_name_for_home(get_hermes_home()) or "default"
     rows: List[Dict[str, Any]] = []
     with target_scope(profile):
         if kind in (None, "plugin"):

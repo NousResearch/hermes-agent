@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 from hermes_cli import profiles as profiles_mod
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, profile_name_for_home
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,14 @@ def reset_setup_profile() -> SetupProfile:
                                               profiles_mod._non_exportable_entries, dirs_exist_ok=True)
     _write_state(path, _FRESH_STATE)
     return SetupProfile(name, path, created=False)
+
+
+def primary_profile(launch_home: Path) -> str:
+    """The profile setup hands off to: the launch profile from the setup profile's home, else this one."""
+    home = get_hermes_home()
+    if (home / profiles_mod.SETUP_PROFILE_MARKER).is_file():
+        home = launch_home
+    return profile_name_for_home(home) or "default"
 
 
 def onboarding_eligible() -> bool:

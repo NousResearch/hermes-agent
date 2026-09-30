@@ -3326,7 +3326,6 @@ def block_task(
     return True
 
 
-_TASK_ID_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
 # Same-card lifecycle events that prove a block was followed by real work.
 _BLOCK_STREAK_PROGRESS_EVENTS = ("review_requested", "changes_requested")
 
@@ -3338,23 +3337,16 @@ def _normalize_block_reason(reason: Any) -> str:
 
 def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> tuple[list[str], Optional[str]]:
     """``(signals, last_reason)`` for the task's last block. Non-empty
-    *signals* = progress since that block, so a same-kind re-block is a new
-    block rather than an unblock loop; empty = no progress was proven.
+    *signals* = a review cycle on this card (``review_requested`` /
+    ``changes_requested``) since its last ``blocked`` / ``block_loop_detected``
+    event -- e.g. a reviewer approves, then blocks for the owner's release
+    handoff -- so a same-kind re-block is a new block, not an unblock loop.
 
-    Two signals, both durable and checked against the last ``blocked`` /
-    ``block_loop_detected`` event:
-
-    * a review cycle on this card (``review_requested`` / ``changes_requested``),
-      e.g. a reviewer approves, then blocks for the owner's release handoff;
-    * the last block was filed as a ``dependency`` wait (re-kinded
-      ``needs_input`` because the card had no open parent -- a flat, unlinked
-      wait) and a card it cited by id completed after that block: the declared
-      blocking obligation was satisfied, so a new block is a new wait. Ids
-      cited in any other kind's reason are context, never the obligation, and
-      cannot launder an unchanged blocker.
-
-    A changed reason alone is not progress; :func:`_route_block` discounts it
-    instead (``BLOCK_RECURRENCE_CHANGED_LIMIT``).
+    Card ids cited in the reason prose are deliberately NOT read: prose cannot
+    say which id is the blocking obligation and which is context, so a
+    completed context card must never launder an unchanged blocker. A changed
+    reason is not progress either; :func:`_route_block` discounts it
+    (``BLOCK_RECURRENCE_CHANGED_LIMIT``).
     """
     last = conn.execute(
         "SELECT id, payload FROM task_events WHERE task_id = ? "
@@ -3371,19 +3363,8 @@ def _block_streak_progress(conn: sqlite3.Connection, task_id: str) -> tuple[list
             (task_id, last["id"], *_BLOCK_STREAK_PROGRESS_EVENTS),
         )
     ]
-    payload = _json_dict(last["payload"])
-    reason = payload.get("reason")
-    reason = reason if isinstance(reason, str) else None
-    if payload.get("requested_kind") == "dependency" and reason:
-        for cited_id in sorted(set(_TASK_ID_RE.findall(reason)) - {task_id}):
-            # Event ids are board-global and monotonic: ordering is exact even
-            # when both transitions land in the same wall-clock second.
-            if conn.execute(
-                "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'completed' AND id > ? LIMIT 1",
-                (cited_id, last["id"]),
-            ).fetchone() is not None:
-                signals.append(f"resolved:{cited_id}")
-    return signals, reason
+    reason = _json_dict(last["payload"]).get("reason")
+    return signals, reason if isinstance(reason, str) else None
 
 
 def _route_block(

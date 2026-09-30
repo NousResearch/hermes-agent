@@ -7,12 +7,11 @@ happened between two blocks of the same kind:
 * a review cycle on the card itself (``review_requested`` /
   ``changes_requested``) -- e.g. a reviewer approves a stage and then blocks
   for the owner's release handoff;
-* the previous block was a declared ``dependency`` wait and the card it cited
-  completed -- the wait was satisfied and a *new* wait began. Ids cited as
-  context in any other kind of block are not the blocking obligation.
 
 A re-block whose reason changed is discounted: it escalates only at
-``BLOCK_RECURRENCE_CHANGED_LIMIT``. A genuine loop -- the same cause re-filed
+``BLOCK_RECURRENCE_CHANGED_LIMIT``. Card ids cited in reason prose are never
+read as progress: completing a card mentioned in an unchanged block (context
+or not) does not launder that block. A genuine loop -- the same cause re-filed
 with no progress -- still reaches ``triage`` at ``BLOCK_RECURRENCE_LIMIT``, and
 a reworded spin still reaches it at the higher limit.
 """
@@ -83,10 +82,11 @@ def test_owner_handoff_after_review_approval_does_not_triage(kanban_home: Path) 
         assert kb.get_task(conn, tid).status == "review"
 
 
-def test_new_dependency_after_cited_blocker_completed_does_not_triage(kanban_home: Path) -> None:
+def test_new_dependency_after_first_wait_resolved_does_not_triage(kanban_home: Path) -> None:
     """Estate t_7528681d: a flat (unlinked) ``dependency`` block citing card A
     is re-kinded ``needs_input``. A completes, the card is unblocked, makes
-    progress, and blocks again on a *different* card B."""
+    progress, and blocks again on a *different* card B: a changed cause,
+    discounted rather than triaged."""
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="activate backup fix", assignee="generalist")
         card_a = kb.create_task(conn, title="publish PR", assignee="cody")
@@ -102,10 +102,10 @@ def test_new_dependency_after_cited_blocker_completed_does_not_triage(kanban_hom
 
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        assert (task.block_kind, task.block_recurrences) == ("needs_input", 1)
+        assert task.block_kind == "needs_input"
         assert "block_loop_detected" not in _kinds(conn, tid)
         blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1].payload
-        assert blocked["streak_reset"] == [f"resolved:{card_a}"]
+        assert blocked["reason_changed"] is True and "streak_reset" not in blocked
 
         # ...but if B never lands and the same wait is re-filed, that IS a loop.
         assert kb.unblock_task(conn, tid)
@@ -194,16 +194,34 @@ def test_completed_card_cited_as_context_does_not_reset_unchanged_blocker(kanban
         assert "streak_reset" not in loop
 
 
-def test_cited_card_still_open_or_completed_earlier_is_not_progress(kanban_home: Path) -> None:
-    """Only a cited card completing *between* the two dependency blocks counts;
-    one already done before the first block, or still open, does not."""
+def test_completed_context_card_in_dependency_block_does_not_reset(kanban_home: Path) -> None:
+    """Reviewer negative control (round 2): a dependency block names the real
+    prerequisite A and, as context, unrelated docs B. Completing only B while A
+    stays open is no progress; the identical re-block triages."""
     with kbc.connect_closing() as conn:
-        done_before = kb.create_task(conn, title="old", assignee="cody")
-        still_open = kb.create_task(conn, title="open", assignee="cody")
-        _finish(conn, done_before)
         tid = kb.create_task(conn, title="waiter", assignee="generalist")
-        reason = f"waiting on {done_before} and {still_open}"
+        prereq = kb.create_task(conn, title="prerequisite", assignee="cody")
+        docs = kb.create_task(conn, title="unrelated docs", assignee="cody")
+        reason = f"Blocked on {prereq}. Background context only: {docs}; documentation is not a prerequisite."
         _cycle(conn, tid, reason, "dependency")
+        _finish(conn, docs)
+        task = _cycle(conn, tid, reason, "dependency")
+        assert (task.status, task.block_recurrences) == ("triage", kb.BLOCK_RECURRENCE_LIMIT)
+        assert kb.get_task(conn, prereq).status != "done"
+        loop = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"][-1].payload
+        assert "streak_reset" not in loop
+
+
+def test_completed_cited_prerequisite_with_identical_reason_still_triages(kanban_home: Path) -> None:
+    """Even the cited card itself completing does not reset an identical
+    re-block: the unchanged reason says the worker is still stuck on the same
+    thing, which is what a human must look at."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="waiter", assignee="generalist")
+        prereq = kb.create_task(conn, title="prerequisite", assignee="cody")
+        reason = f"waiting on {prereq}"
+        _cycle(conn, tid, reason, "dependency")
+        _finish(conn, prereq)
         task = _cycle(conn, tid, reason, "dependency")
         assert task.status == "triage"
 

@@ -1533,6 +1533,7 @@ class _CodexCompletionsAdapter:
             add_responses_cache_kwargs(
                 resp_kwargs, model=model, host=host, is_xai=is_xai, is_github=is_github,
                 scope_id=_runtime_main_value("cache_scope") or _runtime_main_value("session_id"),
+                extra_body=extra_body,
             )
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)

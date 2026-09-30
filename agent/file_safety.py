@@ -245,7 +245,8 @@ def build_write_approval_paths(home: str) -> set[str]:
 # browser-profile/ (copied cookies / Login Data) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+# SECRET_STORE_DIRS (below) are protected as well.
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -291,7 +292,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
         return "credential"
 
     for base in _hermes_dirs():
-        for sub in _HERMES_PROTECTED_SUBPATHS:
+        for sub in (*_HERMES_PROTECTED_SUBPATHS, *SECRET_STORE_DIRS):
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"

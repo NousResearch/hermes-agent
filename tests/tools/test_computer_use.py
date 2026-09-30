@@ -1623,6 +1623,12 @@ class TestClickButtonPassthrough:
             "session": backend._session_id,
         }
 
+        backend.scroll(direction="down", x=50, y=60)
+        scroll_name, scroll_args = backend._session.call_tool.call_args.args
+        assert scroll_name == "scroll"
+        assert scroll_args["window_id"] == 222
+        assert scroll_args["x"] == 50 and scroll_args["y"] == 60
+
     def test_element_drag_sends_frame_centers_not_element_indexes(self):
         """The driver drag tool takes coordinates. Element indexes become the
         centre of the last capture's frames, not from_element/to_element."""
@@ -1674,12 +1680,6 @@ class TestClickButtonPassthrough:
         backend._session.call_tool.reset_mock()
         assert backend.key("banana+d").ok is False
         backend._session.call_tool.assert_not_called()
-
-        backend.scroll(direction="down", x=50, y=60)
-        scroll_name, scroll_args = backend._session.call_tool.call_args.args
-        assert scroll_name == "scroll"
-        assert scroll_args["window_id"] == 222
-        assert scroll_args["x"] == 50 and scroll_args["y"] == 60
 
     def test_coordinate_actions_without_window_id_fail_closed(self):
         backend = self._backend_with_active_target()

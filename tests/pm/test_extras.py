@@ -87,6 +87,16 @@ def test_declared_extra_gates_match_dependency_selection():
                 )
 
 
+def test_google_meet_is_not_supported_on_android():
+    from packaging.markers import default_environment
+
+    environment = {**default_environment(), "sys_platform": "android",
+                   "platform_system": "Android", "platform_machine": "aarch64",
+                   "python_version": "3.14", "python_full_version": "3.14.0"}
+    assert extras.extra_supported("google-meet", environment=environment,
+                                  importable=lambda _: False) is False
+
+
 def test_faster_whisper_targets_are_gated(monkeypatch):
     """The local-STT extra's anchor is faster-whisper, which has no win_arm64 or darwin-x64 build.
 

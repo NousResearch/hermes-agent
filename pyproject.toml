@@ -259,7 +259,7 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
+google-meet = ["playwright==1.62.0; sys_platform == 'linux' or sys_platform == 'darwin'", "websockets==15.0.1; sys_platform == 'linux' or sys_platform == 'darwin'"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",

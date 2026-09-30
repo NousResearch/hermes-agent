@@ -12,7 +12,6 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
-import os
 import time
 import uuid
 from pathlib import Path
@@ -317,19 +316,19 @@ def _collect_style_refs(
 
 
 def _inline_local_style_refs(
-    style_refs: List[Dict[str, Any]], fail: ErrorFn
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    style_refs: List[Any], fail: ErrorFn
+) -> Tuple[List[Any], Optional[Dict[str, Any]]]:
     """Embed local image files as data URIs; URLs and data URIs pass through unchanged."""
     from agent.file_safety import raise_if_read_blocked
 
-    inlined: List[Dict[str, Any]] = []
+    inlined: List[Any] = []
     total_bytes = 0
     for ref in style_refs:
-        source = ref.get("url")
+        source = ref.get("url") if isinstance(ref, dict) else None  # legacy non-dict refs pass through
         if not isinstance(source, str) or source.lower().startswith(_REMOTE_REFERENCE_PREFIXES):
             inlined.append(ref)
             continue
-        path = Path(os.path.expanduser(source))
+        path = Path(source).expanduser()
         # Guard first: a denied path must not reveal whether it exists or how large it is.
         try:
             raise_if_read_blocked(str(path))
@@ -337,13 +336,16 @@ def _inline_local_style_refs(
             return [], fail(str(exc), "invalid_image_url")
         if not path.is_file():
             return [], fail(f"Style reference image not found: {source}", "invalid_image_url")
-        total_bytes += path.stat().st_size
+        # Read at most one byte past the remaining budget: the cap bounds what is sent, not a stat.
+        with path.open("rb") as fh:
+            data = fh.read(_MAX_LOCAL_REFERENCE_BYTES - total_bytes + 1)
+        total_bytes += len(data)
         if total_bytes > _MAX_LOCAL_REFERENCE_BYTES:
             return [], fail(
                 f"Local style reference images total over {_MAX_LOCAL_REFERENCE_BYTES / 2**20:g} MB; "
                 "resize them or pass public URLs", "source_too_large")
         mime = mimetypes.guess_type(path.name)[0] or "image/png"
-        inlined.append({**ref, "url": f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"})
+        inlined.append({**ref, "url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"})
     return inlined, None
 
 

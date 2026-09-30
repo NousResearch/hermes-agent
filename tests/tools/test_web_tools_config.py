@@ -670,10 +670,39 @@ class TestWebExtractFormat:
             )
         )
 
-        assert calls == [{"url": "https://example.com/article", "formats": ["summary"]}]
+        assert calls == [{"url": "https://example.com/article", "formats": ["summary", "markdown"]}]
         assert results[0]["content"] == "Short AI summary."
         assert results[0]["raw_content"] == "Short AI summary."
         assert results[0]["title"] == "Example"
+
+    def test_firecrawl_summary_falls_back_to_markdown_when_no_summary(self, monkeypatch):
+        """Firecrawl returns only the requested formats and may decline to summarise.
+
+        A page it will not summarise must come back as its markdown, not as an
+        empty success with no error.
+        """
+        import asyncio
+
+        from plugins.web.firecrawl import provider as fc
+
+        page = {"markdown": "# Full page body", "metadata": {"title": "Scan", "sourceURL": "u"}}
+
+        class FakeClient:
+            def scrape(self, url, formats):
+                # Like the SDK: only the formats asked for, and no summary for this page.
+                return {k: v for k, v in page.items() if k in formats or k == "metadata"}
+
+        monkeypatch.setattr(fc, "_use_keyless_ring", lambda: False)
+        monkeypatch.setattr(fc, "_get_firecrawl_client", lambda: FakeClient())
+        monkeypatch.setattr(fc, "check_website_access", lambda url: None)
+        monkeypatch.setattr(fc, "is_safe_url", lambda url: True)
+
+        results = asyncio.run(
+            fc.FirecrawlWebSearchProvider().extract(["https://example.com/scan"], format="summary")
+        )
+
+        assert results[0]["content"] == "# Full page body"
+        assert "error" not in results[0]
 
 
 class TestWebSearchErrorHandling:

@@ -378,6 +378,21 @@ const VIM_BADGE_LABELS: Record<VimInputMode, string> = {
  */
 export const vimBadgeLabel = (mode: VimInputMode): string => VIM_BADGE_LABELS[mode].padEnd(VIM_BADGE_WIDTH)
 
+export type VimBadgeColor = 'accent' | 'ok' | 'warn'
+
+/** Visual selection deserves its own mode color instead of reading like NORMAL. */
+export const vimBadgeColor = (mode: VimInputMode): VimBadgeColor => {
+  if (mode === 'insert') {
+    return 'ok'
+  }
+
+  if (mode === 'visual' || mode === 'visual-line') {
+    return 'accent'
+  }
+
+  return 'warn'
+}
+
 type VimOperator = 'c' | 'd' | 'y'
 type VimRegister = { linewise: boolean; text: string }
 type VimFind = { char: string; direction: -1 | 1; till: boolean }

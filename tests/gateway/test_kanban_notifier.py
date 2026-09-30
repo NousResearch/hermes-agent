@@ -796,3 +796,178 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# --------------------------------------------------------------------------- #
+# GOV-F25.c AC-2/3/9/10/11 — Option B durable fence (kanban notifier)          #
+# --------------------------------------------------------------------------- #
+import pytest  # noqa: E402
+from pathlib import Path  # noqa: E402
+from tests.gov_f25c_support import (  # noqa: E402
+    _seed_task, _add_durable_sub, _add_plain_sub, _task_events, _notify_sub_columns,
+    _run_concurrent_claim_deliver, _drain_with_persist, _drain, _fence, _redelivers, _sub_exists,
+    _operator_alerted, _mark_sub_aged, _purge_stale_done_notify_subs, _publish_nonwaking_event,
+    _claim_durable_batch, _deliver_true_receipt, _recover_durable, _fresh_claim,
+)
+
+
+@pytest.fixture
+def kanban_conn(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def kanban_conn_factory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    _conns = []
+
+    def _factory():
+        c = kbc.connect()
+        _conns.append(c)
+        return c
+
+    try:
+        yield _factory
+    finally:
+        for c in _conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+@pytest.fixture
+def wake_without_persist_support():
+    async def _wake(adapter=None, *, text, session_id="", source=None,
+                    notification_category="result", profile=None):
+        return None
+    return _wake
+
+
+def test_ac_gov_f25_c_2(kanban_conn):
+    """Durable delivery rides the existing atomic claim: two concurrent drainers deliver one notification exactly once."""
+    from hermes_cli.kanban_db import publish_task_notification
+
+    task_id = _seed_task(kanban_conn)
+    sub = _add_durable_sub(kanban_conn, task_id)
+    publish_task_notification(kanban_conn, task_id, "once")
+
+    deliveries, cursors = _run_concurrent_claim_deliver(kanban_conn, sub, n=2)
+    assert deliveries == 1
+    assert cursors["advances"] == 1
+    cols = _notify_sub_columns(kanban_conn)
+    assert "claimed_by" not in cols and "lease_until" not in cols
+
+
+def test_ac_gov_f25_c_3(kanban_conn):
+    """A durable delivery not persist-confirmed RETAINS the fence (no rewind); persist-confirmed CASes it forward; M4: durable subs retained on repeated failure and exempt from stale-sub GC; non-waking kinds settle without a wake."""
+    from hermes_cli.kanban_db import publish_task_notification
+
+    task_id = _seed_task(kanban_conn)
+    durable = _add_durable_sub(kanban_conn, task_id)
+    publish_task_notification(kanban_conn, task_id, "keep me")
+
+    failed = _drain_with_persist(kanban_conn, durable, persisted=False)
+    assert _fence(kanban_conn, durable) is not None
+    assert _redelivers(kanban_conn, durable) is True
+
+    retried = _drain_with_persist(kanban_conn, durable, persisted=True)
+    assert _fence(kanban_conn, durable) is None
+    assert _redelivers(kanban_conn, durable) is False
+    assert failed.idempotency_key and failed.idempotency_key == retried.idempotency_key
+
+    from gateway.kanban_watchers_notifier import MAX_SEND_FAILURES
+
+    publish_task_notification(kanban_conn, task_id, "flaky")
+    for _ in range(MAX_SEND_FAILURES + 1):
+        _drain_with_persist(kanban_conn, durable, persisted=False)
+    assert _sub_exists(kanban_conn, durable) is True
+    assert _operator_alerted(kanban_conn, durable) is True
+
+    control = _add_plain_sub(kanban_conn, task_id, chat_id="ctrl")
+    _mark_sub_aged(kanban_conn, durable)
+    _mark_sub_aged(kanban_conn, control)
+    _purge_stale_done_notify_subs(kanban_conn)
+    assert _sub_exists(kanban_conn, control) is False
+    assert _sub_exists(kanban_conn, durable) is True
+
+    from gateway.kanban_watchers_notifier import _WAKE_KINDS
+
+    silent = _add_durable_sub(kanban_conn, task_id, chat_id="silent")
+    publish_task_notification(kanban_conn, task_id, "wake me")
+    _publish_nonwaking_event(kanban_conn, task_id, kind="archived")
+    assert "archived" not in _WAKE_KINDS
+    drained = _drain_with_persist(kanban_conn, silent, persisted=True)
+    assert _fence(kanban_conn, silent) is None
+    assert drained.wakes_for("archived") == 0
+    assert drained.wakes_for("notification") == 1
+
+
+def test_ac_gov_f25_c_9(kanban_conn, wake_without_persist_support):
+    """PR-A alone (no PR-B): a durable sub whose wake API lacks require_persist_ack FAILS CLOSED by a capability check BEFORE claiming — never fences an unconfirmable event."""
+    from hermes_cli.kanban_db import publish_task_notification
+
+    task_id = _seed_task(kanban_conn)
+    durable = _add_durable_sub(kanban_conn, task_id)
+    publish_task_notification(kanban_conn, task_id, "no persist support yet")
+
+    result = _drain(kanban_conn, durable, wake=wake_without_persist_support)
+    assert result.claimed is False
+    assert _fence(kanban_conn, durable) is None
+    assert _sub_exists(kanban_conn, durable) is True
+    assert result.operator_alerted is True
+    assert _redelivers(kanban_conn, durable) is True
+
+
+def test_ac_gov_f25_c_10(kanban_conn_factory):
+    """Option B fence: a two-event durable batch replays ONLY the un-acked second event after a crash following the first ack."""
+    from hermes_cli.kanban_db import publish_task_notification
+
+    conn = kanban_conn_factory()
+    task_id = _seed_task(conn)
+    durable = _add_durable_sub(conn, task_id)
+    publish_task_notification(conn, task_id, "first")
+    publish_task_notification(conn, task_id, "second")
+    e1, e2 = [ev.id for ev in _task_events(conn, task_id, kind="notification")]
+
+    claimed = _claim_durable_batch(conn, durable)
+    assert [ev.id for ev in claimed] == [e1, e2]
+
+    first_wake = _deliver_true_receipt(conn, durable, event_id=e1)
+    assert first_wake.event_id == e1
+    assert _fence(conn, durable) == e2
+
+    conn.close()
+    conn2 = kanban_conn_factory()
+    recovery_wakes = _recover_durable(conn2, durable)
+    assert [w.event_id for w in recovery_wakes] == [e2]
+    assert recovery_wakes[0].idempotency_key != first_wake.idempotency_key
+
+
+def test_ac_gov_f25_c_11(kanban_conn_factory):
+    """Option B fence: while pending_event_id is set, an OVERLAPPING claim from a second connection cannot bypass the fenced un-acked event."""
+    from hermes_cli.kanban_db import publish_task_notification
+
+    first_conn = kanban_conn_factory()
+    task_id = _seed_task(first_conn)
+    durable = _add_durable_sub(first_conn, task_id)
+    publish_task_notification(first_conn, task_id, "fenced")
+    _claim_durable_batch(first_conn, durable)
+    publish_task_notification(first_conn, task_id, "later")
+    e_first, e_later = [ev.id for ev in _task_events(first_conn, task_id, kind="notification")]
+
+    concurrent_conn = kanban_conn_factory()
+    assert _fresh_claim(concurrent_conn, durable) == []
+
+    _deliver_true_receipt(first_conn, durable, event_id=e_first)
+    assert _fence(first_conn, durable) is None
+    assert [ev.id for ev in _fresh_claim(concurrent_conn, durable)] == [e_later]

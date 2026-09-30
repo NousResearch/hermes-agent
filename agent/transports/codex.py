@@ -383,7 +383,7 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
 
 _CHATGPT_EFFORT_UPDATE_MODELS = (
     "gpt-6-astra", "gpt-6-luna", "gpt-6-terra", "gpt-6-sol",
-    "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
+    "gpt-6.1-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
 )
 
 

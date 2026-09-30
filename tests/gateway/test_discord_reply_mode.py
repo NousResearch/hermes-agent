@@ -125,7 +125,8 @@ class TestSendWithReplyToMode:
         adapter, channel, _ = _make_discord_adapter("off")
 
         await adapter.send(
-            "12345", "Implementation result", metadata={"hermes_profile": "sii-worker"},
+            "12345", "Implementation result",
+            metadata={"hermes_profile": "sii-worker", "notify": True},
         )
 
         sent = channel.send.call_args.kwargs["content"]
@@ -142,6 +143,16 @@ class TestSendWithReplyToMode:
         assert channel.send.call_args.kwargs["content"] == "Mission Control response"
 
     @pytest.mark.asyncio
+    async def test_project_profile_progress_message_is_not_labeled(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+
+        await adapter.send(
+            "12345", "Reading skill", metadata={"hermes_profile": "sii-hermes-core"},
+        )
+
+        assert channel.send.call_args.kwargs["content"] == "Reading skill"
+
+    @pytest.mark.asyncio
     async def test_streamed_profile_reply_edit_has_copy_safe_role_label(self):
         adapter, channel, _ = _make_discord_adapter("off")
         msg = AsyncMock()
@@ -149,7 +160,7 @@ class TestSendWithReplyToMode:
 
         await adapter.edit_message(
             "12345", "42", "Streamed result", finalize=True,
-            metadata={"hermes_profile": "strategic-industrial-intelligence"},
+            metadata={"hermes_profile": "strategic-industrial-intelligence", "notify": True},
         )
 
         msg.edit.assert_awaited_once_with(

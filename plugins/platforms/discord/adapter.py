@@ -1024,7 +1024,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     @staticmethod
     def _role_labeled_content(content: str, metadata: Optional[Dict[str, Any]]) -> str:
         profile = str((metadata or {}).get("hermes_profile") or "").strip()
-        if not profile or profile == "default":
+        # Attribution belongs on the copyable final answer, not transient tool/status previews.
+        if not profile or profile == "default" or not (metadata or {}).get("notify"):
             return content
         label = profile.replace("-", " ").replace("_", " ").title()
         prefix = f"**[{label}]**"

@@ -3130,8 +3130,8 @@ class GatewayTurnMixin:
         if metadata is None and _relay_prospective_thread_id:
             metadata = {"reply_to_message_id": event_message_id}
         # Streaming replies use this progress/status metadata for every send/edit. Preserve the
-        # routed profile even when the platform has no thread metadata, so delivery adapters can
-        # present copy-safe profile attribution consistently with the normal final-send path.
+        # routed profile even when the platform has no thread metadata; the adapter combines it
+        # with the final send's notify marker and labels only the sealed, copyable answer.
         profile = str(getattr(source, "profile", None) or "").strip()
         if profile:
             metadata = dict(metadata or {})

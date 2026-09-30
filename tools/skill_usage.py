@@ -569,11 +569,13 @@ def set_state(skill_name: str, state: str) -> None:
 
 
 def set_pinned(skill_name: str, pinned: bool) -> bool:
-    """False when the write did not land (not curation-eligible).
+    """False when the write did not land (not an existing local skill or not curation-eligible).
 
     (skill not curation-eligible), True on success — so callers can report failure instead of a false
     success (issue #92993).
     """
+    if _find_skill_dir(skill_name) is None:
+        return False
     return _set_field(skill_name, "pinned", bool(pinned))
 
 

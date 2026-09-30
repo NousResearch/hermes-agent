@@ -1,4 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -281,6 +282,17 @@ export function isSessionBusyError(error: unknown): boolean {
   return /session busy/i.test(error instanceof Error ? error.message : String(error))
 }
 
+// prompt.submit refused because another surface (TUI, messaging gateway)
+// holds this session's lease (4090 / SESSION_NOT_OWNED, #106217). The gateway
+// stamps the machine reason in `error.data.reason`; the prose fallback covers
+// backends older than that contract. Deterministic until the owner lets go —
+// Retry reproduces it, so the card offers "Start new session" instead.
+export function isSessionNotOwnedError(error: unknown): boolean {
+  const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
+
+  return reason === 'SESSION_NOT_OWNED' || /already has a live owner/i.test(error instanceof Error ? error.message : '')
+}
+
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 // Retry a gateway call across transient "session busy" so it never reaches the
@@ -409,24 +421,14 @@ export function imageFilenameFromPath(filePath: string): string {
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
 //
-// `cachedDataUrl` is the attachment's `previewUrl` when the composer already
-// read the file for the chip thumbnail — that preview is the FULL file as a
-// base64 data URL (attachmentPreviewDataUrl → readFileDataUrl), not a
-// downscaled copy, so reusing it skips a second disk read + IPC round-trip of
-// the same bytes at submit. Only a `;base64,` data URL qualifies; anything
-// else falls through to the disk read.
+// Always re-reads from disk rather than trusting `attachment.previewUrl` as a
+// cache: once a thumbnail is generated, `attachImagePath` keeps only the
+// bounded (≤512px) `thumbnailUrl` and drops `previewUrl` — so a cached
+// `previewUrl` is never guaranteed to be the full-resolution bytes the model
+// needs, and trusting it here would risk silently uploading a downscaled copy.
 export async function readImageForRemoteAttach(
-  filePath: string,
-  cachedDataUrl?: string
+  filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
-  if (cachedDataUrl?.includes(';base64,')) {
-    const cached = base64FromDataUrl(cachedDataUrl)
-
-    if (cached) {
-      return { contentBase64: cached, filename: imageFilenameFromPath(filePath) }
-    }
-  }
-
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
@@ -511,7 +513,7 @@ export function slashStatusText(command: string, output: string): string {
  *   because it needs transcript replacement)
  * - `session.status`:   { output: "<multi-line plain text>" }
  * - `session.save`:     { file: "<absolute path>" }
- * - `session.usage`:    { calls, input, output, total, credits_lines? }
+ * - `session.usage`:    { calls, input, output, total, account_lines?, credits_lines? }
  * - `session.steer`:    { status: 'queued' | 'rejected', text }
  * - `process.stop`:     { killed: boolean }
  * - `agents.list`:      { processes: [{ session_id, command, status, uptime }] }
@@ -570,7 +572,7 @@ export function renderRpcResult(response: unknown, name: string): string {
     return r.output
   }
 
-  // session.usage — { calls, input, output, total, credits_lines? }
+  // session.usage — { calls, input, output, total, account_lines?, credits_lines? }
   if ('total' in r || 'input' in r || 'output' in r || 'calls' in r) {
     const calls = Number(r.calls ?? 0)
     const input = Number(r.input ?? 0)
@@ -581,10 +583,13 @@ export function renderRpcResult(response: unknown, name: string): string {
       `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
     ]
 
-    if (Array.isArray(r.credits_lines)) {
-      for (const credit of r.credits_lines) {
-        if (typeof credit === 'string' && credit.trim()) {
-          lines.push(credit.trim())
+    // Provider account limits (e.g. Codex quota windows) first, then Nous credits — same order as CLI /usage.
+    for (const extra of [r.account_lines, r.credits_lines]) {
+      if (Array.isArray(extra)) {
+        for (const line of extra) {
+          if (typeof line === 'string' && line.trim()) {
+            lines.push(line.trim())
+          }
         }
       }
     }
@@ -698,6 +703,8 @@ export interface SubmitTextOptions {
    *  (queue drain, steer, external submit requests): the check is a no-op
    *  without it. */
   composerScope?: string | null
+  /** This submit's fresh draft acquired a stored key. Never fired for navigation. */
+  onComposerScopeAssigned?: (scope: string) => void
   /** What the transcript shows for this send, when it differs from the text
    *  the agent receives. A `/skill` invocation expands into the whole skill
    *  body — model-facing scaffolding the UI must never render — so the slash
@@ -707,6 +714,13 @@ export interface SubmitTextOptions {
    *  renders anywhere — the off-screen path for widget intents. The agent
    *  still receives the text as a normal user turn. */
   displayKind?: 'hidden'
+  /** Per-turn client surface the gateway turns into a model-bound note. The
+   *  HUD sets `hud` from its own store; a GPT-Live delegation passes
+   *  `voice-live` (spoken transcript in, speakable prose out). */
+  surface?: 'voice-live'
+  /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
+   *  model-bound note by the gateway (never persisted, never rendered). */
+  voiceContext?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

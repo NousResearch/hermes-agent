@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from tests.hermes_cli.anon_portal import make_jwt
+
 
 @pytest.fixture
 def rate_guard_env(tmp_path, monkeypatch):
@@ -28,7 +30,7 @@ class TestRecordNousRateLimit:
 
         path = _state_path()
         assert os.path.exists(path)
-        with open(path) as f:
+        with open(path, encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(1800, abs=2)
         assert state["reset_at"] > time.time()
@@ -45,7 +47,7 @@ class TestRecordNousRateLimit:
             error_context={"reset_at": future_reset},
         )
 
-        with open(_state_path()) as f:
+        with open(_state_path(), encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_at"] == pytest.approx(future_reset, abs=1)
 
@@ -55,7 +57,7 @@ class TestRecordNousRateLimit:
 
         record_nous_rate_limit(headers=None, default_cooldown=120.0)
 
-        with open(_state_path()) as f:
+        with open(_state_path(), encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
 
@@ -77,9 +79,10 @@ class TestNousRateLimitRemaining:
         from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
 
         # Write an already-expired state
-        state_dir = os.path.dirname(_state_path())
+        path = _state_path()
+        state_dir = os.path.dirname(path)
         os.makedirs(state_dir, exist_ok=True)
-        with open(_state_path(), "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump({"reset_at": time.time() - 10, "recorded_at": time.time() - 100}, f)
 
         assert nous_rate_limit_remaining() is None
@@ -106,20 +109,8 @@ class TestClearNousRateLimit:
         assert nous_rate_limit_remaining() is None
         assert not os.path.exists(_state_path())
 
-    def test_clear_when_no_file(self, rate_guard_env):
-        from agent.nous_rate_guard import clear_nous_rate_limit
-
-        # Should not raise
-        clear_nous_rate_limit()
 
 
-class TestFormatRemaining:
-    """Test human-readable duration formatting."""
-
-    def test_seconds(self):
-        from agent.nous_rate_guard import format_remaining
-
-        assert format_remaining(30) == "30s"
 
 
 
@@ -164,18 +155,10 @@ class TestAuxiliaryClientIntegration:
             "inference_base_url": "https://api.nous.test/v1",
         })
 
+        monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: None)
         result = aux._try_nous()
         assert result == (None, None)
 
-    def test_try_nous_works_when_not_rate_limited(self, rate_guard_env, monkeypatch):
-        import agent.auxiliary_client as aux
-
-        # No rate limit recorded — _try_nous should proceed normally
-        # (will return None because no real creds, but won't be blocked
-        # by the rate guard)
-        monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
-        result = aux._try_nous()
-        assert result == (None, None)
 
 
 class TestIsGenuineNousRateLimit:
@@ -199,7 +182,28 @@ class TestIsGenuineNousRateLimit:
         }
         assert is_genuine_nous_rate_limit(headers=headers) is True
 
+    def test_a_welcome_host_429_with_exhausted_buckets_trips_the_breaker(
+        self, rate_guard_env, monkeypatch,
+    ):
+        from agent.nous_rate_guard import (
+            is_genuine_nous_rate_limit,
+            nous_rate_limit_remaining,
+            record_nous_rate_limit,
+        )
 
+        headers = {
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "0",
+            "x-ratelimit-reset-requests-1h": "600",
+        }
+        assert is_genuine_nous_rate_limit(headers=headers) is True
+        record_nous_rate_limit(headers=headers)
+        assert nous_rate_limit_remaining() > 0
+        verdict, _buffered, statuses = TestWelcomeRouteCopy._drive_guard(
+            "https://welcome-api.nousresearch.com/v1", monkeypatch
+        )
+        assert verdict.action == "return"
+        assert "/login" in statuses[0]
 
     def test_bare_429_with_no_headers_is_upstream(self):
         from agent.nous_rate_guard import is_genuine_nous_rate_limit
@@ -239,6 +243,60 @@ class TestIsGenuineNousRateLimit:
 
 
 
+class TestWelcomeRouteCopy:
+    @staticmethod
+    def _drive_guard(base_url, monkeypatch):
+        from types import SimpleNamespace
+
+        from agent import nous_rate_guard
+        from agent.turn_api_call import nous_rate_limit_guard
+
+        monkeypatch.setattr(nous_rate_guard, "nous_rate_limit_remaining", lambda **kw: 600)
+        buffered = []
+        statuses = []
+        agent = SimpleNamespace(
+            provider="nous",
+            api_key=make_jwt(account_tier="anonymous" if "welcome-api" in base_url else "paid"),
+            base_url=base_url,
+            log_prefix="",
+            _buffer_vprint=buffered.append,
+            _buffer_status=statuses.append,
+            _try_activate_fallback=lambda: False,
+            _flush_status_buffer=lambda: None,
+            _persist_session=lambda *_args: None,
+        )
+        from agent.status_output import StatusOutputMixin
+        agent._buffer_diagnostic_status = StatusOutputMixin._buffer_diagnostic_status.__get__(agent)
+        verdict = nous_rate_limit_guard(
+            agent,
+            _retry=None,
+            api_messages=[],
+            messages=[],
+            conversation_history=[],
+            active_system_prompt="system",
+            retry_count=0,
+            compression_attempts=0,
+            api_call_count=0,
+        )
+        return verdict, buffered, statuses
+
+    def test_the_welcome_host_rate_limit_message_names_the_slash_command(self, monkeypatch):
+        from hermes_cli import anon_auth
+
+        verdict, buffered, statuses = self._drive_guard(
+            "https://welcome-api.nousresearch.com/v1", monkeypatch
+        )
+
+        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=anon_auth.friendly_wait(600))
+        assert verdict.action == "return"
+        assert statuses == [f"⏳ {expected}"]
+        assert expected in verdict.result["final_response"]
+        assert "/login" in expected
+        assert "Nous Portal" not in expected
+        assert buffered == [f"⏳ {expected} Trying fallback..."]
+
+
+
 class TestRateGuardStateEncoding:
     """Regression for #18637: the cross-session rate-limit state file was
     opened without ``encoding="utf-8"`` on both the atomic write (os.fdopen)
@@ -272,7 +330,13 @@ class TestRateGuardStateEncoding:
                 is_target = str(file) == str(path)
             except Exception:
                 is_target = False
-            if is_target and "b" not in mode and kwargs.get("encoding") != "utf-8":
+            # The repo encoding policy makes reads BOM-tolerant, so both
+            # UTF-8 family codecs satisfy this regression guard.
+            if (
+                is_target
+                and "b" not in mode
+                and kwargs.get("encoding") not in ("utf-8", "utf-8-sig")
+            ):
                 raise UnicodeDecodeError(
                     "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
                 )

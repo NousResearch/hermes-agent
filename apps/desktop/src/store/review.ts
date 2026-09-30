@@ -9,8 +9,10 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
+import { noteAreaClosed, recordFeatureUse } from './desktop-metrics'
 import { stampSessionPrBranch } from './pull-requests'
 import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
 import { $workspaceChangeTick } from './workspace-events'
@@ -36,7 +38,11 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-export const $reviewOpen = persistentAtom(OPEN_KEY, false, Codecs.bool)
+// Simple mode rests it closed without touching the preference; ⌘G still opens
+// it for the session.
+const $reviewOpenPref = persistentAtom(OPEN_KEY, false, Codecs.bool)
+
+export const $reviewOpen = modeBound('reviewOpen', $reviewOpenPref, open => $reviewOpenPref.set(open))
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'
@@ -268,11 +274,13 @@ export function openReview(scopeCwd: null | string = null, scopeTarget = 'main')
   $reviewScopeCwd.set(scopeCwd?.trim() || null)
   $reviewScopeTarget.set(scopeTarget.trim() || 'main')
   $reviewOpen.set(true)
+  recordFeatureUse('review_pane')
   void refreshReview()
   void refreshShipInfo()
 }
 
 export function closeReview(): void {
+  noteAreaClosed('review_pane')
   $reviewOpen.set(false)
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')

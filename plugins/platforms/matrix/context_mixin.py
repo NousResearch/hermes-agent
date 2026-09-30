@@ -23,6 +23,14 @@ class MatrixContextMixin:
     _is_sender_authorized: Callable[..., bool | None]
 
     async def fetch_inbound_context(self, event: MessageEvent) -> InboundContextSnapshot:
+        from plugins.platforms.matrix.rich_content import MatrixRichContentSnapshot
+
+        if any(
+            isinstance(dependency, MatrixRichContentSnapshot)
+            and dependency.context.adapter is self
+            for dependency in event._inbound_context_dependencies
+        ):
+            return MatrixRichContentSnapshot.capture(self, event)
         return MatrixTurnContext.capture(self, event)
 
     async def fetch_thread_history(

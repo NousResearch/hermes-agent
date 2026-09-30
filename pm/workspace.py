@@ -136,7 +136,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
             seen = buildable.get(name)
             if seen is not None and _same_member_source(seen, entry):
                 continue
-            buildable[name] = identity
+            buildable[name] = entry
         members.append(_workspace_member(entry, root, identity=identity).relative_to(root).as_posix())
 
     if members:

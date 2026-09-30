@@ -117,7 +117,11 @@ def test_identical_buildable_member_across_profiles_joins_the_workspace_once(tmp
     profile = plugin_at("profile-home")
 
     root = tmp_path / "gen"
-    _generate_pyproject({default: default, profile: profile}, root, source=core)
+    identities = {
+        tmp_path / "default-profile" / "tinyfish": default,
+        tmp_path / "secondary-profile" / "tinyfish": profile,
+    }
+    _generate_pyproject(identities, root, source=core)
     workspace = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     members = workspace["tool"]["uv"]["workspace"]["members"]
     assert len(members) == 1, members
@@ -127,6 +131,6 @@ def test_identical_buildable_member_across_profiles_joins_the_workspace_once(tmp
 
     (profile / "extra.py").write_text("X = 1\n", encoding="utf-8")  # the copies diverge
     root2 = tmp_path / "gen2"
-    _generate_pyproject({default: default, profile: profile}, root2, source=core)
+    _generate_pyproject(identities, root2, source=core)
     workspace2 = tomllib.loads((root2 / "pyproject.toml").read_text(encoding="utf-8"))
     assert len(workspace2["tool"]["uv"]["workspace"]["members"]) == 2

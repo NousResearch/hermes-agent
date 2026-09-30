@@ -42,10 +42,10 @@ import {
   type JarvisComputerMode,
   jarvisToolsetPlan
 } from './computer-capabilities'
+import { type JarvisRoleId, selectionForRole } from './connections-catalog'
 import { withCoordinatorPrompt } from './coordinator-prompt'
 import { ChoiceCard, choiceRadioKeyHandler } from './onboarding-choice-card'
 import { ComputerStep, type ComputerStepProps } from './onboarding-computer'
-import { selectionForRole, type JarvisRoleId } from './connections-catalog'
 import { ConnectionsStep } from './onboarding-connections'
 import { PersonalityStep } from './onboarding-personality'
 import {
@@ -260,12 +260,16 @@ export function JarvisOnboarding({
     if (splashLeaving) {
       return
     }
+
     setSplashLeaving(true)
+
     try {
       const AudioContextClass = window.AudioContext
+
       if (AudioContextClass) {
         const audio = new AudioContextClass()
         const now = audio.currentTime
+
         for (const [index, frequency] of [392, 523.25, 659.25].entries()) {
           const oscillator = audio.createOscillator()
           const gain = audio.createGain()
@@ -279,11 +283,13 @@ export function JarvisOnboarding({
           oscillator.start(start)
           oscillator.stop(start + 0.36)
         }
+
         window.setTimeout(() => void audio.close(), 800)
       }
     } catch {
       // The onboarding remains usable when audio is unavailable.
     }
+
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     splashTimer.current = setTimeout(() => setShowSplash(false), reducedMotion ? 0 : 420)
   }
@@ -1090,15 +1096,20 @@ export function JarvisOnboarding({
                   <button
                     aria-current={active ? 'step' : undefined}
                     className={cn(
-                      'flex min-h-11 w-full items-center gap-3 rounded-md border px-3 text-left text-sm backdrop-blur-md transition focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50',
+                      'jarvis-choice flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50',
                       active
-                        ? 'border-[#00B7FF]/70 bg-[#00B7FF]/12 text-(--ui-text-primary)'
-                        : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:border-(--ui-stroke-secondary) hover:bg-(--ui-bg-tertiary) hover:text-(--ui-text-primary)'
+                        ? 'jarvis-choice-on text-(--ui-text-primary)'
+                        : 'jarvis-well text-(--ui-text-tertiary) hover:text-(--ui-text-primary)'
                     )}
                     onClick={() => selectStep(step)}
                     type="button"
                   >
-                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-(--ui-bg-tertiary) text-xs">
+                    <span
+                      className={cn(
+                        'flex size-6 shrink-0 items-center justify-center rounded-full text-xs',
+                        done ? 'bg-emerald-500/20 text-emerald-500' : active ? 'jarvis-segment-on' : 'bg-(--ui-bg-tertiary)'
+                      )}
+                    >
                       {done ? <Check className="size-3.5" /> : index + 1}
                     </span>
                     <span>{stepLabel(step)}</span>
@@ -1109,12 +1120,21 @@ export function JarvisOnboarding({
           </ol>
         </aside>
 
-        <section className="grid min-h-[31rem] min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-4 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary) p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl sm:p-5">
+        <section className="jarvis-panel grid min-h-[31rem] min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-4 rounded-2xl bg-(--ui-bg-quaternary) p-4 backdrop-blur-xl sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-(--ui-stroke-tertiary) pb-4">
             <div>
               <p className="text-xs text-(--ui-text-tertiary)">
                 {copy.progress(currentIndex + 1, JARVIS_ONBOARDING_STEPS.length)}
               </p>
+              <div
+                aria-hidden="true"
+                className="jarvis-progress mt-2 h-1.5 w-40 overflow-hidden rounded-full"
+              >
+                <span
+                  className="jarvis-progress-fill block h-full rounded-full"
+                  style={{ width: `${((currentIndex + 1) / JARVIS_ONBOARDING_STEPS.length) * 100}%` }}
+                />
+              </div>
               <h2 className="mt-1 text-xl font-semibold tracking-normal">{stepLabel(currentStep)}</h2>
               <p className="mt-2 text-sm text-(--ui-accent)">
                 {informational ? guide.information : optional ? guide.optional : guide.required}
@@ -1133,7 +1153,7 @@ export function JarvisOnboarding({
             </div>
           </div>
 
-          <div className="min-h-0 overflow-y-auto pr-1">
+          <div className="jarvis-rise min-h-0 overflow-y-auto pr-1" key={currentStep}>
             {currentStep === 'welcome' ? <WelcomeStep copy={copy.welcome} /> : null}
             {currentStep === 'profile' ? (
               <PersonalityStep

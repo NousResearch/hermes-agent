@@ -43,6 +43,7 @@ import {
 import {
   $connection,
   $contextSuggestions,
+  $currentModel,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -72,6 +73,7 @@ import { JarvisAgentsCard, JarvisModelCard } from '../jarvis/rail-cards'
 import { JarvisConnectCard } from '../jarvis/rail-connect-card'
 import { JarvisMemoryCard } from '../jarvis/rail-memory-card'
 import { JarvisNewsLiveCard } from '../jarvis/rail-news-card'
+import { JarvisStartCard } from '../jarvis/rail-start-card'
 import { $jarvisUi, resetJarvisSession } from '../jarvis/store'
 import { useDesktopOrbBridge } from '../jarvis/use-desktop-orb-bridge'
 import { VoiceControls } from '../jarvis/voice-controls'
@@ -427,6 +429,7 @@ function JarvisDashboardFrame({
 }) {
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const currentModel = useStore($currentModel)
   const profiles = useStore($profiles)
   const jarvisState = useStore($jarvisUi)
   const voicePlayback = useStore($voicePlayback)
@@ -471,6 +474,11 @@ function JarvisDashboardFrame({
       profileDisplayName={activeProfileRow ? profileLabel(activeProfileRow) : undefined}
       rail={
         <>
+          <JarvisStartCard
+            connected={connected}
+            hasHistory={dashboardState.activity.length > 0}
+            modelReady={connected && Boolean(currentModel)}
+          />
           <JarvisMemoryCard connected={connected} />
           <JarvisConnectCard connected={connected} />
           <JarvisQuickAccessCard connected={connected} />

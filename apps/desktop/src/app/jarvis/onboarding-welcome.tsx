@@ -27,7 +27,7 @@ export function WelcomeStep({ copy }: { copy: WelcomeCopy }) {
       <div className="flex items-center gap-4">
         <img
           alt=""
-          className="size-16 shrink-0 object-contain drop-shadow-[0_0_14px_rgb(124_92_255/0.5)]"
+          className="jarvis-float size-16 shrink-0 object-contain drop-shadow-[0_0_14px_rgb(124_92_255/0.5)]"
           src={logoUrl}
         />
         <div className="min-w-0">
@@ -38,8 +38,8 @@ export function WelcomeStep({ copy }: { copy: WelcomeCopy }) {
 
       <section aria-label={copy.pillarsLabel} className="grid gap-2 sm:grid-cols-2">
         {PILLARS.map(({ icon: Icon, id }) => (
-          <div className="flex gap-3 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) p-3" key={id}>
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-[#00B7FF]/12 text-(--ui-accent)">
+          <div className="jarvis-well jarvis-rise flex gap-3 p-3" key={id}>
+            <span className="jarvis-icon-chip grid size-9 shrink-0 place-items-center rounded-xl">
               <Icon className="size-4" />
             </span>
             <span className="min-w-0">
@@ -48,8 +48,8 @@ export function WelcomeStep({ copy }: { copy: WelcomeCopy }) {
             </span>
           </div>
         ))}
-        <div className="flex gap-3 rounded-md border border-emerald-400/30 bg-emerald-400/8 p-3 sm:col-span-2">
-          <span className="grid size-9 shrink-0 place-items-center rounded-md bg-emerald-400/15 text-emerald-300">
+        <div className="jarvis-rise flex gap-3 rounded-xl border border-emerald-400/30 bg-emerald-400/8 p-3 sm:col-span-2">
+          <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-emerald-400/15 text-emerald-400">
             <ShieldLock className="size-4" />
           </span>
           <span className="min-w-0">
@@ -64,8 +64,8 @@ export function WelcomeStep({ copy }: { copy: WelcomeCopy }) {
         <ol className="flex flex-wrap items-center gap-2">
           {copy.flow.map((stage, index) => (
             <li className="flex items-center gap-2" key={stage}>
-              <span className="flex items-center gap-2 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) px-3 py-1.5 text-sm">
-                <span className="grid size-5 place-items-center rounded-full bg-[#00B7FF]/20 text-xs text-(--ui-accent)">
+              <span className="jarvis-well flex items-center gap-2 rounded-full px-3 py-1.5 text-sm">
+                <span className="jarvis-segment-on grid size-5 place-items-center rounded-full text-xs">
                   {index + 1}
                 </span>
                 {stage}

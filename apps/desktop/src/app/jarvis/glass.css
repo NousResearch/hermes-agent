@@ -880,3 +880,47 @@ main[data-home='true'] .jarvis-tips-corner {
 :root.dark .model-brand-mask {
   background: #e8edff;
 }
+
+/* "Start z Czeskiem" progress bar. */
+.jarvis-progress {
+  background: color-mix(in srgb, var(--ui-text-primary) 10%, transparent);
+}
+
+.jarvis-progress-fill {
+  background: var(--czesiek-grad);
+  box-shadow: var(--czesiek-glow);
+  transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-progress-fill {
+    transition: none;
+  }
+}
+
+/* The logo on the welcome step breathes; the pillar cards arrive one after another. */
+@keyframes jarvis-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.jarvis-float {
+  animation: jarvis-float 4.5s ease-in-out infinite;
+}
+
+[data-testid='jarvis-onboarding-welcome'] .jarvis-rise:nth-child(2) { animation-delay: 60ms; }
+[data-testid='jarvis-onboarding-welcome'] .jarvis-rise:nth-child(3) { animation-delay: 120ms; }
+[data-testid='jarvis-onboarding-welcome'] .jarvis-rise:nth-child(4) { animation-delay: 180ms; }
+[data-testid='jarvis-onboarding-welcome'] .jarvis-rise:nth-child(5) { animation-delay: 240ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-float {
+    animation: none;
+  }
+}

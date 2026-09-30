@@ -125,3 +125,9 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 
 - `apps/desktop/src/components/model-brand-icon.tsx` — `ModelBrandIcon` / `resolveModelBrand`: one maker mark per model (simple-icons where they exist, drawn glyphs for GPT, DeepSeek, Hermes, free); used by the model card, the live-voice picker and preset rows.
 - `src/app/jarvis/glass.css` (bottom sections) — gradient-hairline `.jarvis-panel`, `.jarvis-icon-chip`, `.model-brand-tile`, `.jarvis-choice`, `.jarvis-segment`, `.jarvis-menu`, `.jarvis-rise` entrance animation; composer glass controls `.jarvis-ctl*` (classes set in `chat/composer/control-classes.ts`); list/detail surfaces `.jarvis-page-list|detail` and `.jarvis-row` (set in `master-detail.tsx`, `overlays/panel.tsx`). All motion respects `prefers-reduced-motion`.
+
+## Tips and first-run experience
+
+- `apps/desktop/src/app/jarvis/setup-progress.ts` + `rail-start-card.tsx` — "Zacznij tutaj" card at the top of the dashboard rail: progress from real state (model, Google, vault, browser login, first task, daily report), hides itself when done or dismissed.
+- `playbook-extras.ts` + `tips.tsx` — connection-aware tips ("with what you have connected": mail/calendar need Google, file search needs the vault, the "Tatuś wrócił" voice tip) shown above the regular playbook; the launcher asks what is connected each time the window opens.
+- Onboarding wizard (`onboarding.tsx`, `onboarding-welcome.tsx`): glass panel, gradient step markers and progress bar, per-step entrance animation.

@@ -17,12 +17,15 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
+import { getBrowserStatus } from '@/api/browser'
+import { getConnectionStatus } from '@/api/connections'
+import { getVaultGraph } from '@/api/vault'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
-import { Brain, Clock, FolderOpen, Globe, Lightbulb, Mic, Monitor, X } from '@/lib/icons'
+import { Brain, Clock, FolderOpen, Globe, Lightbulb, Mic, Monitor, Sparkles, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { requestComposerInsert } from '../chat/composer/focus'
@@ -40,6 +43,7 @@ import {
   type JarvisPlaybookEntry,
   selectJarvisPlaybook
 } from './playbook'
+import { EXTRA_TIP_COPY, type ExtraTipContext, selectExtraTips } from './playbook-extras'
 import {
   dismissJarvisTip,
   type JarvisTipsState,
@@ -62,9 +66,24 @@ const CATEGORY_ICONS: Record<JarvisPlaybookCategory, IconComponent> = {
 
 type TipsCopy = ReturnType<typeof useI18n>['t']['jarvisTips']
 
+/** A suggestion that exists because something is connected (see playbook-extras). */
+export interface JarvisExtraTip {
+  detail: string
+  id: string
+  /** Empty: a tip to act on out loud, nothing to put in the composer. */
+  prompt: string
+  title: string
+}
+
+const EXTRAS_COPY = {
+  en: { spoken: 'Say it out loud', title: 'With what you have connected' },
+  pl: { spoken: 'Powiedz to na głos', title: 'Z tym, co masz połączone' }
+} as const
+
 export interface JarvisTipsWindowProps {
   copy: TipsCopy
   entries: readonly JarvisPlaybookEntry[]
+  extras?: readonly JarvisExtraTip[]
   onClose: () => void
   onDismiss: (id: string) => void
   onReset: () => void
@@ -79,12 +98,15 @@ function matches(text: string, query: string): boolean {
 export function JarvisTipsWindow({
   copy,
   entries,
+  extras = [],
   onClose,
   onDismiss,
   onReset,
   onUse,
   open
 }: JarvisTipsWindowProps) {
+  const { locale } = useI18n()
+  const extrasCopy = locale === 'pl' ? EXTRAS_COPY.pl : EXTRAS_COPY.en
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<'all' | JarvisPlaybookCategory>('all')
   const categories = useMemo(() => jarvisPlaybookCategories(entries), [entries])
@@ -106,6 +128,14 @@ export function JarvisTipsWindow({
       return !needle || matches(text.title, needle) || matches(text.detail, needle)
     })
   }, [activeCategory, copy.entries, entries, query])
+
+  const visibleExtras = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase()
+
+    return activeCategory !== 'all'
+      ? []
+      : extras.filter(tip => !needle || matches(tip.title, needle) || matches(tip.detail, needle))
+  }, [activeCategory, extras, query])
 
   return (
     <Dialog onOpenChange={next => !next && onClose()} open={open}>
@@ -146,6 +176,35 @@ export function JarvisTipsWindow({
         </div>
 
         <ul className="grid min-h-0 gap-2 overflow-y-auto pr-1" data-testid="jarvis-tips-list">
+          {visibleExtras.length > 0 && (
+            <li className="flex items-center gap-2 px-1 pt-1 text-xs font-semibold uppercase tracking-[0.14em] text-(--ui-text-tertiary)">
+              <Sparkles className="size-3.5 text-(--ui-accent)" />
+              {extrasCopy.title}
+            </li>
+          )}
+          {visibleExtras.map(tip => (
+            <li className="jarvis-tips-card jarvis-choice-on grid gap-2 p-3" data-extra-tip={tip.id} key={tip.id}>
+              <div className="flex items-start gap-2">
+                <Sparkles className="mt-0.5 size-4 shrink-0 text-(--ui-accent)" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-(--ui-text-primary)">{tip.title}</p>
+                  <p className="mt-1 text-sm text-(--ui-text-secondary)">{tip.detail}</p>
+                </div>
+              </div>
+              <div className="flex justify-end">
+                {tip.prompt ? (
+                  <Button className="min-h-11" onClick={() => onUse(tip.prompt)} size="sm" type="button">
+                    {copy.use}
+                  </Button>
+                ) : (
+                  <span className="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs font-medium text-(--ui-accent)">
+                    <Mic className="size-4" />
+                    {extrasCopy.spoken}
+                  </span>
+                )}
+              </div>
+            </li>
+          ))}
           {visible.map(entry => {
             const text = copy.entries[entry.id]
             const Icon = CATEGORY_ICONS[entry.category]
@@ -184,7 +243,7 @@ export function JarvisTipsWindow({
               </li>
             )
           })}
-          {visible.length === 0 && (
+          {visible.length === 0 && visibleExtras.length === 0 && (
             <li className="rounded-md border border-dashed border-(--ui-stroke-tertiary) p-4 text-sm text-(--ui-text-secondary)">
               {entries.length === 0 ? copy.empty : copy.emptyFiltered}
             </li>
@@ -237,6 +296,44 @@ function CategoryChip({
   )
 }
 
+/** What is connected right now, asked once each time the window opens; a failed answer counts as "not connected". */
+function useConnectedCapabilities(open: boolean): ExtraTipContext {
+  const [context, setContext] = useState<ExtraTipContext>({ browserSignedIn: false, googleConnected: false, vaultExists: false })
+
+   
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    let stale = false
+
+    const ask = async <T,>(fn: () => Promise<T>): Promise<null | T> => {
+      try {
+        return await fn()
+      } catch {
+        return null
+      }
+    }
+
+    void Promise.all([ask(getConnectionStatus), ask(getVaultGraph), ask(getBrowserStatus)]).then(([status, vault, browser]) => {
+      if (!stale) {
+        setContext({
+          browserSignedIn: Boolean(browser?.own.google_signed_in || browser?.copy.google_signed_in),
+          googleConnected: status?.google === 'connected',
+          vaultExists: vault?.vault.exists === true
+        })
+      }
+    })
+
+    return () => {
+      stale = true
+    }
+  }, [open])
+
+  return context
+}
+
 export interface JarvisTipsLauncherProps {
   /** A turn in flight — the window may be opened, but never opens itself. */
   busy?: boolean
@@ -273,6 +370,7 @@ export function JarvisTipsLauncher({
   const [open, setOpen] = useState(false)
   const [state, setState] = useState<JarvisTipsState>(() => readJarvisTipsState(storage, scope))
   const autoOpenChecked = useRef(false)
+  const { locale } = useI18n()
 
   // Setup usually finishes while this is already mounted (the wizard is an
   // overlay on top of it), and storage does not notify — so the completion
@@ -322,6 +420,14 @@ export function JarvisTipsLauncher({
     [computerMode, hasHistory, state.dismissedIds]
   )
 
+  const connected = useConnectedCapabilities(open)
+
+  const extras = useMemo<JarvisExtraTip[]>(
+    () =>
+      selectExtraTips(connected).map(tip => ({ id: tip.id, ...EXTRA_TIP_COPY[locale === 'pl' ? 'pl' : 'en'][tip.id] })),
+    [connected, locale]
+  )
+
   const use = (prompt: string) => {
     if (onUse) {
       onUse(prompt)
@@ -358,6 +464,7 @@ export function JarvisTipsLauncher({
       <JarvisTipsWindow
         copy={copy}
         entries={entries}
+        extras={extras}
         onClose={() => setOpen(false)}
         onDismiss={id => persist(dismissJarvisTip(state, id))}
         onReset={() => persist(resetJarvisTips(state))}

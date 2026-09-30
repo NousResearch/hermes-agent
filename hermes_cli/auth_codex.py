@@ -951,8 +951,10 @@ def _codex_login_rate_limited_error(response: "httpx.Response", *, during: str =
     # callers surface a "retry later" notice instead of a misleading "run hermes auth" prompt (see issue
     # #32790).
     retry_after = _parse_retry_after_seconds(getattr(response, "headers", None))
+    from agent.usage_pricing import format_duration_compact
     wait_hint = (
-        f" Try again in about {retry_after}s." if retry_after is not None
+        f" Try again in about {format_duration_compact(float(retry_after))}."
+        if retry_after is not None
         else " Wait a minute and run the login again.")
     return _codex_err(
         f"OpenAI is rate-limiting Codex login requests (HTTP 429){during}. "

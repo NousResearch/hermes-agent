@@ -360,3 +360,26 @@ def test_import_rejects_a_future_format_version(kanban_root, tmp_path):
     kanban_root("target")
     with pytest.raises(ValueError, match="newer than this Hermes"):
         kt.import_board(str(bumped))
+
+
+def test_failed_import_leaves_no_board_behind(kanban_root, tmp_path):
+    _seed_board()
+    archive = Path(kt.export_board("alpha", str(tmp_path / "alpha"))["archive"])
+
+    staged = tmp_path / "restage"
+    safe_extract_targz(archive, staged)
+    (staged / "alpha" / "kanban.db").write_bytes(b"truncated download, not sqlite")
+    broken = tmp_path / "broken.tar.gz"
+    with tarfile.open(broken, "w:gz") as tf:
+        tf.add(staged / "alpha", arcname="alpha")
+
+    kanban_root("target")
+    # ValueError is what ``hermes kanban boards import`` and the REST
+    # endpoint report as a clean "bad archive" error.
+    with pytest.raises(ValueError, match="not a usable kanban database"):
+        kt.import_board(str(broken))
+
+    assert not kb.board_exists("alpha")
+    assert [b["slug"] for b in kb.list_boards()] == ["default"]
+    # A retry with a good archive gets the archive's own slug, not ``alpha-2``.
+    assert kt.import_board(str(archive))["board"] == "alpha"

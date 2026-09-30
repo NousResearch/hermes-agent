@@ -284,6 +284,53 @@ def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[s
     return {"attachments": rehomed, "parked": len(parked)}, warnings
 
 
+def _install_board(
+    target: str, extracted: Path, manifest: dict[str, Any], staged_meta: dict[str, Any],
+) -> tuple[str, dict[str, int], list[str], dict[str, int]]:
+    """Move the extracted archive into board ``target`` and re-anchor it;
+    returns ``(name, stats, warnings, counts)``."""
+    board_root = kb.board_dir(target)
+    board_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(extracted / "kanban.db"), str(board_root / "kanban.db"))
+    for tree in ("attachments", "logs"):
+        src = extracted / tree
+        if src.is_dir():
+            shutil.move(str(src), str(board_root / tree))
+
+    # Rewritten rather than moved across: the archive's copy names a slug
+    # and a workdir that belong to the exporting machine.
+    name = str(staged_meta.get("name") or manifest.get("board_name") or target)
+    kb.write_board_metadata(
+        target,
+        name=name,
+        description=str(staged_meta.get("description") or ""),
+        icon=str(staged_meta.get("icon") or ""),
+        color=str(staged_meta.get("color") or ""),
+        archived=False,
+    )
+    # Bring the imported schema up to this install's version before the
+    # relocation pass writes to it.
+    kb.init_db(board=target)
+
+    with kbc.connect_closing(board=target) as conn:
+        stats, warnings = _relocate_imported_rows(conn, target)
+        counts = _count_rows(conn)
+    return name, stats, warnings, counts
+
+
+def _discard_failed_import(board_root: Path, created: bool) -> None:
+    """Undo a half-finished import. Left in place it lists as a broken board
+    and pushes the retry onto ``<slug>-2``. A directory that was already there
+    (stray logs, no board) only loses the files that made it a board."""
+    kb._INITIALIZED_PATHS.discard(str((board_root / "kanban.db").resolve()))
+    if created:
+        shutil.rmtree(board_root, ignore_errors=True)
+        return
+    for leaf in ("board.json", "kanban.db", "kanban.db-wal", "kanban.db-shm"):
+        with contextlib.suppress(FileNotFoundError):
+            (board_root / leaf).unlink()
+
+
 def import_board(
     archive_path: str,
     slug: Optional[str] = None,
@@ -322,31 +369,14 @@ def import_board(
         staged_meta = _read_board_metadata(extracted / "board.json")
 
         board_root = kb.board_dir(target)
-        board_root.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(staged_db), str(board_root / "kanban.db"))
-        for tree in ("attachments", "logs"):
-            src = extracted / tree
-            if src.is_dir():
-                shutil.move(str(src), str(board_root / tree))
-
-    # Rewritten rather than moved across: the archive's copy names a slug
-    # and a workdir that belong to the exporting machine.
-    name = str(staged_meta.get("name") or manifest.get("board_name") or target)
-    kb.write_board_metadata(
-        target,
-        name=name,
-        description=str(staged_meta.get("description") or ""),
-        icon=str(staged_meta.get("icon") or ""),
-        color=str(staged_meta.get("color") or ""),
-        archived=False,
-    )
-    # Bring the imported schema up to this install's version before the
-    # relocation pass writes to it.
-    kb.init_db(board=target)
-
-    with kbc.connect_closing(board=target) as conn:
-        stats, warnings = _relocate_imported_rows(conn, target)
-        counts = _count_rows(conn)
+        created = not board_root.exists()
+        try:
+            name, stats, warnings, counts = _install_board(target, extracted, manifest, staged_meta)
+        except BaseException as exc:
+            _discard_failed_import(board_root, created)
+            if isinstance(exc, sqlite3.DatabaseError):
+                raise ValueError(f"archive kanban.db is not a usable kanban database: {exc}") from exc
+            raise
 
     if activate:
         kb.set_current_board(target)

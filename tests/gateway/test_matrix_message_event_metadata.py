@@ -242,6 +242,30 @@ _REPLY_WITHOUT_QUOTE = {
         ),
         pytest.param(
             False,
+            {
+                "body": "> original question\n\nbecause reasons",
+                "format": "org.matrix.custom.html",
+                "formatted_body": (
+                    '<mx-reply data-x="1"><blockquote>original question</blockquote></mx-reply>'
+                    "because reasons"
+                ),
+            },
+            {**_REPLY_WITHOUT_QUOTE, "text": "because reasons", "reply_to_text": "original question"},
+            id="html-fallback-with-attributes",
+        ),
+        pytest.param(
+            False,
+            {
+                "body": "> original question\n\nbecause reasons",
+                "formatted_body": (
+                    "<mx-reply><blockquote>original question</blockquote></mx-reply>because reasons"
+                ),
+            },
+            {**_REPLY_WITHOUT_QUOTE, "text": "> original question\n\nbecause reasons"},
+            id="mx-reply-without-html-format",
+        ),
+        pytest.param(
+            False,
             {"body": "> * <@carol:example.org> waves\n\nhello back"},
             {
                 "text": "hello back",

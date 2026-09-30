@@ -11,6 +11,11 @@ describe('texToUnicode — symbols', () => {
     expect(stripBox(texToUnicode(String.raw`\boxed{\Re z + \Im z}`))).toBe('ℜ z + ℑ z')
   })
 
+  it('renders derivative primes without a redundant superscript marker', () => {
+    expect(texToUnicode(String.raw`f^\prime + g^{\prime} + h^{\prime\prime}`)).toBe('f′ + g′ + h′′')
+    expect(texToUnicode(String.raw`f^{\prime 2}`)).toBe('f^(′ 2)')
+  })
+
   it('renders the remaining standalone mathematical symbols', () => {
     expect(texToUnicode(String.raw`\imath + \jmath; \aleph_0; \wp; \mho; f\prime`)).toBe(
       'ı + ȷ; ℵ₀; ℘; ℧; f′'

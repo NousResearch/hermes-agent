@@ -783,6 +783,11 @@ export function texToUnicode(input: string): string {
   s = s.replace(SYMBOL_PUNCT_RE, m => SYMBOLS[m] ?? m)
   s = s.replace(SYMBOL_LETTER_RE, m => SYMBOLS[m] ?? m)
 
+  // Prime glyphs already sit at derivative height; don't retain a second
+  // superscript marker. Mixed script bodies keep the normal fallback below.
+  s = s.replace(/\^\s*\{\s*(′+)\s*\}/g, '$1')
+  s = s.replace(/\^′/g, '′')
+
   // Bare `^c` / `_c` handles ONLY alphanumerics and `+`/`-`/`=`. Parens
   // are intentionally excluded because the braced-fallback above can
   // emit `(...)` and we don't want a second pass to greedily convert

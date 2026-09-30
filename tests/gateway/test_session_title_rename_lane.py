@@ -190,33 +190,27 @@ def test_discord_title_retry_recovery_survives_db_failure():
     )
 
     class BrokenDB:
+        calls = 0
+
         def get_session(self, session_id):
+            self.calls += 1
             raise RuntimeError("state.db unavailable")
 
-    runner = types.SimpleNamespace(
-        _is_telegram_topic_lane=lambda source: False,
-        _is_discord_auto_thread_lane=GatewayRunner._is_discord_auto_thread_lane,
-        _is_relay_discord_channel_lane=lambda source: False,
-        _schedule_discord_semantic_thread_rename=(
-            lambda source, session_id, title: scheduled.append(
-                (source, session_id, title)
-            )
-        ),
-    )
+    db = BrokenDB()
+    runner = _recovery_runner(scheduled)
     holder = types.SimpleNamespace(
         _runner=runner,
         _attach_session_title_callback=TurnRunner._attach_session_title_callback,
     )
-    agent = types.SimpleNamespace(
-        session_id="sess-1", _session_db=BrokenDB(),
-    )
+    agent = _recover_agent(db, None)
 
     holder._attach_session_title_callback(
         holder, agent, types.SimpleNamespace(source=current)
     )
 
-    # Recovery failed, the marker-less source stays off every lane: no callback,
-    # exactly like main — and the failure never escaped the attach.
+    # The recovery DID reach the DB and its failure stayed inside the attach:
+    # no callback and no scheduling, exactly like main.
+    assert db.calls == 1
     assert not hasattr(agent, "_on_session_title")
     assert scheduled == []
 

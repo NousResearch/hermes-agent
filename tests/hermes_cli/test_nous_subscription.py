@@ -215,12 +215,13 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
         ({"provider": "nous", "model": "krea-2-medium"}, "Krea"),
         ({"model": FAL_DEFAULT_MODEL}, "FAL"),
         ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
+        ({"model": "openai/gpt-image-2"}, "FAL"),
         ({"provider": "openai", "model": "gpt-image-2"}, None),
     ],
 )
 def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
-    """One managed image row, three gateways: the stored image_gen.model names the partner; a direct
-    vendor selection owns its model id, so no gateway partner is claimed for it."""
+    """The partner is the gateway the runtime actually dispatches to: the stored model decides under
+    the managed pick (Portal ids only with an explicit ``nous``); a direct vendor owns its model id."""
     assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
 
 

@@ -292,9 +292,13 @@ def managed_image_partner(config: Dict[str, object]) -> Optional[str]:
     from tools.image_generation_managed import FAL, KREA, PORTAL, managed_backend_for_model
 
     section = _section(config, "image_gen")
-    if _selected_provider(section, "provider") not in (None, "nous"):
+    selected = _selected_provider(section, "provider")
+    if selected not in (None, "nous"):
         return None
-    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}[managed_backend_for_model(section.get("model"))]
+    backend = managed_backend_for_model(section.get("model"))
+    if backend == PORTAL and selected != "nous":
+        backend = FAL  # an unset pick with a Portal id runs in-tree FAL (see _managed_model_plugin)
+    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}[backend]
 
 
 def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str]) -> NousFeatureState:

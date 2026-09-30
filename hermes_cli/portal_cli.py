@@ -118,11 +118,10 @@ def _cmd_tools(args) -> int:
         print(color("  Not logged into Nous Portal — sign in with `hermes portal`.", Colors.YELLOW))
         print()
 
-    # The managed image row routes by the stored model: FAL, Krea or Nous Portal.
-    partners = {"image_gen": managed_image_partner(config)}
     label_width = max(len(label) for _, label, _ in _CATALOG)
     for key, label, partner in _CATALOG:
-        partner = partners.get(key) or partner
+        if key == "image_gen":
+            partner = managed_image_partner(config) or partner
         feat = features.features.get(key)
         state = color("unknown", Colors.DIM) if feat is None else _feature_state(feat, via_nous="✓ via Nous Portal")
         print(f"  {label:<{label_width}}  partner: {partner:<14} {state}")

@@ -26,6 +26,7 @@
 // effects (writing the script, spawning) live in main.ts.
 
 import { backendProfileArg } from './profile-id-guard'
+
 // eslint-disable-next-line no-control-regex -- deliberately reject C0/C1 controls in launcher values
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
@@ -79,9 +80,14 @@ export function posixQuote(value: string): string {
   return `'${String(value ?? '').replaceAll("'", `'\\''`)}'`
 }
 
-/** Quote a value for a cmd.exe script line. */
+/**
+ * Quote a value for a cmd.exe script line. Batch files expand `%VAR%` even
+ * inside double quotes, so a literal `%` is written as `%%`.
+ */
 export function windowsQuote(value: string): string {
-  return `"${String(value ?? '').replaceAll('"', '""')}"`
+  return `"${String(value ?? '')
+    .replaceAll('"', '""')
+    .replaceAll('%', '%%')}"`
 }
 
 /**

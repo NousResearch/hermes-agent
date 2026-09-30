@@ -32,6 +32,26 @@ test('windowsQuote doubles embedded quotes', () => {
   assert.equal(windowsQuote('C:\\a "b"'), '"C:\\a ""b"""')
 })
 
+test('windowsQuote doubles % so a batch script cannot expand %VAR% in a value', () => {
+  assert.equal(windowsQuote('sess-%COMSPEC%'), '"sess-%%COMSPEC%%"')
+
+  const script = buildTerminalScript({
+    args: ['--tui', '--resume', 'sess-%USERPROFILE%'],
+    command: 'C:\\hermes\\hermes.exe',
+    cwd: 'C:\\Users\\b\\100%',
+    env: { HERMES_NOTE: '50%off' },
+    platform: 'win32'
+  })
+
+  assert.deepEqual(script.split('\r\n'), [
+    '@echo off',
+    'cd /d "C:\\Users\\b\\100%%"',
+    'set "HERMES_NOTE=50%%off"',
+    '"C:\\hermes\\hermes.exe" "--tui" "--resume" "sess-%%USERPROFILE%%"',
+    ''
+  ])
+})
+
 test('terminalScriptEnv drops PATH in any casing and keeps the rest', () => {
   const env = terminalScriptEnv(
     { Path: 'C:\\junk', PATH: '/junk', PYTHONPATH: '/repo', PYTHONUTF8: '1' },

@@ -546,13 +546,19 @@ class _GatewayRun:
             self._task.cancel()
 
 
+# How long a cancelled caller waits for the gateway-side send to report its outcome.
+_CANCELLED_SEND_GRACE_SECONDS = 5.0
+
+
 async def _dispatch_on_gateway_loop(runner, make_coro, log_message, *, cancel_on_caller_cancel=False):
     """Await ``make_coro()`` on the gateway's loop: adapter.send() uses queues/tasks bound to it,
     so awaiting from another loop (the tool worker thread) deadlocks.
 
     With ``cancel_on_caller_cancel``, a cancelled caller cancels the coroutine on the gateway
-    loop and then waits for its outcome, so a coroutine that finishes an accepted send despite
-    the cancellation still returns its receipt."""
+    loop and then waits up to ``_CANCELLED_SEND_GRACE_SECONDS`` for its outcome, so a coroutine
+    that finishes an accepted send despite the cancellation still returns its receipt. If the
+    outcome does not arrive in time, or the gateway loop is closed, the caller's cancellation
+    is raised."""
     gateway_loop = getattr(runner, "_gateway_loop", None)
     if gateway_loop is None or asyncio.get_running_loop() is gateway_loop:
         return await make_coro()  # same loop / no gateway loop (CLI, tests)
@@ -568,11 +574,15 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message, *, cancel_on
     outcome = asyncio.wrap_future(fut)
     try:
         return await asyncio.shield(outcome)
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as cancelled:
         if not cancel_on_caller_cancel:
             raise
-    gateway_loop.call_soon_threadsafe(gateway_run.cancel)
-    return await outcome
+        caller_cancellation = cancelled
+    try:
+        gateway_loop.call_soon_threadsafe(gateway_run.cancel)
+        return await asyncio.wait_for(asyncio.shield(outcome), _CANCELLED_SEND_GRACE_SECONDS)
+    except (RuntimeError, TimeoutError):
+        raise caller_cancellation from None
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,

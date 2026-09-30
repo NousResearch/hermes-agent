@@ -2487,11 +2487,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.
         http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
-        media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
+        media_urls = [cached_path] if cached_path else ([http_url] if http_url else [])
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             reply_parent=reply_parent,
-            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
+            media_urls=media_urls, media_types=[media_type] if media_urls else [], media_msgtype=msgtype,
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
             await self.handle_message(msg_event)

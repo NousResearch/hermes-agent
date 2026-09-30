@@ -1896,6 +1896,68 @@ async def test_text_batch_spans_sync_responses_before_the_cursor_advances(
 
 
 @pytest.mark.asyncio
+async def test_batched_event_from_a_response_still_dispatching_stays_handled_after_restart(
+    tmp_path, monkeypatch, transport
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    gateway_intake(adapter, {})
+    turns = []
+
+    async def model(event, _key):
+        turns.append(event.text)
+
+    adapter.set_message_handler(AsyncMock())
+    adapter._process_message_background = model
+    quiet, release = asyncio.Event(), asyncio.Event()
+    slow_started, slow_release = asyncio.Event(), asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def batch_clock(delay):
+        if delay == adapter._text_batch_delay_seconds:
+            quiet.set()
+            await release.wait()
+            return
+        await real_sleep(delay)
+
+    async def slow_reaction(*_args, **_kwargs):
+        # A sibling handler that outlasts the batch quiet period, as
+        # reaction_follows_delivery or a media download can.
+        slow_started.set()
+        await slow_release.wait()
+
+    monkeypatch.setattr(asyncio, "sleep", batch_clock)
+    adapter._dispatch_reaction = slow_reaction
+    client = adapter._client
+    await asyncio.wait_for(adapter._absorb_sync(client, batch("s2", message("$first"))), timeout=2)
+    second = asyncio.create_task(
+        adapter._absorb_sync(client, batch("s3", message("$second"), reaction("$slow")))
+    )
+    try:
+        await asyncio.wait_for(slow_started.wait(), timeout=2)
+        await asyncio.wait_for(quiet.wait(), timeout=2)
+        release.set()
+        await asyncio.wait_for(adapter._sync_checkpoints.settled(), timeout=2)
+        # A restart (hermes update, gateway restart) while the s3 response is still dispatching.
+        second.cancel()
+        await asyncio.gather(second, return_exceptions=True)
+    finally:
+        release.set()
+        slow_release.set()
+        await adapter.disconnect()
+
+    restarted = make_adapter()
+    responses.append(batch("s3", message("$second")))
+    assert await restarted.connect()
+    replayed = [call.args[2] for call in restarted._handle_text_message.await_args_list]
+    await restarted.disconnect()
+    assert (turns, replayed) == (["$first\n$second"], [])
+
+
+@pytest.mark.asyncio
 async def test_sync_loop_retries_a_batch_that_the_gateway_did_not_consume(
     tmp_path, monkeypatch, transport
 ):

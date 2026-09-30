@@ -1398,7 +1398,9 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             await self.disconnect()
             return False
         client.sync_store = sync_store
-        self._sync_checkpoints = SyncCheckpoints(sync_store)
+        dispatch = getattr(client, "hermes_sync", None)
+        self._sync_checkpoints = SyncCheckpoints(
+            sync_store, dispatch.dispatching_intakes if isinstance(dispatch, SyncDispatch) else frozenset)
         self._sync_position = None
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
             return False
@@ -2199,7 +2201,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 seen, buffered = dispatch.take_intakes()
                 checkpoints = self._sync_checkpoints
                 if checkpoints is None or checkpoints.store is not store:
-                    checkpoints = self._sync_checkpoints = SyncCheckpoints(store)
+                    checkpoints = self._sync_checkpoints = SyncCheckpoints(store, dispatch.dispatching_intakes)
                 await checkpoints.commit(nb, seen, buffered)
             else:
                 await store.put_next_batch(nb)

@@ -36,13 +36,30 @@ def read_pending(key: str) -> dict | None:
     return record
 
 
+def _shape_error(record) -> str | None:
+    """Why a parsed receipt cannot be ordered or replayed by the scans, or None when usable."""
+    if not isinstance(record, dict):
+        return f"expected a JSON object, got {type(record).__name__}"
+    sequence = record.get("sequence")
+    if not isinstance(sequence, int) or isinstance(sequence, bool):
+        return "sequence is not an integer"
+    if not isinstance(record.get("status"), str):
+        return "status is not a string"
+    if record["status"] == "queued" and not (
+            isinstance(record.get("job"), dict) and isinstance(record.get("id"), str)
+            and all(isinstance(record.get(k), str) for k in ("content", "home"))
+            and isinstance(record.get("profile", 0), (str, type(None)))):
+        return "queued receipt is missing its payload"
+    return None
+
+
 def _records(root: Path) -> list[tuple[Path, dict]]:
     records = []
     for path in root.glob("*.json"):
         try:
             record = json.loads(path.read_text(encoding="utf-8-sig"))
-            if not isinstance(record, dict):
-                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
+            if problem := _shape_error(record):
+                raise ValueError(problem)
         except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
             # Keep damaged or unreadable receipts as evidence; never replay them or block peers
             # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).

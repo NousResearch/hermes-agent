@@ -196,3 +196,26 @@ def test_non_dict_deferred_receipt_is_skipped_by_the_drain_and_fails_exact_id_re
     with pytest.raises(ValueError):
         queue.defer("e" * 64, {"id": "job"}, "same id", "", tmp_path)
     assert bad.read_text(encoding="utf-8") == payload
+
+
+@pytest.mark.parametrize("payload", [
+    '{"status": "queued"}',
+    '{"status": "settled", "sequence": "7"}',
+    '{"status": "queued", "sequence": 7}',
+])
+def test_lost_field_deferred_receipt_is_skipped_by_the_drain_and_admissions(
+        tmp_path, monkeypatch, payload):
+    """A JSON object missing the fields the scan orders or replays by (hand edit, foreign
+    writer) is a bad file too: healthy work still drains, new admissions still land, and the
+    bad receipt is kept as evidence."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text(payload, encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    queue.drain()
+    later = queue.defer("f" * 64, {"id": "job"}, "later", "", tmp_path)
+    queue.drain()
+    assert seen == ["healthy", "later"] and later["status"] == "queued"
+    assert bad.read_text(encoding="utf-8") == payload

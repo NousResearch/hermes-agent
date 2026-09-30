@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent, ProcessingOutcome, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome, SendResult
 from gateway.run import _INTERRUPT_REASON_STOP, GatewayRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
@@ -185,6 +185,41 @@ async def test_priority_path_input_has_one_lifecycle(monkeypatch, mode, redirect
     handler_log = [_START_RUNNING, _START_CORR] if tracked else [_START_CORR, _DONE_CORR]
     assert (verbs, getattr(pending_event, "message_id", None), after_handler, adapter.log) == (
         [expected[0]], expected[1], handler_log, expected[2])
+
+
+class _CompleteOnlyAdapter(LifecycleLogAdapter):
+    """Overrides only on_processing_complete, as A2A, Google Chat and the webhook adapter do."""
+
+    on_processing_start = BasePlatformAdapter.on_processing_start
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leftover", [False, True])
+async def test_priority_path_input_completes_once_without_a_start_hook(monkeypatch, leftover):
+    """The queued lane runs no hooks for an adapter without its own start hook. A steered message
+    therefore completes when its handler returns, and a leftover steer for it runs as plain text."""
+    from gateway.run_turn_followup_ack import _run_followup_processing_hook
+
+    runner, _adapter = _priority_runner(monkeypatch, "steer")
+    adapter = _CompleteOnlyAdapter()
+    adapter.platform = Platform.SLACK
+    runner.adapters[Platform.SLACK] = adapter
+    adapter.set_message_handler(runner._handle_message)
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+    await adapter._run_processing_hook("on_processing_start", running)
+
+    await adapter.handle_message(MessageEvent(text="correction", source=source, message_id="corr-1"))
+    await asyncio.gather(*adapter._background_tasks)
+    result = {"final_response": "reply"}
+    if leftover:
+        result["pending_steer"] = receiver.steer.call_args.args[0]
+    pending_event, _pending = await runner._run_agent_drain_pending(
+        result, adapter, source, key, processing_event=running)
+    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+
+    assert (pending_event, adapter.log) == (None, [_DONE_CORR, _DONE_RUNNING])
 
 
 class _BlockingSendAdapter(LifecycleLogAdapter):

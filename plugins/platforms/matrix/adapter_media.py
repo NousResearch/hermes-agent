@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-import mimetypes
+import re
+import unicodedata
 from collections.abc import Awaitable, Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter
@@ -17,9 +18,31 @@ from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marke
 
 logger = logging.getLogger("plugins.platforms.matrix.adapter")
 
-def _single_name(text: str) -> str:
-    name = text.strip()
-    if not name.isprintable() or name in {".", ".."}:
+_EXTENSION_RE = re.compile(r"\.[0-9A-Za-z]{1,10}")
+# Bidirectional embedding, override and isolate controls. An override can make a name such as
+# "report<U+202E>fdp.exe" display as "reportexe.pdf".
+_BIDI_CONTROLS = frozenset("‪‫‬‭‮⁦⁧⁨⁩")
+
+
+def _without_controls(text: str) -> str:
+    return "".join(
+        ch for ch in text if ch not in _BIDI_CONTROLS and unicodedata.category(ch) != "Cc").strip()
+
+
+def _declared_filename(declared: object) -> str:
+    if not isinstance(declared, str):
+        return ""
+    name = _without_controls(declared.replace("\\", "/").rsplit("/", 1)[-1])
+    return "" if name in {".", ".."} else name
+
+
+def _body_filename(body: str) -> str:
+    text = body.strip()
+    if len(text.splitlines()) != 1 or "/" in text or "\\" in text:
+        return ""
+    name = _without_controls(text)
+    dot = name.rfind(".")
+    if dot <= 0 or not _EXTENSION_RE.fullmatch(name[dot:]):
         return ""
     return name
 
@@ -29,18 +52,12 @@ def inbound_media_filename(declared: object, body: str) -> str:
 
     ``declared`` is the event's ``filename`` and ``body`` is its ``body`` without any reply
     fallback. The Matrix spec makes ``body`` the filename when ``filename`` is absent, but some
-    clients put a caption there instead. Such a body counts as a filename only when it is one line
-    with no directory part and ends in an extension, and either the extension maps to a known MIME
-    type or the body contains no spaces. The result never contains a path separator.
+    clients put a caption there instead. A body therefore counts as a filename only when it is
+    one line, contains no path separator (which also excludes a URL), and ends in an extension of
+    up to ten letters or digits. Control characters are removed from either name, and the result
+    never contains a path separator.
     """
-    if str(declared or "").strip():
-        return _single_name(str(declared).replace("\\", "/").rsplit("/", 1)[-1])
-    name = _single_name(body)
-    if not name or "/" in name or "\\" in name or not PurePosixPath(name).suffix:
-        return ""
-    if mimetypes.guess_type(name)[0] is None and " " in name:
-        return ""
-    return name
+    return _declared_filename(declared) or _body_filename(body)
 
 
 class _InboundMediaTooLarge(Exception):
@@ -222,12 +239,13 @@ class MatrixMediaMixin(BasePlatformAdapter):
             cache_document_from_bytes_async,
             cache_image_from_bytes_async,
         )
+        from gateway.platforms.media_cache import ext_for_mime
         if msg_type == MessageType.PHOTO:
             ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}
             cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext_map.get(media_type, ".jpg"))
             logger.info("[Matrix] Cached user image at %s", cached_path)
             return cached_path
-        mimetype_ext = mimetypes.guess_extension(media_type) or ""
+        mimetype_ext = ext_for_mime(media_type) or ""
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:
             ext = Path(transport_filename).suffix or mimetype_ext or ".ogg"
             return await cache_audio_from_bytes_async(file_bytes, ext=ext)

@@ -97,7 +97,7 @@ def build_initiate_setup_prompt(surface: str, tools, primary_profile: str, sessi
     return f"{HEADER}\n\n{skill}\n\n```json\n{facts}\n```"
 
 
-_NAME_QUESTION = "What should I call you?"
+NAME_QUESTION = "What should I call you?"
 # A closed card counts as answered: the skill takes the default and never re-asks it.
 _ANSWERED = ("submitted", "cancelled")
 
@@ -118,7 +118,7 @@ def _opening_step(call) -> str | None:
     args = _json_object(function.get("arguments"))
     if args.get("kind") == "accent":
         return "accent"
-    return "name" if args.get("kind") == "question" and args.get("question") == _NAME_QUESTION else ""
+    return "name" if args.get("kind") == "question" and args.get("question") == NAME_QUESTION else ""
 
 
 def _opening_so_far(history):
@@ -172,7 +172,7 @@ def _opening(suggested: str | None, said: set, replies: dict):
     reply = replies.get("name")
     if reply is None:
         # ``options`` is required by the tool schema; the history must carry it even when empty.
-        card = {"kind": "question", "question": _NAME_QUESTION,
+        card = {"kind": "question", "question": NAME_QUESTION,
                 "options": [{"id": "suggested", "label": suggested}] if suggested else [], "multi_select": False}
         reply = _json_object((yield "" if INTRO in said else INTRO, "setup_choose", card))
     if "accent" in replies:

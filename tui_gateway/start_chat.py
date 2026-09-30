@@ -9,11 +9,29 @@ def _rejected(reason: str, retryable: bool = False) -> str:
     return json.dumps({"status": "rejected", "reason": reason, "retryable": retryable})
 
 
+# The setup picks the handoff block names, in its order.
+_PICK_LINES = (("name", "Name"), ("connectors", "Apps I picked"), ("plugins", "Plugins I picked"), ("layout", "Layout"))
+
+
+def _setup_learned(cards: dict) -> str:
+    """The "What setup learned" block for a handoff from the setup profile: the user's card picks and the
+    interpreted scan lines its ``/initiate-setup`` turn recorded, so the task chat has them whatever the model
+    wrote. Empty when nothing was recorded."""
+    picks = cards.get("picks") or {}
+    lines = [f"- {label}: {', '.join(map(str, value)) if isinstance(value, list) else value}"
+             for key, label in _PICK_LINES if (value := picks.get(key))]
+    lines += [f"- {line}" for line in cards.get("learned") or ()]
+    if not lines:
+        return ""
+    return "\n".join(["What setup learned about me:", *lines,
+                      "Start from this; look at my computer again only when the task needs more."])
+
+
 def start_chat(args: dict, caller_id: str | None = None) -> str:
     from agent.onboarding import PROFILE_BUILD_FLAG, mark_seen
     from gateway.session_context import get_session_env
     from hermes_cli.profiles import SETUP_PROFILE_MARKER
-    from hermes_cli.setup_profile import mark_completed
+    from hermes_cli.setup_profile import mark_completed, read_cards
     from hermes_constants import profile_name_for_home
     from tui_gateway import server
     from tui_gateway.transport import bind_transport, reset_transport
@@ -34,6 +52,11 @@ def start_chat(args: dict, caller_id: str | None = None) -> str:
     except server.ProfileUnavailableError as exc:
         return _rejected(str(exc))
     target_home = Path(home or server._hermes_home)
+    from_setup = (caller_home / SETUP_PROFILE_MARKER).is_file()
+    if from_setup:
+        with server._session_profile_runtime_scope({"profile_home": str(caller_home)}, hydrate_secrets=False):
+            learned = _setup_learned(read_cards(caller.get("session_key") or ""))
+        message = f"{message}\n\n{learned}" if learned else message
     token = bind_transport(caller.get("transport"))
     try:
         with server._session_profile_runtime_scope({"profile_home": str(home) if home else None}):
@@ -49,7 +72,7 @@ def start_chat(args: dict, caller_id: str | None = None) -> str:
                 return _rejected(submitted["error"]["message"], retryable=True)
     finally:
         reset_transport(token)
-    if (caller_home / SETUP_PROFILE_MARKER).is_file() and target_home.resolve() != caller_home.resolve():
+    if from_setup and target_home.resolve() != caller_home.resolve():
         mark_completed()
     name = result["info"]["profile_name"]
     return json.dumps({

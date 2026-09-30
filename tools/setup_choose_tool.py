@@ -147,6 +147,19 @@ def _follow_up(kind: str, card: str, result: dict, rows: Optional[list], cards: 
     return extra, state
 
 
+# The picks start_chat hands the task chat from the setup profile, keyed by card kind.
+_REMEMBERED = frozenset({"connectors", "plugins", "layout"})
+
+
+def _remember(kind: str, question: str, result: dict, state: dict) -> dict:
+    from agent.initiate_setup_prompt import NAME_QUESTION
+
+    key = "name" if kind == "question" and question == NAME_QUESTION else kind if kind in _REMEMBERED else None
+    if key is None or result["outcome"] != "submitted":
+        return state
+    return {**state, "picks": {**state.get("picks", {}), key: result.get("label") or result["picked"]}}
+
+
 # App-owned parts of a card, filled here from the recorded facts so the model can neither drop nor edit them.
 _APP_FILLED: dict[str, Callable[[dict], dict]] = {
     "tour": lambda cards: {"options": _TOUR_ROWS, "multi_select": False},
@@ -223,6 +236,7 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
             reply = callback(payload)
         result = _result(reply, payload["options"])
         extra, state = _follow_up(kind, card, result, payload["options"], cards)
+        state = _remember(kind, text, result, state)
         if session_id and state != cards:
             record_cards(session_id, state)
         return json.dumps({**result, **extra}, ensure_ascii=False)

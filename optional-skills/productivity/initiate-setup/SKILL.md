@@ -192,7 +192,7 @@ One short sentence: the work gets its own chat so it has room, and this one stay
 
 - `profile`: `primary_profile`. Without it the task opens here, with no terminal or file tools.
 - `title`: the task's name.
-- `message`: the handoff message, written exactly as the fork result's `handoff.message` says, with `handoff.plan` as its plan.
+- `message`: the handoff message, written exactly as the fork result's `handoff.message` says, with `handoff.plan` as its plan. The app appends a "What setup learned" block (their picks and the scan) under it; do not write that part. The task chat talks first: it offers a few directions in plain text and builds once they pick.
 
 ### Beat 8: after the handoff
 
@@ -220,7 +220,7 @@ When `surface` is not `desktop` or a tool is not in `tools_present`:
 ## Pitfalls
 
 - Repeating the card's question in text.
-- A handoff message missing a part: the task chat sees nothing else.
+- A handoff message missing a part: the task chat sees only it and the app's "What setup learned" block.
 
 ## Verification
 

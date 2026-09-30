@@ -798,11 +798,34 @@ def _handoff(facts: dict) -> dict:
             "machine": '"' + " ".join(part for part in parts if part) + '"'}
 
 
+_LEVELS = {"beginner": "new to AI agent apps", "power-user": "a power user", "expert": "an expert"}
+
+
+def _learned(facts: dict) -> list[str]:
+    """The scan, in plain first-person lines, for the block ``start_chat`` appends to the task chat's first
+    message. Only interpreted fields: no names, paths or raw values from the scan."""
+    scan, machine = facts.get("scan") or {}, facts["machine"]
+    ram = f", {machine['ram_gb']} GB RAM" if machine.get("ram_gb") else ""
+    lines = [f"This {facts['signals']['machine_kind']}: {facts['signals']['description']}{ram}."]
+    if scan.get("apps_used"):
+        lines.append(f"Apps I use on it: {', '.join(scan['apps_used'])}.")
+    if scan.get("runs_agents") is True:
+        lines.append("I already run AI agents here.")
+    level = _LEVELS.get(scan.get("user_level"), "")
+    if scan.get("developer") is True:
+        level = f"{level}, a developer" if level else "a developer"
+    if level:
+        lines.append(f"I am {level}.")
+    return lines
+
+
 def setup_cards(facts: dict) -> dict:
     """What the setup cards take from these facts: the fork rows, the rows the apps and plugins cards start
-    with picked (apps seen in use; Blender when it is here), and the handoff text the fork result carries."""
+    with picked (apps seen in use; Blender when it is here), the handoff text the fork result carries, and
+    the scan lines ``start_chat`` appends to the task chat's first message."""
     used = (facts.get("scan") or {}).get("apps_used") or []
     return {
+        "learned": _learned(facts),
         "fork": facts["fork"],
         "preselected": {
             "connectors": [_SCAN_CONNECTORS[app] for app in used if app in _SCAN_CONNECTORS],

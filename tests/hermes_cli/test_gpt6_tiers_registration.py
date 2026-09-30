@@ -17,15 +17,15 @@ from agent.model_metadata import (
     strip_codex_context_variant_suffix,
 )
 from agent.reasoning_effort import CODEX_GPT56_EFFORTS, codex_supported_efforts
-from hermes_cli.codex_models import _finalize_codex_models
+from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _finalize_codex_models
 from hermes_cli.model_switch import _model_sort_key
 
 GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")  # terra: never published by OpenAI, not on OpenRouter/Codex (2026-09-22)
 
 def test_model_gpt_resolves_flagship_across_gpt6_tiers():
-    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"]
+    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol"]
     models.sort(key=lambda m: _model_sort_key(m, "gpt"))
-    assert models[:2] == ["gpt-6-astra", "gpt-6-sol"]
+    assert models[:3] == ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"]
     assert models.index("gpt-6-luna") < models.index("gpt-5.6-sol")
 
 def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
@@ -78,3 +78,49 @@ def test_gpt61_sol_resolves_context_and_pricing_like_its_tier():
     assert _OFFICIAL_DOCS_PRICING[("openai", "gpt-6.1-sol-pro")] is base
     assert base.cache_read_cost_per_million == base.input_cost_per_million / 20  # 5%, not 6 Sol's 10%
     assert not is_codex_900k_base("gpt-6.1-sol")  # not verified above 272K on Codex
+
+
+def test_gpt61_sol_is_available_in_the_offline_codex_catalog():
+    """A transient catalog outage must not hide the current Codex flagship."""
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    assert "gpt-6.1-sol" in DEFAULT_CODEX_MODELS
+    ids = _finalize_codex_models(["gpt-6-sol"])
+    assert "gpt-6.1-sol" in ids
+    assert "gpt-6.1-sol-900k" not in ids  # no >272K Codex verification yet
+    for provider in ("openai-api", "openai-codex"):
+        assert "gpt-6.1-sol" in _PROVIDER_MODELS[provider]
+        assert "gpt-6-luna" in _PROVIDER_MODELS[provider]
+        assert "gpt-6-nebula" not in _PROVIDER_MODELS[provider]
+
+
+def test_gpt61_sol_and_luna_pricing_matches_the_official_model_pages():
+    from decimal import Decimal
+
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    expected = {
+        "gpt-6.1-sol": ("2.00", "10.00", "0.10", "2.50"),
+        "gpt-6-luna": ("0.10", "0.50", "0.01", "0.125"),
+    }
+    for slug, rates in expected.items():
+        entry = _OFFICIAL_DOCS_PRICING[("openai", slug)]
+        assert (
+            entry.input_cost_per_million,
+            entry.output_cost_per_million,
+            entry.cache_read_cost_per_million,
+            entry.cache_write_cost_per_million,
+        ) == tuple(Decimal(rate) for rate in rates), slug
+
+
+def test_unknown_gpt6_name_does_not_inherit_registered_model_metadata():
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match, has_codex_context_variant
+    from agent.reasoning_effort import CODEX_GPT56_EFFORTS, CODEX_LEGACY_EFFORTS
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    unknown = "gpt-6-nebula"
+    assert ("openai", unknown) not in _OFFICIAL_DOCS_PRICING
+    assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, unknown) is None
+    assert not has_codex_context_variant(unknown)
+    assert codex_supported_efforts(unknown) == CODEX_LEGACY_EFFORTS
+    assert codex_supported_efforts(unknown) != CODEX_GPT56_EFFORTS

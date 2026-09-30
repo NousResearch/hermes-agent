@@ -535,7 +535,180 @@ def capture_before(
         return None
 
 
+# --- File-tool writes (write_file / patch) ------------------------------------
+#
+# ``skill_manage`` is the primary ledger writer, but the generic file tools can land
+# content in a skills tree without touching it — and the not-found guidance for
+# cross-profile skills explicitly teaches that fallback ("edit the file directly").
+# These helpers let ``tools/file_tools.py`` attribute those writes in the same ledger
+# with REAL before/after manifests: an entry whose before-state was not captured is
+# rollback-hazardous (rollback restores every before-path and removes after-only
+# paths, so before=[] on a modification would DELETE the file), which is why a failed
+# pre-write capture of an existing file skips the entry entirely. Telemetry, not a
+# gate: nothing here ever blocks the write. Raw shell / editor / MCP filesystem
+# writes stay unlogged — the agent's own file tools are the attributable surface.
+
+
+def _skills_roots_for_classification() -> List[Path]:
+    """Every live skills tree a host-local write could land in: the active profile's
+    roots (local + create_dir + external_dirs), the default root's, and every sibling
+    profile's. Resolved and deduped so a symlinked profile dir matches its canonical
+    tree. Fail-quiet: an unresolvable root is skipped, never fatal."""
+    roots: List[Path] = []
+
+    def _add(candidate) -> None:
+        with suppress(OSError, RuntimeError):
+            resolved = Path(candidate).resolve()
+            if resolved.is_dir() and resolved not in roots:
+                roots.append(resolved)
+
+    with suppress(Exception):
+        from agent.skill_utils import get_all_skills_dirs
+        for d in get_all_skills_dirs():
+            _add(d)
+    with suppress(Exception):
+        from hermes_constants import get_default_hermes_root
+        default_root = get_default_hermes_root()
+        _add(default_root / "skills")
+        profiles = default_root / "profiles"
+        if profiles.is_dir():
+            with suppress(OSError):
+                for entry in profiles.iterdir():
+                    _add(entry / "skills")
+    return roots
+
+
+def _skill_dir_for(target: Path, root: Path, first_segment: str) -> Path:
+    """Nearest ancestor of *target* (bounded by *root*) holding a SKILL.md; falls back
+    to ``root / first_segment`` for a brand-new skill whose SKILL.md is being written."""
+    current = target if target.is_dir() else target.parent
+    while current != root and current != current.parent:
+        if (current / "SKILL.md").is_file():
+            return current
+        current = current.parent
+    return root / first_segment
+
+
+def classify_file_tool_target(path) -> Optional[Dict[str, Any]]:
+    """Classify a host-local file-tool target: ``{path, skill, skill_dir, skills_root}``
+    when it lands inside a live skills tree at a non-metadata position, else None.
+    Dot-segment sidecars (.hub, .archive, .locks, .usage.json, this ledger itself) and
+    transient trees (venvs, caches) are never ledgerable. Never raises."""
+    try:
+        target = Path(os.path.expanduser(str(path)))
+        if not target.is_absolute():
+            return None
+        with suppress(OSError):
+            target = target.resolve()
+        for root in _skills_roots_for_classification():
+            rel = _rel_posix(target, root)
+            if rel is None:
+                continue
+            parts = rel.split("/")
+            first = parts[0]
+            if first.startswith(".") or first in _NON_PACKAGE_TOPS:
+                return None  # under a skills root, but metadata: attribution stops here
+            if any(part in TRANSIENT_DIRS for part in parts[:-1]):
+                return None
+            skill_dir = _skill_dir_for(target, root, first)
+            return {"path": str(target), "skill": skill_dir.name,
+                    "skill_dir": str(skill_dir), "skills_root": str(root)}
+        return None
+    except Exception as e:
+        logger.debug("skill_ledger: file-tool target classification failed (%s)", e)
+        return None
+
+
+def begin_file_tool_write(path) -> Optional[Dict[str, Any]]:
+    """Pre-write capture for a host-local file-tool write: ``{"info", "before"}`` when
+    *path* lands in a live skills tree, else None. A modification whose before-state
+    cannot be captured returns None (entry skipped) rather than recording a hollow
+    before=[] that rollback would interpret as 'delete this file'. Never raises."""
+    try:
+        info = classify_file_tool_target(path)
+        if info is None:
+            return None
+        target = Path(info["path"])
+        existed = target.is_file()
+        before = capture_before(target)
+        if existed and not before:
+            logger.warning(
+                "skill_ledger: before-capture failed for existing file %s — "
+                "skipping the entry rather than recording an unrecoverable mutation", target)
+            return None
+        return {"info": info, "before": before or []}
+    except Exception as e:
+        logger.warning("skill_ledger: file-tool pre-capture failed (%s) — mutation unaffected", e)
+        return None
+
+
+def finish_file_tool_write(pending: Optional[Dict[str, Any]], source: str, *,
+                           ok: bool, session_id: Optional[str] = None) -> None:
+    """Append the ledger entry for a completed file-tool write (``ok`` = the write
+    succeeded). Per-file manifests: rollback restores the pre-write content of exactly
+    the touched file (or removes a created one). Entries land in the ACTIVE profile's
+    ledger — the same semantics skill_manage already uses for external-dir skills —
+    with the owning tree recorded in evidence. Never raises."""
+    if not pending or not ok:
+        return
+    try:
+        info = pending["info"]
+        evidence = {"source": source, "path": info["path"], "skills_root": info["skills_root"]}
+        if session_id:
+            evidence["session_id"] = session_id
+        record_mutation(source, info["skill"], before=pending.get("before") or [],
+                        after_root=Path(info["path"]), evidence=evidence)
+    except Exception as e:
+        logger.warning("skill_ledger: file-tool write record failed (%s) — mutation unaffected", e)
+
+
+def sibling_ledger_counts() -> List[Tuple[str, int]]:
+    """``(profile label, entry count)`` for OTHER profiles' ledger files holding rows.
+    Powers the empty-ledger hint: a per-profile CLI view must not read as 'no history'
+    when a sibling profile holds it. Fail-quiet; unreadable files are skipped."""
+    out: List[Tuple[str, int]] = []
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root()
+    except Exception:
+        return out
+    active: Optional[Path] = None
+    with suppress(Exception):
+        active = ledger_path().resolve()
+    candidates: List[Tuple[str, Path]] = [("default", root / "skills" / ".curator_ledger.jsonl")]
+    profiles = root / "profiles"
+    if profiles.is_dir():
+        with suppress(OSError):
+            for entry in profiles.iterdir():
+                if entry.is_dir():
+                    candidates.append((entry.name, entry / "skills" / ".curator_ledger.jsonl"))
+    for label, path in candidates:
+        with suppress(Exception):
+            if path.resolve() == active:
+                continue
+        try:
+            with open(path, "rb") as fh:
+                count = sum(1 for line in fh if line.strip())
+        except OSError:
+            continue
+        if count:
+            out.append((label, count))
+    return out
+
+
 def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> list[dict[str, Any]]:
+    """Read the ledger, newest first. Malformed lines are skipped."""
+    raw = _read_ledger("listing empty", quiet_missing=True)  # missing/unreadable/undecodable == empty
+    if raw is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in raw.decode("utf-8").splitlines():
+        with suppress(json.JSONDecodeError):
+            row = json.loads(line) if line.strip() else None
+            if isinstance(row, dict) and (not skill or row.get("skill") == skill):
+                rows.append(row)
+    rows.reverse()
+    return rows[:limit] if limit is not None and limit >= 0 else rows
     """Read the ledger, newest first. Malformed lines are skipped."""
     raw = _read_ledger("listing empty", quiet_missing=True)  # missing/unreadable/undecodable == empty
     if raw is None:

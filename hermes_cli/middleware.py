@@ -43,7 +43,7 @@ class LLMExecutionBlocked(Exception):
     Args:
         reason: Human-readable explanation for the block.
         metadata: Optional structured data passed to the caller. By
-            convention (see docs/plugins/hook-taxonomy.md), deny-path
+            convention (see website/docs/developer-guide/hook-taxonomy.md), deny-path
             metadata may carry:
 
             - ``checked_by``: the plugin/middleware that made the block

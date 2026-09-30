@@ -201,7 +201,7 @@ def _autostash_receipt_match(stash_ref: str) -> Optional[dict[str, str]]:
             continue
         for path in receipt_dir.glob("update_*.json"):
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError, TypeError):
                 continue
             if not isinstance(payload, dict):

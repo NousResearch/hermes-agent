@@ -25,7 +25,9 @@ A tool's ``status`` follows Hermes's own failure verdict: the executor classifie
 command Hermes logs as "returned error" arrives as ``status: "error"``.
 
 Built-in memory is scoped per thread (:mod:`litco.memory_scope`): a dm turn uses the lawyer's
-``users/<userId>/memories/``, a channel turn the matter's ``shared/memories/``.
+``users/<userId>/memories/``, a channel turn the matter's ``shared/memories/``. Firm conventions and
+the lawyer's own notes (``sharedMemory`` on the turn, FIRM_AGENT_HOST 4.3) go into that turn's
+ephemeral system prompt only, so they never enter the persisted session a team thread shares.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ from litco.homes import safe_segment
 from litco.litkit.context import TurnIdentity, bind_turn, reset_turn
 from litco.memory_scope import memory_dir, scope_agent_memory
 from litco.thread_context import actor_label, channel_label
-from litco.turn_server import TurnContext, TurnOutcome, build_user_message
+from litco.turn_server import SharedMemory, TurnContext, TurnOutcome, build_user_message
 
 logger = logging.getLogger("litco.hermes_runner")
 
@@ -299,7 +301,8 @@ class HermesTurnRunner:
             "litco_deliver_local (path, optional name and deliverableClass). Only registered files, and "
             ".docx .xlsx .pptx .pdf .md .txt .csv .png .jpg files in deliverables/, reach the thread; "
             "keep specs, JSON and other scratch files elsewhere. Point to the files instead of pasting long "
-            f"text. {memory}")
+            f"text. {memory}" + _shared_scope_line(ctx) + _cross_matter_line(ctx)
+            + _shared_memory_block(req.shared_memory))
 
     def _build_agent(self, ctx: TurnContext, hermes_sid: str, mapper: _EventMapper):
         from run_agent import AIAgent
@@ -341,10 +344,7 @@ class HermesTurnRunner:
         register_task_env_overrides(hermes_sid, {"cwd": str(ctx.cwd), "cwd_source": "session"})
         # LitKit tools assert this turn's lawyer (verified by the turn server) on every call;
         # an unasserted turn runs under the Matter Agent user's own role.
-        turn_token = bind_turn(TurnIdentity(turn_id=ctx.turn_id, matter_id=req.matter_id,
-                                            acting_user=req.acting_user, cwd=ctx.cwd,
-                                            litkit_channel=(req.litkit_channel.slug or None)
-                                            if req.litkit_channel is not None else None))
+        turn_token = bind_turn(turn_identity(ctx))
         agent = None
         try:
             db = self._session_db()
@@ -382,6 +382,50 @@ class HermesTurnRunner:
             reset_turn(turn_token)
             clear_task_env_overrides(hermes_sid)
             clear_session_vars(tokens)
+
+
+def turn_identity(ctx: TurnContext) -> TurnIdentity:
+    """What the LitKit tools see of this turn.
+
+    The turn grant is kept only where the app may mint one (FIRM_AGENT_HOST 6.4): a private thread
+    with a verified lawyer. A grant on a shared thread would let cross-matter hits reach people
+    walled off from the other matter, so it is dropped here even if the app sent one.
+    """
+    req = ctx.request
+    grant = req.turn_grant if req.kind == "dm" and req.acting_user else None
+    return TurnIdentity(turn_id=ctx.turn_id, matter_id=req.matter_id, acting_user=req.acting_user, cwd=ctx.cwd,
+                        litkit_channel=(req.litkit_channel.slug or None) if req.litkit_channel is not None else None,
+                        turn_grant=grant)
+
+
+def _shared_scope_line(ctx: TurnContext) -> str:
+    """Firm and person notes need a verified lawyer (litkit_remember refuses them otherwise)."""
+    if not ctx.request.acting_user:
+        return ""
+    return (" For a convention the whole firm follows, or this lawyer's own preference across matters, use "
+            "litkit_remember with scope firm or person; those scopes hold conventions and preferences only, never "
+            "facts about a matter.")
+
+
+def _cross_matter_line(ctx: TurnContext) -> str:
+    if turn_identity(ctx).turn_grant is None:
+        return ""
+    return (" litkit_cross_matter_search searches this lawyer's other matters. Cite every hit with its matter "
+            "name, and never save a hit to memory.")
+
+
+def _shared_memory_block(memory: Optional[SharedMemory]) -> str:
+    if memory is None:
+        return ""
+    parts = []
+    if memory.firm:
+        parts.append("[FIRM CONVENTIONS] House conventions for every matter. When one shapes your answer, say it "
+                     "is a firm convention.\n" + "\n".join(f"- {item}" for item in memory.firm))
+    if memory.person:
+        parts.append("[THIS LAWYER'S PREFERENCES] Notes the lawyer on this turn saved for all their matters. When "
+                     "one shapes your answer, say it is their preference.\n"
+                     + "\n".join(f"- {item}" for item in memory.person))
+    return "\n\n" + "\n\n".join(parts) if parts else ""
 
 
 def _session_key(req) -> str:

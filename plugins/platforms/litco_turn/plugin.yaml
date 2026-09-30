@@ -27,6 +27,10 @@ optional_env:
     description: "Port for the turn server (default 8765)"
     prompt: "Turn server port"
     password: false
+  - name: LITCO_SLOT_PORT
+    description: "Port a firm-host slot binds, assigned by litco-supervisor; overrides LITCO_TURN_PORT and needs LITCO_MATTER_ID"
+    prompt: "Slot port"
+    password: false
   - name: LITCO_MATTER_HOME
     description: "Root of the per-thread working directories (default ~/matter)"
     prompt: "Matter home directory"

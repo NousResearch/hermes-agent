@@ -9,6 +9,8 @@ Authentication (LitKit agent-token lane):
   is minted fresh for every request (HMAC over ``v1.<user>.<matter>.<iatMs>.<ttlMs>``,
   keyed on the host secret; see :mod:`litco.assertion`). Without a turn (cron) no
   assertion is sent and the Matter Agent user's own viewer role applies.
+* ``X-LitKit-Turn-Grant`` goes only on the cross-matter search, and only when the app
+  minted a grant for the turn (FIRM_AGENT_HOST 6.3).
 * No ``Origin`` header is sent.
 
 Errors are honest: 401/403 raise :class:`LitKitPermissionError` ("not permitted for this
@@ -40,6 +42,7 @@ logger = logging.getLogger("litco.litkit.client")
 
 ACTING_USER_HEADER = "X-LitKit-Acting-User"
 ASSERTION_HEADER = "X-LitKit-User-Assertion"
+TURN_GRANT_HEADER = "X-LitKit-Turn-Grant"
 TOKEN_PREFIX = "lkm_"
 RETRY_STATUSES_READ = frozenset({429, 500, 502, 503, 504})
 RETRY_STATUSES_WRITE = frozenset({429, 503})
@@ -282,8 +285,10 @@ class LitKitClient:
     def _send(self, method: str, path: str, *, params: Optional[Mapping[str, Any]] = None, json_body: Any = None,
               files: Any = None, data: Optional[Mapping[str, Any]] = None, acting_user: Any = _CURRENT,
               idempotent: Optional[bool] = None, ok_statuses: Iterable[int] = (), stream: bool = False,
-              timeout: Optional[float] = None) -> httpx.Response:
-        """Send with retries. Returns the response (streamed and still open when ``stream``)."""
+              timeout: Optional[float] = None, extra_headers: Optional[Mapping[str, str]] = None) -> httpx.Response:
+        """Send with retries. Returns the response (streamed and still open when ``stream``).
+
+        ``extra_headers`` ride beside the auth headers and, like them, are never logged."""
         self._require_config()
         method = method.upper()
         if idempotent is None:
@@ -293,7 +298,7 @@ class LitKitClient:
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
         attempt = 0
         while True:
-            headers = self.headers(acting_user)  # fresh assertion per attempt
+            headers = {**(extra_headers or {}), **self.headers(acting_user)}  # fresh assertion per attempt
             if files is not None:
                 for _name, spec in (files.items() if isinstance(files, dict) else files):
                     if isinstance(spec, tuple) and len(spec) >= 2 and hasattr(spec[1], "seek"):

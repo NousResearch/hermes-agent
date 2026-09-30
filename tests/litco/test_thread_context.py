@@ -161,8 +161,18 @@ def _prompt_before_wave3(ctx: TurnContext) -> str:
 
 @pytest.mark.parametrize("kind,user_id", [("channel", "u1"), ("dm", "u1"), ("channel", "")])
 def test_prompt_without_the_new_fields_is_unchanged_but_for_the_name(tmp_path, kind, user_id):
-    ctx = _ctx(tmp_path, _req(kind=kind, user_id=user_id))
+    ctx = _ctx(tmp_path, _req(kind=kind, user_id=user_id, acting_user=None))
     assert HermesTurnRunner._turn_prompt(ctx) == "You are Ana. " + _prompt_before_wave3(ctx)
+
+
+@pytest.mark.parametrize("kind", ["channel", "dm"])
+def test_prompt_with_a_verified_lawyer_adds_only_the_shared_scopes(tmp_path, kind):
+    """FIRM_AGENT_HOST 4.2: with a lawyer on the turn, Ana is told where firm and person notes go."""
+    ctx = _ctx(tmp_path, _req(kind=kind))
+    assert HermesTurnRunner._turn_prompt(ctx) == "You are Ana. " + _prompt_before_wave3(ctx) + (
+        " For a convention the whole firm follows, or this lawyer's own preference across matters, use "
+        "litkit_remember with scope firm or person; those scopes hold conventions and preferences only, never "
+        "facts about a matter.")
 
 
 # ---------------------------------------------------------------------------

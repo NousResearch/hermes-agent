@@ -62,3 +62,38 @@ async def test_adapter_refuses_without_secret(monkeypatch):
 
     adapter = LitcoTurnAdapter(PlatformConfig(enabled=True, extra={}))
     assert not await adapter.connect()
+
+
+@pytest.mark.asyncio
+async def test_adapter_binds_the_slot_port(monkeypatch, tmp_path):
+    port = _free_port()
+    monkeypatch.setenv("LITCO_HOST_SECRET", "sek")
+    monkeypatch.setenv("LITCO_MATTER_ID", "m1")
+    monkeypatch.setenv("LITCO_MATTER_HOME", str(tmp_path / "matter"))
+    monkeypatch.setenv("LITCO_TURN_HOST", "127.0.0.1")
+    monkeypatch.setenv("LITCO_TURN_PORT", str(_free_port()))
+    monkeypatch.setenv("LITCO_SLOT_PORT", str(port))
+    from gateway.config import PlatformConfig
+    from plugins.platforms.litco_turn.adapter import LitcoTurnAdapter
+
+    adapter = LitcoTurnAdapter(PlatformConfig(enabled=True, extra={}))
+    assert await adapter.connect()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{port}/health") as resp:
+                body = await resp.json()
+        assert body["matterId"] == "m1" and body["draining"] is False
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_adapter_refuses_a_slot_without_a_matter(monkeypatch):
+    monkeypatch.setenv("LITCO_HOST_SECRET", "sek")
+    monkeypatch.delenv("LITCO_MATTER_ID", raising=False)
+    monkeypatch.setenv("LITCO_SLOT_PORT", str(_free_port()))
+    from gateway.config import PlatformConfig
+    from plugins.platforms.litco_turn.adapter import LitcoTurnAdapter
+
+    adapter = LitcoTurnAdapter(PlatformConfig(enabled=True, extra={}))
+    assert not await adapter.connect()

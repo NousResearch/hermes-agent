@@ -3,7 +3,8 @@ version: 0.1.0
 description: >
   LitKit toolset for the LitCo matter host: matter search, census, document text and PDFs,
   bulk text export, memos, LitSpace files, gated deliverables, quote checks, Review & Tag (criteria
-  sets, proposed runs, status), ingest status, proposals, tags, work sets, LitLex research, notifications and matter memory. Calls
+  sets, proposed runs, status), ingest status, proposals, tags, work sets, LitLex research, notifications,
+  matter, firm and personal memory, and cross-matter search from private threads. Calls
   the firm's LitKit instance with the matter-pinned agent token and the acting lawyer's user
   assertion. Code lives in the top-level ``litco.litkit`` package; this plugin only registers it.
 author: LitCo
@@ -29,6 +30,7 @@ provides_tools:
   - litkit_notify
   - litkit_remember
   - litkit_recall
+  - litkit_cross_matter_search
   - litkit_actions
   - litkit_attachment
   - litkit_channel_history

@@ -4,7 +4,9 @@ Contract (LitKit survey, Appendix D; execution ledger decision 5)::
 
     POST /turn                 -> SSE of agent2-shaped events
     POST /interrupt/{turnId}   -> stop that turn
-    GET  /health               -> version, uptime, active turns, matterId
+    POST /drain                -> refuse new turns (503 draining); running turns finish
+    DELETE /drain              -> take new turns again
+    GET  /health               -> version, uptime, active turns, draining, matterId
     GET  /deliverables/{id}    -> bytes of a file listed in final.deliverables
 
 Every event is one SSE frame, ``event: <type>`` plus a JSON ``data`` line carrying
@@ -17,6 +19,17 @@ Sessions: one LitKit thread = one ``sessionId`` = one Hermes session. Turns on t
 ``sessionId`` run one at a time in arrival order; turns on different ``sessionId``s run
 concurrently. There is no cumulative token ceiling; ``budgetMs`` (if given) interrupts the
 turn when the wall clock runs out.
+
+Drain (FIRM_AGENT_HOST 3.6): ``litco-agent-drain`` posts ``/drain`` and then polls ``/health``
+until ``activeTurns`` is 0. From the moment the flag is set, ``/turn`` answers
+``503 {"error": {"code": "draining"}}`` and the app sends the turn to its daemon, so a busy
+matter cannot hold a restart open. Turns already accepted, including those still queued behind
+their session's lock, run to their end, and ``/interrupt`` keeps working on them. The flag lives
+in memory: a restarted process takes turns again.
+
+Where it listens (:func:`listen_address`): a slot on the firm host (FIRM_AGENT_HOST 3.3) binds
+``LITCO_SLOT_PORT``, which the supervisor assigns, and must be given ``LITCO_MATTER_ID``; the
+legacy one-matter droplet binds ``LITCO_TURN_PORT``.
 
 The agent itself is behind the :class:`TurnRunner` interface so the server can be tested
 with a fake runner; :mod:`litco.hermes_runner` is the production runner.
@@ -34,7 +47,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -50,6 +63,12 @@ logger = logging.getLogger("litco.turn_server")
 HOST_SECRET_HEADER = "X-Host-Secret"
 ACTING_USER_HEADER = "X-LitKit-Acting-User"
 ASSERTION_HEADER = "X-LitKit-User-Assertion"
+DEFAULT_TURN_HOST = "127.0.0.1"
+DEFAULT_SLOT_HOST = "0.0.0.0"  # a slot is reached over the tailnet; nftables admits only tailscale0
+DEFAULT_TURN_PORT = 8765
+TURN_GRANT_MAX = 4096
+SHARED_MEMORY_MAX_ITEMS = 12  # per scope (FIRM_AGENT_HOST 4.3)
+SHARED_MEMORY_MAX_CHARS = 3000  # per scope
 CHANNELS = ("slack", "web", "telegram")
 KINDS = ("channel", "dm")
 KEEPALIVE_SECONDS = 15.0
@@ -78,6 +97,73 @@ class TurnRequest:
     actor: Optional[Actor] = None
     thread_context: Optional[ThreadContext] = None
     litkit_channel: Optional[LitKitChannel] = None
+    # FIRM_AGENT_HOST 6.3: the app-minted grant for this turn, sent back on cross-matter searches.
+    # The app mints one only for a person's own private thread; never logged or echoed.
+    turn_grant: Optional[str] = field(default=None, repr=False)
+    # FIRM_AGENT_HOST 4.3: firm conventions and the acting lawyer's own notes, for this turn's
+    # system prompt only (never the persisted session).
+    shared_memory: Optional["SharedMemory"] = None
+
+
+@dataclass(frozen=True)
+class SharedMemory:
+    firm: Tuple[str, ...] = ()
+    person: Tuple[str, ...] = ()
+
+
+def _shared_items(raw: Any) -> Tuple[str, ...]:
+    out: List[str] = []
+    used = 0
+    for item in raw if isinstance(raw, list) else []:
+        text = item.get("content") if isinstance(item, dict) else item
+        if not isinstance(text, str) or not text.strip():
+            continue
+        text = " ".join(text.split())
+        if len(out) >= SHARED_MEMORY_MAX_ITEMS or used + len(text) > SHARED_MEMORY_MAX_CHARS:
+            break
+        out.append(text)
+        used += len(text)
+    return tuple(out)
+
+
+def parse_shared_memory(raw: Any) -> Optional[SharedMemory]:
+    """``sharedMemory: {firm, person}``, each a list of strings or ``{content}`` objects.
+
+    Malformed values are dropped, like the other structured turn fields; the caps apply per scope.
+    """
+    if not isinstance(raw, dict):
+        return None
+    memory = SharedMemory(firm=_shared_items(raw.get("firm")), person=_shared_items(raw.get("person")))
+    return memory if memory.firm or memory.person else None
+
+
+def parse_turn_grant(raw: Any) -> Optional[str]:
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    return raw if raw and len(raw) <= TURN_GRANT_MAX else None
+
+
+def listen_address(env: Dict[str, str], *, default_host: Optional[str] = None,
+                   default_port: Optional[int] = None) -> Tuple[str, int]:
+    """``(host, port)`` the turn server binds.
+
+    ``LITCO_SLOT_PORT`` marks a slot on the firm host: it wins over ``LITCO_TURN_PORT``, the host
+    defaults to all interfaces, and ``LITCO_MATTER_ID`` is required, since a slot that accepted any
+    matter would undo the per-matter process. Raises ``ValueError`` on a bad configuration.
+    """
+    slot = str(env.get("LITCO_SLOT_PORT") or "").strip()
+    host = str(env.get("LITCO_TURN_HOST") or "").strip()
+    if slot:
+        if not str(env.get("LITCO_MATTER_ID") or "").strip():
+            raise ValueError("LITCO_SLOT_PORT is set but LITCO_MATTER_ID is not; a slot serves exactly one matter")
+        raw, host = slot, host or DEFAULT_SLOT_HOST
+    else:
+        raw = str(env.get("LITCO_TURN_PORT") or "").strip() or str(default_port or DEFAULT_TURN_PORT)
+        host = host or default_host or DEFAULT_TURN_HOST
+    if not raw.isdigit() or not 0 < int(raw) < 65536:
+        raise ValueError(f"{'LITCO_SLOT_PORT' if slot else 'LITCO_TURN_PORT'} must be a port number")
+    return host, int(raw)
 
 
 @dataclass
@@ -194,6 +280,7 @@ class TurnServer:
         self._session_locks: Dict[str, asyncio.Lock] = {}
         self._runner_site: Optional[web.AppRunner] = None
         self._background: set = set()
+        self.draining = False
 
     # -- app ---------------------------------------------------------------------
     def build_app(self) -> web.Application:
@@ -201,6 +288,8 @@ class TurnServer:
         app.router.add_post("/turn", self.handle_turn)
         app.router.add_post("/interrupt/{turn_id}", self.handle_interrupt)
         app.router.add_get("/health", self.handle_health)
+        app.router.add_post("/drain", self.handle_drain)
+        app.router.add_delete("/drain", self.handle_drain)
         app.router.add_get("/deliverables/{file_id}", self.handle_deliverable)
         app.on_shutdown.append(self._on_shutdown)
         return app
@@ -255,7 +344,19 @@ class TurnServer:
         return web.json_response({
             "ok": True, "version": __version__, "hermesVersion": _hermes_version(),
             "uptimeSeconds": round(time.time() - self.started_at, 3),
-            "activeTurns": self.active_turn_count, "matterId": self.matter_id or None})
+            "activeTurns": self.active_turn_count, "draining": self.draining,
+            "state": "draining" if self.draining else "ready", "matterId": self.matter_id or None})
+
+    async def handle_drain(self, request: web.Request) -> web.Response:
+        """``POST`` stops taking turns; ``DELETE`` takes them again. Idempotent either way."""
+        if not self._authorized(request):
+            return self._error(401, "unauthorized", "missing or wrong host secret")
+        draining = request.method == "POST"
+        if draining != self.draining:
+            logger.info("litco turn server %s (%d running turn(s))",
+                        "draining: new turns get 503" if draining else "taking turns again", self.active_turn_count)
+        self.draining = draining
+        return web.json_response({"ok": True, "draining": self.draining, "activeTurns": self.active_turn_count})
 
     async def handle_interrupt(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
@@ -292,6 +393,10 @@ class TurnServer:
         if acting is not None and parsed.user_id != acting:
             return self._error(403, "user_mismatch", "userId does not match the asserted user")
         parsed.acting_user = acting
+        # Checked with no await between here and the registration below, so a turn is either
+        # refused or counted in activeTurns before the drain script next reads /health.
+        if self.draining:
+            return self._error(503, "draining", "this host is draining for a restart; send the turn elsewhere")
 
         turn = _Turn(turn_id=f"turn_{uuid.uuid4().hex}", request=parsed, started_at=time.time(),
                      queue=asyncio.Queue())
@@ -361,7 +466,9 @@ class TurnServer:
                            budget_ms=int(budget) if budget is not None else None,
                            actor=parse_actor(body.get("actor")),
                            thread_context=parse_thread_context(body.get("threadContext")),
-                           litkit_channel=parse_litkit_channel(body.get("litkitChannel"))), None
+                           litkit_channel=parse_litkit_channel(body.get("litkitChannel")),
+                           turn_grant=parse_turn_grant(body.get("turnGrant")),
+                           shared_memory=parse_shared_memory(body.get("sharedMemory"))), None
 
     # -- event plumbing ----------------------------------------------------------
     def _push(self, turn: _Turn, event_type: str, fields: Dict[str, Any]) -> None:
@@ -601,8 +708,9 @@ def main() -> None:  # pragma: no cover - exercised on the host, not in unit tes
     import argparse
 
     parser = argparse.ArgumentParser(description="LitCo turn server (sidecar mode)")
-    parser.add_argument("--host", default=os.environ.get("LITCO_TURN_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("LITCO_TURN_PORT", "8765")))
+    host, port = listen_address(dict(os.environ))
+    parser.add_argument("--host", default=host)
+    parser.add_argument("--port", type=int, default=port)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     from litco.hermes_runner import HermesTurnRunner

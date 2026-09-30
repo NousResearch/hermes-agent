@@ -9,15 +9,15 @@ import pytest
 
 from litco import hermes_runner
 from litco.hermes_runner import HermesTurnRunner, _EventMapper, _summarize_result
-from litco.turn_server import TurnContext, TurnRequest
+from litco.turn_server import SharedMemory, TurnContext, TurnRequest
 
 
-def _ctx(tmp_path: Path, session_id="s1", kind="channel", user_id="u1", text="hi"):
+def _ctx(tmp_path: Path, session_id="s1", kind="channel", user_id="u1", text="hi", **fields):
     events = []
     cwd = tmp_path / ("shared" if kind == "channel" else f"users/{user_id}")
     (cwd / "deliverables").mkdir(parents=True, exist_ok=True)
     req = TurnRequest(matter_id="m1", user_id=user_id, session_id=session_id, text=text, attachments=[],
-                      channel="slack", kind=kind)
+                      channel="slack", kind=kind, **fields)
     ctx = TurnContext(turn_id="turn_1", request=req, home=tmp_path, cwd=cwd,
                       emit=lambda t, f: events.append((t, f)))
     return ctx, events
@@ -294,3 +294,55 @@ def test_scoped_memory_store_class_is_built_once(tmp_path):
     b = memory_scope.scoped_store(tmp_path / "b")
     assert type(a) is type(b) is memory_scope._store_class()
     assert a.directory != b.directory
+
+
+# ---------------------------------------------------------------------------
+# FIRM_AGENT_HOST 4.3 and 6.3-6.4: shared memory in the turn prompt, the turn grant
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind,acting,kept", [("dm", "u1", True), ("dm", None, False), ("channel", "u1", False)])
+def test_turn_grant_reaches_the_tools_only_in_a_verified_private_thread(tmp_path, kind, acting, kept):
+    ctx, _ = _ctx(tmp_path, kind=kind, acting_user=acting, turn_grant="grant-abc")
+    identity = hermes_runner.turn_identity(ctx)
+    assert identity.turn_grant == ("grant-abc" if kept else None)
+    assert "grant-abc" not in repr(identity)
+    prompt = HermesTurnRunner._turn_prompt(ctx)
+    assert ("litkit_cross_matter_search" in prompt) is kept
+
+
+def test_shared_memory_goes_into_this_turns_prompt_not_the_message(tmp_path):
+    memory = SharedMemory(firm=("Cite exhibits as Ex. N.",), person=("Short memos, bullets last.",))
+    ctx, _ = _ctx(tmp_path, kind="dm", acting_user="u1", shared_memory=memory)
+    prompt = HermesTurnRunner._turn_prompt(ctx)
+    firm = prompt.index("[FIRM CONVENTIONS]")
+    assert prompt.index("- Cite exhibits as Ex. N.") > firm
+    assert prompt.index("- Short memos, bullets last.") > prompt.index("[THIS LAWYER'S PREFERENCES]") > firm
+    assert "scope firm or person" in prompt
+    message = hermes_runner.build_user_message(ctx)
+    assert "Cite exhibits" not in message and "Short memos" not in message
+
+    bare, _ = _ctx(tmp_path, kind="dm")
+    assert "[FIRM CONVENTIONS]" not in HermesTurnRunner._turn_prompt(bare)
+
+
+def test_run_binds_the_grant_for_the_tools(runner, tmp_path, monkeypatch):
+    from litco.litkit.context import current_turn_grant
+    seen = {}
+
+    def build(ctx, sid, mapper):
+        agent = FakeAgent(mapper)
+        agent.session_id = sid
+        original = agent.run_conversation
+
+        def run_conversation(**kw):
+            seen["grant"] = current_turn_grant()
+            return original(**kw)
+
+        agent.run_conversation = run_conversation
+        return agent
+
+    monkeypatch.setattr(runner, "_build_agent", build)
+    ctx, _ = _ctx(tmp_path, kind="dm", user_id="u7", acting_user="u7", turn_grant="grant-xyz")
+    runner.run(ctx)
+    assert seen["grant"] == "grant-xyz"
+    assert current_turn_grant() is None  # unbound after the turn

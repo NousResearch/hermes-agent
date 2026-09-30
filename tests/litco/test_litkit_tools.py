@@ -372,7 +372,7 @@ def test_toolset_registers_through_plugin_discovery(tmp_path, monkeypatch):
 
 
 def test_schemas_are_well_formed():
-    assert len(T.TOOLS) == 24
+    assert len(T.TOOLS) == 25
     for name, schema, _handler in T.TOOLS:
         assert schema["name"] == name and schema["parameters"]["type"] == "object"
         assert set(schema["parameters"]["required"]) <= set(schema["parameters"]["properties"])
@@ -619,7 +619,10 @@ def test_remember_defaults_to_a_kind_litkit_accepts(fake, env):
     fake.route("POST", r"/api/agent/actions", lambda r: (200, {"ok": True, "echo": r.json()}))
     out = call("litkit_remember", content="Jane Doe left Acme in March 2022")
     assert out["echo"]["args"] == {"kind": "fact", "content": "Jane Doe left Acme in March 2022"}
-    assert set(T.SCHEMAS["litkit_remember"]["parameters"]["properties"]["kind"]["enum"]) == set(T.REMEMBER_KINDS)
+    # kind has no enum: matter kinds and firm/person kinds differ, so the description names each set
+    # and the tool validates at call time.
+    desc = T.SCHEMAS["litkit_remember"]["parameters"]["properties"]["kind"]["description"]
+    assert all(k in desc for k in T.REMEMBER_KINDS)
 
 
 def test_remember_rejects_a_kind_litkit_would_refuse_before_any_request(fake, env):
@@ -627,3 +630,149 @@ def test_remember_rejects_a_kind_litkit_would_refuse_before_any_request(fake, en
         out = call("litkit_remember", content="x", kind=kind)
         assert "kind must be one of fact, strategy" in out["error"], out
     assert fake.requests == []
+
+# FIRM_AGENT_HOST 4: firm and person memory
+# ---------------------------------------------------------------------------
+
+SHARED = r"/api/agent/shared-memory"
+
+
+def test_remember_firm_and_person_go_to_the_shared_route(fake, env):
+    fake.route("POST", SHARED, lambda r: (200, {"id": "sm1", "status": "proposed" if r.json()["scope"] == "firm"
+                                                 else "active"}))
+    out = call("litkit_remember", content="Cite exhibits as  Ex. N at p.", scope="firm")
+    assert out == {"saved": True, "scope": "firm", "id": "sm1", "status": "proposed",
+                   "notes": ["a Firm admin must confirm a firm convention before other matters see it"]}
+    req = fake.requests[-1]
+    assert req.json() == {"scope": "firm", "kind": "convention", "content": "Cite exhibits as Ex. N at p."}
+    assert req.headers["x-litkit-acting-user"] == USER_ID and "x-litkit-turn-grant" not in req.headers
+
+    out = call("litkit_remember", content="Short memos.", scope="person")
+    assert out["saved"] is True and out["status"] == "active" and "notes" not in out
+    assert fake.requests[-1].json() == {"scope": "person", "kind": "preference", "content": "Short memos."}
+    assert not fake.calls("POST", r"/api/agent/actions")  # never a matter write
+
+
+def test_remember_shared_checks_before_calling(fake, env):
+    assert "must be one of convention" in call("litkit_remember", content="x", scope="firm", kind="fact")["error"]
+    assert "at most 1000" in call("litkit_remember", content="x" * 1001, scope="person")["error"]
+    token = bind_turn(TurnIdentity(acting_user=None, cwd=env["cwd"]))
+    try:
+        assert "needs a lawyer" in call("litkit_remember", content="x", scope="firm")["error"]
+    finally:
+        reset_turn(token)
+    assert fake.requests == []
+
+
+def test_remember_shared_reports_refusal_and_missing_route(fake, env):
+    out = call("litkit_remember", content="Short memos.", scope="person")  # today's app: no route
+    assert out["saved"] is False and out["unavailable"] is True and "nothing was saved" in out["message"]
+    assert not fake.calls("POST", r"/api/agent/actions")
+
+    fake.route("POST", SHARED, (422, {"error": "matter facts stay in matter memory", "code": "matter_fact"}))
+    out = call("litkit_remember", content="We settled at $4.2M.", scope="firm")
+    assert out["saved"] is False and out["status"] == 422
+    assert out["error"] == "matter facts stay in matter memory: matter_fact"
+    assert "scope=matter" in out["notes"][0]
+
+
+def test_recall_merges_matter_firm_and_person(fake, env):
+    fake.route("POST", r"/api/agent/actions", lambda r: (200, {"ok": True, "memories": [{"id": "m1"}],
+                                                              "args": r.json()["args"]}))
+    fake.route("GET", SHARED, lambda r: (200, {"items": [
+        {"id": f"{r.query['scope'][0]}1", "kind": "convention", "content": f"{r.query['scope'][0]} rule",
+         "status": "active"}, "junk"]}))
+    out = call("litkit_recall", query="memo", limit=99)
+    assert out["matter"] == {"ok": True, "memories": [{"id": "m1"}], "args": {"query": "memo", "limit": 50}}
+    assert out["firm"] == [{"id": "firm1", "kind": "convention", "content": "firm rule"}]
+    assert out["person"] == [{"id": "person1", "kind": "convention", "content": "person rule"}]
+    gets = fake.calls("GET", SHARED)
+    assert [g.query["scope"] for g in gets] == [["firm"], ["person"]]
+    assert all(g.headers["x-litkit-acting-user"] == USER_ID for g in gets)
+
+    fake.requests.clear()
+    out = call("litkit_recall", scope="firm")
+    assert set(out) == {"firm", "notes"} and len(fake.requests) == 1
+
+
+def test_recall_is_fail_soft_without_the_shared_route(fake, env):
+    fake.route("POST", r"/api/agent/actions", (200, {"ok": True, "memories": []}))
+    out = call("litkit_recall")
+    assert out["matter"] == {"ok": True, "memories": []}
+    assert out["firm"] == [] and out["person"] == []
+    assert out["notes"].count("firm and personal memory are not available on this LitKit yet") == 1
+
+    fake.route("GET", SHARED, (500, {"error": "boom"}))
+    out = call("litkit_recall", scope="firm")
+    assert out["firm"] == [] and "could not be read" in out["notes"][0]
+
+
+def test_recall_without_a_lawyer_skips_person_notes(fake, env):
+    fake.route("POST", r"/api/agent/actions", (200, {"ok": True}))
+    fake.route("GET", SHARED, {"items": []})
+    token = bind_turn(TurnIdentity(acting_user=None, cwd=env["cwd"]))
+    try:
+        out = call("litkit_recall")
+    finally:
+        reset_turn(token)
+    assert "person" not in out and [g.query["scope"] for g in fake.calls("GET", SHARED)] == [["firm"]]
+
+
+# ---------------------------------------------------------------------------
+# FIRM_AGENT_HOST 6: cross-matter search
+# ---------------------------------------------------------------------------
+
+CROSS = r"/api/agent/cross-matter-search"
+
+
+def _with_grant(env, grant="grant.v1.mac", acting=USER_ID):
+    return bind_turn(TurnIdentity(turn_id="turn_1", matter_id=M, acting_user=acting, cwd=env["cwd"],
+                                  turn_grant=grant))
+
+
+def test_cross_matter_search_without_a_grant_points_to_a_private_thread(fake, env):
+    out = call("litkit_cross_matter_search", query="ZEBRA-7731")  # the env turn carries no grant
+    assert out["available"] is False and "private thread" in out["message"]
+    token = _with_grant(env, acting=None)
+    try:
+        assert call("litkit_cross_matter_search", query="ZEBRA-7731")["available"] is False
+    finally:
+        reset_turn(token)
+    assert fake.requests == []
+
+
+def test_cross_matter_search_sends_the_grant_and_returns_labelled_snippets(fake, env):
+    other = _id(77)
+    fake.route("POST", CROSS, (200, {"hits": [
+        {"matterId": other, "matterName": "Matter B", "documentId": _id(i), "bates": f"B{i:05d}",
+         "title": "Email", "snippet": "ZEBRA-7731 " + "x" * 400, "text": "full text must not pass"}
+        for i in range(12)]}))
+    token = _with_grant(env)
+    try:
+        out = call("litkit_cross_matter_search", query="ZEBRA-7731", matterIds=[other])
+    finally:
+        reset_turn(token)
+    req = fake.requests[-1]
+    assert req.json() == {"query": "ZEBRA-7731", "matterIds": [other]}
+    assert req.headers["x-litkit-turn-grant"] == "grant.v1.mac"
+    assert req.headers["x-litkit-acting-user"] == USER_ID and req.headers["authorization"] == f"Bearer {TOKEN}"
+    assert out["available"] is True and out["hits"] == 10
+    first = out["results"][0]
+    assert first["matterName"] == "Matter B" and first["bates"] == "B00000" and "text" not in first
+    assert len(first["snippet"]) <= 300
+    assert any("matter name" in n for n in out["notes"]) and any("never save" in n for n in out["notes"])
+    assert _files_outside(env["tmp"], env["tmp"] / "nothing") == []  # no snippet is written into this matter
+
+
+def test_cross_matter_search_other_answers(fake, env):
+    token = _with_grant(env)
+    try:
+        out = call("litkit_cross_matter_search", query="x")  # today's app: no route
+        assert out["available"] is False and "not available on this LitKit" in out["message"]
+        fake.route("POST", CROSS, (403, {"error": "turn_grant_invalid"}))
+        out = call("litkit_cross_matter_search", query="x")
+        assert out["permission_denied"] is True and "private thread" in out["message"]
+        assert "must be a list" in call("litkit_cross_matter_search", query="x", matterIds=["nope"])["error"]
+    finally:
+        reset_turn(token)
+    assert len(fake.calls("POST", CROSS)) == 2

@@ -15,7 +15,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from litco.assertion import mint_user_assertion, verify_user_assertion
 from litco.homes import decode_file_id
-from litco.turn_server import TurnContext, TurnOutcome, TurnServer, build_user_message
+from litco.turn_server import TurnContext, TurnOutcome, TurnServer, build_user_message, listen_address
 
 SECRET = "s3cret-host"
 MATTER = "matter-123"
@@ -444,3 +444,127 @@ def test_deliver_local_needs_a_turn(tmp_path, monkeypatch):
     monkeypatch.setenv("LITCO_MATTER_HOME", str(tmp_path))
     out = json.loads(T.HANDLERS["litco_deliver_local"]({"path": "x.md"}))
     assert "only inside a turn" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# drain (FIRM_AGENT_HOST 3.6)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_drain_refuses_new_turns_while_running_turns_finish(home):
+    runner = FakeRunner()
+    gate = runner.block["s1"] = threading.Event()
+    async with TestClient(TestServer(_server(runner, home).build_app())) as client:
+        running = await client.post("/turn", json=_body(), headers=_headers())
+        for _ in range(300):
+            if runner.running:
+                break
+            await asyncio.sleep(0.01)
+        # a turn queued behind the same session's lock is already accepted, so it runs too
+        queued = await client.post("/turn", json=_body(text="second"), headers=_headers())
+        assert queued.status == 200
+
+        assert (await client.post("/drain")).status == 401
+        assert (await client.post("/drain", headers={"X-Host-Secret": "nope"})).status == 401
+        drained = await client.post("/drain", headers=_headers())
+        assert drained.status == 200
+        assert await drained.json() == {"ok": True, "draining": True, "activeTurns": 2}
+        assert (await client.post("/drain", headers=_headers())).status == 200  # idempotent
+
+        health = await (await client.get("/health")).json()
+        assert (health["draining"], health["state"], health["activeTurns"]) == (True, "draining", 2)
+        assert health["ok"] is True  # the drain script treats a failing /health as nothing to drain
+
+        refused = await client.post("/turn", json=_body(sessionId="s2"), headers=_headers())
+        assert refused.status == 503
+        assert (await refused.json())["error"]["code"] == "draining"
+        # the host secret is still checked first
+        assert (await client.post("/turn", json=_body(sessionId="s2"))).status == 401
+
+        gate.set()
+        first, second = _parse_sse(await running.text()), _parse_sse(await queued.text())
+        assert first[-1]["type"] == "final" and first[-1]["text"] == "Done."
+        assert second[-1]["type"] == "final" and second[-1]["text"] == "Done."
+        health = await (await client.get("/health")).json()
+        assert (health["draining"], health["activeTurns"]) == (True, 0)
+        assert len(runner.calls) == 2
+
+        resumed = await client.delete("/drain", headers=_headers())
+        assert await resumed.json() == {"ok": True, "draining": False, "activeTurns": 0}
+        assert (await (await client.get("/health")).json())["state"] == "ready"
+        events = await _turn(client, _body(sessionId="s3"))
+        assert events[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_still_reaches_a_turn_during_drain(home):
+    runner = FakeRunner()
+    runner.block["s1"] = threading.Event()  # never released
+    async with TestClient(TestServer(_server(runner, home).build_app())) as client:
+        resp = await client.post("/turn", json=_body(), headers=_headers())
+        turn_id = resp.headers["X-Turn-Id"]
+        for _ in range(300):
+            if runner.running:
+                break
+            await asyncio.sleep(0.01)
+        await client.post("/drain", headers=_headers())
+        assert (await client.post(f"/interrupt/{turn_id}", headers=_headers())).status == 202
+        events = _parse_sse(await resp.text())
+        assert events[-2]["reason"] == "interrupted"
+        assert (await (await client.get("/health")).json())["activeTurns"] == 0
+
+
+# ---------------------------------------------------------------------------
+# slots (FIRM_AGENT_HOST 3.3) and the new turn fields
+# ---------------------------------------------------------------------------
+
+def test_listen_address_slot_and_legacy():
+    assert listen_address({}) == ("127.0.0.1", 8765)
+    assert listen_address({"LITCO_TURN_HOST": "0.0.0.0", "LITCO_TURN_PORT": "9000"}) == ("0.0.0.0", 9000)
+    assert listen_address({}, default_host="10.0.0.1", default_port=9100) == ("10.0.0.1", 9100)
+    # a slot's supervisor-assigned port wins, and it listens for the tailnet unless told otherwise
+    slot = {"LITCO_SLOT_PORT": "8803", "LITCO_TURN_PORT": "8765", "LITCO_MATTER_ID": MATTER}
+    assert listen_address(slot) == ("0.0.0.0", 8803)
+    assert listen_address({**slot, "LITCO_TURN_HOST": "100.64.0.7"}) == ("100.64.0.7", 8803)
+    with pytest.raises(ValueError, match="LITCO_MATTER_ID"):
+        listen_address({"LITCO_SLOT_PORT": "8803"})
+    for bad in ("0", "70000", "88a"):
+        with pytest.raises(ValueError, match="LITCO_SLOT_PORT"):
+            listen_address({"LITCO_SLOT_PORT": bad, "LITCO_MATTER_ID": MATTER})
+    with pytest.raises(ValueError, match="LITCO_TURN_PORT"):
+        listen_address({"LITCO_TURN_PORT": "x"})
+
+
+@pytest.mark.asyncio
+async def test_slot_reads_its_matter_from_env(home):
+    env = {"LITCO_HOST_SECRET": SECRET, "LITCO_MATTER_ID": MATTER, "LITCO_SLOT_PORT": "8801",
+           "LITCO_MATTER_HOME": str(home)}
+    server = TurnServer(FakeRunner(), env=env)
+    async with TestClient(TestServer(server.build_app())) as client:
+        assert (await (await client.get("/health")).json())["matterId"] == MATTER
+        resp = await client.post("/turn", json=_body(matterId="matter-other"), headers=_headers())
+        assert resp.status == 403 and (await resp.json())["error"]["code"] == "matter_mismatch"
+        assert (await _turn(client))[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_turn_grant_and_shared_memory_are_parsed(home):
+    runner = FakeRunner()
+    async with TestClient(TestServer(_server(runner, home).build_app())) as client:
+        shared = {"firm": ["Cite the record as (Ex. N at p).", {"id": "x", "kind": "convention",
+                                                                "content": "  Bluebook,\n  not ALWD.  "}, 7, ""],
+                  "person": [{"content": "Short memos."}]}
+        await _turn(client, _body(kind="dm", turnGrant="g1.payload.mac", sharedMemory=shared))
+        req = runner.calls[-1].request
+        assert req.turn_grant == "g1.payload.mac"
+        assert req.shared_memory.firm == ("Cite the record as (Ex. N at p).", "Bluebook, not ALWD.")
+        assert req.shared_memory.person == ("Short memos.",)
+        assert "g1.payload.mac" not in repr(req)
+
+        # malformed optional fields are dropped, not refused
+        await _turn(client, _body(turnGrant=["x"], sharedMemory="firm"))
+        req = runner.calls[-1].request
+        assert req.turn_grant is None and req.shared_memory is None
+        await _turn(client, _body(turnGrant="x" * 5000, sharedMemory={"firm": [f"rule {i}" for i in range(40)]}))
+        req = runner.calls[-1].request
+        assert req.turn_grant is None and len(req.shared_memory.firm) == 12

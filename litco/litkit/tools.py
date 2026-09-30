@@ -25,9 +25,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from litco.homes import register_deliverable, safe_segment
-from litco.litkit.client import (LitKitClient, LitKitConfig, LitKitError, LitKitPermissionError,
-                                 default_client)
-from litco.litkit.context import current_acting_user, current_turn
+from litco.litkit.client import (TURN_GRANT_HEADER, LitKitClient, LitKitConfig, LitKitError,
+                                 LitKitPermissionError, default_client)
+from litco.litkit.context import current_acting_user, current_turn, current_turn_grant
 from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
                                 input_path, output_dir, output_path, relative, spill, work_dir)
 
@@ -1203,13 +1203,67 @@ def _actions(client: LitKitClient, action: str, action_args: Dict[str, Any]) -> 
 # other kind is a 400 "remember: invalid kind".
 REMEMBER_KINDS = ("fact", "strategy", "custodian_note", "doc_cluster", "timeline_hint")
 
+SHARED_MEMORY_ROUTE = "/api/agent/shared-memory"
+SHARED_SCOPES = ("firm", "person")
+SHARED_KINDS = ("convention", "preference", "tool_habit")
+SHARED_CONTENT_MAX = 1000  # agent_shared_memory.content CHECK (FIRM_AGENT_HOST 4.1)
+SHARED_READ_MAX = 50
+SHARED_UNAVAILABLE = "firm and personal memory are not available on this LitKit yet"
+
+
+def _remember_shared(client: LitKitClient, scope: str, args: Dict[str, Any]) -> Any:
+    """A firm or person note goes to the shared-memory route, where LitKit's classifier decides.
+
+    FIRM_AGENT_HOST 4.2: LitKit refuses matter facts (and records the verdict); a firm note lands
+    ``proposed`` until a Firm admin confirms it. The host only shapes the request.
+    """
+    if not current_acting_user():
+        raise ValueError(f"a {scope} note needs a lawyer on the turn; this turn has none")
+    content = " ".join(str(_require(args, "content")).split())
+    if len(content) > SHARED_CONTENT_MAX:
+        raise ValueError(f"a {scope} note holds at most {SHARED_CONTENT_MAX} characters; state the convention "
+                         "or preference in a sentence or two")
+    kind = str(args.get("kind") or ("convention" if scope == "firm" else "preference"))
+    if kind not in SHARED_KINDS:
+        raise ValueError(f"a {scope} note's kind must be one of {', '.join(SHARED_KINDS)}")
+    status, body = client.json_with_status("POST", SHARED_MEMORY_ROUTE, ok_statuses=(400, 404, 409, 422),
+                                           json_body={"scope": scope, "kind": kind, "content": content})
+    if status == 404:
+        return {"saved": False, "scope": scope, "unavailable": True,
+                "message": f"{SHARED_UNAVAILABLE}; nothing was saved. Save it as a matter note (scope=matter, "
+                           "or scope=user for this lawyer only) if it belongs to this matter, and say so."}
+    if status >= 400:
+        return {"saved": False, "scope": scope, "status": status,
+                "error": _error_text(body) or f"LitKit refused the {scope} note (HTTP {status})",
+                "notes": ["LitKit keeps facts about a matter out of firm and personal memory. If this is a matter "
+                          "fact, save it with scope=matter and tell the lawyer."]}
+    body = body if isinstance(body, dict) else {}
+    out = {"saved": True, "scope": scope, "id": body.get("id"), "status": body.get("status")}
+    if body.get("status") == "proposed":
+        out["notes"] = ["a Firm admin must confirm a firm convention before other matters see it"]
+    return out
+
+
+def _error_text(body: Any) -> Optional[str]:
+    """LitKit's refusal as text: the error message and the verdict code, never the note itself."""
+    if isinstance(body, str):
+        return body[:300] or None
+    if not isinstance(body, dict):
+        return None
+    err = body.get("error")
+    if isinstance(err, dict):
+        err = err.get("message") or err.get("code")
+    return ": ".join(dict.fromkeys(str(x) for x in (err, body.get("code") or body.get("verdict")) if x)) or None
+
 
 @_tool("litkit_remember")
 def litkit_remember(args: Dict[str, Any]) -> Any:
     client = _client()
     scope = str(args.get("scope") or "matter")
-    if scope not in ("matter", "user", "wall"):
-        raise ValueError("scope must be matter, user or wall")
+    if scope not in ("matter", "user", "wall") + SHARED_SCOPES:
+        raise ValueError("scope must be matter, user, wall, firm or person")
+    if scope in SHARED_SCOPES:
+        return _remember_shared(client, scope, args)
     if scope == "user" and not current_acting_user():
         raise ValueError("a private (user) note needs a lawyer on the turn; this turn has none")
     kind = str(args.get("kind") or "fact").strip()
@@ -1229,13 +1283,105 @@ def litkit_remember(args: Dict[str, Any]) -> Any:
     return _actions(client, "remember", action_args)
 
 
+def _shared_items(client: LitKitClient, scope: str, notes: List[str]) -> List[Dict[str, Any]]:
+    """Active firm or person notes. Fail-soft: a LitKit without the route (404) or a failed read
+    leaves a note and an empty list, so matter recall still answers."""
+    try:
+        status, body = client.json_with_status("GET", SHARED_MEMORY_ROUTE, params={"scope": scope},
+                                               ok_statuses=(404,))
+    except LitKitError as exc:
+        notes.append(f"{scope} memory could not be read ({exc})")
+        return []
+    if status == 404:
+        if SHARED_UNAVAILABLE not in notes:
+            notes.append(SHARED_UNAVAILABLE)
+        return []
+    items = body.get("items") if isinstance(body, dict) else None
+    out = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("content"), str):
+            out.append({"id": item.get("id"), "kind": item.get("kind"),
+                        "content": _clip(item["content"], SHARED_CONTENT_MAX)})
+    return out[:SHARED_READ_MAX]
+
+
 @_tool("litkit_recall")
 def litkit_recall(args: Dict[str, Any]) -> Any:
+    """Matter memories (wall-filtered, as before) plus the firm's conventions and, when a lawyer is on
+    the turn, that lawyer's own notes (FIRM_AGENT_HOST 4.3), each labelled with its scope."""
     client = _client()
-    action_args = {k: args[k] for k in ("query", "kind") if args.get(k)}
-    if args.get("limit"):
-        action_args["limit"] = max(1, min(int(args["limit"]), 50))
-    return _actions(client, "recall", action_args)
+    scope = str(args.get("scope") or "all")
+    if scope not in ("all", "matter") + SHARED_SCOPES:
+        raise ValueError("scope must be all, matter, firm or person")
+    out: Dict[str, Any] = {}
+    notes: List[str] = []
+    if scope in ("all", "matter"):
+        action_args = {k: args[k] for k in ("query", "kind") if args.get(k)}
+        if args.get("limit"):
+            action_args["limit"] = max(1, min(int(args["limit"]), 50))
+        out["matter"] = _actions(client, "recall", action_args)
+    if scope in ("all", "firm"):
+        out["firm"] = _shared_items(client, "firm", notes)
+    if scope in ("all", "person"):
+        if current_acting_user():
+            out["person"] = _shared_items(client, "person", notes)
+        else:
+            notes.append("no lawyer on this turn, so no personal notes")
+    notes.append("name your source when you use one: this matter, a firm convention, or the lawyer's preference")
+    out["notes"] = notes
+    return out
+
+
+CROSS_MATTER_ROUTE = "/api/agent/cross-matter-search"
+CROSS_MATTER_HITS_MAX = 10
+CROSS_MATTER_SNIPPET_MAX = 300
+CROSS_MATTER_UNAVAILABLE = ("Searching other matters is not available in this thread: it works only in a lawyer's own "
+                            "private thread. Tell the lawyer: \"Ask me in a private thread and I'll search your "
+                            "other matters.\"")
+
+
+@_tool("litkit_cross_matter_search")
+def litkit_cross_matter_search(args: Dict[str, Any]) -> Any:
+    """FIRM_AGENT_HOST 6.1: search the acting lawyer's other matters through LitKit.
+
+    LitKit checks the lawyer's own access on each matter, applies walls, audits, and returns at most
+    ten labelled snippets. The result is returned inline and never spilled to a file, so no other
+    matter's text is written into this matter's home.
+    """
+    query = str(_require(args, "query"))
+    grant = current_turn_grant()
+    if not grant or not current_acting_user():
+        return dumps({"available": False, "message": CROSS_MATTER_UNAVAILABLE})
+    body: Dict[str, Any] = {"query": query[:1000]}
+    if args.get("matterIds") is not None:
+        ids = args["matterIds"]
+        if not isinstance(ids, list) or not all(isinstance(x, str) and _UUID.match(x) for x in ids):
+            raise ValueError("'matterIds' must be a list of LitKit matter ids (uuid)")
+        body["matterIds"] = ids[:50]
+    client = _client()
+    try:
+        status, result = client.json_with_status("POST", CROSS_MATTER_ROUTE, json_body=body, ok_statuses=(404,),
+                                                 extra_headers={TURN_GRANT_HEADER: grant})
+    except LitKitPermissionError as exc:
+        out = exc.to_dict()
+        if "grant" in str(exc.code or "").lower():
+            out["message"] = CROSS_MATTER_UNAVAILABLE
+        return dumps(out)
+    if status == 404:
+        return dumps({"available": False, "message": "Searching other matters is not available on this LitKit yet."})
+    raw = result.get("hits") if isinstance(result, dict) else None
+    hits = []
+    for hit in raw if isinstance(raw, list) else []:
+        if not isinstance(hit, dict):
+            continue
+        row = {k: hit.get(k) for k in ("matterId", "matterName", "documentId", "bates", "title") if hit.get(k)}
+        row["snippet"] = _clip(hit.get("snippet") or "", CROSS_MATTER_SNIPPET_MAX)
+        hits.append(row)
+    hits = hits[:CROSS_MATTER_HITS_MAX]
+    return dumps({"available": True, "hits": len(hits), "results": hits,
+                  "notes": ["cite every hit with its matter name; the lawyer opens the document in that matter",
+                            "never save a hit, or anything drawn from one, to memory",
+                            "snippets only: this matter's tools cannot open another matter's documents"]})
 
 
 PASSTHROUGH_ACTIONS = ("term_frequency", "find_redacted", "hot_documents", "refresh_dossier", "diagnose_issue",
@@ -1405,13 +1551,27 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
          "userId": _S, "matterWide": _B, "kind": {"type": "string", "enum": list(NOTIFY_KINDS)}, "priority": _S},
         ["title"]),
     "litkit_remember": _schema(
-        "litkit_remember", "Save a matter memory in LitKit. scope=user keeps it private to the lawyer on this turn.",
-        {"content": _S, "kind": {"type": "string", "enum": list(REMEMBER_KINDS), "description": "default fact"},
-         "key": _S, "scope": {"type": "string", "enum": ["matter", "user", "wall"]},
+        "litkit_remember", "Save a memory in LitKit. matter (default): for this matter's team; user: this lawyer "
+        "only; wall: one wall. firm: a convention every matter follows (a Firm admin confirms it); person: this "
+        "lawyer's preference in all their matters. Firm and person hold conventions and preferences only, never "
+        "matter facts (parties, amounts, dates, Bates, case details); LitKit refuses those there.",
+        {"content": {"type": "string", "description": "firm/person: at most 1000 characters"}, "kind": {
+            "type": "string", "description": "matter/user/wall: one of " + ", ".join(REMEMBER_KINDS) + " (default fact); "
+                                             "firm/person: convention, preference or tool_habit"},
+         "key": _S, "scope": {"type": "string", "enum": ["matter", "user", "wall", "firm", "person"]},
          "wallId": _S, "expiresAt": _S, "replacesIds": _IDS}, ["content"]),
     "litkit_recall": _schema(
-        "litkit_recall", "Recall matter memories saved in LitKit (wall-filtered for the lawyer on this turn).",
-        {"query": _S, "kind": _S, "limit": _I}),
+        "litkit_recall", "Recall memories from LitKit, labelled by scope: this matter's (wall-filtered for the lawyer "
+        "on this turn), the firm's conventions, and the lawyer's own preferences. Say which one you relied on.",
+        {"query": _S, "kind": _S, "limit": _I,
+         "scope": {"type": "string", "enum": ["all", "matter", "firm", "person"], "description": "default all"}}),
+    "litkit_cross_matter_search": _schema(
+        "litkit_cross_matter_search", "Search the acting lawyer's OTHER matters for a term (private threads only). "
+        "LitKit applies that lawyer's own access and walls, logs the search, and returns at most ten snippets, "
+        "each labelled with its matter. Cite every hit with its matter name; never save a hit to memory. In a "
+        "shared thread it reports that it is unavailable: offer to search from a private thread.",
+        {"query": _S, "matterIds": {"type": "array", "items": {"type": "string"},
+                                    "description": "optional: only these matters"}}, ["query"]),
     "litkit_actions": _schema(
         "litkit_actions", "LitKit analysis actions: term_frequency, find_redacted, hot_documents, refresh_dossier, "
         "diagnose_issue, diagnose_ingest, litlex_format_cite.",
@@ -1445,6 +1605,7 @@ HANDLERS: Dict[str, Callable[..., str]] = {
     "litkit_ingest": litkit_ingest, "litkit_proposals": litkit_proposals, "litkit_tags": litkit_tags,
     "litkit_work_sets": litkit_work_sets, "litkit_litlex": litkit_litlex, "litkit_notify": litkit_notify,
     "litkit_remember": litkit_remember, "litkit_recall": litkit_recall, "litkit_actions": litkit_actions,
+    "litkit_cross_matter_search": litkit_cross_matter_search,
     "litkit_attachment": litkit_attachment, "litkit_channel_history": litkit_channel_history,
     "litco_deliver_local": litco_deliver_local,
 }

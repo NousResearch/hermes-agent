@@ -26,15 +26,23 @@ class TestBuildPreloadedSkillsPrompt:
     def test_no_skills_returns_none(self):
         assert _build_preloaded_skills_prompt(None) is None
 
-    def test_all_missing_raises(self, monkeypatch):
+    def test_all_missing_degrades_to_warning(self, monkeypatch, caplog):
+        """All requested skills unknown → warn and return no prompt, never raise.
+
+        Fail-loud at startup was the kanban crash-loop class (workers exiting 1 at init).
+        """
+        import logging
+
         import agent.skill_commands as sc
 
         monkeypatch.setattr(
             sc, "build_preloaded_skills_prompt",
             lambda parsed, **kw: ("", [], list(parsed)),
         )
-        with pytest.raises(ValueError, match="Unknown skill"):
-            _build_preloaded_skills_prompt("not-a-skill")
+        with caplog.at_level(logging.WARNING):
+            assert _build_preloaded_skills_prompt("not-a-skill") is None
+        assert "Unknown skill" in caplog.text
+        assert "not-a-skill" in caplog.text
 
     def test_partial_success_returns_prompt(self, monkeypatch):
         import agent.skill_commands as sc

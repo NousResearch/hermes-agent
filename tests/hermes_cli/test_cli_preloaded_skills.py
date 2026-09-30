@@ -58,7 +58,14 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     assert cli_obj.system_prompt == "base prompt\n\nskill prompt"
     assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
 
-def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
+def test_main_degrades_for_unknown_preloaded_skill(monkeypatch, caplog):
+    """An unknown forced skill must degrade (warn + keep running), never raise.
+
+    Fail-loud here hard-exited kanban workers at init and turned a config gap into a
+    crash loop that burned the spawn slot (worker-deaths.log, reason=unknown_skill).
+    """
+    import logging
+
     import cli as cli_mod
 
     created = {}
@@ -77,7 +84,9 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     with pytest.raises(SystemExit):
         cli_mod.main(skills="missing-skill", list_tools=True)
 
-    # The all-skills-unknown hard failure now surfaces when the preload is
-    # finalized (agent init), preserving the fail-loud contract.
-    with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
+    with caplog.at_level(logging.WARNING, logger="cli"):
         _real_finalize(created["cli"])
+
+    assert created["cli"].preloaded_skills == []
+    assert "Unknown skill" in caplog.text
+    assert "missing-skill" in caplog.text

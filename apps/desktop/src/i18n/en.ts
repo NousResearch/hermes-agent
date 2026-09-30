@@ -3838,7 +3838,6 @@ export const en: Translations = {
     lookupLoading: 'Looking up…',
     lookupNoMatches: 'No matches.',
     lookupFailed: 'Commands unavailable.',
-    lookupRetry: 'Retry',
     lookupTry: 'Try',
     lookupOr: 'or',
     commonCommands: 'Common commands',

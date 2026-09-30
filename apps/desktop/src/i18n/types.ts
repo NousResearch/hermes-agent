@@ -3243,7 +3243,6 @@ export interface Translations {
     lookupLoading: string
     lookupNoMatches: string
     lookupFailed: string
-    lookupRetry: string
     lookupTry: string
     lookupOr: string
     commonCommands: string

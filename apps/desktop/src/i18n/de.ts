@@ -4218,7 +4218,6 @@ export const deOverrides = {
     lookupLoading: 'Sucht…',
     lookupNoMatches: 'Keine Treffer.',
     lookupFailed: 'Befehle nicht verfügbar.',
-    lookupRetry: 'Erneut versuchen',
     lookupTry: 'Versuchen Sie',
     lookupOr: 'oder',
     commonCommands: 'Häufige Befehle',

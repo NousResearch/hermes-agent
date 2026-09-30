@@ -3606,7 +3606,6 @@ export const zh = defineLocale({
     lookupLoading: '查找中…',
     lookupNoMatches: '没有匹配项。',
     lookupFailed: '命令暂不可用。',
-    lookupRetry: '重试',
     lookupTry: '试试',
     lookupOr: '或',
     commonCommands: '常用命令',

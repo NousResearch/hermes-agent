@@ -4229,7 +4229,6 @@ export const frOverrides = {
     lookupLoading: 'Recherche…',
     lookupNoMatches: 'Aucune correspondance.',
     lookupFailed: 'Commandes indisponibles.',
-    lookupRetry: 'Réessayer',
     lookupTry: 'Essayez',
     lookupOr: 'ou',
     commonCommands: 'Commandes courantes',

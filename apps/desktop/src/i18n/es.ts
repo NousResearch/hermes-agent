@@ -4210,7 +4210,6 @@ export const esOverrides = {
     lookupLoading: 'Buscando…',
     lookupNoMatches: 'Sin coincidencias.',
     lookupFailed: 'Comandos no disponibles.',
-    lookupRetry: 'Reintentar',
     lookupTry: 'Prueba',
     lookupOr: 'o',
     commonCommands: 'Comandos comunes',

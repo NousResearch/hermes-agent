@@ -2323,7 +2323,6 @@ export const ar = defineLocale({
     lookupLoading: 'جار البحث...',
     lookupNoMatches: 'لا توجد نتائج',
     lookupFailed: 'الأوامر غير متاحة.',
-    lookupRetry: 'إعادة المحاولة',
     lookupTry: 'جرب',
     lookupOr: 'أو',
     commonCommands: 'الأوامر الشائعة',

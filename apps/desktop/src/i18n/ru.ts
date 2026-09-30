@@ -2938,7 +2938,6 @@ export const ru = defineLocale({
     lookupLoading: 'Ищем…',
     lookupNoMatches: 'Нет совпадений.',
     lookupFailed: 'Команды недоступны.',
-    lookupRetry: 'Повторить',
     lookupTry: 'Попробуйте',
     lookupOr: 'или',
     commonCommands: 'Частые команды',

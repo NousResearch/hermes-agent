@@ -2944,7 +2944,6 @@ export const zhHant = defineLocale({
     lookupLoading: '查詢中…',
     lookupNoMatches: '沒有相符項目。',
     lookupFailed: '命令暫時無法使用。',
-    lookupRetry: '重試',
     lookupTry: '試試',
     lookupOr: '或',
     commonCommands: '常用指令',

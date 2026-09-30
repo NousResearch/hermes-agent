@@ -2,6 +2,7 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { Fragment, useEffect, useRef } from 'react'
 
 import { referenceKind, referenceStyle } from '@/components/assistant-ui/reference-kinds'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
@@ -173,9 +174,9 @@ export function ComposerTriggerPopover({
           </div>
         ) : error ? (
           <CompletionDrawerEmpty title={copy.lookupFailed}>
-            <button className="text-foreground underline" onClick={onRetry} type="button">
-              {copy.lookupRetry}
-            </button>
+            <Button onClick={onRetry} size="inline" type="button" variant="textStrong">
+              {t.common.retry}
+            </Button>
           </CompletionDrawerEmpty>
         ) : (
           <CompletionDrawerEmpty title={copy.lookupNoMatches}>

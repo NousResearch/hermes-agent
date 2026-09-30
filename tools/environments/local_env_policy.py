@@ -4,7 +4,8 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
-from typing import Optional
+import re
+from typing import Iterable, Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -183,6 +184,9 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
+# ``<KEY>_2``, ``<KEY>_3`` ...: the rotation-pool siblings of a declared key.
+_NUMBERED_SIBLING_RE = re.compile(r"_\d+$")
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
@@ -194,6 +198,38 @@ def _is_hermes_internal_secret(key: str) -> bool:
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
+
+
+def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
+    """The subset of *names* the ACTIVE profile itself consumes as a credential, for env that is
+    forwarded implicitly (no skill, operator or server declared the name). Derived from the
+    consumers, not listed: the blocklist and dynamic internal secrets; the tokens a messaging
+    adapter connects with (``profile_channels.credential_env_keys``); the numbered siblings
+    ``<KEY>_2``.. and the persisted ``env:VAR`` rows the credential pool rotates through
+    (``credential_pool._env_key_var_candidates``); and a ``<NAME>_<PROFILE>`` source name that
+    hydration also applies as ``<NAME>`` (``secret_sources.registry._profile_alias_target``).
+    Resolved per call: pool rows, plugin adapters and the profile differ per served profile."""
+    from agent.secret_sources.registry import _active_profile_name, _profile_alias_target
+    from hermes_cli.auth import read_credential_pool
+    from hermes_cli.profile_channels import credential_env_keys
+    from hermes_constants import get_hermes_home
+
+    adapter_keys = credential_env_keys()
+    pool_rows = {
+        str(entry.get("source"))[len("env:"):].strip()
+        for entries in read_credential_pool().values() if isinstance(entries, list)
+        for entry in entries if isinstance(entry, dict) and str(entry.get("source")).startswith("env:")}
+    profile = _active_profile_name(get_hermes_home())
+
+    def consumed(name: str) -> bool:
+        upper = name.upper()
+        return name in pool_rows or _is_hermes_internal_secret(name) or any(
+            candidate in _HERMES_PROVIDER_ENV_BLOCKLIST or candidate in adapter_keys
+            for candidate in (upper, _NUMBERED_SIBLING_RE.sub("", upper)))
+
+    return frozenset(
+        name for name in names
+        if consumed(name) or consumed(_profile_alias_target(name, profile) or name))
 
 
 # Authorization gates: the env names platform adapters read to decide WHO may talk to the

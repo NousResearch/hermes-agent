@@ -1525,6 +1525,7 @@ class TestBuildSafeEnv:
             "ALPACA_API_KEY": "from-bws-key",
             "NOTION_TOKEN": "from-op",
             "UNTRACKED_SECRET_KEY": "still-filtered",
+            "HERMES_HOME": os.environ["HERMES_HOME"],
         }
         with patch.dict("os.environ", fake_env, clear=True):
             result = _build_safe_env(None)
@@ -1543,7 +1544,8 @@ class TestBuildSafeEnv:
 
         monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
         monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
-        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "default-profile", "NOTION_TOKEN": "default-notion"}
+        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "default-profile", "NOTION_TOKEN": "default-notion",
+                    "HERMES_HOME": os.environ["HERMES_HOME"]}
         set_multiplex_active(True)
         token = set_secret_scope({"ALPACA_API_KEY": "profile-b"})
         try:
@@ -1564,7 +1566,8 @@ class TestBuildSafeEnv:
         from tools.mcp_tool_config import _build_safe_env
 
         hermes_creds = {"OPENAI_API_KEY": "sk-MARKER-provider", "TELEGRAM_BOT_TOKEN": "MARKER-bot"}
-        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "MARKER-third-party", **hermes_creds}
+        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "MARKER-third-party", **hermes_creds,
+                    "HERMES_HOME": os.environ["HERMES_HOME"]}
         with patch.dict("os.environ", fake_env, clear=True):
             from_dotenv = _build_safe_env(None)
             for name in [*hermes_creds, "ALPACA_API_KEY"]:

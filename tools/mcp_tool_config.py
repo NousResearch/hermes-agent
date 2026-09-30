@@ -148,17 +148,19 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
     from agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
-    from tools.env_passthrough import _is_hermes_provider_credential
+    from tools.environments.local_env_policy import hermes_consumed_credentials
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
     # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
     # holds only the LAUNCH profile's values, so the value must come from the active profile's
     # secret scope; a profile that lacks the name gets nothing, never another profile's token.
-    for key in secret_source_names():
-        # Where a credential is stored must not decide who receives it: Hermes' own provider keys
-        # and bot/gateway tokens are stripped from .env too, and reach a server only via its ``env``.
-        if _is_hermes_provider_credential(key):
+    source_names = secret_source_names()
+    # Where a credential is stored must not decide who receives it: what Hermes itself consumes
+    # (under any name it reads it by) is stripped from .env too, and reaches a server only via ``env``.
+    withheld = hermes_consumed_credentials(source_names) if source_names else ()
+    for key in source_names:
+        if key in withheld:
             continue
         value = get_secret(key)
         if value is not None:

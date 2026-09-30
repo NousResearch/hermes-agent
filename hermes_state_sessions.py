@@ -144,6 +144,7 @@ def _projected_tip_source_sql(session_alias: str = "s") -> str:
                     WHERE parent.end_reason = 'compression'
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                 )
                 WHERE child_rank = 1
@@ -1516,6 +1517,7 @@ class SessionSessionsMixin:
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
                 workspace_key=workspace_key,
+                source_sql=source_sql,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")

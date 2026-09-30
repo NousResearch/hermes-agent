@@ -5350,6 +5350,52 @@ class TestRetryExhaustion:
         assert result.get("turn_exit_reason") == "malformed_function_call"
         assert agent.client.chat.completions.create.call_count == 1
 
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("with_tool", [False, True])
+    def test_native_malformed_turn_persists_failed_trajectory(self, agent, tmp_path, monkeypatch, stream, with_tool):
+        import httpx
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        self._setup_agent(agent)
+        monkeypatch.chdir(tmp_path)
+        agent.save_trajectories = True
+        agent.model = "gemini-test"
+        calls = []
+        payload = {"candidates": [{
+            "content": {"parts": [{"functionCall": {"name": "web_search", "args": {}}}] if with_tool else []},
+            "finishReason": "MALFORMED_FUNCTION_CALL",
+        }]}
+
+        def respond(request):
+            calls.append(request)
+            if stream:
+                return httpx.Response(200, text="data: " + json.dumps(payload) + "\n\n", headers={"content-type": "text/event-stream"})
+            return httpx.Response(200, json=payload)
+
+        client = GeminiNativeClient(api_key="fixture-key", http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+        agent.client = client
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kwargs: client)
+        monkeypatch.setattr("agent.turn_api_call._should_stream", lambda agent: stream)
+        def forbid_network(*args, **kwargs):
+            raise AssertionError("network forbidden")
+
+        monkeypatch.setattr("socket.socket.connect", forbid_network)
+        if stream:
+            agent.stream_delta_callback = lambda text: None
+        try:
+            with patch.object(agent, "_execute_tool_calls") as execute, patch.object(agent, "_cleanup_task_resources"):
+                result = agent.run_conversation("please call a tool")
+            assert result.get("failed") is True
+            assert result.get("completed") is False
+            assert len(calls) == 1
+            execute.assert_not_called()
+            assert not (tmp_path / "trajectory_samples.jsonl").exists()
+            rows = [json.loads(line) for line in (tmp_path / "failed_trajectories.jsonl").read_text(encoding="utf8").splitlines()]
+            assert len(rows) == 1
+            assert rows[0]["completed"] is False
+        finally:
+            client.close()
+
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
 

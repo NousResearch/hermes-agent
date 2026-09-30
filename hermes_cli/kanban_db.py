@@ -3230,6 +3230,11 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+    ``dependency`` is the exception: it never enters the human ``blocked``
+    bucket, so an in-place classification routes it exactly like the
+    running path -- parked in ``todo`` (``dependency_wait``) for
+    ``recompute_ready``, or re-kinded to sticky ``needs_input`` when no
+    parent is open (#129486).
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3249,6 +3254,33 @@ def block_task(
         if cur_row["status"] == "blocked":
             if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
                 return False
+            requested_kind = kind
+            rekind_reason = None
+            if kind == "dependency" and _parents_satisfied(conn, task_id):
+                kind = "needs_input"
+                rekind_reason = "no_open_parent"
+            if kind == "dependency":
+                # A dependency wait never enters the human ``blocked`` bucket
+                # (#129486): parking it here as a sticky ``blocked`` card would
+                # strand it -- ``_has_sticky_block`` hides it from
+                # ``recompute_ready`` forever. Route it like the running path
+                # instead: ``todo`` + ``dependency_wait``, promoted when the
+                # open parent lands. No live run exists here, so there is no
+                # run to end; claim fields are cleared defensively like the
+                # running-path update.
+                parked = conn.execute(
+                    "UPDATE tasks SET status = 'todo', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, block_kind = ? "
+                    "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
+                    "AND current_run_id IS NULL",
+                    (kind, task_id),
+                ).rowcount
+                if parked != 1:
+                    return False
+                _append_event(conn, task_id, "dependency_wait", {
+                    "kind": kind, "reason": reason, "classified_in_place": True,
+                })
+                return True
             classified = conn.execute(
                 "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "
                 "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
@@ -3257,9 +3289,11 @@ def block_task(
             ).rowcount
             if classified != 1:
                 return False
-            _append_event(conn, task_id, "blocked", {
-                "kind": kind, "reason": reason, "classified_in_place": True,
-            })
+            payload = {"kind": kind, "reason": reason, "classified_in_place": True}
+            if rekind_reason:
+                payload["requested_kind"] = requested_kind
+                payload["rekind_reason"] = rekind_reason
+            _append_event(conn, task_id, "blocked", payload)
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind

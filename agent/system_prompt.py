@@ -741,7 +741,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
-    from agent.employee_prompt import connection_guidance, responsibility_prompt
+    from agent.employee_prompt import connection_guidance, file_keeping_guidance, responsibility_prompt
     from agent.knowledge import render
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     token = set_hermes_home_override(_agent_home(agent))
@@ -750,11 +750,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             "`hermes-agent` skill", "`hermes-agent` guide"
         ).replace("skill_view(name='hermes-agent')", "read_file(path='{guides_root}/employee/guide.md')")))
         connections = connection_guidance()
+        filing = file_keeping_guidance()
         responsibilities = responsibility_prompt()
     finally:
         reset_hermes_home_override(token)
     stable_parts.extend(_guidance_parts(agent))
-    stable_parts.append(connections)
+    stable_parts.extend([connections, filing])
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))

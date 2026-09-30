@@ -1,13 +1,15 @@
 # Guides
 
-Ship two guide roots:
+Ship three guide roots:
 
 - `guides/employee`: native Hermes self-reference skill copied as a guide,
   including references/templates, with only runtime-specific adaptations.
 - `guides/responsibility-authoring`: responsibility packages, schedules and
   webhook authoring.
 
-Remove the file-keeping guide and its imposed document/repository conventions.
+- `guides/file-keeping`: documents/repos under the active Hermes home, lasting
+  attachments, cloud-document stubs and reusable filing conventions.
+
 The standalone connections guide remains removed. Its approved documentation
 rule lives in `employee/references/service-connections.md`: read the existing
 manual, document every connection and verification, and keep reusable scripts
@@ -25,5 +27,5 @@ responsibilities, person memory and Hindsight. Do not rename unsupported skill
 commands into invented responsibility commands.
 
 [Provenance](reference/README.md) and the checked-in adaptation diffs record
-source and edits. Responsibility/connection storage locations and final main
-prompt offering remain open in the [scope ledger](../downstream/scope.md).
+source and edits. The agreed prompt and storage boundaries are in the
+[scope ledger](../downstream/scope.md).

@@ -99,6 +99,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | Delegation and background work | `references/background-systems.md` |
 | Connecting or operating any service | `references/service-connections.md` |
 | MCP servers (add, catalog, `hermes mcp`) | `references/native-mcp.md` |
+| Keeping documents, cloud-document references and Git checkouts | `../file-keeping/guide.md` |
 | Responsibility packages, schedules and webhook runs | `../responsibility-authoring/guide.md` |
 | A custom theme/skin ("synthwave theme", "change the gold ●") | `references/themes.md` + `templates/skin.yaml` |
 | A desktop app UI element (pane, widget, ⌘K command, page) | `references/desktop-plugins.md` + `templates/plugin.js` |

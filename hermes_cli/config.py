@@ -567,7 +567,7 @@ def _ensure_default_soul_md(home: Path) -> None:
 _HERMES_HOME_ENSURED: set = set()
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
-    "pairing", "hooks", "image_cache", "audio_cache", "skills")
+    "pairing", "hooks", "image_cache", "audio_cache", "skills", "documents", "repos")
 
 
 def ensure_hermes_home():

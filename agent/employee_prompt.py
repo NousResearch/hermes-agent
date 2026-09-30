@@ -6,6 +6,11 @@ def connection_guidance():
     return render("For service connection work, read {guides_root}/employee/references/service-connections.md and the existing {profile_home}/connections/<service>/manual.md, if present. Document every connection in that manual; keep reusable references and scripts alongside it.")
 
 
+def file_keeping_guidance():
+    from agent.knowledge import render
+    return render("Keep lasting documents, data and deliverables in {profile_home}/documents/ and Git checkouts in {profile_home}/repos/. Before filing or reorganizing lasting material, read {guides_root}/file-keeping/guide.md. Search documents before saying a file is unavailable. Use native scratch storage for disposable work.")
+
+
 def responsibility_prompt():
     from agent.knowledge import render
     from responsibilities.common import get_responsibilities_root, ResponsibilityFilesystemError

@@ -44,12 +44,13 @@
 -| Delegation, cron, curator, kanban | `references/background-systems.md` |
 +| Delegation and background work | `references/background-systems.md` |
 +| Connecting or operating any service | `references/service-connections.md` |
-@@ -87 +102 @@
+@@ -87 +102,2 @@
 -| Webhook routes and event-driven runs | `references/webhooks.md` |
++| Keeping documents, cloud-document references and Git checkouts | `../file-keeping/guide.md` |
 +| Responsibility packages, schedules and webhook runs | `../responsibility-authoring/guide.md` |
-@@ -96 +110,0 @@
+@@ -96 +111,0 @@
 -| "Can app X use my Nous Portal subscription/OAuth?" | `references/portal-auth-for-third-party-apps.md` |
-@@ -182,3 +196,2 @@
+@@ -182,3 +197,2 @@
 -- **For scheduled tasks**, use the `cronjob` tool instead of spawning — handles delivery and retry
 -- **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Three real cap paths in Hermes; if none fired, the model is self-limiting and rationalising it as "the runtime caps."
 -- **"Can $external_app use my Nous Portal subscription / OAuth?"** — see `references/portal-auth-for-third-party-apps.md`. Walk the user through three layers (plugin-vs-app, what Portal actually exposes, local-broker-proxy option).

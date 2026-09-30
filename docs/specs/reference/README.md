@@ -9,7 +9,7 @@ These are versioned specification inputs, not runtime assets.
   additions. Native source: skill version 3.2.0, Hermes Agent + Teknium, MIT;
   latest source-directory commit `99768fd1274203a821c2eea42b7d02f2c1440672`.
 - [Employee guide adaptations](guide-adaptations.diff): retained responsibility
-  wording, with path/name substitutions normalized out.
+  and file-keeping wording, with path/name substitutions normalized out.
 - [Hindsight configuration](hindsight-config.json): image pin, API environment
   and bank template extracted without importing infrastructure code. Pool sizes
   are resolved from the reference production configuration (development matches).

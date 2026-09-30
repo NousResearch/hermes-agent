@@ -29,7 +29,7 @@ Browser Use is selected in Railway config. There is no fork-specific persistent
 browser profile manager. Whisper's native default model is baked into the image
 and copied to the native cache on first boot without replacing existing state.
 
-**Open:** responsibility/connection locations.
-Deployment review follows those decisions. Local checks do not prove real Codex
+File keeping uses profile-local documents/repos alongside responsibilities and
+connections, with a shipped guide and prompt pointer. Deployment review follows. Local checks do not prove real Codex
 entitlement, Browser Use account behavior, public ingress or backup/restore.
 Responsibility filesystem code still requires POSIX (Linux/WSL2 or macOS).

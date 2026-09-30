@@ -10,10 +10,9 @@ knowledge review and send/list messaging. Use native prompting, configuration,
 CLI, browser implementation, conversation framing, persistence and replay.
 Hide selected client controls without changing native administration endpoints.
 
-The prompt scope is settled in [system prompt](system-prompt.md). The remaining
-open decision is where responsibilities and connections belong. Existing
-profile-local paths remain until agreed; no file migration or special
-working-folder convention.
+The prompt scope is settled in [system prompt](system-prompt.md). The folder layout is settled in [local layout](local-layout.md): documents,
+repositories, responsibilities and connections live directly under the active
+Hermes home. No existing files are migrated.
 
 See [implementation](implementation.md), [responsibilities](responsibility-execution.md),
 [tools](tool-surface.md), [guides](guides.md), [defaults](runtime-defaults.md),

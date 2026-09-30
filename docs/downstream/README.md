@@ -59,3 +59,5 @@ is removed or upstream satisfies it. Use this shape:
 - [Employee surface exclusions](divergences/employee-surface.md) — preserve the model tool filter, disabled skills and client visibility only.
 
 - [Unified knowledge review](divergences/knowledge-review.md) — preserve source review scope and personal/shared memory tools.
+
+- [File keeping](divergences/file-keeping.md) — profile-local documents/repos and a source-derived filing guide.

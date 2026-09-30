@@ -338,7 +338,7 @@ The architecture is intentionally optimized to:
 ## Fork additions
 
 The native identity and guidance assembly remains. `agent/employee_prompt.py`
-supplies service-manual guidance and the unchanged full responsibility section
+supplies service-manual/file-keeping guidance and the unchanged full responsibility section
 in the native skills-index slot; the Hermes help pointer loads the shipped guide.
 Native memory guidance remains. No separate Hindsight guidance is added; its
 tool description explains recall.

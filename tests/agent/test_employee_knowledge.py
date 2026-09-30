@@ -1,6 +1,6 @@
 import json
 
-from agent.employee_prompt import connection_guidance, responsibility_prompt
+from agent.employee_prompt import connection_guidance, file_keeping_guidance, responsibility_prompt
 from agent.file_safety import get_write_denied_error
 from agent.knowledge import guides_root
 from tools.file_tools import read_file_tool
@@ -97,3 +97,21 @@ def test_native_guide_references_and_templates_resolve_through_file_tools(tmp_pa
     assert hub / "references/native-mcp.md" in seen
     assert hub / "references/service-connections.md" in seen
     assert (root / "responsibility-authoring/guide.md").resolve() in seen
+    assert (root / "file-keeping/guide.md").resolve() in seen
+
+
+def test_filing_guidance_uses_active_profile_not_cwd(tmp_path, monkeypatch):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    ambient = tmp_path / "ambient"
+    profile = tmp_path / "selected"
+    monkeypatch.setenv("HERMES_HOME", str(ambient))
+    monkeypatch.chdir(tmp_path)
+    token = set_hermes_home_override(profile)
+    try:
+        guidance = file_keeping_guidance()
+        assert str(profile / "documents") in guidance
+        assert str(profile / "repos") in guidance
+        assert str(ambient) not in guidance
+        assert str(guides_root() / "file-keeping" / "guide.md") in guidance
+    finally:
+        reset_hermes_home_override(token)

@@ -7,14 +7,14 @@ the explicit differences below.
 
 | Area | Decision and reason | Where / boundary |
 | --- | --- | --- |
-| Main prompt | Native baseline with guide/connection pointers and the unchanged full responsibility section in the skills-index slot. Native memory guidance stays; no added Hindsight paragraph. | `agent/system_prompt.py`; `employee_prompt.py` supplies the connection pointer and responsibility roster. Native identity/SOUL, task guidance and environment context remain. |
+| Main prompt | Native baseline with guide/connection/file-keeping pointers and the unchanged full responsibility section in the skills-index slot. Native memory guidance stays; no added Hindsight paragraph. | `agent/system_prompt.py`; `employee_prompt.py` supplies knowledge pointers and the responsibility roster. Native identity/SOUL, task guidance and environment context remain. |
 | Model tools | Keep the selected employee surface; avoid paying for unwanted tools. Configured MCP tools remain eligible. | `agent/employee_policy.py`, `model_tools.py`, `toolsets.py`. This is a model-tool filter, not a ban on native administrator commands. |
 | Skills | Disabled in agent loading, invocation, sync and curator. | Small gates in native skill owners. Native implementation retained for upstream merges. |
 | Responsibilities | Keep charters, state, references, scripts, archives and discovery. Consolidate schedules and webhooks into this one divergence area. | `responsibilities/`; native cron and webhook integration. Native administration remains, with file-owned jobs protected against conflicting edits. |
 | File tools | Keep responsibility-specific validation, limits and feedback. Everything else uses native read/write/patch behavior. | `tools/file_*`, `responsibilities/files.py`. Guide reads use native pagination and budgets. |
-| Guides | Native Hermes self-reference copied as a guide with necessary runtime edits, plus responsibility authoring. | `guides/employee`, `guides/responsibility-authoring`. Removed file-keeping guide and imposed filing conventions. |
+| Guides | Native Hermes self-reference copied as a guide with necessary runtime edits, plus responsibility authoring and file keeping. | `guides/employee`, `guides/responsibility-authoring`, `guides/file-keeping`. |
 | Connections | Document every service connection, verification and operating procedure; scripts/references alongside. | Service-connections reference and prompt pointer. Native service CLI/MCP/authentication. No connection-management tool. |
-| Filesystem | Native Hermes layout and access. **Open:** final responsibility and connection locations. | Existing profile-local paths retained provisionally; no migrations, documents/repos convention, sandbox or custom temp/cache layout. |
+| Filesystem | Native Hermes layout and access, with profile-local filing roots. | `$HERMES_HOME/{documents,repos,responsibilities,connections}`. Native initialization adds documents/repos; no migrations, sandbox or custom temp/cache layout. |
 | Authored/personal memory | Source-product memory tool description and personal/shared targets; native store operations, limits/configuration and approval mechanics, except person selection/loading and current-turn placement. Background review can consolidate as agreed below. | `agent/people.py`, memory tool/store, inline executor. Current-person context follows user content before recall. Existing person paths retained. |
 | Context/replay | Native serialization, persistence, provider replay and token accounting. | Native string sidecars; native durable text-part handling for multimodal input. Only personal-context composition changes; Codex app-server receives current-turn personal/recall/plugin context at dispatch without changing native stored rows or history seeding. |
 | Hindsight | Keep provider integration and employee policy; same-message recall and only `recall` exposed. | `plugins/memory/hindsight`; native memory-provider lifecycle, context wrapper and provider selection. Deployment selects Hindsight. |
@@ -37,8 +37,7 @@ the explicit differences below.
 Every runtime change must belong to an approved row. Restore unrelated code to
 native Hermes. Prefer configuration for provider/default choices. Preserve the
 native prompt cache lifecycle; never reload a warm prompt or rewrite history.
-The open folder decision does not authorize a filesystem migration. Update this
-ledger when the user settles it.
+The agreed folder layout does not authorize moving or deleting existing data.
 
 ## Native reference
 

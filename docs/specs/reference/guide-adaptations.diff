@@ -1,3 +1,35 @@
+--- reference/file-keeping/guide.md
++++ guides/file-keeping/guide.md
+@@ -3,4 +3,8 @@
+-`{workdir}` is the organization's drive. `{workdir}/documents` is where lasting documents live.
+-`{workdir}/repos` holds git checkouts, one directory per repo.
+-`{workdir}/cache` is the read-only arrival area — entries expire after about
+-a day.
++`$HERMES_HOME/documents/` is the organization's drive for lasting documents, data and deliverables.
++`$HERMES_HOME/repos/` holds git checkouts, one directory per repo.
++Both belong to the active Hermes profile, independent of the current working directory.
++Use the native terminal environment's scratch directory for disposable work and send-only artifacts; follow its runtime path guidance.
++Incoming attachments use the paths in their message notices. Their retention follows the native channel; copy lasting material into documents.
++
++Before saying a file is unavailable, search `$HERMES_HOME/documents/`.
++Responsibility packages link to material here; they hold instructions and handoff state, not bulk data.
+@@ -19,2 +23 @@
+-- Copy out of the cache during the conversation it arrived in; the cache copy
+-  is gone within a day.
++- Copy lasting material during the conversation it arrived in; do not rely on attachment-cache retention.
+@@ -26 +29 @@
+-  `documents/` root until related files accumulate.
++  `$HERMES_HOME/documents/` root until related files accumulate.
+@@ -28,3 +31,3 @@
+-  paths. Your own artifacts might: before moving a file, grep the workspace
+-  for its path (schedules, responsibilities, scripts, stubs) and update any
+-  reference you find.
++  paths. Your own artifacts might: before moving a file, search documents, repos,
++  responsibilities and connections under `$HERMES_HOME` for its path
++  (including schedules, scripts and stubs), and update any reference you find.
+@@ -49 +52 @@
+-- Before creating a stub, grep `documents/` for the doc's URL or ID — update
++- Before creating a stub, grep `$HERMES_HOME/documents/` for the doc's URL or ID — update
 --- reference/responsibility-authoring/guide.md
 +++ guides/responsibility-authoring/guide.md
 @@ -94 +94 @@

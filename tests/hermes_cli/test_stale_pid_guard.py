@@ -265,3 +265,24 @@ class TestHermesHomeForPid:
         monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: None)
         assert dashboard_procs._hermes_home_for_pid(7) is None
         assert dashboard_procs._pids_owned_by_hermes_home([7], "/home/alice/.hermes") == []
+
+    @pytest.mark.platforms("posix")  # POSIX default home is $HOME/.hermes
+    def test_install_scope_matches_root_and_profile_backends(self, monkeypatch, tmp_path):
+        """#116503 follow-up: the update runs under ``<root>/profiles/<name>`` while launchd-owned
+        backends may live on the install root or sibling profiles. The multi-home install scope
+        must claim both, spare a foreign install's backend, and stay fail-closed on unreadable
+        environments."""
+        root = tmp_path / "hermes-root"
+        foreign = tmp_path / "other-install"
+        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {
+            1: {"HOME": str(tmp_path), "HERMES_HOME": str(root)},
+            2: {"HOME": str(tmp_path), "HERMES_HOME": str(root / "profiles" / "work")},
+            3: {"HOME": str(tmp_path), "HERMES_HOME": str(foreign)},
+        }.get(pid))
+        from hermes_cli import main_dashboard
+        monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid", lambda pid: ["hermes", "serve"])
+
+        scope = {str(root), str(root / "profiles" / "work")}
+        assert dashboard_procs._pids_owned_by_scoped_homes([1, 2, 3], scope) == [1, 2]
+        # Fail-closed: no readable environment is never a scope member, even for a wide scope.
+        assert dashboard_procs._pids_owned_by_scoped_homes([7], scope) == []

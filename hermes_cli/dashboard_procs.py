@@ -281,6 +281,24 @@ def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
     ]
 
 
+def _pids_owned_by_scoped_homes(pids: list[int], homes: "set[str] | frozenset[str]") -> list[int]:
+    """Return *pids* whose resolved Hermes home is any of *homes* (multi-home install scope).
+
+    The post-update cleanup runs with the invoking profile's ``HERMES_HOME``
+    while launchd-owned backends of the same install may live on the install
+    root or sibling profiles (see #116503 follow-up): an exact single-home
+    match never sees them, so their kickstart never fires and the run ends
+    ``unaccounted``. Same fail-closed rule as :func:`_pids_owned_by_hermes_home`
+    applies per PID: unreadable ownership never matches.
+    """
+    targets = {_normalized_home_for_compare(home) for home in homes}
+    return [
+        pid for pid in pids
+        if (pid_home := _hermes_home_for_pid(pid))
+        and _normalized_home_for_compare(pid_home) in targets
+    ]
+
+
 def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) -> str:
     """Stable owner key: ``HERMES_HOME`` when known, else ``--profile`` / ``-p``.
 
@@ -589,7 +607,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
-    scope_home: str | None = None,
+    scope_home: str | None = None, scope_homes: "set[str] | None" = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 
@@ -601,6 +619,10 @@ def _kill_stale_dashboard_processes(
     When *scope_home* is supplied, only processes with that exact live
     ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
     used by ``dashboard --stop`` and the per-profile update cleanup.
+    *scope_homes* (update cleanup only) widens that set to every home the
+    running update owns — install root and profiles — so a launchd-owned
+    backend running on the install root is still kickstarted when the update
+    was invoked under ``<root>/profiles/<name>`` (#116503 follow-up).
 
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
@@ -622,7 +644,8 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    pids = _dash._find_stale_dashboard_pids(
+        exclude_pids=exclude or None, scope_home=scope_home, scope_homes=scope_homes)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).

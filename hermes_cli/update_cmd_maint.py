@@ -278,12 +278,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     See #83595.
     """
     from hermes_cli.update_cmd import _m, _record_update_step
-    from hermes_constants import get_hermes_home
+    from hermes_cli.update_fleet_scope import update_scope_homes
 
     try:
+        # Install-wide scope, matching the fleet restart's ownership rule (#93349): launchd-owned
+        # backends may run on the install root while this update was invoked under
+        # ``<root>/profiles/<name>`` — an exact invoking-home match never sees them, their
+        # kickstart never fires, and the run ends ``unaccounted`` (#116503 follow-up).
         stop_result = _m()._kill_stale_dashboard_processes(
             restart_managed=True, already_restarted_units=already_restarted_units,
-            scope_home=str(get_hermes_home()),
+            scope_homes={str(home) for home in update_scope_homes()},
         )
     except Exception as exc:
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort

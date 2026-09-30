@@ -397,6 +397,100 @@ async def test_plain_peer_name_is_dropped_before_scoring_or_buffering(tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("explicit_reply", [False, True])
+async def test_same_sender_followup_to_direct_request_has_relevance_floor(
+    explicit_reply, tmp_path
+):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._name_pattern_for_room = lambda room: gate._names_pattern(["felix"])
+    gate._score_delays[4] = 3600
+    gate._throttled_evaluate = AsyncMock(return_value=(1, "Model missed the clarification."))
+
+    request = event(Platform.MATRIX, text="Felix, please create a new PNG.")
+    request.message_id = "direct-request"
+    request.metadata["conversation_mentioned"] = False
+    await adapter.handle_message(request)
+    if explicit_reply:
+        intervening = event(Platform.MATRIX, text="Unrelated room note")
+        intervening.message_id = "intervening"
+        intervening.source.user_id = "other-person"
+        intervening.metadata["conversation_mentioned"] = False
+        await adapter.handle_message(intervening)
+
+    clarification = event(Platform.MATRIX, text="I mean the file I just sent.")
+    clarification.message_id = "clarification"
+    clarification.metadata["conversation_mentioned"] = False
+    if explicit_reply:
+        clarification.reply_to_message_id = request.message_id
+    await adapter.handle_message(clarification)
+
+    assert gate._pending["same-room"].last_score == 4
+    decisions = [json.loads(line) for line in (
+        tmp_path / "logs/matrix-relevance-decisions.jsonl"
+    ).read_text().splitlines() if json.loads(line)["phase"] == "decision"]
+    assert decisions[-1]["reason_code"] == "addressed_followup"
+    assert decisions[-1]["score"] == 4
+    await gate._flush("same-room")
+    assert adapter.delivered[-1].text.startswith("I mean the file")
+
+    another_detail = event(Platform.MATRIX, text="Please keep its transparent background.")
+    another_detail.message_id = "another-detail"
+    another_detail.metadata["conversation_mentioned"] = False
+    await adapter.handle_message(another_detail)
+    assert gate._pending["same-room"].last_score == 4
+    await gate._flush("same-room")
+    assert adapter.delivered[-1].text.startswith("Please keep its transparent")
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
+async def test_followup_boost_does_not_transfer_to_other_sender_or_peer(tmp_path):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._peer_names = ["charlotte"]
+    gate._peer_name_pattern = gate._names_pattern(gate._peer_names)
+    gate._throttled_evaluate = AsyncMock(return_value=(1, "Not addressed to this agent."))
+
+    request = event(Platform.MATRIX, text="Felix, please create a new PNG.")
+    request.message_id = "direct-request"
+    await adapter.handle_message(request)
+
+    other_sender = event(Platform.MATRIX, text="I can provide the file later.")
+    other_sender.message_id = "other-sender"
+    other_sender.source.user_id = "other-person"
+    other_sender.reply_to_message_id = request.message_id
+    other_sender.metadata["conversation_mentioned"] = False
+    await adapter.handle_message(other_sender)
+    assert gate._pending == {}
+
+    peer_request = event(Platform.MATRIX, text="Charlotte, please check the layout.")
+    peer_request.message_id = "peer-request"
+    peer_request.metadata["conversation_mentioned"] = False
+    await adapter.handle_message(peer_request)
+
+    later = event(Platform.MATRIX, text="I mean the file I just sent.")
+    later.message_id = "later"
+    later.metadata["conversation_mentioned"] = False
+    await adapter.handle_message(later)
+    assert gate._pending == {}
+    assert len(adapter.delivered) == 1
+    decisions = [json.loads(line) for line in (
+        tmp_path / "logs/matrix-relevance-decisions.jsonl"
+    ).read_text().splitlines() if json.loads(line)["phase"] == "decision"]
+    assert [decision["reason_code"] for decision in decisions[-3:]] == [
+        "ai_score_context_only", "plain_name_addressed_to_peer", "ai_score_context_only"
+    ]
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
 async def test_always_room_dispatches_messages_naming_peers_without_scoring(tmp_path):
     (tmp_path / "RELEVANCE_CONTEXT.xml").write_text(
         '<relevance_context><rooms><room id="same-room">'

@@ -328,6 +328,10 @@ class IntelligentReactionGate:
         if not self._passive_context:
             self._passive_context.update(self._load_passive_context())
         self._mentioned_event_ids: Dict[str, Set[str]] = {}
+        # A direct request may be clarified in the next message without another
+        # mention. Keep the sender as well as the event ID so a different person
+        # replying in the same thread does not inherit that request.
+        self._addressed_event_senders: Dict[str, Dict[str, str]] = {}
         # Messages explicitly addressed to another local Groupchat profile.
         # Replies to these stay context-only unless this agent is mentioned.
         self._peer_targeted_event_ids: Dict[str, Set[str]] = (
@@ -1154,6 +1158,10 @@ class IntelligentReactionGate:
             # Direct mention: flush everything for this room, including the mention.
             if msg_event.message_id:
                 self._mentioned_event_ids.setdefault(room, set()).add(msg_event.message_id)
+                if msg_event.user_id:
+                    self._addressed_event_senders.setdefault(room, {})[
+                        msg_event.message_id
+                    ] = msg_event.user_id
             logger.debug("Conversation IR: room %s direct mention/name match, flushing", room)
             self._audit(
                 msg_event,
@@ -1372,6 +1380,19 @@ class IntelligentReactionGate:
         # payload and never start or reset a delivery timer.
         transcript = self._transcript_for_prompt(room)
         score, rationale = await self._throttled_evaluate(room, text, transcript)
+        addressed_followup = self._is_addressed_followup(room, msg_event)
+        if addressed_followup and msg_event.message_id and msg_event.user_id:
+            # Carry the addressee through consecutive clarifications, but not
+            # across a different room message or an explicit peer request.
+            self._addressed_event_senders.setdefault(room, {})[
+                msg_event.message_id
+            ] = msg_event.user_id
+        if addressed_followup and score < 4:
+            score = 4
+            rationale = (
+                "Follow-up to this sender's request addressed to this agent. "
+                + rationale
+            ).strip()
 
         if score == 0:
             self._audit(
@@ -1444,7 +1465,7 @@ class IntelligentReactionGate:
             msg_event,
             phase="decision",
             decision="buffer_delayed",
-            reason_code="ai_score_delay",
+            reason_code="addressed_followup" if addressed_followup else "ai_score_delay",
             score=score,
             delay_seconds=delay,
             buffered_count=len(buf.events),
@@ -1574,7 +1595,16 @@ class IntelligentReactionGate:
         transcript = self._room_transcript.setdefault(room, [])
         transcript.append((sender, text, timestamp, event_id))
         if len(transcript) > self._max_transcript_entries:
-            self._room_transcript[room] = transcript[-self._max_transcript_entries :]
+            transcript = transcript[-self._max_transcript_entries :]
+            self._room_transcript[room] = transcript
+            addressed = self._addressed_event_senders.get(room)
+            if addressed:
+                retained_ids = {entry[3] for entry in transcript}
+                self._addressed_event_senders[room] = {
+                    event_id: sender_id
+                    for event_id, sender_id in addressed.items()
+                    if event_id in retained_ids
+                }
 
     def _retain_passive_context(
         self,
@@ -1729,6 +1759,29 @@ class IntelligentReactionGate:
         # recency ordering intact (offset is <1s) but breaks ties deterministically.
         name_offset = (hash(self._profile_dir.name) % 1000) / 1000.0
         return recency + name_offset
+
+    def _is_addressed_followup(self, room: str, event: MessageEvent) -> bool:
+        """Recognize a same-sender clarification of a direct request.
+
+        An explicit reply can refer to an older request. Without a reply
+        relation, only the next real room message within five minutes inherits
+        the addressee. Peer-addressed messages were already routed away above.
+        """
+        sender_id = event.user_id
+        if not sender_id:
+            return False
+        addressed = self._addressed_event_senders.get(room, {})
+        if event.reply_to_message_id:
+            return addressed.get(event.reply_to_message_id) == sender_id
+        transcript = self._room_transcript.get(room, [])
+        if not transcript:
+            return False
+        _, _, timestamp, event_id = transcript[-1]
+        return bool(
+            event_id
+            and addressed.get(event_id) == sender_id
+            and 0 <= _now() - timestamp <= 300
+        )
 
     def _transcript_for_prompt(
         self, room: str, max_entries: int = 10

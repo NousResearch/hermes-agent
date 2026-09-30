@@ -776,33 +776,9 @@ Rules the host enforces so the surface stays safe:
 - First registration wins on a name collision; namespace adventurous names
   with your slug (`myplugin-board`, not `board`).
 
-Core ships one directive as the reference consumer: `::preview{file="…"}`
-renders the workspace HTML file **live inside the message** — a sandboxed
-`srcdoc` iframe with an opaque origin (scripts run and the widget is fully
-interactive; no reach into the app, its storage, or the bridge). The frame
-sizes itself to the content (height live, width adopted from the content's
-intrinsic span, flush left in the message flow), and a theme prelude hands
-the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
-`--accent`, `--border`, `--card`), the app font, and a transparent
-background — so widget-shaped HTML reads as native while a full page keeps
-its own design. Non-HTML targets and remote gateways fall back to the
-classic preview card. Tell the agent about your directive in a skill (that's
-how it learns to emit it).
-
-Previewed widgets can also **talk back**. Inside the frame,
-`window.hermes.send('get-price eth')` (or a declarative
-`<button data-hermes-send="get-price eth">` — no script needed) hands that
-prompt to the agent as a user turn, off-screen: no bubble takes up the
-transcript, the widget updating is the visible response. The turn is still
-real — it wakes the agent, rides the composer's steer/queue rules, and
-persists (typed `hidden`) so resume and the session DB keep the full record.
-Prompts are trimmed, capped at 500 chars (`window.hermes.maxLength`), and
-throttled to one per second per frame. Nothing is truncated or dropped
-silently: `send()` returns a Promise that resolves `{ ok: true }` once the
-prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
-`too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
-or `undelivered` (no visible composer took it). Check it before showing a
-widget as saved.
+Tell the agent about your directive in a skill (that's how it learns to emit
+it). Files are not a directive: the agent delivers them with `MEDIA:` tags,
+which the gateway turns into message attachments rendered as file cards.
 
 ### Mount-scoped chrome (`Contribute`)
 

@@ -7,7 +7,6 @@ import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { AskDirective } from '@/components/assistant-ui/ask-directive'
-import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
 import { OnboardingChatDirective } from '@/components/onboarding-chat/directive'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
@@ -334,19 +333,6 @@ registry.registerMany([
       keywords: ['plugins', 'reload', 'refresh', 'desktop'],
       run: () => void discoverRuntimePlugins()
     } satisfies PaletteContribution
-  },
-  // The core `::preview{file="…"}` transcript directive — the model (or a
-  // skill) renders a workspace HTML file LIVE inside its own message
-  // (sandboxed srcdoc iframe; falls back to the classic preview card for
-  // non-HTML targets and remote gateways). Also the reference consumer for
-  // the `transcript.directives` area plugins register into.
-  {
-    id: 'transcript.preview',
-    area: TRANSCRIPT_DIRECTIVE_AREA,
-    data: {
-      name: 'preview',
-      render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
-    } satisfies TranscriptDirectiveContribution
   },
   ...(isOnboardingEnabled()
     ? [

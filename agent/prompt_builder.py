@@ -716,30 +716,20 @@ PLATFORM_HINTS = {
         f"{_LOCAL_CRON_DELIVERY_NOTE}"
     ),
     "tui": (
-        # Same file-delivery reality as the CLI: no MEDIA: interception in tui/.
-        "You are in the Hermes terminal UI (TUI). Files: there is no attachment channel and MEDIA:/path tags "
-        "are NOT intercepted here (they print as literal text) — deliver a file by stating its absolute path "
-        "or URL in plain text. "
+        # tui_gateway strips MEDIA: tags from the reply; the TUI lists each file as a link row under it.
+        "You are in the Hermes terminal UI (TUI). Files: write MEDIA:/absolute/path/to/file on its own line — the "
+        "tag is removed from your text and the file shows as a clickable path under your reply. "
         f"{_LOCAL_CRON_DELIVERY_NOTE}"
     ),
     "desktop": (
-        # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is
-        # recipe-first: HOW (an inline widget IS a ::preview'd HTML file) and WHY (the frame injects the theme
-        # prelude first; width adopts the first measured span). setup_mcp is taught by its own tool schema.
+        # Every claim verified against the shipping renderer: tui_gateway turns MEDIA: tags into attachments,
+        # rendered as media players or file cards (components/chat/preview-attachment.tsx). setup_mcp is taught
+        # by its own tool schema.
         "You are chatting inside the Hermes desktop app, a graphical chat surface. Markdown renders with full GitHub "
         "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by writing "
-        "MEDIA:/absolute/path/to/file — any file type: images/audio/video render inline, everything else becomes a "
-        "card with Download and preview buttons. Remote image URLs render via ![alt](url); local files ONLY via MEDIA: "
-        "(local markdown images are blocked). Inline widget/chart (living IN the chat): write an HTML file, then put "
-        "::preview{file=\"path.html\"} alone on its own line (plugins can register more ::name{...} directives). The "
-        "frame already themes it — the app's live theme arrives as var(--foreground), var(--muted-foreground), "
-        "var(--accent), var(--border), var(--card), plus the app font, zero margins, and a transparent background, "
-        "injected before your styles — so use those vars for color and don't set your own background, font, or margins "
-        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame sizes itself to your content: "
-        "height live, width from the content's first measured span — lay content flush left with no centering wrappers "
-        "or it measures full-bleed. Widgets talk back: data-hermes-send=\"prompt\" on any clickable element (or "
-        "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
-        "file, not with prose."
+        "MEDIA:/absolute/path/to/file on its own line — any file type: images/audio/video render inline, everything "
+        "else (HTML included) becomes a card with Download and preview buttons. Remote image URLs render via "
+        "![alt](url); local files ONLY via MEDIA: (local markdown images are blocked)."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text only — no markdown, no "

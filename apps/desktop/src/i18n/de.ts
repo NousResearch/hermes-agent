@@ -12,6 +12,38 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: 'Webquellen an einem Ort. Auf diesem Gerät für diesen Arbeitsbereich gespeichert.',
+    pinSelection: 'Ausgewählten Block anheften',
+    pinPage: 'Seite anheften',
+    working: 'Wird bearbeitet…',
+    emptyTitle: 'Hier beginnt deine Recherche',
+    emptyBody:
+      'Markiere Text auf einer Webseite und hefte den umgebenden Block an. Sammle Quellen und lass Hermes ausgewählte Karten vergleichen.',
+    truncated: 'Erste 6.000 Zeichen erfasst',
+    changed: 'Geändert · vorherige Erfassung anzeigen',
+    checked: 'Zuletzt geprüft',
+    note: 'Deine Notiz',
+    openSource: 'Quelle öffnen',
+    refresh: 'Aktualisieren',
+    remove: 'Entfernen',
+    question: 'Was soll Hermes untersuchen?',
+    ask: 'Hermes fragen',
+    added: 'Zum Chatentwurf hinzugefügt',
+    selectHint: 'Wähle 1–8 Karten; prüfe den Entwurf vor dem Senden.',
+    comparePrompt: 'Vergleiche diese Quellen in einer kurzen Tabelle. Zeige Unterschiede und fehlende Informationen.',
+    errors: {
+      selectText: 'Markiere zuerst Text innerhalb eines Blocks der Webseite.',
+      emptyPage: 'Diese Seite enthält keinen lesbaren Text.',
+      unavailable: 'Seite konnte nicht gelesen werden. Neu laden und erneut versuchen.',
+      sourceChanged: 'Adresse oder Struktur der Quelle hat sich geändert. Öffne sie und hefte den Block erneut an.',
+      openFirst: 'Öffne die Quelle zuerst in einem Browsertab und aktualisiere dann.',
+      saveFailed: 'Lens-Daten konnten nicht gespeichert werden. Prüfe den Browserspeicher.',
+      boardFull: 'Dieses Board ist voll. Entferne zuerst eine Karte.',
+      noComposer: 'Öffne einen Chat neben dem Browser, um den Entwurf hinzuzufügen.'
+    }
+  },
   sharedMetrics: deSharedMetrics,
   intro: introDe,
   connectors: {

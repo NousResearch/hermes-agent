@@ -11,6 +11,8 @@ import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
+import { LensPanel } from '@/features/lens/panel'
+import { registerLensGuest, useLens } from '@/features/lens/use-lens'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
@@ -277,6 +279,7 @@ export function PreviewPane({
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
+  const lens = useLens(() => webviewRef.current)
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
@@ -1367,8 +1370,10 @@ export function PreviewPane({
     webview.addEventListener('dom-ready', noteGuestReady)
     host.appendChild(webview)
     webviewRef.current = webview
+    const unregisterLens = registerLensGuest(webview)
 
     return () => {
+      unregisterLens()
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
@@ -1498,6 +1503,8 @@ export function PreviewPane({
             commentCount={annotate.stack.pins.length}
             consoleOpen={consoleOpen}
             devToolsOpen={devtoolsOpen}
+            lensContent={<LensPanel {...lens} />}
+            lensOpen={lens.open}
             loading={loading}
             onBack={goBack}
             onClose={onClose}
@@ -1519,6 +1526,7 @@ export function PreviewPane({
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
+            onToggleLens={lens.toggle}
             url={currentUrl}
           />
         )}

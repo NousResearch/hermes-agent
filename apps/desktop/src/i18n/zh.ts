@@ -11,6 +11,37 @@ import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zhOverrides = {
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: '汇集网页资料。为此工作区保存在本设备上。',
+    pinSelection: '固定所选文本块',
+    pinPage: '固定页面',
+    working: '处理中…',
+    emptyTitle: '从这里开始研究',
+    emptyBody: '选择网页文字，固定其所在文本块。收集来源，选择卡片，让 Hermes 比较。',
+    truncated: '已截取前 6,000 个字符',
+    changed: '已更改 · 查看上次内容',
+    checked: '上次检查',
+    note: '你的备注',
+    openSource: '打开来源',
+    refresh: '刷新',
+    remove: '移除',
+    question: '希望 Hermes 调查什么？',
+    ask: '询问 Hermes',
+    added: '已添加到聊天草稿',
+    selectHint: '选择 1–8 张卡片；发送前请检查草稿。',
+    comparePrompt: '用简明表格比较这些来源，突出差异和缺失信息。',
+    errors: {
+      selectText: '请先选择网页中同一文本块内的文字。',
+      emptyPage: '此页面没有可读文字。',
+      unavailable: '无法读取页面。请重新加载后重试。',
+      sourceChanged: '来源地址或结构已改变。请打开来源并重新固定。',
+      openFirst: '请先在浏览器标签页中打开来源，再刷新。',
+      saveFailed: '无法保存 Lens 数据。请检查浏览器存储空间。',
+      boardFull: '看板已满。请移除一张卡片后再添加。',
+      noComposer: '请在浏览器旁打开聊天以添加比较草稿。'
+    }
+  },
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',

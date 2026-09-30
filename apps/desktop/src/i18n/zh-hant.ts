@@ -13,6 +13,37 @@ import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: '彙整網頁資料。為此工作區儲存在本裝置上。',
+    pinSelection: '釘選所選文字區塊',
+    pinPage: '釘選頁面',
+    working: '處理中…',
+    emptyTitle: '從這裡開始研究',
+    emptyBody: '選取網頁文字，釘選其所在區塊。收集來源，選取卡片，讓 Hermes 比較。',
+    truncated: '已擷取前 6,000 個字元',
+    changed: '已變更 · 檢視上次內容',
+    checked: '上次檢查',
+    note: '你的備註',
+    openSource: '開啟來源',
+    refresh: '重新整理',
+    remove: '移除',
+    question: '希望 Hermes 調查什麼？',
+    ask: '詢問 Hermes',
+    added: '已加入聊天草稿',
+    selectHint: '選取 1–8 張卡片；傳送前請檢查草稿。',
+    comparePrompt: '用簡明表格比較這些來源，強調差異和缺少的資訊。',
+    errors: {
+      selectText: '請先選取網頁中同一區塊內的文字。',
+      emptyPage: '此頁面沒有可讀文字。',
+      unavailable: '無法讀取頁面。請重新載入後再試。',
+      sourceChanged: '來源位址或結構已變更。請開啟來源並重新釘選。',
+      openFirst: '請先在瀏覽器分頁中開啟來源，再重新整理。',
+      saveFailed: '無法儲存 Lens 資料。請檢查瀏覽器儲存空間。',
+      boardFull: '看板已滿。請先移除一張卡片。',
+      noComposer: '請在瀏覽器旁開啟聊天以加入比較草稿。'
+    }
+  },
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',

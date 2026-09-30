@@ -15,6 +15,38 @@ import { enUninstallSection } from './en_uninstall_section'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: 'Web evidence, kept together. Saved on this device for this workspace.',
+    pinSelection: 'Pin selected block',
+    pinPage: 'Pin page',
+    working: 'Working…',
+    emptyTitle: 'Your research starts here',
+    emptyBody:
+      'Select text on a webpage, then pin its enclosing block. Collect sources, select cards, and ask Hermes to compare them.',
+    truncated: 'First 6,000 characters captured',
+    changed: 'Changed · show previous capture',
+    checked: 'Last checked',
+    note: 'Your note',
+    openSource: 'Open source',
+    refresh: 'Refresh',
+    remove: 'Remove',
+    question: 'What should Hermes investigate?',
+    ask: 'Ask Hermes',
+    added: 'Added to your chat draft',
+    selectHint: 'Select 1–8 cards; review the draft before sending.',
+    comparePrompt: 'Compare these sources in a concise table. Highlight differences and missing information.',
+    errors: {
+      selectText: 'Select text inside one block of the webpage first.',
+      emptyPage: 'This page has no readable text.',
+      unavailable: 'Could not read this page. Reload it and try again.',
+      sourceChanged: 'The source moved or its structure changed. Open it and pin the block again.',
+      openFirst: 'Open this source in a browser tab first, then refresh.',
+      saveFailed: 'Could not save Lens data. Check available browser storage.',
+      boardFull: 'This board is full. Remove a card before pinning another.',
+      noComposer: 'Open a chat beside the browser to add the comparison draft.'
+    }
+  },
   externalOpenFailed: {
     title: 'Couldn’t open this link',
     message: 'No browser is registered to open this address. Copy the link and open it manually.',

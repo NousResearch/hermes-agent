@@ -1770,7 +1770,9 @@ async def test_mention_catch_up_stops_at_the_previous_turn(scope, latest_turn_ev
 async def test_mention_catch_up_passes_over_bot_status_notices(scope):
     """A status notice, such as a heartbeat or a restart notice, does not answer a turn."""
     from gateway.run import _non_conversational_metadata
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     relates_to = _CATCH_UP_THREAD if scope == "thread" else {}
     history: list[dict] = []
     adapter = _catch_up_adapter(history, thread=scope == "thread")
@@ -1805,8 +1807,10 @@ async def test_mention_catch_up_passes_over_the_restart_notices(tmp_path, monkey
     messages went unanswered, because they did not mention the bot."""
     import gateway.run as gateway_run
     from gateway.config import HomeChannel
+    from hermes_cli.plugins import discover_plugins
     from tests.gateway.restart_test_helpers import make_restart_runner
 
+    discover_plugins()
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     history: list[dict] = []
     adapter = _catch_up_adapter(history, thread=False)

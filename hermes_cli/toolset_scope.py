@@ -11,6 +11,7 @@ _TOOLSET_PLATFORM_RESTRICTIONS = {
     "matrix_read": {"matrix"},
     "matrix_reaction": {"matrix"},
     "matrix_admin": {"matrix"},
+    "matrix_image_packs": {"matrix"},
 }
 
 

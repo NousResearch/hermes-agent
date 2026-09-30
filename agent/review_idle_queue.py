@@ -110,6 +110,26 @@ class ReviewIdleQueue:
         with self._lock:
             return len(self._pending)
 
+    def dispatch_now(self, agent: Any) -> None:
+        """Dispatch this session's pending review immediately, bypassing the idle gate.
+
+        The idle gate exists to keep the fork's GPU cost off a *live* turn. A process that is
+        exiting has no next turn to protect, and a deferred item lives only in this process's
+        memory, so waiting for idleness would lose it outright.
+        """
+        key = str(getattr(agent, "session_id", None) or id(agent))
+        with self._lock:
+            item = self._pending.pop(key, None)
+        if item is None:
+            return
+        if not self._still_enabled(item):
+            logger.info("Deferred background review dropped at exit: reviews are disabled")
+            return
+        logger.info(
+            "Dispatching deferred background review at exit (session=%s, queued=%d)",
+            item.session_key[-12:], self.pending_count())
+        item.agent._spawn_background_review_now(**item.kwargs)
+
     def _ensure_thread(self) -> None:
         with self._lock:
             if self._thread is None or not self._thread.is_alive():

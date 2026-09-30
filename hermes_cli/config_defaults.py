@@ -811,7 +811,9 @@ DEFAULT_CONFIG = {
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
         # if you want a different effort level; a one-time warning says so when the key is set.
-        "background_review": {"enabled": True, **_aux(120)},
+        # One-shot (-q/-Q) knobs, all optional: linger_timeout_s (default 240; 0 = no linger) bounds the
+        # wait for an in-flight review at exit.
+        "background_review": {"enabled": True, "linger_timeout_s": 240, **_aux(120)},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

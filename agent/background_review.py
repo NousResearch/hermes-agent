@@ -219,6 +219,53 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
         )
         return True, {}
 
+# Bounded linger for the post-turn review at one-shot process exit. The review needs a
+# prefill of the whole conversation plus a few tool turns; 4 minutes covers that on a local
+# box while staying far short of an interactive user's patience (which is why the linger is
+# one-shot only). See _linger_for_background_review in cli.py.
+_DRAIN_DEFAULT_S = 240.0
+
+
+def drain_timeout_s() -> float:
+    """``auxiliary.background_review.linger_timeout_s`` (default 240; ``0`` disables the linger)."""
+    try:
+        _enabled, task_cfg = load_background_review_settings()
+        return max(0.0, float((task_cfg or {}).get("linger_timeout_s", _DRAIN_DEFAULT_S)))
+    except Exception:  # noqa: BLE001 — a bad knob must not break shutdown
+        return _DRAIN_DEFAULT_S
+
+
+def drain_background_review(agent: Any, *, timeout: Optional[float] = None) -> bool:
+    """Bounded linger for the in-flight post-turn memory/skill review at process exit.
+
+    The review forks on a daemon thread. A one-shot CLI (``-q``/``-Q``, a kanban worker)
+    exits as soon as the turn is delivered, which truncates the fork before it writes
+    anything: the memories and skills it were consolidating are lost with no trace beyond a
+    truncated log. Mirrors ``process_registry.wait_for_pending_completions`` for the review
+    thread. Returns True when a review was in flight and finished inside the budget.
+    """
+    if agent is None:
+        return False
+    # A deferred review is memory-only, and there is no future idle window in a dying process.
+    with suppress(Exception):
+        from agent.review_idle_queue import QUEUE
+
+        QUEUE.dispatch_now(agent)
+    run = getattr(agent, "_background_review_run", None)
+    done = getattr(run, "request_done", None)
+    if done is None:
+        return False
+    budget = drain_timeout_s() if timeout is None else float(timeout)
+    if budget <= 0:
+        return False
+    finished = done.wait(budget)
+    if not finished:
+        logger.warning(
+            "Background review still running %.0fs after exit began — abandoning it; "
+            "raise auxiliary.background_review.linger_timeout_s to let it finish", budget)
+    return bool(finished)
+
+
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
@@ -1208,7 +1255,12 @@ def _run_review_fork(
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(t("display.review.summary_cli", summary=summary))
+    # ``-Q`` promises stdout carries only the final response; with the one-shot exit linger the
+    # review now finishes while the process is still alive, so its summary goes to the log there.
+    if getattr(agent, "suppress_status_output", False):
+        logger.info("Background review: %s", summary)
+    else:
+        agent._safe_print(t("display.review.summary_cli", summary=summary))
     if agent.background_review_callback:
         with suppress(Exception):
             agent.background_review_callback(t("display.review.summary_callback", summary=summary))

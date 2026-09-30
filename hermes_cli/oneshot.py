@@ -627,10 +627,23 @@ def _linger_for_background_completions() -> None:
     process_registry.wait_for_pending_completions(None)
 
 
+def _linger_for_background_review(agent) -> None:
+    from agent.background_review import drain_background_review
+
+    if drain_background_review(agent):
+        logging.getLogger(__name__).info(
+            "One-shot exit linger: background review completed (session=%s)",
+            getattr(agent, "session_id", None) or "<unknown>")
+
+
 def _close_agent(agent, session_db) -> None:
     """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
     oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
     if agent is not None:
+        # Let the post-turn memory/skill review land FIRST (bounded by
+        # auxiliary.background_review.linger_timeout_s): it decodes through the aux clients that
+        # close() tears down, and the hard exit below kills its daemon thread mid-write.
+        _quietly("background review wait", lambda: _linger_for_background_review(agent))
         # Linger (bounded) for notify_on_complete background processes BEFORE agent.close():
         # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
         # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).

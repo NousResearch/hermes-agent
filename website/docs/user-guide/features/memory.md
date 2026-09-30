@@ -445,6 +445,20 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### One-shot runs (`-q` / `-Q`)
+
+A one-shot process exits as soon as its answer is printed, and the review runs
+on a daemon thread, so without help the review is cut off mid-flight. On exit a
+one-shot run now waits for an in-flight review, bounded by `linger_timeout_s`
+(default 240; `0` restores the old exit-at-once behaviour). With `-Q` the
+review's summary goes to `agent.log`, never to stdout.
+
+```yaml
+auxiliary:
+  background_review:
+    linger_timeout_s: 240
+```
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

@@ -28,10 +28,8 @@ function renderSubmenu(opts: {
   effort?: string
   fastControl: FastControl
   isActive?: boolean
-  isPinned?: boolean
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
-  onTogglePin?: () => void
   reasoning: boolean
 }) {
   return render(
@@ -44,11 +42,9 @@ function renderSubmenu(opts: {
             effort={opts.effort ?? 'medium'}
             fastControl={opts.fastControl}
             isActive={opts.isActive ?? true}
-            isPinned={opts.isPinned}
             model="m1"
             onSelectModel={opts.onSelectModel ?? vi.fn()}
             onSetOptions={opts.onSetOptions}
-            onTogglePin={opts.onTogglePin}
             provider="p1"
             reasoning={opts.reasoning}
           />
@@ -131,41 +127,5 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
-  })
-})
-
-// Pinning is not a capability: lifting a model to the top of the picker has
-// nothing to do with what the model can be asked for, so the row reports it
-// even when the submenu has nothing else to offer.
-describe('ModelEditSubmenu reports pins without performing them', () => {
-  it('offers the pin even on a model with no reasoning or fast options', () => {
-    const onTogglePin = vi.fn()
-    renderSubmenu({ fastControl: { kind: 'none' }, onSetOptions: vi.fn(), onTogglePin, reasoning: false })
-
-    expect(screen.getByText('No options for this model')).toBeTruthy()
-
-    fireEvent.click(screen.getByText('Pin'))
-
-    expect(onTogglePin).toHaveBeenCalled()
-  })
-
-  it('names the pin action by state, so unpinning is never a blind click', () => {
-    renderSubmenu({
-      fastControl: { kind: 'none' },
-      isPinned: true,
-      onSetOptions: vi.fn(),
-      onTogglePin: vi.fn(),
-      reasoning: false
-    })
-
-    expect(screen.getByText('Unpin')).toBeTruthy()
-    expect(screen.queryByText('Pin')).toBeNull()
-  })
-
-  it('renders no pin row when the surface passes no toggle', () => {
-    renderSubmenu({ fastControl: { kind: 'none' }, onSetOptions: vi.fn(), reasoning: false })
-
-    expect(screen.queryByText('Pin')).toBeNull()
-    expect(screen.queryByText('Unpin')).toBeNull()
   })
 })

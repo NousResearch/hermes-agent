@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -39,6 +40,7 @@ import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
+import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   type LocalModelsOwner,
@@ -58,7 +60,6 @@ import {
   seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
-import { $pinnedModels, pinnedModelKey, togglePinnedModel } from '@/store/pinned-models'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
@@ -218,10 +219,10 @@ export function ModelCatalogMenu({
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
   const customModels = useStore($customModels)
-  // Pinned models, same reasoning as the shortlist above: one global
+  // Favorite models, same reasoning as the shortlist above: one global
   // preference owned by the catalog, so the composer pill, session tiles and
-  // the kanban override all show the same Pinned section.
-  const pinnedKeys = useStore($pinnedModels)
+  // the kanban override all show the same Favorites section.
+  const favoriteKeys = useStore($favoriteModels)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -329,29 +330,33 @@ export function ModelCatalogMenu({
     [visibleModels, pickerProviders]
   )
 
-  // Pinned models paint their own section ABOVE the provider groups — the
-  // whole point of pinning one. Resolved against the catalog we actually
-  // fetched, so a pin whose provider is not connected (or whose model the lab
+  // Favorites paint their own section ABOVE the provider groups — the whole
+  // point of starring one. Resolved against the catalog we actually fetched,
+  // so a favorite whose provider is not connected (or whose model the lab
   // retired) has no row to show; it is KEPT, not dropped, for when it returns.
-  // Pins ignore the Edit Models shortlist on purpose: pinning IS an explicit
-  // "always show me this one". A search turns the section off — a query means
-  // "show me every match", and those are listed in their provider's place.
-  const pinnedRows = useMemo(
-    () => (q ? [] : resolvePinnedRows(pickerProviders, pinnedKeys)),
-    [pickerProviders, pinnedKeys, q]
+  // Favorites ignore the Edit Models shortlist on purpose: a star IS an
+  // explicit "always show me this one". A search turns the section off — a
+  // query means "show me every match", listed in their provider's place.
+  const favoriteRows = useMemo(
+    () => (q ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys)),
+    [pickerProviders, favoriteKeys, q]
   )
 
   // The same rows are dropped from the provider groups, so no model is ever
-  // listed twice in one open menu.
-  const pinnedRowKeys = useMemo(
-    () => new Set(pinnedRows.map(({ family, provider }) => pinnedModelKey(provider.slug, family.id))),
-    [pinnedRows]
-  )
+  // listed twice in one open menu. Not while searching: a query lists every
+  // match in its provider's place.
+  const favoriteSet = useMemo(() => new Set(favoriteKeys), [favoriteKeys])
 
   const groups = useMemo(
     () =>
-      groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys, pinnedRowKeys),
-    [pickerProviders, search, current.model, current.provider, shownKeys, pinnedRowKeys]
+      groupModels(
+        pickerProviders,
+        search,
+        { model: current.model, provider: current.provider },
+        shownKeys,
+        q ? null : favoriteSet
+      ),
+    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -366,9 +371,9 @@ export function ModelCatalogMenu({
 
   // The scrolling catalog list only mounts when it has rows; otherwise a
   // section below it (MoA, custom slug) would sit under two separators.
-  // Pins count: a catalog whose every curated family is pinned has
+  // Favorites count: a catalog whose every curated family is starred has
   // groups but no group rows, and the section must still paint.
-  const hasList = !hideCatalog && (groups.length > 0 || shownDownloads.length > 0 || pinnedRows.length > 0)
+  const hasList = !hideCatalog && (groups.length > 0 || shownDownloads.length > 0 || favoriteRows.length > 0)
 
   // A typed id no provider lists is still a model to the backend. Offer it as
   // a row per configured provider (the current one first) so a slug the
@@ -435,7 +440,7 @@ export function ModelCatalogMenu({
   }
 
   // ── Keyboard selection (cmdk semantics on a Radix menu) ───────────────────
-  // One flat list mirroring EXACTLY what's rendered (Pinned section,
+  // One flat list mirroring EXACTLY what's rendered (Favorites section,
   // collapse, filter, presets), so the selection can never sit on a hidden row.
   type KbRow =
     | { key: string; kind: 'custom'; provider: ModelOptionProvider; slug: string }
@@ -444,14 +449,12 @@ export function ModelCatalogMenu({
 
   const kbRows = useMemo<KbRow[]>(
     () => [
-      ...pinnedRows.map(
-        ({ family, provider }): KbRow => ({
-          family,
-          key: `${provider.slug}:${family.id}`,
-          kind: 'family',
-          provider
-        })
-      ),
+      ...favoriteRows.map(({ family, provider }): KbRow => ({
+        family,
+        key: `${provider.slug}:${family.id}`,
+        kind: 'family',
+        provider
+      })),
       ...groups.flatMap(group =>
         collapsedProviders.includes(group.provider.slug) && !search
           ? []
@@ -472,10 +475,13 @@ export function ModelCatalogMenu({
           }))
         : [])
     ],
-    [pinnedRows, groups, collapsedProviders, search, shownMoaPresets, customSlug, customProviders]
+    [favoriteRows, groups, collapsedProviders, search, shownMoaPresets, customSlug, customProviders]
   )
 
-  const [kbOverride, setKbOverride] = useState<null | number>(null)
+  // The row the arrows (or a Shift+Enter star) last put the highlight on,
+  // held by KEY: a starred row moves into or out of Favorites, and the
+  // highlight follows it rather than staying on the old index.
+  const [kbOverride, setKbOverride] = useState<null | string>(null)
   // Searchable DropdownMenu rows already cancel Radix's hover-to-focus while
   // the search owns focus (#53980). Keep rows hit-testable so the first
   // deliberate click works even before the pointer has moved (#123040).
@@ -490,7 +496,8 @@ export function ModelCatalogMenu({
 
   const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
-  const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
+  const overrideIndex = kbOverride === null ? -1 : kbRows.findIndex(row => row.key === kbOverride)
+  const kbIndex = overrideIndex >= 0 ? overrideIndex : autoIndex
   const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null
 
   const stepKb = (delta: -1 | 1) => {
@@ -500,7 +507,7 @@ export function ModelCatalogMenu({
 
     const from = kbIndex >= 0 ? kbIndex : delta === 1 ? -1 : 0
 
-    setKbOverride((from + delta + kbRows.length) % kbRows.length)
+    setKbOverride(kbRows[(from + delta + kbRows.length) % kbRows.length].key)
   }
 
   const commitKbRow = () => {
@@ -527,6 +534,21 @@ export function ModelCatalogMenu({
     }
 
     closeMenu()
+  }
+
+  // Shift+Enter stars the highlighted model — the keyboard twin of
+  // shift-clicking a row. Pinning the highlight to its key lets it follow
+  // the row to its new slot.
+  const toggleKbFavorite = () => {
+    const row = kbIndex >= 0 ? kbRows[kbIndex] : undefined
+
+    if (row?.kind !== 'family') {
+      return
+    }
+
+    setKbOverride(row.key)
+    triggerHaptic('selection')
+    toggleFavoriteModel(row.provider.slug, row.family.id)
   }
 
   // ── Keyboard path into a row's edit submenu (#86966) ─────────────────────
@@ -635,6 +657,10 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
+          } else if (isSubmitEnter(event) && event.shiftKey) {
+            event.preventDefault()
+            event.stopPropagation()
+            toggleKbFavorite()
           } else if (isSubmitEnter(event)) {
             event.preventDefault()
             event.stopPropagation()
@@ -676,30 +702,34 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && pinnedRows.length === 0 && moaPresets.length === 0 && shownDownloads.length === 0 && !customSlug ? (
+      ) : groups.length === 0 &&
+        favoriteRows.length === 0 &&
+        moaPresets.length === 0 &&
+        shownDownloads.length === 0 &&
+        !customSlug ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
         <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
-          {/* Pinned models first — the shortcut the pin exists for. The
-              section paints nothing while searching, where every match is
-              listed in its provider's place instead. */}
-          {pinnedRows.length > 0 ? (
+          {/* Favorites first — the shortcut the star exists for. The section
+              paints nothing with no favorites, and nothing while searching,
+              where every match is listed in its provider's place instead. */}
+          {favoriteRows.length > 0 ? (
             <DropdownMenuGroup className="py-0.5">
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.pinned}</DropdownMenuLabel>
-              {pinnedRows.map(({ family, provider }) => (
+              <DropdownMenuLabel className={catalogGroupLabel}>{copy.favorites}</DropdownMenuLabel>
+              {favoriteRows.map(({ family, provider }) => (
                 <ModelFamilyRow
                   controller={controller}
                   current={current}
                   defaultEffort={defaultEffort}
                   family={family}
+                  favorite
                   kbProps={kbRowProps(`${provider.slug}:${family.id}`)}
                   key={`${provider.slug}:${family.id}`}
                   loadingModels={loadingModels}
                   onSelect={selectFamily}
                   onSubOpenChange={handleSubOpenChange}
-                  pinnedKeys={pinnedKeys}
                   provider={provider}
                   search={search}
                   showProvider
@@ -717,7 +747,10 @@ export function ModelCatalogMenu({
             return (
               <DropdownMenuGroup className="py-0.5" key={slug}>
                 <DropdownMenuItem
-                  className="group/label flex w-full items-center gap-1 px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) cursor-pointer !bg-transparent focus:!bg-transparent"
+                  className={cn(
+                    catalogGroupLabel,
+                    'group/label flex w-full cursor-pointer items-center gap-1 !bg-transparent focus:!bg-transparent'
+                  )}
                   onSelect={event => {
                     event.preventDefault()
                     toggleCollapsedProvider(slug)
@@ -740,12 +773,12 @@ export function ModelCatalogMenu({
                       current={current}
                       defaultEffort={defaultEffort}
                       family={family}
+                      favorite={favoriteSet.has(favoriteModelKey(group.provider.slug, family.id))}
                       kbProps={kbRowProps(`${group.provider.slug}:${family.id}`)}
                       key={`${group.provider.slug}:${family.id}`}
                       loadingModels={loadingModels}
                       onSelect={selectFamily}
                       onSubOpenChange={handleSubOpenChange}
-                      pinnedKeys={pinnedKeys}
                       provider={group.provider}
                       search={search}
                     />
@@ -760,9 +793,7 @@ export function ModelCatalogMenu({
           })}
           {!hasLocalGroup && shownDownloads.length > 0 && (
             <DropdownMenuGroup className="py-0.5" key="local-downloads">
-              <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
-                {copyPicker.localDownloadsHeading}
-              </DropdownMenuLabel>
+              <DropdownMenuLabel className={catalogGroupLabel}>{copyPicker.localDownloadsHeading}</DropdownMenuLabel>
               {shownDownloads.map(job => (
                 <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
               ))}
@@ -856,27 +887,27 @@ export function ModelCatalogMenu({
 export { dropdownMenuRow }
 
 /** Row props the flat keyboard selection paints onto whichever trigger is
- *  active — shared by the Pinned section and the provider groups. */
+ *  active — shared by the Favorites section and the provider groups. */
 interface KbRowProps {
   'data-kb-active'?: string
   className: string
 }
 
-/** One pinned model, resolved against the live catalog. */
-interface PinnedRow {
+/** One favorite model, resolved against the live catalog. */
+interface FavoriteRow {
   family: ModelFamily
   provider: ModelOptionProvider
 }
 
-/** Resolve stored pins into paintable rows, in the order the user pinned
- *  them. A key with no family in THIS catalog yields no row — and is not
- *  dropped, so it comes back when its provider reconnects. */
-function resolvePinnedRows(providers: readonly ModelOptionProvider[], keys: readonly string[]): PinnedRow[] {
-  const byKey = new Map<string, PinnedRow>()
+/** Resolve stored favorites into paintable rows, in the order the user
+ *  starred them. A key with no family in THIS catalog yields no row — and is
+ *  not dropped, so it comes back when its provider reconnects. */
+function resolveFavoriteRows(providers: readonly ModelOptionProvider[], keys: readonly string[]): FavoriteRow[] {
+  const byKey = new Map<string, FavoriteRow>()
 
   for (const provider of providers) {
     for (const family of collapseModelFamilies(provider.models ?? [])) {
-      byKey.set(pinnedModelKey(provider.slug, family.id), { family, provider })
+      byKey.set(favoriteModelKey(provider.slug, family.id), { family, provider })
     }
   }
 
@@ -892,35 +923,37 @@ interface ModelFamilyRowProps {
   current: ModelChoice
   defaultEffort: string
   family: ModelFamily
-  /** Keyboard/hover props built by the host, so the Pinned section and the
-   *  provider groups share ONE flat selection order. */
+  /** Whether this model is starred — paints the filled star. */
+  favorite: boolean
+  /** Keyboard/hover props built by the host, so the Favorites section and
+   *  the provider groups share ONE flat selection order. */
   kbProps: KbRowProps
   loadingModels: Record<string, LocalModelLoadProgress>
   /** Commit this family — what a click means belongs to the host that owns it. */
   onSelect: (family: ModelFamily, provider: ModelOptionProvider) => Promise<boolean | void> | void
   /** Keyboard-focus round trip for the sub this row opens (#86966). */
   onSubOpenChange?: (open: boolean, key: string) => void
-  pinnedKeys: readonly string[]
   provider: ModelOptionProvider
   search: string
-  /** Name the provider on the row. On in the Pinned section, where rows
+  /** Name the provider on the row. On in the Favorites section, where rows
    *  from every provider sit together and two labs can share a model name. */
   showProvider?: boolean
 }
 
-/** One model family row: the trigger that commits the model, plus the
- *  hover-revealed options submenu. Shared by the Pinned section and the
- *  provider groups, so the two can never paint a model differently. */
+/** One model family row: the favorite star, the trigger that commits the
+ *  model, plus the hover-revealed options submenu. Shared by the Favorites
+ *  section and the provider groups, so the two can never paint a model
+ *  differently. */
 function ModelFamilyRow({
   controller,
   current,
   defaultEffort,
   family,
+  favorite,
   kbProps,
   loadingModels,
   onSelect,
   onSubOpenChange,
-  pinnedKeys,
   provider,
   search,
   showProvider
@@ -971,7 +1004,7 @@ function ModelFamilyRow({
   // Row meta (provider, variant tag, fast mode, reasoning effort) renders as
   // discrete badge chips BESIDE the name — not appended to it — so "High"
   // reads as the model's reasoning setting, never as part of a differently-
-  // named model. The provider chip only paints in the Pinned section,
+  // named model. The provider chip only paints in the Favorites section,
   // where rows from every provider sit together.
   const metaTags = [
     showProvider ? provider.name : null,
@@ -983,7 +1016,7 @@ function ModelFamilyRow({
   ].filter((chip): chip is string => Boolean(chip))
 
   // Clicking the row commits the model and closes; the edit submenu
-  // (reasoning/fast/pin) is reached by HOVER, so you can tweak those without
+  // (reasoning/fast) is reached by HOVER, so you can tweak those without
   // the click dismissing everything. The trailing caret is what advertises
   // that submenu — without it the row's effort badge reads as a fixed
   // model+effort combo rather than an editable setting (#86966).
@@ -995,19 +1028,23 @@ function ModelFamilyRow({
     closeMenu()
   }
 
-  const togglePin = () => togglePinnedModel(provider.slug, family.id)
+  const toggleFavorite = () => {
+    triggerHaptic('selection')
+    toggleFavoriteModel(provider.slug, family.id)
+  }
+
+  const favoriteLabel = favorite ? copy.removeFavorite : copy.addFavorite
 
   return (
     <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)}>
       <DropdownMenuSubTrigger
         onClick={event => {
-          // Shift-click pins, the same gesture as a chat row in the sidebar.
-          // Nothing is picked and the menu stays open, so a second shift-click
-          // (on the row, now in the Pinned section) undoes it.
+          // Shift-click stars, the same gesture that pins a chat row in the
+          // sidebar. Nothing is picked and the menu stays open, so a second
+          // shift-click (on the row, now under Favorites) undoes it.
           if (event.shiftKey) {
             event.preventDefault()
-            triggerHaptic('selection')
-            togglePin()
+            toggleFavorite()
 
             return
           }
@@ -1020,7 +1057,35 @@ function ModelFamilyRow({
           }
         }}
         {...kbProps}
+        className={cn(kbProps.className, 'group/model')}
       >
+        {/* The star IS the favorite control: filled when starred, a quiet
+            outline otherwise. Its click never reaches the row, so starring
+            neither selects the model nor closes the menu. Not a tab stop —
+            the search field owns keyboard focus (Shift+Enter stars). */}
+        <Tip
+          label={<TipHintLabel hint={favorite ? undefined : copy.favoriteShortcut} text={favoriteLabel} />}
+        >
+          <button
+            aria-label={favoriteLabel}
+            aria-pressed={favorite}
+            className={cn(
+              '-mx-0.5 grid size-4 shrink-0 place-items-center rounded-sm transition-colors duration-100 hover:text-foreground hover:transition-none',
+              favorite
+                ? 'text-(--ui-text-secondary)'
+                : 'text-(--ui-text-quaternary) group-hover/model:text-(--ui-text-tertiary) group-hover/model:transition-none group-data-[kb-active]/model:text-(--ui-text-tertiary)'
+            )}
+            onClick={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              toggleFavorite()
+            }}
+            tabIndex={-1}
+            type="button"
+          >
+            <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
+          </button>
+        </Tip>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="min-w-0 truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
@@ -1054,13 +1119,11 @@ function ModelFamilyRow({
         effortWire={isCurrent ? current.effortWire : undefined}
         fastControl={fastControl}
         isActive={isCurrent}
-        isPinned={pinnedKeys.includes(pinnedModelKey(provider.slug, family.id))}
         model={family.id}
         onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
         onSetOptions={patch =>
           controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
         }
-        onTogglePin={togglePin}
         provider={provider.slug}
         reasoning={caps?.reasoning ?? true}
       />
@@ -1079,6 +1142,10 @@ function caretAtEnd(input: HTMLInputElement): boolean {
 // The backend's provider row for staged local models (inventory.py's
 // _local_runtime_row). Downloads-in-flight attach to this group.
 const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+// Heading for every row group in the list (Favorites, providers, downloads).
+const catalogGroupLabel =
+  'px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
 
 // A model still downloading: visible so the user knows it's coming (and
 // where it will land), disabled so it can't be selected early, with the
@@ -1156,7 +1223,8 @@ function groupModels(
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null,
-  pinned: ReadonlySet<string>
+  /** Favorites to leave out (they paint in their own section); null lists every row. */
+  favorites: ReadonlySet<string> | null
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
@@ -1196,19 +1264,11 @@ function groupModels(
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    // Pinned families already paint in the Pinned section, so drop them
-    // here: an open menu never lists the same model twice. Only while not
-    // searching — a query lists every match in its provider's place.
-    const pinnedHere = q
-      ? null
-      : new Set(
-          allFamilies
-            .filter(family => pinned.has(pinnedModelKey(provider.slug, family.id)))
-            .map(family => family.id)
-        )
-
+    // Favorites already paint in the Favorites section, so drop them here:
+    // an open menu never lists the same model twice.
     const families = allFamilies.filter(
-      family => (shown.has(family.id) || family.id === activeId) && !pinnedHere?.has(family.id)
+      family =>
+        (shown.has(family.id) || family.id === activeId) && !favorites?.has(favoriteModelKey(provider.slug, family.id))
     )
 
     if (families.length > 0) {

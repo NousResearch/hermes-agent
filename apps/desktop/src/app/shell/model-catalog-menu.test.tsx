@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { queryClient } from '@/lib/query-client'
+import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
 import { setShowModelPricing } from '@/store/model-pricing'
@@ -26,7 +27,6 @@ import {
   setModelVisibilityOpen,
   setVisibleModels
 } from '@/store/model-visibility'
-import { $pinnedModels, pinnedModelKey, togglePinnedModel } from '@/store/pinned-models'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
@@ -66,7 +66,7 @@ beforeEach((): void => {
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   window.localStorage.clear()
   $visibleModels.set(null)
-  $pinnedModels.set([])
+  $favoriteModels.set([])
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
@@ -220,99 +220,104 @@ describe('the catalog owns model curation', () => {
   })
 })
 
-// Pinning is a promise about the LIST: "keep this one where I can always
-// reach it". That promise is what decides where a pinned row paints — its own
-// section at the top, and nowhere twice.
-describe('the catalog owns pinned models', () => {
-  it('lifts a pinned model into the Pinned section above the provider groups', async () => {
-    togglePinnedModel('google', 'gemini-2.5-flash')
+// A star is a promise about the LIST: "keep this one where I can always reach
+// it". That promise is what decides where a favorite paints — its own section
+// at the top, and nowhere twice.
+describe('the catalog owns favorite models', () => {
+  it('lifts a favorite into the Favorites section above the provider groups', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
 
     renderMenu()
 
     const rows = (await screen.findAllByText(/Gemini 2\.5/i)).map(node => node.closest('[role="menuitem"]')!)
 
-    // Its own section heading paints above the provider groups…
-    expect(screen.getByText('Pinned')).toBeTruthy()
-
-    // …and the row's DOM order reflects it: the section label comes before
-    // the provider group heading (the LAST 'Google' text — the pinned row's
-    // provider chip paints one first).
-    const pinnedLabel = screen.getByText('Pinned')
+    // The section label comes before the provider group heading (the LAST
+    // 'Google' text — the favorite row's provider chip paints one first).
+    const label = screen.getByText('Favorites')
     const googleTexts = screen.getAllByText('Google')
     const googleHeading = googleTexts[googleTexts.length - 1]
 
-    expect(pinnedLabel.compareDocumentPosition(googleHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(label.compareDocumentPosition(googleHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     // The provider chip names the row's provider, so two labs sharing a model
     // id stay apart in the mixed section.
     expect(rows.some(row => row.textContent?.includes('Google'))).toBe(true)
   })
 
-  it('does not also list a pinned model under its provider', async () => {
-    togglePinnedModel('google', 'gemini-2.5-flash')
+  it('does not also list a favorite under its provider', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
 
     renderMenu()
 
-    await screen.findByText('Pinned')
+    await screen.findByText('Favorites')
 
-    // Listed once, under Pinned — not also down in Google's group.
+    // Listed once, under Favorites — not also down in Google's group.
     expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
   })
 
-  it('keeps a pin whose provider is not connected without painting an empty section', async () => {
-    $pinnedModels.set([pinnedModelKey('anthropic', 'claude-sonnet-4.6')])
+  it('keeps a favorite whose provider is not connected without painting an empty section', async () => {
+    $favoriteModels.set([favoriteModelKey('anthropic', 'claude-sonnet-4.6')])
 
     renderMenu()
 
     await screen.findByText(/Gemini 3\.1 Pro/i)
-    expect(screen.queryByText('Pinned')).toBeNull()
+    expect(screen.queryByText('Favorites')).toBeNull()
   })
 
-  // Curation and pinning are different questions: "which models do I usually
-  // want listed" vs "which one do I want first". A pin wins.
-  it('shows a pinned model the Edit Models shortlist hides', async () => {
+  // Curation and favorites are different questions: "which models do I
+  // usually want listed" vs "which one do I want first". A star wins.
+  it('shows a favorite the Edit Models shortlist hides', async () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-3.1-pro')]))
-    togglePinnedModel('google', 'gemini-2.5-flash')
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
 
     renderMenu()
 
-    await screen.findByText('Pinned')
+    await screen.findByText('Favorites')
     expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
   })
 
   it('folds the section away while searching and lists the match in its provider place', async () => {
-    togglePinnedModel('google', 'gemini-2.5-flash')
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
 
     renderMenu()
-    await screen.findByText('Pinned')
+    await screen.findByText('Favorites')
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini-2.5' } })
 
     // A query means "show me every match": the section folds and the match
-    // paints in its provider's place. Still exactly once.
+    // paints in its provider's place. Still exactly once, still starred.
     await vi.waitFor(() => {
-      expect(screen.queryByText('Pinned')).toBeNull()
+      expect(screen.queryByText('Favorites')).toBeNull()
     })
 
     expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Remove from favorites' }).getAttribute('aria-pressed')).toBe('true')
   })
 
-  // The same gesture as a sidebar chat: shift-click pins, and the menu stays
-  // put so a second shift-click (now on the row in the Pinned section) undoes
-  // it. Neither click is a pick.
-  it('shift-click toggles the pin without selecting the model or closing the menu', async () => {
+  // Starring is never a pick: the star, a shift-click on the row (the
+  // sidebar's pin gesture) and Shift+Enter all toggle in place, the menu stays
+  // open, and the same gesture on the moved row undoes it.
+  it('the star, shift-click and Shift+Enter toggle a favorite without selecting or closing', async () => {
     const select = renderMenu()
-    const row = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
+    const key = favoriteModelKey('google', 'gemini-2.5-flash')
+    const row = () => screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+    const star = () => row().querySelector('button[aria-pressed]')!
 
-    fireEvent.click(row, { shiftKey: true })
+    await screen.findByText('Gemini 2.5')
+    fireEvent.click(star())
+    expect($favoriteModels.get()).toEqual([key])
+    await screen.findByText('Favorites')
 
-    expect($pinnedModels.get()).toEqual([pinnedModelKey('google', 'gemini-2.5-flash')])
-    await screen.findByText('Pinned')
+    fireEvent.click(row(), { shiftKey: true })
+    expect($favoriteModels.get()).toEqual([])
 
-    fireEvent.click(screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!, { shiftKey: true })
+    const search = screen.getByRole('textbox', { name: 'Search models' })
 
-    expect($pinnedModels.get()).toEqual([])
-    await vi.waitFor(() => expect(screen.queryByText('Pinned')).toBeNull())
+    fireEvent.change(search, { target: { value: 'gemini-2.5' } })
+    await vi.waitFor(() => expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1))
+    fireEvent.keyDown(search, { key: 'Enter', shiftKey: true })
+    expect($favoriteModels.get()).toEqual([key])
+
     expect(select).not.toHaveBeenCalled()
     expect(closeMenu).not.toHaveBeenCalled()
   })

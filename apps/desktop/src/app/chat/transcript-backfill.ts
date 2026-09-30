@@ -15,6 +15,7 @@
  * drift on the next page.
  */
 
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
@@ -114,6 +115,136 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
 }
 
 /**
+ * The text a refreshed row is paired with its previous twin on: answer text,
+ * reasoning, and a tool-call signature. Reasoning is included because a row can
+ * settle with reasoning and no answer — an aborted turn — and the tool signature
+ * because a tool-only row has no text at all and is itself a live row whose
+ * disclosure must survive the refresh (`chatMessageText` covers answer parts only).
+ */
+function textForPairing(message: ChatMessage): string {
+  const text = message.parts
+    .map(part => {
+      if (part.type === 'text' || part.type === 'reasoning') {
+        return part.text
+      }
+
+      // The tool name is enough to identify a tool-only row against its own stored
+      // twin, because the live turn is matched newest first: two turns that call the
+      // same tool cannot trade identities when only the newer is still live.
+      return part.type === 'tool-call' ? `[tool:${part.toolName}]` : ''
+    })
+    .join('')
+
+  return textWithoutReferenceLines(text)
+}
+
+/**
+ * The previous row a refreshed row represents, newest first, or `-1` for none.
+ *
+ * Only a row whose id is about to change can hand an identity on, so a candidate
+ * that is already persisted under a DIFFERENT row id is a different message that
+ * happens to read the same — two turns that both open "continue" — and claiming it
+ * would leave two rows sharing one identity. A candidate under the same id is the
+ * same row already committed: it keys on that id either way, so there is nothing
+ * to carry. Newest first, so a repeated phrase pairs with the live turn rather
+ * than an older one.
+ */
+function lastIndexOfPair(
+  previous: ChatMessage[],
+  message: ChatMessage,
+  text: string,
+  claimed: Set<number>
+): number {
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    if (claimed.has(index)) {
+      continue
+    }
+
+    const candidate = previous[index]
+
+    if (candidate.role !== message.role || candidate.id === message.id) {
+      continue
+    }
+
+    if (candidate.rowId !== undefined) {
+      // Persisted, so it settles the question on its own: the same row id is the
+      // same row, and a different one is a different message that merely reads alike.
+      if (candidate.rowId === message.rowId) {
+        return index
+      }
+
+      continue
+    }
+
+    // Unpersisted, so it pairs on what it reads as. A streamed row is a prefix of
+    // its stored reply, never the reverse — allowing the reverse would let a short
+    // prompt ("ok", "continue") claim a longer older row that merely starts with it.
+    const candidateText = textForPairing(candidate)
+
+    if (candidateText !== '' && (candidateText === text || text.startsWith(candidateText))) {
+      return index
+    }
+  }
+
+  return -1
+}
+
+/**
+ * Carry each refreshed row's render identity (`ChatMessage.rowKey`) across the
+ * refresh.
+ *
+ * A row's id is not stable: a turn's rows are born under an optimistic `user-*`
+ * / `assistant-stream-*` id and only acquire their committed one when the stored
+ * transcript is re-read. The row element is keyed on the identity it was born
+ * with, so a refresh that hands the list a fresh object carrying the committed id
+ * re-keys the row and React remounts its subtree — the thinking preview the
+ * reader is watching snaps shut to its header (duration lost), a preview they
+ * closed reopens, and every other row-local disclosure in the turn resets. This
+ * refresh is the path that rewrite travels: `hydrateFromStoredSession` reads the
+ * stored tail, converts it with `toChatMessages`, and grafts it here.
+ *
+ * Pair a refreshed row with the previous row it represents — same role, and the
+ * same text once directive lines are dropped, or one a prefix of the other,
+ * since a streamed row is a prefix of its stored reply — and let it inherit the
+ * identity that row was rendering under. Paired by content rather than by slot:
+ * the refreshed tail is a single page while `previous` may hold a longer
+ * backfilled prefix, so the arrays are rarely index-aligned.
+ *
+ * Returns `refreshedTail` untouched when nothing needed carrying, so the common
+ * case keeps its array and object identity.
+ */
+function carryRowKeysOntoRefreshedTail(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  if (previous.length === 0) {
+    return refreshedTail
+  }
+
+  const claimed = new Set<number>()
+  let changed = false
+
+  const carried = refreshedTail.map(message => {
+    if (message.rowKey !== undefined) {
+      return message
+    }
+
+    const index = lastIndexOfPair(previous, message, textForPairing(message), claimed)
+
+    if (index < 0) {
+      return message
+    }
+
+    claimed.add(index)
+
+    const source = previous[index]
+
+    changed = true
+
+    return { ...message, rowKey: source.rowKey ?? source.id }
+  })
+
+  return changed ? carried : refreshedTail
+}
+
+/**
  * Re-anchor a refreshed TAIL onto a transcript that has backfilled older
  * pages. Background refreshes and post-turn rehydrates re-read only the
  * newest page; replacing the store with that page outright would silently
@@ -127,6 +258,10 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * a row with no stored id stays at the end. A page that shares no stored id
  * is the transcript now on screen — a compaction rewrite or a different
  * session — and replaces the window.
+ *
+ * The refreshed rows keep the render identity they were born with, so adopting
+ * the stored tail does not re-key (and remount) the rows it replaces — see
+ * `carryRowKeysOntoRefreshedTail`.
  */
 function pageCoversWindow(previous: ChatMessage[], refreshedIds: Set<string>, refreshedRowIds: Set<number>): boolean {
   return previous.every(
@@ -296,40 +431,54 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     anchorRowId !== undefined &&
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
-  if (anchor === 0) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+  const attach = (tail: ChatMessage[]): ChatMessage[] => {
+    if (anchor === 0) {
+      return tail
+    }
+
+    if (prefixIsEarlier) {
+      // A page-local tool fold can sit in front of the anchor on BOTH sides: the
+      // window's copy was hydrated from the same page, and the refreshed page
+      // re-emits that row with the same id. Keeping both copies makes the graft
+      // non-idempotent — the refreshed window comes back one row longer than the
+      // local window on every read, so `messagesIfTranscriptBehind` reports
+      // "behind" forever: the send is refused before `prompt.submit` runs and a
+      // duplicate accumulates per retry. Drop only the prefix copies the page
+      // already carries. Every durable prefix row keeps travelling in front of
+      // the refreshed tail, and so does an unstored row the page has no copy of
+      // (it can only have come from an older page).
+      const refreshedIds = new Set(tail.map(message => message.id))
+
+      const prefix = previous
+        .slice(0, anchor)
+        .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+
+      return prefix.length ? [...prefix, ...tail] : tail
+    }
+
+    const refreshedIds = new Set(tail.map(message => message.id))
+
+    // The page already contains everything on screen, including a live row the
+    // tail really did cover. Take the page. This is what keeps a finished reply
+    // through a long tool turn.
+    if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
+      return tail
+    }
+
+    return mergeOverlappingTail(previous, tail)
   }
 
-  if (prefixIsEarlier) {
-    // A page-local tool fold can sit in front of the anchor on BOTH sides: the
-    // window's copy was hydrated from the same page, and the refreshed page
-    // re-emits that row with the same id. Keeping both copies makes the graft
-    // non-idempotent — the refreshed window comes back one row longer than the
-    // local window on every read, so `messagesIfTranscriptBehind` reports
-    // "behind" forever: the send is refused before `prompt.submit` runs and a
-    // duplicate accumulates per retry. Drop only the prefix copies the page
-    // already carries. Every durable prefix row keeps travelling in front of
-    // the refreshed tail, and so does an unstored row the page has no copy of
-    // (it can only have come from an older page).
-    const refreshedIds = new Set(refreshedTail.map(message => message.id))
+  const grafted = attach(refreshedTail)
 
-    const prefix = previous
-      .slice(0, anchor)
-      .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+  // Only rows the graft drops can hand a render identity on: a retained row's
+  // identity must stay with it, or two rendered rows would share one key —
+  // worse than the remount the carry exists to prevent. Dropped is derived
+  // from the graft's own output, so every path (retained prefix, stored-id
+  // merge, page-takes-window) hands over exactly the rows it replaced.
+  const retained = new Set(grafted)
+  const dropped = previous.filter(message => !retained.has(message))
 
-    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
-  }
-
-  const refreshedIds = new Set(refreshedTail.map(message => message.id))
-
-  // The page already contains everything on screen, including a live row the
-  // tail really did cover. Take the page. This is what keeps a finished reply
-  // through a long tool turn.
-  if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainCompletedTurnTools(refreshedTail, previous)
-  }
-
-  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+  return retainCompletedTurnTools(attach(carryRowKeysOntoRefreshedTail(refreshedTail, dropped)), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4

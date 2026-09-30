@@ -203,6 +203,9 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //                   (a model switch, a process completion); the stale-transcript
 //                   compare reads it, while the visible system row is painted
 //                   from role + parts, and role is already COMPARED
+//   rowKey — render identity for the row element (thread/list.tsx): minted where the
+//            row is born and carried across the id swap that follows a committed turn,
+//            so it never changes what's painted either
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -236,7 +239,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice', 'rowKey'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -982,6 +985,7 @@ export function preserveLocalPendingTurnMessages(
       message.rowId !== undefined &&
       message.rowId <= lastStoredRowId
     ) {
+      // The committed twin takes this row's place in the list.
       continue
     }
 

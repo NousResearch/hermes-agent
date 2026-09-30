@@ -69,6 +69,14 @@ export type ChatMessage = {
    *  counted in backend rows, so anything that rewinds that offset must convert
    *  through this. Absent means one row. */
   serverRowSpan?: number
+  /** Render identity for this transcript row, minted where the row is born and
+   *  carried when the turn-end refresh swaps a live row's id for its durable one
+   *  (`graftRefreshedTailOntoBackfill`). The thread keys each row element on it
+   *  (see `messageGroupKey`), so it must not change for as long as the row is
+   *  alive — neither when the id is rewritten nor when the transcript window
+   *  re-cuts under it. Absent for rows that predate the field; those key on
+   *  their id. */
+  rowKey?: string
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
   /** Backend-authored transcript notice rather than a message any view sent: a

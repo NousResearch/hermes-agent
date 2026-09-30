@@ -26,11 +26,17 @@ export const ResponseMessageIds = createContext<readonly string[]>([])
 interface ResponseMessagesProps {
   components: ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
   indices: readonly number[]
+  /** The rows' render identities, `|`-joined and aligned with `indices` (see
+   *  `messageGroupKey`). Sections and message elements key on these — never on
+   *  the message id (rewritten when a live row commits) or the index (moves on
+   *  a transcript window re-cut). */
+  identity: string
 }
 
 interface ResponseRow {
   index: number
   id: string
+  key: string
   role: string
   hasText: boolean
 }
@@ -38,12 +44,13 @@ interface ResponseRow {
 interface ResponseSection {
   key: string
   indices: number[]
+  rowKeys: string[]
   assistantIds: string[]
   response: boolean
 }
 
 /** Keep message runtimes intact; only their visual container and footer are shared. */
-export function ResponseMessages({ components, indices }: ResponseMessagesProps) {
+export function ResponseMessages({ components, indices, identity }: ResponseMessagesProps) {
   const signature = useAuiState(s =>
     JSON.stringify(
       indices.flatMap(index => {
@@ -65,7 +72,14 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
   )
 
   const sections = useMemo(() => {
-    const rows = JSON.parse(signature) as ResponseRow[]
+    const keys = identity.split('|')
+    const keyOf = new Map(indices.map((index, position) => [index, keys[position] || String(index)]))
+
+    const rows = (JSON.parse(signature) as ResponseRow[]).map(row => ({
+      ...row,
+      key: keyOf.get(row.index) ?? String(row.index)
+    }))
+
     const result: ResponseSection[] = []
 
     for (const row of rows) {
@@ -73,13 +87,16 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
       const previous = result.at(-1)
 
       const section: ResponseSection =
-        response && previous?.response ? previous : { key: row.id, indices: [], assistantIds: [], response }
+        response && previous?.response
+          ? previous
+          : { key: row.key, indices: [], rowKeys: [], assistantIds: [], response }
 
       if (section !== previous) {
         result.push(section)
       }
 
       section.indices.push(row.index)
+      section.rowKeys.push(row.key)
 
       if (row.role === 'assistant' && row.hasText) {
         section.assistantIds.push(row.id)
@@ -87,14 +104,14 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
     }
 
     return result
-  }, [signature])
+  }, [signature, indices, identity])
 
   return sections.map(section =>
     section.response ? (
       <ResponseMessageIds.Provider key={section.key} value={section.assistantIds}>
         <div className="group flex min-w-0 flex-col gap-(--scaffold-block-gap)" data-slot="aui_response-group">
-          {section.indices.map(index => (
-            <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+          {section.indices.map((index, position) => (
+            <ThreadPrimitive.MessageByIndex components={components} index={index} key={section.rowKeys[position]} />
           ))}
         </div>
       </ResponseMessageIds.Provider>

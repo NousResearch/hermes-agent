@@ -598,12 +598,14 @@ Other platforms use the committed registry lock without wheel requests.
 
 When a source checkout actually fails to build an unavailable native wheel's
 sdist, PM prepares Windows build tools and retries once before publishing a
-venv. Plugin-expanded builds retain their existing on-demand retry; sealed
-payloads have no compiler provider. Repair verifies copied wheels and rebinds
-only generation-local paths; it does not fetch current manifests or change the
-recorded versions. The `wheelhouse-build` workflow produces wheels from locked
-sdists on native Windows ARM64 and its protected publisher uploads immutable
-SHA-addressed objects to R2, checks metadata/tags, and reads back the public
+venv. The separate development/test environment still resolves against the
+registry lock, so its builder gets the same on-demand retry if it needs to
+compile a native sdist. Plugin-expanded builds retain their existing retry;
+sealed payloads have no compiler provider. Repair verifies copied wheels and
+rebinds only generation-local paths; it does not fetch current manifests or
+change the recorded versions. The `wheelhouse-build` workflow produces wheels
+from locked sdists on native Windows ARM64. Its protected publisher uploads
+immutable SHA-addressed objects to R2, checks metadata/tags, and reads back the public
 hash. No GitHub release is created. Until an object is present on R2, that
 wheel uses the source-build path rather than claiming a compiler-free install.
 

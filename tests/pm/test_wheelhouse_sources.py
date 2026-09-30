@@ -1,6 +1,7 @@
 """Native wheel delivery is optional, hash-locked, and never masks corruption."""
 
 import hashlib
+import json
 import shutil
 import tomllib
 
@@ -79,10 +80,16 @@ def test_repair_rebinds_verified_wheels_without_current_inputs(tmp_path):
     (directory / filename).write_bytes(body)
     original_lock = (recorded / "uv.lock").read_text(encoding="utf-8")
     registry_row = original_lock[original_lock.index('[[package]]\nname = "second"'):]
+
+    def escaped_path(path):
+        value = str(path)
+        # Different TOML spellings can decode to the same filesystem path.
+        return '"' + '\\u' + f'{ord(value[0]):04x}' + json.dumps(value)[2:]
+
     (recorded / "uv.lock").write_text(
         '[[package]]\nname = "first"\nversion = "1.0"\n'
-        f'source = {{ registry = "{directory}" }}\n'
-        f'wheels = [{{ path = "{directory / filename}" }}]\n'
+        f'source = {{ registry = {escaped_path(directory)} }}\n'
+        f'wheels = [{{ path = {escaped_path(directory / filename)} }}]\n'
         + registry_row, encoding="utf-8")
 
     repair = tmp_path / "repair"

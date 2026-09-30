@@ -124,12 +124,56 @@ def test_frozen_build_never_prepares_native_compilers(locked_project, tmp_path, 
     def refuse_compiler(_source):
         raise AssertionError("a locked wheel install must not prepare native compilers")
 
-    monkeypatch.setattr(pm.native_build, "source_build_environment", refuse_compiler, raising=False)
+    monkeypatch.setattr(pm.native_build, "plugin_build_environment", refuse_compiler)
     executable = build_environment(
         source=source, python=Path(sys.executable), out=tmp_path / "compiler-free-env",
         cache=tmp_path / "cache", no_install_project=True, offline=True, explicit=True,
     )
     assert executable.is_file()
+
+
+def test_source_environment_retries_failed_backend_with_build_tools(tmp_path, monkeypatch):
+    from pm.environment import BuildFailure
+    from pm.operations import build_environment
+    import pm.environment
+    import pm.native_build
+
+    project = tmp_path / "checkout"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[project]\nname="example"\nversion="1"\n')
+    (project / "uv.lock").write_text("pinned source lock")
+    destination = tmp_path / "side-environment"
+    attempts = []
+
+    class Environment:
+        def __init__(self, env):
+            self.env = env or {}
+            self.destination = destination
+            self.executable = destination / "bin" / "python"
+
+        def create(self):
+            (destination / "bin").mkdir()
+            self.executable.write_text("fixture")
+
+        def sync(self, source, **kwargs):
+            attempts.append((dict(self.env), source))
+            if not self.env.get("READY"):
+                raise BuildFailure("venv", "the build backend returned an error")
+
+        def check(self):
+            assert self.executable.is_file()
+
+    monkeypatch.setattr(pm.environment, "managed_environment",
+                        lambda destination, **kwargs: Environment(kwargs.get("env")))
+    prepared = []
+    def compiler(source):
+        prepared.append(source)
+        return {"READY": "yes"}
+    monkeypatch.setattr(pm.native_build, "plugin_build_environment", compiler)
+    result = build_environment(source=project, out=destination, explicit=True)
+    assert result.is_file() and (project / "uv.lock").read_text() == "pinned source lock"
+    assert [bool(env.get("READY")) for env, _ in attempts] == [False, True]
+    assert prepared == [project]
 
 
 @pytest.mark.parametrize("failures", [1, 2])

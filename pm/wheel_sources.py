@@ -83,24 +83,27 @@ def relocate_wheels(root: Path, replay: Path, *, target: str) -> tuple[str, ...]
     if target != "win32-arm64":
         return ()
     lock_path = root / "uv.lock"
-    text = lock_path.read_text(encoding="utf-8-sig")
-    document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
-    pins = document.get("tool", {}).get("hermes", {}).get("win-arm64-wheels", {})
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8-sig"))
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    pins = project.get("tool", {}).get("hermes", {}).get("win-arm64-wheels", {})
     old_dir, new_dir = replay / "wheels", root / "wheels"
-    local = [row for row in tomllib.loads(text)["package"]
-             if row["source"].get("registry") == str(old_dir)]
+    local = [row for row in lock["package"]
+             if "registry" in row["source"] and Path(row["source"]["registry"]) == old_dir]
     for row in local:
         name = row["name"]
         if name not in pins:
             raise InstallError("venv", f"unrecognized recorded wheel: {name}")
         filename, sha = pins[name]["filename"], pins[name]["sha256"]
-        expected = {"path": str(old_dir / filename)}
-        if row["version"] != filename.split("-")[1] or row.get("wheels") != [expected]:
+        wheels = row.get("wheels", [])
+        if (row["version"] != filename.split("-")[1] or len(wheels) != 1
+                or set(wheels[0]) != {"path"} or Path(wheels[0]["path"]) != old_dir / filename):
             raise InstallError("venv", f"recorded wheel does not match the reviewed pin: {name}")
         _verify_wheel_file(name, new_dir / filename, sha)
-    if text.count(str(old_dir)) != 2 * len(local):
-        raise InstallError("venv", "recorded wheel paths do not match the generation")
-    lock_path.write_text(text.replace(str(old_dir), str(new_dir)), encoding="utf-8")
+        row["source"]["registry"] = str(new_dir)
+        wheels[0]["path"] = str(new_dir / filename)
+    if local:
+        import tomli_w
+        lock_path.write_text(tomli_w.dumps(lock), encoding="utf-8")
     return tuple(sorted(set(pins) - {row["name"] for row in local}))
 
 

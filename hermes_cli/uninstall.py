@@ -367,7 +367,7 @@ _GATEWAY_SERVICE_REMOVERS = {
 
 
 def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
-    """Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\cmd, git\bin,
+    r"""Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\cmd, git\bin,
     node...). ``include_managed_bin`` adds ``<root>\bin`` (launchers + managed uv) — only when that
     dir is about to be deleted, so a keep-data uninstall keeps the working uv resolvable."""
     root = str(hermes_home).rstrip("\\/")
@@ -727,6 +727,10 @@ def run_gui_uninstall(args):
         print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
         print(f"  • Your config, sessions, and secrets under {hermes_home}")
         print()
+
+    if bool(getattr(args, "dry_run", False)):
+        print("Dry run: no files or processes changed.")
+        return
 
     if not skip_confirm and not _confirm_yes("to remove the Chat GUI"):
         return

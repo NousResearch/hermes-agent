@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli import uninstall
 
 
@@ -68,3 +70,41 @@ def test_build_uninstall_parser_accepts_dry_run():
 
     assert args.dry_run is True
     assert args.full is True
+
+
+@pytest.mark.parametrize("yes", [False, True])
+def test_gui_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys, yes):
+    """Regression for #128974: ``hermes uninstall --gui --dry-run`` ignored the flag and
+    really deleted the built artifacts (including the workspace node_modules), even with
+    ``--yes``. A GUI dry-run must print the plan, never prompt, never remove."""
+    hermes_home = tmp_path / "hermes-home"
+    agent_root = hermes_home / "hermes-agent"
+    # hermes_cli/ marks the agent as installed (prints the "Kept intact" block);
+    # node_modules/ is the artifact the uninstaller claims it would remove.
+    (agent_root / "hermes_cli").mkdir(parents=True)
+    node_modules = agent_root / "node_modules"
+    node_modules.mkdir()
+
+    monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(uninstall, "_refuse_if_steward_owned", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(
+        "hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: tmp_path / "absent-userdata")
+
+    def _confirm_reached(*args, **kwargs):
+        raise AssertionError("dry-run must not prompt for confirmation")
+
+    uninstalled = []
+    monkeypatch.setattr(uninstall, "_confirm_yes", _confirm_reached)
+    monkeypatch.setattr(
+        "hermes_cli.gui_uninstall.uninstall_gui",
+        lambda *args, **kwargs: uninstalled.append(args))
+
+    uninstall.run_gui_uninstall(SimpleNamespace(dry_run=True, yes=yes))
+
+    out = capsys.readouterr().out
+    assert uninstalled == []
+    assert "Dry run" in out
+    assert str(node_modules) in out
+    assert node_modules.exists()

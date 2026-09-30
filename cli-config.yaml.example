@@ -401,6 +401,13 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Opt-in: when a completion summary cites a task id that exists on NO board,
+  # spawn a `verify:` child task on the completing profile so the claim gets
+  # re-checked. Off by default: the reference is still flagged (the
+  # `suspected_hallucinated_references` event + the prose_phantom_refs
+  # diagnostic), but no task is created that nobody requested — a single misread
+  # citation would otherwise cascade into one child card per unresolved id.
+  # auto_verify_phantom_refs: false
 
 # =============================================================================
 # Terminal Tool Configuration

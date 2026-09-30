@@ -6,9 +6,12 @@ Invariants:
    board is a legitimate cross-board citation — it must emit
    ``cross_board_references`` and must NEVER emit
    ``suspected_hallucinated_references`` nor spawn a ``verify:`` child.
-2. An id that resolves on NO board is a phantom — it emits
-   ``suspected_hallucinated_references`` and spawns exactly one ``verify:``
-   child assigned to the completing task's profile, parented on the task.
+2. An id that resolves on NO board is a phantom — it ALWAYS emits
+   ``suspected_hallucinated_references``, and spawns a ``verify:`` child
+   assigned to the completing task's profile, parented on the task, ONLY when
+   ``kanban.auto_verify_phantom_refs`` is explicitly enabled (opt-in). With the
+   default config no card is created at all: the detector flags the reference
+   and logs the suppressed spawn at debug level.
 3. The two kinds are structurally distinct: the cross-board payload carries
    ``refs`` (id -> board slug) and never ``phantom_refs``.
 """
@@ -16,12 +19,15 @@ Invariants:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
+
+VERIFY_FLAG = "auto_verify_phantom_refs"
 
 
 @pytest.fixture
@@ -34,6 +40,18 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     kb.init_db()
     return home
+
+
+def _set_auto_verify(home: Path, enabled: bool) -> None:
+    """Write the real ``config.yaml`` the running install reads.
+
+    The opt-in is a config knob, so the tests drive it through the same
+    ``load_config_readonly()`` path production uses — never by patching the
+    reader (a patched seam would not notice the key being renamed).
+    """
+    (home / "config.yaml").write_text(
+        f"kanban:\n  {VERIFY_FLAG}: {'true' if enabled else 'false'}\n", encoding="utf-8",
+    )
 
 
 def _kinds(conn, task_id):
@@ -76,8 +94,33 @@ def test_cross_board_reference_is_not_a_phantom(kanban_home):
     assert "phantom_refs" not in payload
 
 
-def test_unresolvable_reference_is_phantom_and_spawns_verify_child(kanban_home):
-    """An id on no board at all is a phantom and gets re-checked."""
+def test_unresolvable_reference_is_phantom_without_creating_a_card(kanban_home, caplog):
+    """Default config: the reference is flagged, no task is manufactured from it.
+
+    Opt-in behaviour (``kanban.auto_verify_phantom_refs``, default off) — the
+    detector's output is a flag on the parent task, not a new card on the board.
+    """
+    conn = connect(board="default")
+    tid = kb.create_task(conn, title="invents a task", assignee="coder")
+    fake = "t_deadbeef99"
+    with caplog.at_level(logging.DEBUG, logger="hermes_cli.kanban_db"):
+        assert kb.complete_task(conn, tid, summary=f"Verified via {fake} which passed.") is True
+
+    kinds = _kinds(conn, tid)
+    assert "suspected_hallucinated_references" in kinds
+    payload = _payload(conn, tid, "suspected_hallucinated_references")
+    assert payload["phantom_refs"] == [fake]
+    assert payload["auto_verify_card"] is False
+    assert _verify_children(conn) == []
+    # The suppressed spawn is still observable in the log.
+    assert any("suppress" in r.getMessage().lower() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_verify_child_spawned_when_opted_in(kanban_home):
+    """``kanban.auto_verify_phantom_refs: true`` restores the old behaviour."""
+    _set_auto_verify(kanban_home, True)
     conn = connect(board="default")
     tid = kb.create_task(conn, title="invents a task", assignee="coder")
     fake = "t_deadbeef99"
@@ -85,7 +128,9 @@ def test_unresolvable_reference_is_phantom_and_spawns_verify_child(kanban_home):
 
     kinds = _kinds(conn, tid)
     assert "suspected_hallucinated_references" in kinds
-    assert _payload(conn, tid, "suspected_hallucinated_references")["phantom_refs"] == [fake]
+    payload = _payload(conn, tid, "suspected_hallucinated_references")
+    assert payload["phantom_refs"] == [fake]
+    assert payload["auto_verify_card"] is True
 
     children = _verify_children(conn)
     assert len(children) == 1
@@ -98,6 +143,17 @@ def test_unresolvable_reference_is_phantom_and_spawns_verify_child(kanban_home):
         "SELECT parent_id FROM task_links WHERE child_id = ?", (child["id"],)
     ).fetchall()
     assert [p["parent_id"] for p in parents] == [tid]
+
+
+def test_explicitly_disabled_flag_creates_no_card(kanban_home):
+    """An explicit ``false`` is off too — the flag is opt-in, not "set at all"."""
+    _set_auto_verify(kanban_home, False)
+    conn = connect(board="default")
+    tid = kb.create_task(conn, title="invents a task", assignee="coder")
+    assert kb.complete_task(conn, tid, summary="Verified via t_deadbeef99 which passed.") is True
+
+    assert "suspected_hallucinated_references" in _kinds(conn, tid)
+    assert _verify_children(conn) == []
 
 
 def test_mixed_refs_report_both_kinds_separately(kanban_home):
@@ -118,7 +174,7 @@ def test_mixed_refs_report_both_kinds_separately(kanban_home):
     assert "suspected_hallucinated_references" in kinds
     assert _payload(conn, tid, "cross_board_references")["refs"] == {remote_id: "other-board"}
     assert _payload(conn, tid, "suspected_hallucinated_references")["phantom_refs"] == [fake]
-    assert len(_verify_children(conn)) == 1
+    assert _verify_children(conn) == []
 
 
 def test_pinned_db_env_resolves_cross_board_reference(kanban_home, monkeypatch):
@@ -155,12 +211,14 @@ def test_pinned_db_env_resolves_cross_board_reference(kanban_home, monkeypatch):
 
 def test_pinned_db_env_still_flags_true_phantom(kanban_home, monkeypatch):
     """The fix must not make the scanner blind: an id on NO board is still a
-    phantom and still spawns exactly one ``verify:`` child in a pinned env."""
+    phantom (and, with the opt-in on, still spawns exactly one ``verify:`` child)
+    in a pinned env."""
     kb.create_board("other-board")
     other = connect(board="other-board")
     kb.create_task(other, title="lives elsewhere", assignee="sysadmin")
     other.close()
 
+    _set_auto_verify(kanban_home, True)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
     conn = connect(board="default")
     tid = kb.create_task(conn, title="invents a task", assignee="coder")

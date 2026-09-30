@@ -209,11 +209,13 @@ def parse_requires(raw: Any, app: Optional[AppSpec], *, where: str) -> RequiresS
         if not needs_app:
             raise DeclarationError(f"{where}: requires.min_version needs requires.app: true")
         assert app is not None
-        # An OS with no version source (Linux has none) is gated on presence only; at least one must be versioned.
-        if all(d.version_kind == "none" for d in app.per_os.values()):
-            first = sorted(app.per_os)[0]
+        # Linux has no version source, so a Linux block is gated on presence only; Windows and macOS must read
+        # one, and a Linux-only declaration has nothing to compare.
+        unversioned = [osf for osf in sorted(app.per_os) if app.per_os[osf].version_kind == "none"
+                       and (osf != "linux" or len(app.per_os) == 1)]
+        if unversioned:
             raise DeclarationError(
-                f"{where}: requires.min_version needs a version source under app.{first} (kind is none)")
+                f"{where}: requires.min_version needs a version source under app.{unversioned[0]} (kind is none)")
     return RequiresSpec(app=needs_app, min_version=min_version)
 
 

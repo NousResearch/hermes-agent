@@ -41,7 +41,7 @@ app:
     version: { kind: plist }
 ```
 
-`location` is one path or an ordered list of places to look; the first present one wins. A list item is a path or a mapping that names a location kind:
+`location` is one path or an ordered list of places to look; the first present one wins, except that with `requires.min_version` every present copy's version is read and the first copy that qualifies wins. A list item is a path or a mapping that names a location kind:
 
 ```yaml
 app:
@@ -99,7 +99,7 @@ requires:
 | field | type | rule |
 |---|---|---|
 | `app` | bool | when true, `app:` must exist and the server is gated on presence |
-| `min_version` | str | requires `app: true`; dotted numeric; at least one `app.<os>` must declare a real `version.kind`, and an OS without one (Linux has no version source) is gated on presence only; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
+| `min_version` | str | requires `app: true`; dotted numeric; every `app.win32` and `app.darwin` must declare a real `version.kind`; `app.linux` may omit it (Linux has no version source) and is then gated on presence only, but a Linux-only declaration cannot set a minimum; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
 
 `requires.app: true` with no `app:` block is a `DeclarationError`.
 

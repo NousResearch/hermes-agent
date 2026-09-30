@@ -9,10 +9,11 @@ import logging
 from urllib.parse import quote
 
 from gateway.session import format_untrusted_prompt_value
+from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
-from plugins.platforms.matrix.thread_context import Method, PreviousTurnCheck, history_entry
+from plugins.platforms.matrix.thread_context import PreviousTurnCheck, history_entry
 
 
 logger = logging.getLogger(__name__)
@@ -73,13 +74,14 @@ async def fetch_room_entries(
         stored = cache.store(room_id, raw["event_id"], entry)
         if stored is not None:
             newest_first.append((raw["event_id"], stored))
-    entries = newest_first[::-1]
-    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
+
+    kept = newest_first[::-1]
+    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in kept])
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
                 reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
-        for (_, entry), snapshot in zip(entries, snapshots)
+        for (_, entry), snapshot in zip(kept, snapshots)
     ]
 
 

@@ -20,9 +20,10 @@ text as a literal product default.
 - Render real profile, working-directory and shipped-guide paths according to
   [the local layout](local-layout.md). Remove fixed cloud-machine claims and
   describe the actual execution environment.
-- Use the agreed `Service manuals` listing and guide instructions from
-  [guides and skills removal](guides.md), without credential-store or removed
-  connection-tool instructions.
+- Keep the frozen `Service manuals` listing. For self-reference, reuse the native
+  Hermes help pointer with only the skill label and loading call changed to the
+  guide and `read_file`. The native-derived guide covers service setup without
+  a separate connections guide or hosted connection tool; see [guides](guides.md).
 - Apply the agreed tool exclusions and authored-memory placement from
   [the tool surface](tool-surface.md). Personal profiles belong after the
   current user message, not in the system prompt.

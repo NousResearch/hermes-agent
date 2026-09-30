@@ -175,7 +175,7 @@ def prompt_parts(agent):
     from responsibilities.common import get_responsibilities_root, ResponsibilityFilesystemError
     from responsibilities.packages import scan_workspace_responsibilities
     from responsibilities.roster import render_responsibility_roster
-    from agent.prompt_builder import STEER_CHANNEL_NOTE, ASYNC_HANDOFF_GUIDANCE
+    from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE, STEER_CHANNEL_NOTE, ASYNC_HANDOFF_GUIDANCE
     config = load_config_readonly().get("employee", {})
     identity = render(EMPLOYEE_AGENT_IDENTITY)
     parts = [identity, config.get("instructions", ""),
@@ -184,8 +184,10 @@ def prompt_parts(agent):
         render(EMPLOYEE_FILES_GUIDANCE), EMPLOYEE_MEMORY_GUIDANCE,
         EMPLOYEE_BACKGROUND_MEMORY_GUIDANCE,
         render("Your profile knowledge lives under {profile_home}; the organization's documents, repositories and working files live under {workdir}. These are organization conventions, not a filesystem sandbox. Product-owned guides live under {guides_root}; do not edit them."),
-        render("For your features, configuration, tools and capabilities, read {guides_root}/employee/guide.md."),
-        render("Before operating a service, read its manual.md if one exists under {profile_home}/connections/<service>/. The listing records operating knowledge, not current access. When you work out something non-trivial about a service, record it in its manual; correct missing steps, wrong commands and pitfalls before finishing. To establish access, read {guides_root}/connections/guide.md first."),
+        render(HERMES_AGENT_HELP_GUIDANCE.replace(
+            "`hermes-agent` skill", "`hermes-agent` guide"
+        ).replace("skill_view(name='hermes-agent')", "read_file(path='{guides_root}/employee/guide.md')")),
+        render("For any service connection work, read {guides_root}/employee/references/service-connections.md and the existing manual.md under {profile_home}/connections/<service>/ before operating. Document every connection there, including its account, access method and verification result; keep reusable references and scripts alongside the manual, never secrets. Update the manual when access or operating knowledge changes. The listing records operating knowledge, not current access."),
     ]
     if agent.valid_tool_names:
         parts.append(STEER_CHANNEL_NOTE)

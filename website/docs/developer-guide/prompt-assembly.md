@@ -9,7 +9,11 @@ description: "How Hermes builds the system prompt, preserves cache stability, an
 ## Employee fork behavior
 
 This fork uses `agent/employee_prompt.py` and the bundled `guides/` for employee
-instructions. The native cached-prefix lifecycle remains unchanged. Shared
+instructions. Its self-reference pointer reuses native `HERMES_AGENT_HELP_GUIDANCE`,
+substituting the guide label and `read_file` invocation for the skill. The shipped
+employee guide carries over native Hermes references with explicit runtime
+adaptations; there is no separate connections guide. The native cached-prefix
+lifecycle remains unchanged. Shared
 `MEMORY.md`, guide entry points, and responsibility/service listings freeze with
 the conversation. Skills and the native SOUL persona are omitted from this surface;
 `employee.name` and `employee.instructions` supply administrator customization.

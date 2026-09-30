@@ -68,3 +68,33 @@ def test_prompt_remains_available_when_responsibility_root_needs_repair(tmp_path
     repaired = '\n'.join(prompt_parts(agent))
     assert 'Responsibility index unavailable' not in repaired
     assert 'No responsibilities yet' in repaired
+
+
+def test_native_guide_references_and_templates_resolve_through_file_tools(tmp_path, monkeypatch):
+    import re
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = guides_root()
+    hub = root / "employee"
+    pending = [hub / "guide.md"]
+    seen = set()
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        result = json.loads(read_file_tool(str(path), task_id="native-guide-links"))
+        assert not result.get("error"), (path, result)
+        content = result["content"]
+        assert "{guides_root}" not in content
+        if path.suffix != ".md":
+            continue
+        # References use the hub directory, including links between references.
+        for match in re.finditer(r"`((?:references|templates)/[\w.-]+\.(?:md|js|mjs|yaml))`", content):
+            pending.append(hub / match[1])
+        for match in re.finditer(re.escape(str(root)) + r"/[\w./-]+\.(?:md|js|mjs|yaml)", content):
+            pending.append(root / match[0][len(str(root)) + 1:])
+    assert hub / "references/native-mcp.md" in seen
+    assert hub / "references/service-connections.md" in seen
+    assert root / "responsibility-authoring/guide.md" in seen
+    assert any(path.parent.name == "templates" for path in seen)

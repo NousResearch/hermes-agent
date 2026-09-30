@@ -96,14 +96,14 @@ handshake:
 The `secret` is never a literal value. It is a `env:VARIABLE_NAME` reference
 into native profile secrets, resolved by the platform each time the
 handshake runs — a literal is rejected at compile. Obtain the provider's
-token as `{guides_root}/connections/guide.md` directs — request it when a person
-holds it, store it when you obtained it yourself — and write the
-returned reference into the file. The value never passes through chat
+token through native secret administration or the configured secret manager;
+the user enters reusable secrets there, never in chat. Write only the
+`env:VARIABLE_NAME` reference into the file. The value never passes through chat
 or lands in the file, and rotating it in the store leaves the file's
 bytes unchanged, so the webhook's URL survives rotation. If the
-referenced connection is later removed, deliveries continue — only the
-provider's next verification fails; repair by requesting the credential
-again and updating the reference in place.
+referenced secret is later removed, deliveries continue — only the
+provider's next verification fails; repair through native secret administration
+and update the reference in place if its name changes.
 
 Some providers require the computed response in a specific encoding. X
 (Twitter) expects a base64 HMAC with a `sha256=` prefix:

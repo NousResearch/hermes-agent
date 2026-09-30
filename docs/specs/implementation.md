@@ -15,7 +15,7 @@ acceptance tests are separate work from the Linux deployment specified here.
 | System prompt | Native persona, skill index and global personal profile | Employee wording, configured name/instructions, frozen manual/responsibility listings; `agent/employee_prompt.py` and native `system_prompt.py` |
 | Tools | Native broad default toolsets | Employee allowlist and configured MCP; `model_tools.py`, `toolsets.py`, native registry |
 | File operations | Generic file feedback | Source responsibility budgets, validation, gauges and warnings on native reads/writes/patches; `responsibilities/`, `tools/file_*` |
-| Guides | Skill-based instructions | Shipped guides read fully by file tools; profile/work paths rendered; product files read-only |
+| Guides | Skill-based instructions | Native Hermes self-reference ported as a guide plus responsibility/file-keeping guides; full file-tool reads, rendered paths and protected product files |
 | Authored memory | Global `USER.md` in system prefix | Fixed shared store plus stable person files; fresh profile after current user input, before recalled memory and hooks; `agent/people.py` |
 | Replay | String sidecar; injected multimodal text stored as user content | String and list sidecars use native SQLite content encoding; clean transcript stays separate |
 | Background memory | Configurable plugin surface | Bundled Hindsight with employee policy; model sees `recall`, automatic retain/prefetch uses source mechanics |
@@ -29,13 +29,16 @@ acceptance tests are separate work from the Linux deployment specified here.
 
 ## Wording preservation
 
-The checked-in [guide diff](reference/guide-adaptations.diff) compares source
-wording with the shipped guides. Path/name substitutions are normalized out so
-necessary runtime changes are visible. The connections guide uses the explicitly
-approved shorter version. Other changes remove concrete contradictions with
-native attachments, delegation, steering, filesystem persistence and
-administration. Credential references use native `env:NAME` secrets instead of
-the hosted credential store. Guides never direct the model to the source repo.
+The [employee guide diff](reference/guide-adaptations.diff) records adaptations
+to the retained responsibility and file-keeping guides. The
+[native guide diff](reference/native-guide-adaptations.diff) compares the Hermes
+self-reference skill with the shipped employee guide and applicable references.
+The separate connections guide and custom employee overview were removed.
+The native prompt help pointer is reused, replacing only the skill label and
+loading call. MCP setup uses native CLI/dashboard workflows; fixed exclusions,
+responsibility authoring, memory, browser and administration boundaries are
+explicit adaptations. Service manuals remain writable knowledge. Credential
+references use native `env:NAME` secrets instead of the hosted credential store.
 
 The employee identity drops the source product/company names. Working, memory,
 file-keeping and review doctrine are copied; only paths and concrete native

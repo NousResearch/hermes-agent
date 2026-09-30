@@ -47,10 +47,11 @@ reference prompt instructions. Other tool feedback leans toward the employee
 where it matches the actual selected behavior. File budgets, personal-memory
 placement and messaging parity have explicit contracts, not stylistic latitude.
 
-Guides and references retain wording except necessary adaptations. The approved
-shorter [connections guide](reference/connections-guide.md) is the deliberate
-exception. It must be available from the spec without relying on gitignored
-workspace notes. Hindsight has a [configuration snapshot](reference/hindsight-config.json);
+Self-reference follows the native Hermes skill, carried over as a guide with
+runtime-specific adaptations. Responsibility authoring and file keeping retain
+their established wording. The separate connections guide is removed; native
+setup commands and documentation cover service access. See [guides](guides.md).
+Hindsight has a [configuration snapshot](reference/hindsight-config.json);
 endpoint and authentication substitutions are explicit, not silent retuning.
 
 ## Configuration and administration

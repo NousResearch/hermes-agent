@@ -4,79 +4,61 @@ Status: implemented in the codebase; see [implementation map and validation limi
 
 ## Decision
 
-Remove skills from the employee's model-visible knowledge system. Use the
-established employee guides and their reference files verbatim, except where
-local execution or explicitly removed capabilities require a change. Do not
-summarize, rewrite for style, merge guides or invent replacement doctrine. The
-explicit exception is the approved shortened connections guide linked below.
+Skills stay out of the employee's model-visible knowledge system. The native
+`hermes-agent` self-reference skill is carried over as the shipped
+`guides/employee/guide.md`, including its applicable references and templates.
+Preserve native wording and structure; adapt only concrete runtime differences.
+The former custom employee overview and separate connections guide are removed.
+Responsibility authoring and file keeping remain separate guides.
 
-Guides are product-owned instructions read through ordinary file tools, with
-entry points referenced by the prompt and links to detailed reference files.
-They are not discoverable/installable skills. The employee does not edit its
-own product guides; retain that ownership contract without claiming OS-level
-protection until the local implementation provides it.
+The system prompt reuses native `HERMES_AGENT_HELP_GUIDANCE` verbatim except for
+replacing the skill label and `skill_view` invocation with a guide label and
+`read_file` pointing to the resolved guide path. The guide routes the agent to
+native command, configuration, authentication, MCP and troubleshooting references.
+Upstream documentation remains the native reference; the guide identifies fixed
+fork differences so it cannot accidentally re-enable excluded capabilities.
 
-Remove skill listings, skill-tool instructions, skill-authoring/review guidance
-and other model-facing routes that would reintroduce the retired primitive.
-Retarget learning to the agreed employee knowledge homes. This does not require
-indiscriminate deletion of upstream internals used by unrelated functionality.
+Guides are product-owned and read through ordinary file tools. They are not
+installable/discoverable skills. Existing file-tool protection prevents editing
+them; this does not claim OS-level isolation from unrestricted terminal access.
 
-## Guide treatment
+## Runtime adaptations
 
-| Guide | Preservation rule |
+| Native guidance | Fork treatment |
 | --- | --- |
-| Responsibility authoring, including schedule/webhook references | Preserve wording and procedures; adapt paths and actual local execution facts. References to unsupported capabilities must be removed or corrected. |
-| File keeping | Preserve filing judgment, organization and cloud-document stub conventions. Adapt roots and statements about cache permissions, expiration and backup to actual local behavior. |
-| Employee self-reference and its references | Preserve applicable behavior, conversation, delegation and memory instructions. Replace hosted-only operating facts and remove unavailable management actions. |
-| Connections and its references | Keep service manuals independently of authentication storage. The shortened local connections guide is approved; omit hosted credential-store, request-link, broker and dashboard mechanics. Adapt references consistently. |
-| mcporter | Do not silently ship a guide that claims a bundled mcporter installation or directs all MCP work through it. Native MCP remains supported. Use native MCP instructions; do not ship mcporter-specific setup or impose it as a dependency. |
+| Skill installation, authoring, bundles and curator | Remove these instructions; durable owned work uses responsibility packages. Do not mechanically rename unsupported commands. |
+| Standalone cron/webhook authoring | Route to responsibility authoring and its schedules/webhooks references. Retain native execution and inspection. |
+| SOUL/personality and global personal memory | Use employee name/instructions, shared authored memory, per-person context and fixed Hindsight. Keep the dedicated memory reference. |
+| Browser selection | Describe `browser_exec` and Browser Use Cloud in a dedicated reference. |
+| Connection setup | Use native `hermes mcp`, service CLI authentication, configured secrets and native dashboard authorization. No hosted connection tool or mcporter dependency. |
+| Other native functionality | Preserve the applicable references/templates, with actual tool availability and platform limits stated. |
 
-## Permitted adaptations
+User-requested service setup through native commands is allowed; it does not
+permit arbitrary edits to employee settings, instructions or credentials.
+General configuration remains administrator-owned. OAuth approval is completed
+by the user; reusable secrets go through native administration or a configured
+secret manager, never chat. Interactive/headless limitations must be stated,
+not bypassed by hand-writing protected config or token files.
 
-Make narrow, reviewable edits for local paths; real host/browser behavior;
-startup, sleep and process lifetime; file delivery and retention; and references
-to explicitly removed tools or hosted management services. Examples requiring
-change include “nothing to install and no local application,” fixed cloud Linux
-facts, routine machine replacement, hosted dashboard/billing administration,
-`connection` request links and `report_issue` instructions.
+## Service manuals
 
-Do not infer removal of useful operating knowledge merely because it mentions
-a connected service. Removing credential-management tools does not itself decide
-the fate of service manuals or the account-selection advice they contain.
+Service manuals remain employee-owned knowledge under
+`<profile-home>/connections/<service>/`, with optional references and scripts.
+Removing the connections guide does not delete manuals or revoke access.
+The prompt retains the frozen `Service manuals` listing and instruction to read
+an existing manual before operating a service. The prompt and native guide route every connection operation through the
+service-connections reference and existing manual. Every CLI/API/MCP/browser
+connection is documented, including account, access method, credential location
+(without values), verification result and useful references/scripts. Pending or
+failed setup stays explicitly unverified. Connection changes update the manual.
+A missing listing does not prove a manual or login is absent.
 
-## Port verification
+## Verification and upstream maintenance
 
-Compare every resulting guide and reference with its source text. Each changed
-passage must have a concrete local-behavior or agreed-exclusion reason. Preserve
-all other wording exactly, check internal links, and verify that prompt/file-tool
-entry points load the guides without reintroducing skills. Guide roots follow
-[the local layout](local-layout.md); the employee name is configurable. References
-must describe the agreed native attachments, delegation and steering behavior,
-and Browser Use Cloud, rather than copying incompatible runtime claims.
-
-## Service manuals and prompt discovery
-
-Decision: the employee owns one operating-knowledge folder per service, with
-`manual.md`, optional `references/` and `scripts/`. After first verifying access,
-it creates the manual if absent and maintains it as it works. Access uses native
-CLI authentication, configured secrets, MCP or the browser independently of
-these files. There is no generated `credentials.md`.
-
-The [approved connections guide](reference/connections-guide.md) is a versioned
-specification asset, not yet a runtime asset. Guide and knowledge roots are agreed in [the local layout](local-layout.md);
-replace `<connections-root>` with the resolved profile connections directory
-when installing the guide.
-
-Decision: change prompt discovery from `Connected: ...` to
-`Service manuals: ...`. The listing is frozen per conversation and means
-operating knowledge exists, not that access is currently authenticated or healthy.
-Use this instruction in place of the credential-file read requirement:
-
-> Before operating a service, read its manual.md if one exists.
-> The listing records operating knowledge, not current access.
-
-Retain the instructions to maintain manuals and to read the connections guide
-when establishing access to a new service. Remove instructions to read generated
-`credentials.md` or call removed connection tools. A missing entry in the frozen
-listing does not establish that no manual exists; the guide instructs the agent
-to check the directory.
+Compare the native guide copy with `skills/autonomous-ai-agents/hermes-agent/`
+on upstream sync. Preserve source structure and compatible improvements rather
+than rewriting an independent overview. The checked-in reference diffs account
+for adaptations. Verify prompt-to-guide-to-reference reads, template packaging,
+removed-guide links, fixed surface exclusions, and unchanged warm-session prompt
+bytes. Guide reads remain ordinary tool results; never rebuild an existing prompt
+mid-conversation to refresh guide or manual discovery.

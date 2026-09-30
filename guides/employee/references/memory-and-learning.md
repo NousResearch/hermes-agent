@@ -16,7 +16,7 @@ Practical mechanics:
 
 ## Distilled memory vs verbatim history
 
-Background memory keeps distilled, consolidated facts (retained automatically every few completed exchanges, recalled automatically with a turn of lag), not a verbatim recording. Verbatim history lives in past conversations and is searchable with `session_search`:
+Background memory keeps distilled, consolidated facts (retained automatically every few completed exchanges, recalled synchronously for the current turn, including the first substantive turn), not a verbatim recording. Verbatim history lives in past conversations and is searchable with `session_search`:
 
 - keyword search (`query`), read a whole past conversation (`session_id`), jump to a spot (`session_id` + `around_message_id`), or browse recent ones (no args);
 - subagent and internal sessions never show up; scheduled-run history is searchable but ranked below real conversations;
@@ -24,7 +24,7 @@ Background memory keeps distilled, consolidated facts (retained automatically ev
 
 ## How you learn without being asked
 
-On the native background-review cadence, you automatically review the conversation in the background and file what it taught you into the same three homes you use live: a fact or preference to memory, a correction about an owned area into that responsibility's references, a lesson about how a service is operated into that service's connection manual. The review files with the same permissions you have live. It never records one-off errors, transient environment failures, or task narratives, and it never edits what is read-only to you — the guides under `{guides_root}/`. It cannot edit schedule or webhook declarations; proposed changes go into STATE.md.
+On the native background-review cadence, you automatically review the conversation in the background and file what it taught you into the same three homes you use live: a fact or preference to memory, a correction about an owned area into that responsibility's references, a lesson about how a service is operated into that service's connection manual. The review can update knowledge files and memory. It never records one-off errors, transient environment failures, or task narratives, and it never edits what is read-only to you — the guides under `{guides_root}/`. It cannot edit schedule or webhook declarations; proposed changes go into STATE.md.
 
 ## Manuals, guides, and what's yours
 

@@ -6,29 +6,23 @@
 
 ## Downstream intent
 
-Preserve [employee contracts](../../specs/employee.md): employee wording and guides,
-fixed tools, file-owned responsibilities, per-person memory after the current
-message, Hindsight, and knowledge consolidation. Native adapters, delegation,
-steering, scratch/cache handling and administration remain owners. Confirmed
-deliveries enter next turn.
+Preserve [employee contracts](../../specs/employee.md): fixed tools, responsibility
+packages, per-person memory, Hindsight, service manuals and knowledge review.
+Native adapters, delegation, scratch/cache and administration remain owners.
+Confirmed deliveries enter the next turn.
 
 ## Reconciliation
 
-Keep integration points direct. Do not restore skills, alternate memory/browser
-surfaces, hosted billing or credential gateways. Preserve cached prompts,
-historical API sidecars, Hindsight policy and Codex authentication. Employee prompt
-assembly follows native agent-home precedence, including bare worker threads.
-Messaging must retain a leaf toolset so native delegation restrictions apply.
-Absorb equivalent upstream behavior rather than duplicating it.
+Port native Hermes self-reference as a guide with the native prompt pointer;
+preserve [runtime adaptations](../../specs/guides.md) and connection documentation.
+Do not restore excluded surfaces or hosted credential gateways. Preserve prompt
+caches, replay bytes, profile scope (including worker threads), Codex auth and
+Hindsight policy. Messaging needs a leaf toolset for native child restrictions.
+Absorb equivalent upstream behavior directly.
 
 ## Validation
 
-Run employee tests in `tests/agent`, `tests/responsibilities`, `tests/plugins`,
+Run employee tests in `tests/agent`, `tests/responsibilities`, `tests/plugins`
 and `tests/deploy` through the native runner. [Deployment acceptance](../../../deploy/railway/README.md)
-requires a future server.
-
-## Platform scope
-
-Linux deployment and macOS development are supported. Responsibility filesystem
-operations require POSIX; Windows uses WSL2. Native Windows needs separate
-implementation and acceptance testing. Retained Windows instructions are upstream reference.
+requires a server. Linux/WSL2 and macOS are supported; responsibility filesystem
+operations require POSIX. Native Windows needs separate implementation and tests.

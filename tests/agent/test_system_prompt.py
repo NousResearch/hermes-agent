@@ -787,3 +787,21 @@ def test_coding_prompt_keeps_workspace_after_shared_context():
     assert "CODING_STABLE" in agent._cached_system_prompt_static
     assert "SYSTEM_MESSAGE" not in agent._cached_system_prompt_static
     assert "WORKSPACE" not in agent._cached_system_prompt_static
+
+
+def test_employee_help_keeps_native_wording_and_routes_to_readable_guide(tmp_path, monkeypatch):
+    from agent.knowledge import guides_root
+    from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    guide = guides_root() / "employee" / "guide.md"
+    expected = HERMES_AGENT_HELP_GUIDANCE.replace(
+        "`hermes-agent` skill", "`hermes-agent` guide"
+    ).replace("skill_view(name='hermes-agent')", f"read_file(path='{guide}')")
+    parts = build_system_prompt_parts(_make_agent(valid_tool_names=["read_file", "terminal"]))
+    assert expected in parts["stable"]
+    result = json.loads(read_file_tool(str(guide), task_id="native-guide-discovery"))
+    assert not result.get("error")
+    assert "references/native-mcp.md" in result["content"]
+    assert "references/service-connections.md" in result["content"]

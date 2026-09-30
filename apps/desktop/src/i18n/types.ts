@@ -3660,10 +3660,6 @@ export interface Translations {
     messaging: { title: string; text: string }
     rightPane: { title: string; text: string }
   }
-  guidedGreeting: {
-    line: string
-    nameSuggestion: (name: string) => string
-  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string

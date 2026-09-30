@@ -3413,10 +3413,6 @@ export const ru = defineLocale({
     bundleOutOfSyncAction: 'Скачать установщик',
     checkingShort: 'Проверка…'
   },
-  guidedGreeting: {
-    line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
-    nameSuggestion: (name: string) => `(Могу звать вас просто ${name}, если так удобнее.)`
-  },
   install: {
     stageStates: {
       pending: 'Ожидает',

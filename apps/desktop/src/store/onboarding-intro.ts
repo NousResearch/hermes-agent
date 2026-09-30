@@ -12,5 +12,9 @@ export type IntroView = 'off' | 'starting' | 'intro' | 'ended'
 
 export const $introView = atom<IntroView>('off')
 
+/** The demo layout is on screen: the chat alone, narrower, minimal composer, no status bar. Kept here,
+ *  free of layout imports, so the shell can read it; onboarding-chat/assembly.ts owns the switch. */
+export const $chatOnboardingSolo = atom(false)
+
 // While the intro runs, the provider picker, the free-tier ready screen and the tips wait for it.
 $introView.subscribe(view => setOnboardingSurfaceActive('intro', view === 'starting' || view === 'intro'))

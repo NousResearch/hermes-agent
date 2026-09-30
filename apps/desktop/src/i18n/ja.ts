@@ -3176,10 +3176,6 @@ export const ja = defineLocale({
     checkingShort: '確認中…'
   },
 
-  guidedGreeting: {
-    line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
-    nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
-  },
   install: {
     stageStates: {
       pending: '待機中',

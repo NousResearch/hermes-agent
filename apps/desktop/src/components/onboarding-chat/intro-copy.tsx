@@ -11,8 +11,9 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 
 import { $introCopy, $introTurnSent } from './intro'
 
-// App-owned, English only. The backend's prelude writes the same words as the setup chat's first
-// assistant row, which replaces this copy once it lands.
+// App-owned, English only. The backend's prelude writes the same words (INTRO in
+// agent/initiate_setup_prompt.py; keep the two equal) as the setup chat's first assistant row, which
+// replaces this copy once it lands.
 const LINES = ["Hi, I'm Hermes.", "Let's set things up for you. Then we'll get something cool done."] as const
 
 // The boot overlay (the `starting` screen) clears its text before it fades; typing starts under the fade.

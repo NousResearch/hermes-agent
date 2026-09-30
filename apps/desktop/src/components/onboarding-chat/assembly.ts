@@ -21,11 +21,9 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $interfaceMode, type InterfaceMode, modeLayout, setInterfaceMode } from '@/store/interface-mode'
 import { setSidebarOpen } from '@/store/layout'
+import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
 import { $paneStates, type PaneStateSnapshot } from '@/store/panes'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-
-/** The demo layout is on screen: the chat alone, narrower, minimal composer, no status bar. */
-export const $chatOnboardingSolo = atom(false)
 
 // The demo is borrowed: nothing it changes is persisted as the user's layout.
 $chatOnboardingSolo.subscribe(solo => {
@@ -80,6 +78,18 @@ export function endChatOnboardingSolo(): void {
 
   $chatOnboardingSolo.set(false)
   restorePreviousLayout()
+}
+
+/** Leave the demo on the layout just picked in it: drop the snapshot, release the hold, save the pick. */
+export function keepChatOnboardingLayout(): void {
+  previousLayout = null
+
+  if ($chatOnboardingSolo.get()) {
+    window.hermesDesktop?.chatOnboarding?.size('normal')
+  }
+
+  $chatOnboardingSolo.set(false)
+  persistTree()
 }
 
 function restorePreviousLayout() {
@@ -179,22 +189,29 @@ export function snapshotChatLayout(): () => void {
   }
 }
 
+/** The setup chat is guided only while the intro runs; in `ended` or `off` it is a normal chat. The
+ *  thread ids outlive the intro so a later `start_chat` from that chat is still recognized. */
 export function useOnboardingChatActive(): boolean {
   const solo = useStore($chatOnboardingSolo)
+  const intro = useStore($introView) === 'intro'
   const threadIds = useStore($chatOnboardingThreadIds)
   const runtimeId = useStore($activeSessionId)
   const storedId = useStore($selectedStoredSessionId)
 
   return (
-    solo || (runtimeId != null && threadIds.includes(runtimeId)) || (storedId != null && threadIds.includes(storedId))
+    solo ||
+    (intro &&
+      ((runtimeId != null && threadIds.includes(runtimeId)) || (storedId != null && threadIds.includes(storedId))))
   )
 }
 
 /** Whether the chat view this renders in (primary or a tile) shows the setup
- *  chat. Solo covers the primary view before the guide's session ids are known. */
+ *  chat while the intro runs. Solo covers the primary view before the guide's
+ *  session ids are known; in `ended` or `off` the setup chat is a normal chat. */
 export function useSetupChatView(): boolean {
   const view = useSessionView()
   const solo = useStore($chatOnboardingSolo)
+  const intro = useStore($introView) === 'intro'
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
 
@@ -202,5 +219,5 @@ export function useSetupChatView(): boolean {
     [runtimeId, storedId].some(id => id != null && ids.includes(id))
   )
 
-  return (view.kind === 'primary' && solo) || inThread
+  return (view.kind === 'primary' && solo) || (intro && inThread)
 }

@@ -4744,10 +4744,6 @@ export const deOverrides = {
     stayText:
       'Wechseln Sie ins Einrichtungsprofil und öffnen Sie „Willkommen bei Hermes“, wenn Sie Hilfe brauchen. Es bleibt dort.'
   },
-  guidedGreeting: {
-    line: 'Hallo und willkommen. Ich bin Hermes. Geben Sie mir zwei Minuten, um alles für Sie einzurichten, dann setzen wir mich auf etwas an, das Sie wirklich erledigt haben möchten.\\n\\nAber zuerst: Wie soll ich Sie nennen?',
-    nameSuggestion: name => `(Ich kann Sie auch einfach ${name} nennen, wenn Ihnen das lieber ist.)`
-  },
   install: {
     stageStates: {
       pending: 'Ausstehend',

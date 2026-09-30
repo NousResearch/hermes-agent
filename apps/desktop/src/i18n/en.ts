@@ -4369,10 +4369,6 @@ export const en: Translations = {
     messaging: { title: 'Messaging', text: 'Reach Hermes from Telegram, Slack, Discord and more.' },
     rightPane: { title: 'The working pane', text: 'Opens files, terminal, review and the in-app browser on the right.' }
   },
-  guidedGreeting: {
-    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
-    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
-  },
   install: {
     stageStates: {
       pending: 'Pending',

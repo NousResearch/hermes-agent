@@ -5,6 +5,7 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 
 import { $gateway } from './gateway'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
+import { resetTips } from './tips'
 
 // `left`: the user walked out of the intro (sidebar, another chat, a layout pick) without skipping;
 // the setup chat is a normal chat from then on and can still finish the guide.
@@ -192,16 +193,13 @@ export function abandonGuide(result: Exclude<GuideKickoffResult, 'started'>): vo
 }
 
 /** Settings → Advanced → Developer: rebuild the setup profile and clear its marker, so the next
- *  launch runs the first run from zero. The primary profile is left as it is. */
-export async function resetOnboarding(): Promise<void> {
-  const gateway = $gateway.get()
-
-  if (!gateway) {
-    throw new Error('Gateway not connected')
-  }
-
-  await gateway.request('onboarding.reset_setup_profile', {})
-  setGuideKickoff({ status: 'idle' })
-  setPhase('idle')
+ *  launch runs the first run from zero. The primary profile is left as it is. The caller reloads.
+ *  `request` is the ambient gateway requester (reconnects a stale socket); the params stay bare. */
+export async function resetOnboarding(
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+): Promise<void> {
+  await request('onboarding.reset_setup_profile', {})
   setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [], plugins: [], pluginOutcomes: {} })
+  // Skip retired the tutorial tips; from zero means they come back.
+  resetTips()
 }

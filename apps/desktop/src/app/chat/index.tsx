@@ -53,7 +53,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
-import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isMainWindow, isWatchWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -857,7 +857,7 @@ const ChatViewContent = memo(function ChatViewContent({
               sessionKey={threadKey}
             />
           )}
-          {isPrimary && !isAuxiliaryWindow() && <IntroCopy />}
+          {isPrimary && isMainWindow() && <IntroCopy />}
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}

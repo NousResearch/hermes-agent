@@ -2,14 +2,16 @@ import type { OnboardingEnsureSetupProfileResult, OnboardingEnsureSetupSessionRe
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
-import { $chatOnboardingThreadIds, endChatOnboardingSolo } from '@/components/onboarding-chat/assembly'
+import { $chatOnboardingThreadIds, endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { $introTurnSent, openIntro, rememberLaunchSource } from '@/components/onboarding-chat/intro'
 import { $setupSession, guideSourceConnectionId } from '@/components/onboarding-chat/setup-profile'
+import type { ChatMessagePart } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { prefetchConnectorCatalog } from '@/store/connector-catalog'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { $setupProfileName, type GuideKickoffResult } from '@/store/onboarding-gate'
+import { $introView } from '@/store/onboarding-intro'
 import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
 import {
   $activeGatewayProfile,
@@ -42,6 +44,36 @@ interface SetupStatus {
   ready?: boolean
   provider_configured?: boolean
   free_tier_route?: boolean
+}
+
+const answeredSetupCard = (part: ChatMessagePart) =>
+  part.type === 'tool-call' && part.toolName === 'setup_choose' && part.result !== undefined
+
+/**
+ * Where the setup chat's opening stands after a relaunch. `blank`: no assistant words yet. `stalled`: no
+ * live turn, and nothing after the last answered card drives the chat on — the backend's name and accent
+ * cards were not both answered, or the model never spoke after the last answer (the app quit mid-turn).
+ */
+function setupChatOpening(runtimeId: string): { blank: boolean; stalled: boolean } {
+  const state = $sessionStates.get()[runtimeId]
+  const parts = (state?.messages ?? []).filter(m => m.role === 'assistant' && !m.hidden).flatMap(m => m.parts)
+  const blank = !parts.some(part => part.type === 'text' && part.text.trim())
+
+  if (!state || state.busy || state.awaitingResponse || state.turnLive || state.needsInput) {
+    return { blank, stalled: false }
+  }
+
+  const answers = parts.flatMap((part, index) => (answeredSetupCard(part) ? [index] : []))
+
+  if (answers.length < 2) {
+    return { blank, stalled: true }
+  }
+
+  const spoke = parts
+    .slice(answers[answers.length - 1] + 1)
+    .some(part => part.type === 'tool-call' || (part.type === 'text' && part.text.trim()))
+
+  return { blank, stalled: !spoke }
 }
 
 export async function adoptGuideSession(
@@ -112,11 +144,21 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
         return 'off'
       }
 
+      // The gate gave up waiting (its deadline): the app is already on its normal layout.
+      const stillStarting = () => {
+        if ($introView.get() !== 'starting') {
+          throw new Error('The welcome chat took too long to open.')
+        }
+      }
+
+      stillStarting()
+      takeGuideShape()
       rememberLaunchSource()
       swapped = true
       $newChatRoute.set(null)
       $newChatProfile.set(setupProfile)
       await ensureGatewayProfile(setupProfile)
+      stillStarting()
 
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(setupProfile, method, params, timeout)
@@ -132,9 +174,15 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
         guideRequest
       )
 
-      openIntro(setupChat.empty)
+      stillStarting()
 
-      if (setupChat.empty) {
+      // A relaunch reopens the same setup chat; one whose opening was cut off is sent the command again.
+      const opening = setupChat.empty ? { blank: true, stalled: true } : setupChatOpening(runtimeId)
+
+      openIntro(opening.blank)
+      $introTurnSent.set(!opening.stalled)
+
+      if (opening.stalled) {
         // The skill turn: the backend plays the fixed cards, then the model takes over.
         void runSlashCommand('/initiate-setup', { hidden: true, sessionId: runtimeId }).finally(() =>
           $introTurnSent.set(true)

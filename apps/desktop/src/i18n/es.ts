@@ -4737,10 +4737,6 @@ export const esOverrides = {
     stayTitle: 'Hermes está a un clic',
     stayText: 'Cambia al perfil de configuración y abre Bienvenida a Hermes siempre que necesites ayuda. Se queda ahí.'
   },
-  guidedGreeting: {
-    line: 'Hola, pasa. Soy Hermes. Dame dos minutos para prepararlo todo a tu medida y luego me pondremos a trabajar en algo que de verdad quieras hacer.\n\nPero antes, ¿cómo quieres que te llame?',
-    nameSuggestion: (name: string) => `(También puedo llamarte simplemente ${name}, si lo prefieres.)`
-  },
   install: {
     stageStates: {
       pending: 'Pendiente',

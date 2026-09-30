@@ -18,6 +18,10 @@ import { $introView } from '@/store/onboarding-intro'
 
 import { failIntro, startIntro } from './intro'
 
+// `starting` is never left waiting on a hung kickoff: past this it counts as a failed start. The kickoff
+// notices on its next step and undoes what it did.
+const INTRO_START_DEADLINE_MS = 45_000
+
 interface OnboardingChatGateProps {
   enabled: boolean
   onKickoff: () => Promise<GuideKickoffResult>
@@ -76,14 +80,26 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
         abandonGuide(result)
       }
 
-      void runGuideKickoff(onKickoff).then(
-        result => {
-          if (result !== 'started') {
-            recover(result)
-          }
-        },
-        () => recover('failed')
-      )
+      let settled = false
+
+      const settle = (result: GuideKickoffResult) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        window.clearTimeout(deadline)
+
+        if (result !== 'started') {
+          recover(result)
+        }
+      }
+
+      const deadline = window.setTimeout(() => settle('failed'), INTRO_START_DEADLINE_MS)
+
+      void runGuideKickoff(onKickoff).then(settle, () => settle('failed'))
+
+      return () => window.clearTimeout(deadline)
     }
   }, [enabled, gate.guideQueued, onKickoff])
 

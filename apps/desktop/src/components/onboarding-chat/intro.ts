@@ -14,6 +14,7 @@ import {
   $newChatProfile,
   $newChatRoute,
   type AgentProfileRoute,
+  normalizeProfileKey,
   selectProfile
 } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
@@ -21,7 +22,7 @@ import { storedSessionIdForRuntimeId } from '@/store/session-states'
 import { retireTips } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
 
-import { $chatOnboardingThreadIds, endChatOnboardingSolo, takeGuideShape } from './assembly'
+import { $chatOnboardingThreadIds, endChatOnboardingSolo, keepChatOnboardingLayout } from './assembly'
 import { showHandoffTour } from './signpost'
 
 /**
@@ -45,9 +46,10 @@ interface LaunchSource {
 // Where new chats went before the intro moved them into the setup profile.
 let launch: LaunchSource | null = null
 
+/** The boot overlay holds while the kickoff checks inference and opens the setup chat; the window takes
+ *  the demo shape only once inference is known to be there. */
 export function startIntro(): void {
   $introView.set('starting')
-  takeGuideShape()
 }
 
 export function rememberLaunchSource(): void {
@@ -58,11 +60,10 @@ export function rememberLaunchSource(): void {
   }
 }
 
-/** The setup chat is open. A fresh (empty) chat plays the intro copy. */
-export function openIntro(fresh: boolean): void {
+/** The setup chat is open. A chat with no assistant words yet plays the intro copy. */
+export function openIntro(blank: boolean): void {
   $introView.set('intro')
-  $introTurnSent.set(!fresh)
-  $introCopy.set(fresh ? 'playing' : 'hidden')
+  $introCopy.set(blank ? 'playing' : 'hidden')
 }
 
 export function failIntro(): void {
@@ -71,27 +72,42 @@ export function failIntro(): void {
   endChatOnboardingSolo()
 }
 
-function endIntroView(): boolean {
+// `keepLayout`: a layout pick ends the intro on the picked layout, not on the one from before the intro.
+function endIntroView(keepLayout = false): boolean {
   if ($introView.get() !== 'intro') {
     return false
   }
 
   $introView.set('ended')
   $introCopy.set('hidden')
-  endChatOnboardingSolo()
 
-  // A leave action that picked a profile itself (the rail, a new chat elsewhere) keeps its pick.
+  if (keepLayout) {
+    keepChatOnboardingLayout()
+  } else {
+    endChatOnboardingSolo()
+  }
+
+  // A leave action that picked a profile itself (the rail, a new chat elsewhere) keeps its pick. Otherwise
+  // new chats go to the launch profile by name: with no intent they would follow the active gateway,
+  // which is still the setup profile.
   if (launch && $newChatProfile.get() === $setupProfileName.get()) {
-    $newChatProfile.set(launch.newChatProfile)
+    $newChatProfile.set(launch.newChatProfile ?? normalizeProfileKey(launch.profile))
     $newChatRoute.set(launch.newChatRoute)
   }
 
   return true
 }
 
-/** Any leave action (sidebar, another chat, a profile, a layout, a Cmd-K command) ends the intro. */
+/** Any leave action (sidebar, another chat, a profile, a Cmd-K command) ends the intro. */
 export function leaveIntro(): void {
   if (endIntroView()) {
+    leaveGuide()
+  }
+}
+
+/** A layout pick (the setup card, `apply_layout`, the layout picker) ends the intro and keeps the pick. */
+function leaveIntroOnLayout(): void {
+  if (endIntroView(true)) {
     leaveGuide()
   }
 }
@@ -143,8 +159,8 @@ function watchLeaveActions(): () => void {
 
   const stops = [
     () => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onReveal),
-    $sidebarOpen.listen(leaveIntro),
-    $activePresetId.listen(id => id !== DEMO_LAYOUT_ID && leaveIntro()),
+    $sidebarOpen.listen(() => leaveIntro()),
+    $activePresetId.listen(id => id !== DEMO_LAYOUT_ID && leaveIntroOnLayout()),
     $activeGatewayProfile.listen(profile => profile !== setupProfile && leaveIntro()),
     $selectedStoredSessionId.listen(id => (!id || !$chatOnboardingThreadIds.get().includes(id)) && leaveIntro())
   ]

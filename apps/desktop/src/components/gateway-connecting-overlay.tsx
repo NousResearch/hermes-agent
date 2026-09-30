@@ -10,7 +10,7 @@ import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $onboardingStateRead } from '@/store/onboarding-gate'
 import { $introView } from '@/store/onboarding-intro'
 import { $gatewayState } from '@/store/session'
-import { isAuxiliaryWindow } from '@/store/windows'
+import { isMainWindow } from '@/store/windows'
 
 // Decode mechanics live in the shared <DecodeText> primitive
 // (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
@@ -83,7 +83,7 @@ export function GatewayConnectingOverlay() {
   // The first-run intro's `starting` screen is this overlay: it stays up until the backend says
   // whether the intro runs and, if it does, until the setup chat is open.
   const introHolds =
-    !previewing && !isAuxiliaryWindow() && isOnboardingEnabled() && (!onboardingStateRead || introView === 'starting')
+    !previewing && isMainWindow() && isOnboardingEnabled() && (!onboardingStateRead || introView === 'starting')
 
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {

@@ -11,12 +11,12 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router'
 
-import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $activeConnectionId } from '@/store/connections'
 import { $gateway } from '@/store/gateway'
 import { $guideOpening } from '@/store/onboarding-gate'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 

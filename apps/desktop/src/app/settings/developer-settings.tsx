@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { Wrench } from '@/lib/icons'
@@ -14,6 +15,7 @@ export function DeveloperSettings() {
   const { t } = useI18n()
   const c = t.settings.config
   const [resetting, setResetting] = useState(false)
+  const { requestGateway } = useGatewayRequest()
 
   if (!isOnboardingEnabled()) {
     return null
@@ -23,7 +25,7 @@ export function DeveloperSettings() {
     setResetting(true)
 
     try {
-      await resetOnboarding()
+      await resetOnboarding(requestGateway)
       // A fresh window runs the first run from zero, starting screen included.
       window.location.reload()
     } catch (error) {

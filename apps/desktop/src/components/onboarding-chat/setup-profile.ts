@@ -12,8 +12,6 @@ import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { FIRST_USE_GUIDANCE, PLAIN_SPEECH } from '@/store/onboarding-script'
 import { getSessionOwnerHint } from '@/store/session'
 
-export const SETUP_CHAT_TITLE = 'Welcome to Hermes'
-
 export type SetupHandoffPhase = 'done' | 'error' | 'opening' | 'pending'
 
 export type HandoffPlan = 'build' | 'machine-setup' | 'plugin'

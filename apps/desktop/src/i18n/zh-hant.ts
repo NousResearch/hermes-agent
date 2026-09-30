@@ -3373,10 +3373,6 @@ export const zhHant = defineLocale({
     checkingShort: '檢查中…'
   },
 
-  guidedGreeting: {
-    line: '來了，進來吧。我是 Hermes。給我兩分鐘，把這裡按你的習慣整理一下，然後我們找件你真正想做的事來做。\n\n先說，我該怎麼稱呼你？',
-    nameSuggestion: (name: string) => `（如果你願意，我也可以直接叫你 ${name}。）`
-  },
   install: {
     stageStates: {
       pending: '等待中',

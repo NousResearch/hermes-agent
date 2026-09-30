@@ -33,6 +33,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -217,8 +218,10 @@ export function ChatBar({
 
   // The guide uses the setup profile's inference route; the model pill and
   // git controls would expose settings unrelated to its conversational steps.
-  // Solo covers startup before the guide's session ids are known.
+  // Solo covers startup before the guide's session ids are known. Once the intro has ended the setup
+  // chat is a normal chat again.
   const guidedChat = useSetupChatView()
+  const chatOnboardingSolo = useStore($chatOnboardingSolo)
   // The git row (branch / worktree / PR / review) is the coding instrument the
   // guide already hides; Simple mode hides it for the same reason, everywhere.
   const showsAdvancedChrome = useStore($showsAdvancedChrome)

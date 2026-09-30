@@ -4095,10 +4095,6 @@ export const zh = defineLocale({
     versionDetailsUncommittedChanges: '未提交的变更'
   },
 
-  guidedGreeting: {
-    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
-    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
-  },
   install: {
     stageStates: {
       pending: '等待中',

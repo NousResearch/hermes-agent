@@ -171,6 +171,32 @@ def _inside_checkout(candidate: str, checkout_root: Path, original_argv0: str) -
         return False
 
 
+def _is_pm_runtime_managed(candidate: str) -> bool:
+    """Whether *candidate* lives under this machine's PM runtime tree (``<HERMES_HOME>/installs/``,
+    see ``home_data_layout.PM_RUNTIME_ROOT_DIRS``).
+
+    A content-addressed dependency environment there is exactly the kind of launch-context
+    artifact ``_inside_checkout`` already guards against — its own directory hash changes on
+    every dependency sync (so persisting it pins the entry to a generation that gets pruned),
+    and its materialized source workspace ships no ``apps/`` (the desktop GUI source), so an
+    ``Exec=`` pointing there can't even build the GUI. Unlike a checkout hit, this can surface
+    as the FIRST PATH match (``<env>/venv/bin`` is prepended ahead of durable wrapper locations
+    by the activated-environment PATH every hermes subprocess runs under), so it must be
+    excluded the same way at both the primary and the rerouted checks.
+    """
+    try:
+        resolved = Path(candidate).resolve()
+    except OSError:
+        return False
+    try:
+        from hermes_constants import get_hermes_home
+
+        installs_root = (get_hermes_home() / "installs").resolve()
+    except Exception:
+        return False
+    return resolved == installs_root or installs_root in resolved.parents
+
+
 def _resolve_hermes_bin_for_desktop_entry(
     resolve_fn=None,
     checkout_root: Optional[Path] = None,
@@ -202,7 +228,11 @@ def _resolve_hermes_bin_for_desktop_entry(
     # installation. Only rerun the resolver with argv[0] hidden when the primary could actually
     # be checkout-internal (also shortens the window a concurrent reader sees mutated sys.argv).
     primary = resolve_fn()
-    if primary and not _inside_checkout(primary, checkout_root, original_argv0):
+    if (
+        primary
+        and not _inside_checkout(primary, checkout_root, original_argv0)
+        and not _is_pm_runtime_managed(primary)
+    ):
         return primary
 
     # A primary that is NOT checkout-internal and not the invoking interpreter is an external launcher (e.g.
@@ -224,8 +254,11 @@ def _resolve_hermes_bin_for_desktop_entry(
     # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
-    if primary and rerouted is not None and not _inside_checkout(
-        rerouted, checkout_root, original_argv0
+    if (
+        primary
+        and rerouted is not None
+        and not _inside_checkout(rerouted, checkout_root, original_argv0)
+        and not _is_pm_runtime_managed(rerouted)
     ):
         return rerouted
     # A PATH hit inside this checkout is the same launch-context artifact as argv[0]: the

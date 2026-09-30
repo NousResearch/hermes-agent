@@ -1011,9 +1011,8 @@ class LlamaCpp(BinaryPackage):
         """A usable GPU enumeration is any line that is not the `(none)`
         placeholder. Empty output counts as none too: an engine too old to
         answer the flag has no verifiable device either."""
-        return bool(out.strip()) and not re.search(
-            r"^\s*\(none\)\s*$", out, re.MULTILINE
-        )
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        return any(line.lower() != "available devices:" and line != "(none)" for line in lines)
 
     def _post_probe_reason(self, binary: Path, proc: "subprocess.CompletedProcess") -> str:
         argv = self._device_probe_argv()

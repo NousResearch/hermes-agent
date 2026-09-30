@@ -619,3 +619,30 @@ async def test_quote_batches_preserve_context_and_split_distinct_replies(
         await asyncio.gather(
             *adapter._pending_text_batch_tasks.values(), return_exceptions=True
         )
+
+
+@pytest.mark.parametrize("media_urls,media_types", [
+    ([], []),
+    (["/tmp/q.png"], ["image/png"]),
+])
+@pytest.mark.parametrize("authorized", [None, False, True])
+def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types, authorized):
+    existing = _make_event("one")
+    incoming = _make_event("two")
+    incoming.media_urls, incoming.media_types = list(media_urls), list(media_types)
+    incoming.reply_to_message_id, incoming.reply_to_text = "$photo", "[image]"
+    incoming.reply_to_author_id, incoming.reply_to_author_name = "@alice:example.org", "Alice"
+    incoming.reply_to_author_authorized = authorized
+    expected = replace(
+        existing, text="one\n\ntwo" if media_urls else "one\ntwo",
+        media_urls=list(media_urls), media_types=list(media_types),
+        media_text_inlined=[None] * len(media_urls),
+        reply_to_message_id="$photo", reply_to_text="[image]",
+        reply_to_author_id="@alice:example.org", reply_to_author_name="Alice",
+        reply_to_author_authorized=authorized, merged_message_ids=[incoming.message_id],
+    )
+    pending = {"session": existing}
+
+    merge_pending_message_event(pending, "session", incoming, merge_text=True)
+
+    assert pending == {"session": expected}

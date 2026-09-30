@@ -4179,6 +4179,19 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Early reject of unauthorized user %s in channel %s", user_id, channel_id)
         return decision is False
 
+    def _gateway_answers_unauthorized_dm(self, source) -> bool:
+        """True when ``unauthorized_dm_behavior`` resolves to a pairing code or a decline for this
+        sender's profile, so an early-rejected DM must still reach the gateway (Telegram's intake
+        rule). ``ignore`` stays a silent drop here."""
+        # Bound-handler ``__self__`` is None under multiplex; ``gateway_runner`` survives that wrapping.
+        runner = (getattr(getattr(self, "_message_handler", None), "__self__", None)
+                  or getattr(self, "gateway_runner", None))
+        behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
+        if not callable(behavior_fn):
+            return False
+        profile = getattr(source, "profile", None) or getattr(self, "_owner_profile", None)
+        return behavior_fn(Platform.SLACK, profile=profile) != "ignore"
+
     async def _channel_gate_allows(
         self, *, channel_id: str, routing_text: str, bot_uid: str, is_mentioned: bool,
         is_thread_reply: bool, event_thread_ts, user_id: str, team_id: str, is_dm: bool,
@@ -4621,6 +4634,15 @@ class SlackAdapter(BasePlatformAdapter):
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
         if self._early_reject_unauthorized(user_id, channel_id, is_dm):
+            # The gateway answers an unauthorized 1:1 DM with a pairing code or a decline, and it
+            # decides that on an event. Hand it a bare one: no lookups, no downloads.
+            source = self.build_source(
+                chat_id=channel_id, chat_type="dm", user_id=user_id, scope_id=team_id or None,
+                is_bot=self._event_declares_bot_sender(event))
+            if is_one_to_one_dm and self._gateway_answers_unauthorized_dm(source):
+                await self.handle_message(MessageEvent(
+                    text=original_text, message_type=MessageType.TEXT, source=source,
+                    raw_message=event, message_id=ts))
             return
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)

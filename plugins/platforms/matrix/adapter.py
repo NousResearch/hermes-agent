@@ -2956,9 +2956,10 @@ class MatrixAdapter(BasePlatformAdapter):
         return not body.startswith("/") and not self._content_mentions_bot(body, content)
 
     def _content_mentions_bot(self, body: str, content: dict) -> bool:
-        """``_is_bot_mentioned`` fed from an event's content. Element sends an empty
-        ``m.mentions`` with every message, so only a non-empty ``user_ids`` list replaces the
-        body match. A malformed ``m.mentions`` never counts as a mention."""
+        """``_is_bot_mentioned`` fed from an event's content. Element sends ``m.mentions`` with
+        every message, and its ``user_ids`` is empty unless the user picked a pill or replied, so
+        an empty ``user_ids`` is treated like an absent one. A malformed ``m.mentions`` never
+        counts as a mention."""
         mention_user_ids = None
         if "m.mentions" in content:
             mentions = content["m.mentions"]

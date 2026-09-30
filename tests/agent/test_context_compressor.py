@@ -3090,11 +3090,32 @@ class TestSummaryPromptBounding:
 
         prompt = mock_call.call_args.kwargs["messages"][0]["content"]
         assert summary.startswith(SUMMARY_PREFIX)
-        # previous summary block + new-turns block each capped, plus the
-        # fixed template: well under 3x the cap (unbounded would be ~800K).
-        assert len(prompt) < 2 * cap + 30_000
+        # #128561: the two inputs share ONE cap, so the whole prompt (both blocks
+        # plus the fixed template) stays under the cap + template slack — not
+        # 2x the cap, which overshot a 64K aux summariser window.
+        assert len(prompt) < cap + 30_000
         assert "PREV_HEAD" in prompt
         assert "PREV_TAIL" in prompt
+
+    def test_iterative_budget_is_shared_between_inputs(self):
+        """#128561: _bound_iterative_summary_inputs splits ONE budget — each input
+        claims at most half, unused budget flows to the other side, and the sum of
+        the bounded outputs never exceeds the cap."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+
+        # Combined under the cap: untouched.
+        prev, new = ContextCompressor._bound_iterative_summary_inputs("p" * 100, "n" * 100)
+        assert (prev, new) == ("p" * 100, "n" * 100)
+
+        # Huge previous summary, small new turns: the new turns keep everything.
+        prev, new = ContextCompressor._bound_iterative_summary_inputs("p" * (cap * 3), "n" * 1_000)
+        assert new == "n" * 1_000
+        assert len(prev) <= cap - len(new)
+
+        # Both oversized: each bounded to ~half; total within the cap (markers included).
+        prev, new = ContextCompressor._bound_iterative_summary_inputs("p" * (cap * 2), "n" * (cap * 2))
+        assert len(prev) + len(new) <= cap
+        assert "p" in prev and "n" in new  # head/tail preserved, middle elided
 
     def test_marker_does_not_collide_with_summary_classifier(self):
         """The omitted-middle marker must never make bounded content classify

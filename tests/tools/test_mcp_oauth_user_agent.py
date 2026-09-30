@@ -36,6 +36,11 @@ from tools.mcp_oauth import (  # noqa: E402 — after the SDK availability gate
 )
 from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT  # noqa: E402
 
+# With no platforms() gate no OS lane ever imported this file, so the
+# Windows-only fake-TTY failure it pins (GetConsoleMode vs MagicMock stdin)
+# could regress unseen. "any" adds the Windows lane; Linux/macOS keep it.
+pytestmark = pytest.mark.platforms("any")
+
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()

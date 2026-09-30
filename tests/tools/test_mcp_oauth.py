@@ -693,6 +693,10 @@ class TestInvalidateTokensOnClientChange:
 class TestIsInteractive:
     """_is_interactive() detects headless/daemon/container environments."""
 
+    # "any": the pin in _set_interactive_stdin only fails on Windows, and
+    # without a platforms gate the OS lanes' -m filter deselected this test
+    # there — the helper's pin had no lane enforcing it.
+    @pytest.mark.platforms("any")
     def test_suppress_interactive_oauth_disables_stdin_prompts(self, monkeypatch):
         import tools.mcp_oauth as mod
 
@@ -703,6 +707,7 @@ class TestIsInteractive:
             assert _is_interactive() is False
         assert _is_interactive() is True
 
+    @pytest.mark.platforms("any")
     def test_suppression_propagates_across_run_coroutine_threadsafe(self, monkeypatch):
         """#35927 core: suppression set on the discovery thread MUST reach the
         coroutine asyncio runs on a *different* (event-loop) thread — that is

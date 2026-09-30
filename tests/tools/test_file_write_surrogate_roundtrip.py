@@ -16,15 +16,20 @@ from tools.environments.base_output import _pipe_stdin
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
+# With no platforms() gate no OS lane ever imported this file, so the
+# bash-path failure it pins (only reproducible on Windows) could regress
+# unseen. "any" adds the Windows lane; Linux/macOS keep it.
+pytestmark = pytest.mark.platforms("any")
+
 
 def _cat_to_file_proc(out_path):
     """A real child that copies its stdin to a file, byte for byte."""
     out = Path(out_path)
     # The target is a bare relative filename with the child cwd'd to its
-    # parent: a Windows path inside the -c string is parsed by bash as a
-    # relative POSIX path (the file lands mangled in the caller's cwd), and
-    # -c positional args are dropped when a native Windows parent spawns
-    # MSYS bash.
+    # parent — both path-passing alternatives fail on Windows: a Windows
+    # path inside the -c string is parsed by bash as a relative POSIX path
+    # (the file lands mangled in the caller's cwd), and -c positional args
+    # are dropped entirely when a native Windows parent spawns MSYS bash.
     return subprocess.Popen(
         ["bash", "-c", f"cat > {out.name}"],
         cwd=str(out.parent),

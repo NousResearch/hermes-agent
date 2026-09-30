@@ -328,14 +328,19 @@ export function setRememberedRoute(path: null | string, profile: string): void {
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
+  const profile = connection?.profile?.trim() || 'default'
+
   if (connection?.mode !== 'remote') {
-    return WORKSPACE_CWD_KEY
+    // One desktop runs several local profiles, and one shared key let the last
+    // profile's project leak into every other profile's new chats (#96834).
+    // The default profile keeps the bare key — byte-identical for
+    // single-profile users, the connection-scoped.ts contract.
+    return profile === 'default' ? WORKSPACE_CWD_KEY : `${WORKSPACE_CWD_KEY}.profile.${encodeURIComponent(profile)}`
   }
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
-  const profile = encodeURIComponent(connection.profile || 'default')
 
-  return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
+  return `${WORKSPACE_CWD_KEY}.remote.${base}.${encodeURIComponent(profile)}`
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
@@ -412,9 +417,13 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
     return
   }
 
-  if (remembered) {
-    const { cwd } = await sanitize(remembered)
-    seedLiveCwd(cwd)
+  // An empty memory is meaningful here too: on a local profile switch the
+  // live cwd still belongs to the outgoing profile, so clear it rather than
+  // let the incoming profile's new chats start there (#96834).
+  const { cwd } = remembered ? await sanitize(remembered) : { cwd: '' }
+
+  if (shouldPublish() && !$activeSessionId.get()) {
+    setCurrentCwdTransient(cwd)
   }
 }
 
@@ -1583,6 +1592,12 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
+
+// The fresh-draft identity lives in store/composer.ts with the draft stash it
+// keys; re-exported here because session.ts is where new-chat lifecycles rotate
+// it (startFreshSessionDraft) and where most call sites already import from.
+export { $freshDraftKey, rotateFreshDraftKey } from './composer'
+
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
 export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {

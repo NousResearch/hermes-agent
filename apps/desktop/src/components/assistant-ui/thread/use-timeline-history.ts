@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, getSessionOwnerHint } from '@/store/session'
@@ -36,6 +37,13 @@ export function useTimelineHistory() {
   const loadMore = useCallback(
     async (beyondRowId?: number) => {
       if (!storedId) {
+        return
+      }
+
+      // A freshly minted draft has no state.db row until the first prompt persists
+      // it (#123622) — fetching its timeline before then only ever 404s, since an
+      // empty local view already IS the correct (empty) render.
+      if (sessionCreatedThisRun(storedId) && view.$messages.get().length === 0) {
         return
       }
 

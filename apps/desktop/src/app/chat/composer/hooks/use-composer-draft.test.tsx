@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import {
+  $freshDraftKey,
   $restoredDraftNotice,
   announceGoneSessionDraft,
   announceNewSessionDraftKey,
@@ -11,6 +12,8 @@ import {
   type ComposerAttachment,
   dismissRestoredDraftNotice,
   mainComposerScope,
+  NEW_SESSION_DRAFT_KEY,
+  rotateFreshDraftKey,
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
@@ -68,6 +71,12 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     mainComposerScope.clear()
     clearSessionDraft('session-A')
     clearSessionDraft('session-B')
+    // Fresh-draft lifecycles rotate per test; the afterEach must sweep the
+    // whole map or one test's abandoned bucket leaks into the next.
+    for (const scope of ['session-created', NEW_SESSION_DRAFT_KEY, $freshDraftKey.get()]) {
+      clearSessionDraft(scope)
+    }
+    rotateFreshDraftKey()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     vi.unstubAllGlobals()
     $connection.set(null)
@@ -182,6 +191,80 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     expect(takeSessionDraft('session-A')).toEqual({ attachments: [], text: '' })
     expect(takeSessionDraft(null).text).toBe('still composing a new chat')
     clearSessionDraft(null)
+  })
+
+  it('isolates two concurrent new-chat lifecycles: the second fresh draft never shows the first one\'s text (#66662)', () => {
+    const firstKey = rotateFreshDraftKey()
+    const secondKey = rotateFreshDraftKey()
+
+    expect(firstKey).not.toBe(secondKey)
+
+    // First new chat: type unsent text under its own lifecycle key.
+    stashSessionDraft(firstKey, 'first unsent chat', [])
+    expect(takeSessionDraft(firstKey).text).toBe('first unsent chat')
+
+    // A second New Chat rotated the key; its composer must restore empty —
+    // the first chat's text is invisible until the user goes back.
+    render(<ProbeHarness activeQueueSessionKey={secondKey} onLayoutSnapshot={() => undefined} sessionId="" />)
+
+    expect(takeSessionDraft(secondKey)).toEqual({ attachments: [], text: '' })
+
+    // The abandoned lifecycle keeps its text — no consumer of the second
+    // lifecycle's scope can see or clobber it.
+    expect(takeSessionDraft(firstKey).text).toBe('first unsent chat')
+
+    clearSessionDraft(firstKey)
+    clearSessionDraft(secondKey)
+  })
+
+  it('re-homes the ACTIVE lifecycle\'s draft onto the session its first send creates (#66662)', () => {
+    const key = rotateFreshDraftKey()
+
+    // The user typed in the current new chat; the swap cleanup stashed it
+    // under the lifecycle key (null scope resolves to it).
+    stashSessionDraft(null, 'typed before first send', [])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={key} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    expect(takeSessionDraft(key).text).toBe('typed before first send')
+
+    // First send: session.create assigns the stored id; the composer's scope
+    // swap follows the announcement and moves THIS lifecycle's bucket.
+    announceNewSessionDraftKey('session-created')
+    act(() => {
+      rerender(
+        <ProbeHarness
+          activeQueueSessionKey="session-created"
+          onLayoutSnapshot={() => undefined}
+          sessionId="session-created"
+        />
+      )
+    })
+
+    expect(takeSessionDraft('session-created').text).toBe('typed before first send')
+    expect(takeSessionDraft(key).text).toBe('')
+
+    clearSessionDraft('session-created')
+  })
+
+  it('keys a fresh chat\'s live stash under its lifecycle key, not the shared bucket (#66662)', () => {
+    const key = rotateFreshDraftKey()
+
+    const { unmount } = render(
+      <ProbeHarness activeQueueSessionKey={key} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    // Stash through the null scope the way the swap cleanup does when the
+    // user types and navigates away mid-debounce.
+    stashSessionDraft(null, 'typed in this lifecycle', [])
+
+    expect(takeSessionDraft(key).text).toBe('typed in this lifecycle')
+    expect(takeSessionDraft(NEW_SESSION_DRAFT_KEY).text).toBe('')
+
+    unmount()
+    clearSessionDraft(key)
   })
 
   it('applies a delayed image preview when it resolves while its attachment draft is inactive', async () => {

@@ -25,6 +25,19 @@ if TYPE_CHECKING:
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
 
+# Delivery-failure handling for a notify sub: 'default' = stock (rewind/drop on failure);
+# 'durable' = GOV-F25 Option B never-drop (the single pending_event_id batch fence, see the
+# kanban_notify_subs schema in kanban_db.py).
+_NOTIFY_RETRY_POLICIES = ("default", "durable")
+# The only transport whose delivery can confirm persistence — its wake self-post carries the
+# X-Hermes-Turn-Persisted ack (GOV-F25 PR-B) — so the only platform a 'durable' retry_policy is
+# deliverable on. A string, not gateway.config.Platform.API_SERVER: the adapter is not in scope
+# here and hermes_cli must not import the gateway layer.
+_DURABLE_RETRY_PLATFORM = "api_server"
+# Only a woken turn produces the persist-ack a durable fence waits for, so a durable sub MUST be
+# wake-capable; a plain 'notify' sub could never confirm and would strand the fence forever.
+_WAKE_CAPABLE_DELIVERY_MODES = ("notify+wake", "wake")
+
 _SCALAR_TYPES = (str, int, float, bool)
 
 # Subscription primary key predicate; every per-row statement below binds
@@ -77,6 +90,7 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    retry_policy: Optional[str] = None,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -92,6 +106,10 @@ def add_notify_sub(
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
+    valid_retry_policy = retry_policy if retry_policy in _NOTIFY_RETRY_POLICIES else None
+    if retry_policy is not None and valid_retry_policy is None:
+        raise ValueError(
+            f"unknown retry_policy {retry_policy!r} (expected one of {_NOTIFY_RETRY_POLICIES})")
     # api_server is stateless: the adapter has no send(), the wake self-post IS
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
@@ -99,10 +117,28 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT delivery_metadata, delivery_mode, retry_policy FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             key,
         ).fetchone()
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
+        # (M4) A 'durable' sub must always have a confirmable, wake-capable delivery — otherwise its
+        # persist-ack never arrives and the pending_event_id fence never clears (a silent
+        # never-deliver). Compute the retry_policy / delivery_mode that WILL apply after this call
+        # (last-write-wins: an explicit value wins, an omitted one keeps the existing row's) and
+        # re-check on EVERY subscribe / policy update, so an omitted-policy re-subscribe can never
+        # silently downgrade a durable sub into a non-wake / non-api_server state. Raise BEFORE any
+        # write so a rejected update leaves the existing row untouched.
+        effective_retry_policy = valid_retry_policy or (existing["retry_policy"] if existing else "default")
+        if effective_retry_policy == "durable":
+            effective_mode = valid_mode or (existing["delivery_mode"] if existing else insert_mode)
+            if platform != _DURABLE_RETRY_PLATFORM:
+                raise ValueError(
+                    f"retry_policy='durable' requires the {_DURABLE_RETRY_PLATFORM!r} platform "
+                    f"(only it can confirm persistence); got platform={platform!r}")
+            if effective_mode not in _WAKE_CAPABLE_DELIVERY_MODES:
+                raise ValueError(
+                    f"retry_policy='durable' requires a wake-capable delivery_mode "
+                    f"(one of {_WAKE_CAPABLE_DELIVERY_MODES}); got delivery_mode={effective_mode!r}")
         merged_metadata = dict(existing_metadata)
         if delivery_metadata:
             merged_metadata.update(delivery_metadata)
@@ -131,6 +167,7 @@ def add_notify_sub(
             ("notifier_profile", notifier_profile, True),
             ("delivery_mode", valid_mode, False),
             ("delivery_metadata", metadata_json, False),
+            ("retry_policy", valid_retry_policy, False),
         ):
             if not value:
                 continue
@@ -295,7 +332,10 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
     cutoff = int(time.time()) - days * 86400
     with _kb.write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM kanban_notify_subs WHERE task_id IN ("
+            # GOV-F25 (M4): NEVER GC a durable sub — an aged durable sub may still hold an un-acked
+            # pending_event_id fence, and reaping it would drop that event (defeating never-drop).
+            # Only 'default' subs are stale-swept.
+            "DELETE FROM kanban_notify_subs WHERE retry_policy = 'default' AND task_id IN ("
             " SELECT t.id FROM tasks t"
             " WHERE t.status IN ('done', 'blocked')"
             " AND COALESCE("
@@ -366,18 +406,46 @@ def claim_unseen_events_for_sub(
     writer lock and only the first claims a given event range. Callers send the
     events, then leave the cursor or call :func:`rewind_notify_cursor` on
     delivery failure.
+
+    GOV-F25 Option B — a ``retry_policy='durable'`` sub carries a single
+    ``pending_event_id`` fence. On a fresh durable claim the fence is set to the
+    FIRST claimed event id in the SAME transaction that advances the cursor (one
+    column, no peek); while the fence is set a fresh claim returns NO newer events
+    — a newer claim can never bypass an un-acked event, and recovery replays the
+    fenced range via :func:`pending_events_for_sub`. The fence is CAS'd forward per
+    event by :func:`settle_notify_pending` after each persist-ack (NULL after the
+    final one). A non-durable ('default') sub is unchanged — it has no fence.
     """
+    key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
-        old_cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
-        if old_cursor is None:
+        row = conn.execute(
+            "SELECT last_event_id, retry_policy, pending_event_id "
+            "FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            key,
+        ).fetchone()
+        if row is None:
             return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        durable = row["retry_policy"] == "durable"
+        if durable and row["pending_event_id"] is not None:
+            # Fence held: an un-acked batch is still in flight. A fresh claim must NOT bypass it
+            # (recovery replays [pending_event_id, last_event_id]); return empty.
+            return old_cursor, old_cursor, []
         new_cursor, events = unseen_events_for_sub(
             conn, task_id=task_id, platform=platform, chat_id=chat_id,
             thread_id=thread_id, kinds=kinds,
         )
         if not events:
             return old_cursor, old_cursor, []
-        _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor)
+        _cas_cursor(conn, key, new_cursor, old_cursor)
+        if durable:
+            # Set the fence to the oldest (first) claimed event, atomically with the cursor
+            # advance. CAS-guarded on NULL so a racing claim can never overwrite a live fence.
+            conn.execute(
+                "UPDATE kanban_notify_subs SET pending_event_id = ? " + _SUB_KEY_WHERE
+                + " AND pending_event_id IS NULL",
+                (int(events[0].id), *key),
+            )
         return old_cursor, new_cursor, events
 
 
@@ -433,6 +501,86 @@ def rewind_notify_cursor(
     """
     with _kb.write_txn(conn):
         cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor, claimed_cursor)
+    return cur.rowcount > 0
+
+
+# --- GOV-F25 Option B durable fence (pending_event_id) accessors ---
+
+
+def notify_retry_policy(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None,
+) -> Optional[str]:
+    """The sub's ``retry_policy`` ('default' | 'durable'), or ``None`` when unsubscribed."""
+    row = conn.execute(
+        "SELECT retry_policy FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+        _sub_key(task_id, platform, chat_id, thread_id),
+    ).fetchone()
+    return None if row is None else str(row["retry_policy"])
+
+
+def notify_pending_event_id(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None,
+) -> Optional[int]:
+    """The durable fence — the oldest un-acked event id in flight — or ``None`` when the sub is
+    unsubscribed or the fence is clear (nothing in flight)."""
+    row = conn.execute(
+        "SELECT pending_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+        _sub_key(task_id, platform, chat_id, thread_id),
+    ).fetchone()
+    if row is None or row["pending_event_id"] is None:
+        return None
+    return int(row["pending_event_id"])
+
+
+def pending_events_for_sub(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, kinds: Optional[Iterable[str]] = None,
+) -> list[Event]:
+    """The un-acked events of a durable sub's in-flight batch: those with
+    ``pending_event_id <= id <= last_event_id`` — the claimed-but-not-yet-settled range the fence
+    guards. Empty when the fence is clear. Recovery / redelivery reads ONLY this range (never beyond
+    ``last_event_id``), so a restart replays exactly the un-acked tail and never the already-acked
+    head (GOV-F25 Option B, AC-10).
+    """
+    row = conn.execute(
+        "SELECT last_event_id, pending_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+        _sub_key(task_id, platform, chat_id, thread_id),
+    ).fetchone()
+    if row is None or row["pending_event_id"] is None:
+        return []
+    pending, last = int(row["pending_event_id"]), int(row["last_event_id"])
+    kind_list = list(kinds) if kinds else None
+    q = (
+        "SELECT * FROM task_events WHERE task_id = ? AND id >= ? AND id <= ? "
+        + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+        + "ORDER BY id ASC"
+    )
+    params: list[Any] = [task_id, pending, last]
+    if kind_list:
+        params.extend(kind_list)
+    return [_kb.Event.from_row(r) for r in conn.execute(q, params).fetchall()]
+
+
+def settle_notify_pending(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, settled_event_id: int, next_pending_id: Optional[int],
+) -> bool:
+    """CAS the durable fence forward after ONE event settles — a TRUE persist-ack, OR a non-waking
+    kind (archived/unblocked) that can never produce an ack and so is treated as immediately
+    settled. ``next_pending_id`` is the next un-acked event id, or ``None`` after the final event
+    (fence cleared -> the sub may claim again). CAS-guarded on ``settled_event_id`` so a concurrent
+    settle cannot double-advance. Returns True when it moved. On a durable delivery FAILURE the
+    caller does NOT call this — the fence is RETAINED and recovery replays the range.
+    """
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET pending_event_id = ? " + _SUB_KEY_WHERE
+            + " AND pending_event_id = ?",
+            (None if next_pending_id is None else int(next_pending_id),
+             *_sub_key(task_id, platform, chat_id, thread_id), int(settled_event_id)),
+        )
     return cur.rowcount > 0
 
 

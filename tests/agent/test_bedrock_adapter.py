@@ -172,6 +172,54 @@ class TestScopedAwsSessionKwargs:
         assert in_scope(home_a, scoped_aws_session_kwargs) == a_kwargs
         assert in_scope(home_a, resolve_bedrock_bearer_token) == "bearer-A"
 
+    def test_sigv4_auth_reuses_session_for_multiple_requests(self, monkeypatch):
+        from agent import bedrock_adapter
+        from agent.bedrock_adapter import BedrockOpenAISigV4Auth, reset_client_cache
+
+        class Credentials:
+            def get_frozen_credentials(self):
+                return object()
+
+        class Session:
+            instances = 0
+
+            def __init__(self, **kwargs):
+                type(self).instances += 1
+                self.credentials = Credentials()
+
+            def get_credentials(self):
+                return self.credentials
+
+        Boto3 = type("Boto3", (), {"Session": Session})
+
+        class SigV4Auth:
+            def __init__(self, *args):
+                pass
+
+            def add_auth(self, request):
+                pass
+
+        class AWSRequest:
+            def __init__(self, **kwargs):
+                self.headers = kwargs["headers"]
+
+        import sys
+        botocore = ModuleType("botocore")
+        auth = ModuleType("botocore.auth")
+        awsrequest = ModuleType("botocore.awsrequest")
+        auth.SigV4Auth = SigV4Auth
+        awsrequest.AWSRequest = AWSRequest
+        botocore.auth = auth
+        botocore.awsrequest = awsrequest
+        reset_client_cache()
+        monkeypatch.setattr(bedrock_adapter, "_require_boto3", lambda: Boto3)
+        with patch.dict(sys.modules, {"botocore": botocore, "botocore.auth": auth, "botocore.awsrequest": awsrequest}):
+            for _ in range(3):
+                request = MagicMock(method="POST", url="https://bedrock-mantle.us-east-1.api.aws/v1/responses", content=b"{}")
+                request.headers.items.return_value = []
+                list(BedrockOpenAISigV4Auth("us-east-1").auth_flow(request))
+        assert Session.instances == 1
+
 
 class TestResolveBedrocRegion:
     def test_prefers_aws_region(self):

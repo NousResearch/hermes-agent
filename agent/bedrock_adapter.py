@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
+_bedrock_openai_session_cache: Dict[Tuple[str, str, Tuple[Tuple[str, str], ...]], Any] = {}
 # Routed multiplex profiles: one client per (profile home, region). boto3 freezes the credential
 # chain into the client at construction, so a region-only slot would sign profile B's calls with A's keys.
 _bedrock_clients_by_home: Dict[Tuple[str, str, str], Any] = {}
@@ -147,6 +148,7 @@ def reset_client_cache():
     """Clear cached boto3 clients. Used in tests and profile switches."""
     _bedrock_runtime_client_cache.clear()
     _bedrock_control_client_cache.clear()
+    _bedrock_openai_session_cache.clear()
     _bedrock_clients_by_home.clear()
     _inference_profile_model_cache.clear()
 
@@ -224,8 +226,15 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
         from botocore.auth import SigV4Auth
         from botocore.awsrequest import AWSRequest
+        from hermes_constants import get_hermes_home_override, hermes_home_key
         kwargs = scoped_aws_session_kwargs()
-        credentials = _require_boto3().Session(**kwargs).get_credentials()
+        home_key = hermes_home_key() if get_hermes_home_override() is not None else ""
+        cache_key = (home_key, self.region, tuple(sorted(kwargs.items())))
+        session = _bedrock_openai_session_cache.get(cache_key)
+        if session is None:
+            session = _require_boto3().Session(**kwargs)
+            _bedrock_openai_session_cache[cache_key] = session
+        credentials = session.get_credentials()
         if credentials is None:
             raise RuntimeError(
                 "No AWS credentials available for Bedrock OpenAI Responses. "

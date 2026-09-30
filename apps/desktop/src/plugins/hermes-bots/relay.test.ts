@@ -378,7 +378,8 @@ describe('relay-route socket retention (#93594)', () => {
     await vi.advanceTimersByTimeAsync(0)
     await pushAndSettle()
 
-    expect(calls).toHaveLength(0)
+    // Only the sole remaining connection's one-time roster clear goes out; the local source is never polled.
+    expect(calls).toEqual([{ connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] } }])
     expect(pins).toHaveLength(0)
 
     stopBotRelay()

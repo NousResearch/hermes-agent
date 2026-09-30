@@ -343,7 +343,7 @@ async def test_env_policy_uncertainty_ignores_warm_config_cache(env, monkeypatch
     else:
         raw = {"syntax": "[bad", "root": "[]", "section": "compression: []",
                "invalid": "compression:\n  exhaustion_action: invalid"}[fault]
-        target.write_text(raw.ljust(before.st_size))
+        target.write_bytes(raw.encode("utf-8").ljust(before.st_size, b" "))
         os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
         assert (target.stat().st_size, target.stat().st_mtime_ns) == (before.st_size, before.st_mtime_ns)
     assert await e.runner._compression_exhaustion_action(e.source) is None

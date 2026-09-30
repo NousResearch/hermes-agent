@@ -1,9 +1,26 @@
 # Gateway-owned groups in Desktop
 
-Bot Mode lists gateway rooms separately from legacy renderer rooms. Refresh gateway groups reloads the selected connection/profile's canonical room list. Opening a room captures that exact authority; changing the foreground profile does not retarget its controls.
+Bot Mode lists gateway rooms separately from classic rooms, which Desktop runs itself. **Refresh gateway groups** reloads the canonical room list for the selected connection and profile. Opening a room captures that exact authority; changing the foreground profile does not retarget its controls.
 
-With `groups.capabilities.driver` enabled, the existing creation dialog creates a canonical group. Only same-authority local-profile members are supported; Desktop connection descriptors are not peer grants. Existing legacy rooms offer **Start gateway group** instead of renderer-owned execution. This starts a new room and deliberately does not replay legacy history.
+## Which rooms are gateway rooms
 
-The gateway owns the log and work. Desktop reads `groups.state` and `groups.log`, sends through `groups.send`, and stops through `groups.stop`. Pending actions come only from `driver_status.pending_actions`. Discard requires explicit confirmation that prior side effects are not undone; Retry and approvals retain the exact member/task/generation/request identity. Errors remain visible and no failed canonical mutation falls back to hidden-session submission.
+One classifier (`groupExecutionMode`) decides from `groups.capabilities`. A connection is canonical only when its `methods` include `groups.discard`, and it can run rooms only when `driver` is `true`. A `-32601` reply, or any other capability payload (current `main`, standalone `hermes serve` or `hermes dashboard`), means classic rooms. A transport error shows the driver as unavailable with **Retry now**, but a connection already classified classic in this session keeps its classic composer.
 
-This initial canonical workspace is text-only. Rename, disband, membership editing and attachments are not offered here. Room discovery is durable on the gateway rather than replicated through Desktop ui_meta. Ambiguous send retries preserve their event identity while the workspace remains mounted; native crash-safe group-send journaling is not implemented.
+Today only Desktop's local gateway connection reaches the canonical surface. SSH, URL remotes and Nous Cloud connect to the standalone web server, which answers with the legacy surface, so their rooms stay classic until that server exposes the canonical one.
+
+On a canonical connection the creation dialog creates a gateway group when the roster qualifies: two to six members, all on this connection, with unique profiles and non-reserved handles. Other rosters are created as classic rooms, and the dialog says why. On a default install the gateway refuses members that are not listed under `hosted_rooms.profiles`; the dialog explains this and links the hosted profile guide.
+
+An existing classic room whose roster qualifies offers **Start gateway group**, which starts a new gateway room and deliberately does not replay the classic history. A classic room whose roster does not qualify keeps its classic composer.
+
+## The room workspace
+
+The gateway owns the log and the work. Desktop reads `groups.state`, and reads `groups.log` incrementally from the last seen `seq`, starting again from the beginning when the room's `authority_epoch` changes. It polls every two seconds while the room is visible and pauses while it is hidden.
+
+- **Status** comes only from `driver_status`: working, idle or driver stopped, plus blocked, approvals waiting and members that need attention. A member whose turn failed or was deferred is listed beside the live status and never replaces it.
+- **Send** goes through `groups.send` with a journaled event id: the native prepared-submission journal, or a browser fallback that survives reloads but not crashes. A refusal with `invalid_params`, `permission_denied`, `unknown_execution` or `stale_generation` hands the text back for editing. Any other refusal, and any transport failure, keeps the exact entry for **Retry**, which resends the same event id. A failed Send only returns to the room it was sent from.
+- **Stop** (`groups.stop`) has its own busy state, so it works while a Send is pending, and reports how many tasks it stopped.
+- **Retry, Discard and approvals** come only from `driver_status.pending_actions` and send the exact member, task, generation and request identity. Discard requires confirmation that prior side effects are not undone.
+- **Attachments** upload with `groups.attachment.upload` and download with `groups.attachment.download`.
+- **Rename** (`groups.rename`) keeps one event id per intended name across retries. **Disband** (`groups.disband`) asks for confirmation, and only a confirmed tombstone removes the room from Desktop and closes its tab. Both appear only when the gateway advertises them.
+
+Errors stay visible, and no failed gateway-room action falls back to Desktop-run execution. Membership editing is not offered. Room discovery is durable on the gateway rather than replicated through Desktop `ui_meta`.

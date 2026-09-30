@@ -62,7 +62,7 @@ class BaseLifecycleMixin:
                     await absorbed.adapter._run_processing_hook(
                         hook_name, absorbed.event, *args[1:], **kwargs)
             if hook_name == "on_processing_start":
-                if not event._processing_state.start():
+                if not event._processing_state.start(event):
                     return
             elif hook_name == "on_processing_complete":
                 if not event._processing_state.complete():

@@ -3,6 +3,7 @@ import { Component, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageRenderBoundary } from './message-render-boundary'
+import { messageRowResetKey } from './thread/list'
 
 afterEach(() => {
   cleanup()
@@ -45,6 +46,14 @@ const lookupErrors = [
   ['tapClientLookup', new Error('tapClientLookup: Index 2 out of bounds (length: 2)')],
   ['tapClientResource', new Error('tapClientResource: Index 2 out of bounds (length: 2)')]
 ] as const
+
+describe('messageRowResetKey', () => {
+  it('changes when message-part weight changes so stale row lookups are remounted', () => {
+    expect(messageRowResetKey('0:m1:user\n1:m2:assistant', '1,4')).not.toBe(
+      messageRowResetKey('0:m1:user\n1:m2:assistant', '1,5')
+    )
+  })
+})
 
 describe('MessageRenderBoundary', () => {
   it.each(lookupErrors)('swallows the transient %s out-of-bounds store race', (_label, error) => {

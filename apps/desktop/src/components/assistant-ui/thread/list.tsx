@@ -58,6 +58,9 @@ export type MessageGroup = { id: string; weight: number } & (
   { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
 )
 
+export const messageRowResetKey = (structuralSignature: string, weightSignature: string): string =>
+  `${structuralSignature}:${weightSignature}`
+
 // DOM is bounded by a render-cost budget, not a message/turn count. The
 // currency is `messagePaintWeight`: what a turn actually MOUNTS, which is what
 // the grouping decides rather than what the payload weighs. A settled run of
@@ -1504,7 +1507,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           components={components}
           group={group}
           key={group.id}
-          resetKey={`${structuralSignature}:${weightSignature}`}
+          resetKey={messageRowResetKey(structuralSignature, weightSignature)}
           virtualized={indexInVisible < tailStart}
         />
       )),

@@ -47,6 +47,46 @@ class GatewayQueuedFollowupMixin:
         self: "GatewayRunner", turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
         response: Any, result: Any, stream_task: Any,
     ) -> Any:
+        """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``).
+
+        A leftover steer that the drain handed to this follow-up has no other completion: its own
+        handler skipped it, and the running turn no longer lists it. Every exit before the follow-up
+        starts therefore completes it here."""
+        from gateway.run_turn_followup_ack import _followup_cancel_outcome
+
+        try:
+            merged = await self._run_agent_queued_followup_turn(
+                turn_ctx, adapter, pending, pending_event, response, result, stream_task)
+        except asyncio.CancelledError:
+            await self._complete_unstarted_followup(
+                pending_event, _followup_cancel_outcome(self._followup_hook_adapter(pending_event)))
+            raise
+        except BaseException:
+            await self._complete_unstarted_followup(pending_event, ProcessingOutcome.FAILURE)
+            raise
+        # At the recursion cap the follow-up returns to the pending slot and runs later.
+        if turn_ctx._interrupt_depth < self._MAX_INTERRUPT_DEPTH:
+            await self._complete_unstarted_followup(pending_event, ProcessingOutcome.FAILURE)
+        return merged
+
+    def _followup_hook_adapter(self: "GatewayRunner", pending_event: Any) -> Any:
+        source = getattr(pending_event, "source", None)
+        return self._intake_adapter_for(source) if source is not None else None
+
+    async def _complete_unstarted_followup(self: "GatewayRunner", pending_event: Any, outcome: ProcessingOutcome) -> None:
+        """Complete a handed-over follow-up, and the messages attached to it, that never started."""
+        from gateway.run_turn_followup_ack import _run_followup_processing_hook
+
+        state = getattr(pending_event, "_processing_state", None)
+        if state is None or not state.resume_absorbed():
+            return
+        await _run_followup_processing_hook(
+            self._followup_hook_adapter(pending_event), pending_event, "on_processing_complete", outcome)
+
+    async def _run_agent_queued_followup_turn(
+        self: "GatewayRunner", turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
+        response: Any, result: Any, stream_task: Any,
+    ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
         reservation = None
         if pending_event is not None and adapter is not None and turn_ctx.session_key:

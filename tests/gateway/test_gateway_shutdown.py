@@ -411,9 +411,11 @@ async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_finishes_an_inflight_shutdown_notice_before_disconnect():
+async def test_gateway_stop_finishes_an_inflight_shutdown_notice_before_disconnect(monkeypatch):
     from gateway.platforms.base import SendResult
 
+    # The real 2-second bound can expire under load while the first `t()` call parses the locale files.
+    monkeypatch.setattr(gateway_run_shutdown, "_SHUTDOWN_NOTICE_TIMEOUT_SECS", 60.0)
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM, chat_id="home-chat", name="Telegram Home",

@@ -37,7 +37,7 @@ _DEFAULT_USER_ID = "hermes-user"
 # question for recall to answer, yet the prefetched block lands in the transcript and rides
 # along on EVERY later call of that session. Skip the recall round-trip there; ``mem0_search``
 # stays available to the agent as an explicit backstop. Override with
-# ``prefetch_skip_contexts`` in mem0.json / MEM0_PREFETCH_SKIP_CONTEXTS — a blank value or
+# ``prefetch_skip_contexts`` in mem0.json — a blank value or
 # ``none`` prefetches in every context. ``flush`` is included defensively: the core does not
 # emit it today (agent_init.py maps flush-like platforms to "primary"), but if it ever does,
 # a flush run is exactly the autonomous case this gate exists for.

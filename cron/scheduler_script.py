@@ -320,6 +320,24 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     return [python_exe, str(path)], env_overlay, None
 
 
+def _cron_script_subprocess_env() -> dict[str, str]:
+    """Build a cron script environment with independent scheduler authority.
+
+    A cron fire can be initiated in-process by a Kanban worker.  The generic
+    child factory correctly removes that worker's task identity and adds its
+    descendant fence, but a scheduled script is not a delegated child: it is
+    the cron scheduler's independently-owned job.  Keep the board routing and
+    remove only that inherited fence so manager scripts can file their own
+    durable alerts without gaining the worker's lifecycle authority.
+    """
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from tools.environments.local import build_subprocess_env
+
+    env = build_subprocess_env(strip_launch_profile=True)
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+    return env
+
+
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
@@ -343,7 +361,6 @@ def _run_job_script(
         return False, err
 
     try:
-        from tools.environments.local import build_subprocess_env
         # Lossy decode only: keep the platform-default (locale) encoding — gating ``encoding=``
         # to win32 was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but
         # ``errors=`` must not stay 'strict': one stray non-UTF-8 byte in the script's stdout
@@ -368,7 +385,7 @@ def _run_job_script(
         # the sanitizer then overlays the names the owning profile declares in
         # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
         # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
-        env = build_subprocess_env(strip_launch_profile=True)
+        env = _cron_script_subprocess_env()
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

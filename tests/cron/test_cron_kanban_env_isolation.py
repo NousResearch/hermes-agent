@@ -28,6 +28,7 @@ is left completely untouched.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 
@@ -377,6 +378,37 @@ class TestRunJobKanbanIsolation:
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
         }
         assert after == before, "worker identity must survive concurrent cron jobs"
+
+
+def test_no_agent_script_drops_inherited_worker_fence(tmp_path, monkeypatch, worker_env):
+    """A cron script is an independent scheduler job, not a delegated child.
+
+    The generic child-env factory must still strip the triggering worker's task
+    identity, while the cron runner removes its inherited descendant fence so
+    a manager script can use the normal Kanban CLI path for its own alert.
+    """
+    from cron.scheduler_script import _run_job_script
+
+    home = tmp_path / "profile"
+    scripts = home / "scripts"
+    scripts.mkdir(parents=True)
+    probe = scripts / "probe.py"
+    probe.write_text(
+        "import json, os\n"
+        "print(json.dumps({'task': os.getenv('HERMES_KANBAN_TASK'), "
+        "'fence': os.getenv('HERMES_DELEGATED_CHILD_CONTEXT')}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / "board-root"))
+
+    ok, output = _run_job_script("probe.py")
+
+    assert ok, output
+    assert json.loads(output) == {"task": None, "fence": None}
+    # The worker's process-global identity remains available to its heartbeat.
+    assert os.environ["HERMES_KANBAN_TASK"] == "t_worker_real_task"
+    assert os.environ["HERMES_DELEGATED_CHILD_CONTEXT"] == str(tmp_path / "board-root")
 
 
 @pytest.mark.linux_only

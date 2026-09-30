@@ -343,6 +343,40 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onSteer, queueEditRef]
   )
 
+  // Double-Enter while busy. The entry usually sits in the queue because the
+  // first Enter's steer didn't land, so retry that: the words join the live
+  // turn as a bubble, with no interrupt and no settle wait. A payload a steer
+  // can't carry (attachments, hidden notes, expanded skills) or a refused
+  // steer falls back to send-now's interrupt.
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  const steeringIdsRef = useRef(new Set<string>())
+
+  const deliverQueuedNow = useCallback(
+    async (id: string) => {
+      const entry = activeQueueSessionKey ? getQueuedPrompts(activeQueueSessionKey).find(e => e.id === id) : undefined
+
+      if (!busy || !entry || entry.displayKind || entry.displayText || !isSteerableEntry(entry)) {
+        return sendQueuedNow(id)
+      }
+
+      // A repeat Enter mid-steer must not interrupt the turn about to take it.
+      if (steeringIdsRef.current.has(id)) {
+        return true
+      }
+
+      steeringIdsRef.current.add(id)
+      const steered = await steerQueuedNow(id).finally(() => steeringIdsRef.current.delete(id))
+
+      // Settled while we asked: the idle auto-drain already owns the entry.
+      return (
+        steered ||
+        (busyRef.current && getQueuedPrompts(activeQueueSessionKey!).some(e => e.id === id) && sendQueuedNow(id))
+      )
+    },
+    [activeQueueSessionKey, busy, sendQueuedNow, steerQueuedNow]
+  )
+
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
   // a stale-session 404) can't strand the entry permanently nor spin-loop. The
@@ -454,6 +488,7 @@ export function useComposerQueue({
 
   return {
     beginQueuedEdit,
+    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,

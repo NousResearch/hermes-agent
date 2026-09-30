@@ -447,11 +447,16 @@ def skill_command_collision_note(name: str) -> Optional[str]:
 
 
 def cli_skill_command_collision_note(name: str) -> Optional[str]:
-    """``skill_command_collision_note`` plus the ``hermes -s`` launch that preloads the skill."""
+    """``skill_command_collision_note`` plus the ``hermes -s`` launch that preloads the skill in the
+    active profile."""
     note = skill_command_collision_note(name)
     if note is None:
         return None
-    return f"{note}; to load it, start a session with hermes -s {shlex.quote(name)}"
+    from hermes_constants import get_hermes_home, profile_name_for_home
+
+    profile = profile_name_for_home(get_hermes_home()) or "default"
+    launch = "hermes" if profile == "default" else f"hermes -p {shlex.quote(profile)}"
+    return f"{note}; to load it, start a session with {launch} -s {shlex.quote(name)}"
 
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:

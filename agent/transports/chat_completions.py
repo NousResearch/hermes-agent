@@ -441,28 +441,17 @@ def _sanitize_message(
             for tc_idx, tc in enumerate(tool_calls):
                 if not isinstance(tc, dict):
                     continue
-                extra = tc.get("extra_content", {})
-                # Unknown provider payloads must survive replay unchanged.
-                if not isinstance(extra, dict):
-                    continue
-                sig = None
-                google = extra.get("google") or extra.get("thought_signature")
-                if isinstance(google, dict):
-                    sig = google.get("thought_signature") or google.get("thoughtSignature")
-                elif isinstance(google, str) and google:
-                    sig = google
-                if sig:
-                    continue
-                google = extra.get("google", {})
-                if not isinstance(google, dict):
+                # An existing sidecar is handled by the replayability guard above:
+                # valid signatures survive, while corrupt/unknown payloads are
+                # dropped on the wire. Only calls with no sidecar need a sentinel.
+                if "extra_content" in tc:
                     continue
                 if copied_tool_calls is None:
                     copied_tool_calls = list(tool_calls)
                 if copied_tool_calls[tc_idx] is tc:
                     copied_tool_calls[tc_idx] = dict(tc)
                 copied_tool_calls[tc_idx]["extra_content"] = {
-                    **extra,
-                    "google": {**google, "thought_signature": "skip_thought_signature_validator"},
+                    "google": {"thought_signature": "skip_thought_signature_validator"},
                 }
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
@@ -508,7 +497,10 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
-        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        sanitized = self.convert_messages(
+            messages, model=params.get("message_target_model") or model,
+            base_url=params.get("base_url"), provider_profile=_profile,
+        )
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 

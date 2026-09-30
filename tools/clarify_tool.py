@@ -16,6 +16,26 @@ _UNAVAILABLE = "Clarify tool is not available in this execution context."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
+def _flatten_choice(c) -> str:
+    """Coerce one choice to display text. LLMs sometimes emit dict-shaped choices and ``str(c)``
+    would leak the repr onto every surface and back as the answer; unwrap order ``label`` >
+    ``description`` > ``text`` > ``title`` (``name``/``value`` excluded: raw component enums,
+    not labels). No match -> "" and dropped: no choice beats a garbage label."""
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, dict):
+        # label/description/text/title are recognized display keys; ``name``/``value`` are
+        # normally raw component enums and sit LAST so a dict carrying both a ``label`` and a
+        # ``value`` still renders the label. When only ``value`` (or ``name``) is present — the
+        # case the agent emits when it groups a choice as ``{"value": "a) Pause..."}`` — fall
+        # back to that field so the choice isn't silently dropped. (issue: clarify-picker regression)
+        return next((v.strip() for k in ("label", "description", "text", "title", "name", "value")
+                     if isinstance(v := c.get(k), str) and v.strip()), "")
+    if isinstance(c, (list, tuple)):
+        return " ".join(_flatten_choice(x) for x in c).strip()
+    return "" if c is None else str(c).strip()
+
+
 def mark_recommended(choices: List[str]) -> List[str]:
     """Suffix the first choice (schema says best-first) with RECOMMENDED_LABEL; idempotent,
     and a lone choice is left untouched (nothing to prefer it over)."""

@@ -94,6 +94,7 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
         while adapter._active_sessions:
             await asyncio.sleep(0.01)
     entry = runner.session_store.get_or_create_session(source)
+    assert entry.transport_profile == 'transport'  # admit_native persists the receiving bot.
     committed = rows(entry.session_id)
     assert committed and committed[0]['outcome'] == 'completed', (committed, adapter.deliveries)
     provenance = committed[0]['payload']['native_text_v1']['provenance']

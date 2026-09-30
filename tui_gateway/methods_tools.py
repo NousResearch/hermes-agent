@@ -756,7 +756,7 @@ def _cmd_initiate_setup(rid, params, session, name, arg):
         tools = _tools_mod("model_tools").get_tool_definitions(
             enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True)
         surface = _resolve_agent_platform(_session_source(session))
-        primary = _tools_mod("hermes_cli.setup_profile").primary_profile(_hermes_home)
+        primary = _tools_mod("hermes_cli.setup_profile").primary_profile(_launch_home())
         message = _tools_mod("agent.initiate_setup_prompt").build_initiate_setup_prompt(
             surface, [tool["function"]["name"] for tool in tools], primary)
     return _ok(rid, {"type": "send", "message": message, "display": "/initiate-setup"})

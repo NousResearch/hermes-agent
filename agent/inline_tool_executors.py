@@ -277,7 +277,7 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "setup_choose": _callback_tool(
         "tools.setup_choose_tool", "setup_choose_tool", "setup_choose_callback",
         ("kind", "kind", ""), ("question", "question", ""), ("options", "options"),
-        ("multi_select", "multi_select"), ("intent", "intent"),
+        ("multi_select", "multi_select"),
     ),
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,

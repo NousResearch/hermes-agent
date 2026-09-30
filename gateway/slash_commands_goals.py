@@ -151,7 +151,8 @@ class GatewayGoalCommandsMixin:
         if not quick_key:
             return None, None, t(f"gateway.{verb}.unavailable")
         if quick_key in self._running_agents:
-            return quick_key, None, t("gateway.shared.agent_running_retry_later", command=verb)
+            prefix = self._typed_command_prefix_for(event.source.platform)
+            return quick_key, None, t("gateway.shared.agent_running_retry_later", command=verb, prefix=prefix)
         agent = self._cached_agent_for(quick_key)
         if agent is None:
             return quick_key, None, t(f"gateway.{verb}.nothing_yet")

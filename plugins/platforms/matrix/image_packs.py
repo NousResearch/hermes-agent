@@ -16,7 +16,7 @@ from typing import Any, Awaitable
 from gateway.config import Platform
 from gateway.session_context import get_session_env, get_session_transport
 from hermes_constants import hermes_home_key
-from plugins.platforms.matrix.client_events import raw_event
+from plugins.platforms.matrix.client_events import raw_event, raw_state_event
 from plugins.platforms.matrix.read_context import _read_access
 from plugins.platforms.matrix.room_inspection import _content, room_permissions
 
@@ -366,14 +366,15 @@ class PackRequest:
         state_key: str = "",
         *,
         full_event: bool = False,
-    ) -> Any:
+    ) -> dict | None:
         try:
-            return await self.read(
-                self.client.get_state_event(
+            value = await self.read(
+                raw_state_event(
+                    self.client,
                     room_id,
                     event_type,
                     state_key,
-                    **({"format": "event"} if full_event else {}),
+                    query={"format": "event"} if full_event else None,
                 )
             )
         except Exception as exc:
@@ -383,8 +384,9 @@ class PackRequest:
                 or type(exc).__name__ == "MNotFound"
             ):
                 await self.access(self.room_id)
-                return {}
+                return None
             raise
+        return value if isinstance(value, dict) else {}
 
     async def pack(self, source: PackSource) -> dict:
         if source.room_id is None:
@@ -409,7 +411,7 @@ class PackRequest:
             raise PackError("Matrix room pack has no state key")
         value = await self.state(source.room_id, source.event_type, source.state_key)
         await self.access(source.room_id)
-        return _content(value)
+        return value or {}
 
 
 def _selections(adapter: Any) -> OrderedDict[str, Selection]:
@@ -671,8 +673,8 @@ async def _send(
     fresh = selection.current_image(pack, images, request.adapter._max_media_bytes)
 
     async def permissions() -> bool:
-        power = _content(await request.state(request.room_id, "m.room.power_levels"))
-        encryption = _content(await request.state(request.room_id, "m.room.encryption"))
+        power = await request.state(request.room_id, "m.room.power_levels")
+        encryption = await request.state(request.room_id, "m.room.encryption") or {}
         algorithm = encryption.get("algorithm")
         if algorithm is not None and algorithm != "m.megolm.v1.aes-sha2":
             raise PackError("Matrix room encryption algorithm is unsupported")
@@ -680,7 +682,7 @@ async def _send(
         levels = room_permissions(
             power,
             encryption,
-            raw_event(create),
+            create,
             request.requester,
             request.bot,
             event_type="m.sticker",

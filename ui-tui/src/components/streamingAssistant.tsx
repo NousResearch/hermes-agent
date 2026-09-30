@@ -3,7 +3,7 @@ import { memo } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiTheme } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
@@ -30,7 +30,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   progress,
   sections
 }: StreamingAssistantProps) {
-  const ui = useStore($uiState)
+  const theme = useStore($uiTheme)
   const streamSegments = useTurnSelector(state => state.streamSegments)
   const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
   const streaming = useTurnSelector(state => state.streaming)
@@ -81,7 +81,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             prev={prev}
             reasoningActive={block.msg.isLiveReasoning === true}
             sections={sections}
-            t={ui.theme}
+            t={theme}
             {...(block.tools ? { tools: block.tools } : {})}
           />
         )
@@ -102,11 +102,11 @@ export const StreamingAssistant = memo(function StreamingAssistant({
 })
 
 export const LiveTodoPanel = memo(function LiveTodoPanel() {
-  const ui = useStore($uiState)
+  const theme = useStore($uiTheme)
   const todos = useTurnSelector(state => state.todos)
   const collapsed = useTurnSelector(state => state.todoCollapsed)
 
-  return <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
+  return <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={theme} todos={todos} />
 })
 
 interface StreamingAssistantProps {

@@ -121,6 +121,36 @@ describe('PreviewPane console state', () => {
     forgetPreviewConsole(tabId)
   })
 
+  // Sites with a browser allow-list (WhatsApp Web: "works with Google Chrome
+  // 100+") refuse Electron's default user agent because it names the app and
+  // Electron. The guest is the Chrome build underneath, so present it as that.
+  it('presents the webview as plain Chrome by dropping the app and Electron UA tokens', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Hermes/0.17.6 Chrome/144.0.0.0 Electron/40.10.2 Safari/537.36'
+    })
+
+    try {
+      let rendered!: ReturnType<typeof render>
+      await act(async () => {
+        rendered = render(
+          <PreviewPane
+            target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+          />
+        )
+      })
+
+      const webview = rendered.container.querySelector('webview') as HTMLElement
+
+      expect(webview.getAttribute('useragent')).toBe(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
+      )
+    } finally {
+      delete (navigator as { userAgent?: string }).userAgent
+    }
+  })
+
   // The bar is chrome for a LIVE page. A file peek, an artifact, and remote
   // HTML in a sandboxed iframe have no webview to navigate.
   it('shows the browser bar only for a live webview preview', async () => {

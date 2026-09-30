@@ -1,0 +1,14 @@
+name: vidiq
+repo: https://github.com/vid-io/vidiq-mcp
+sha: 1c094797d036577519e378e3ee4856682cbe1818
+description: Grow on YouTube, Instagram, and TikTok with vidIQ.
+maintainer: vid-io
+tier: community
+category: tools
+docs_url: https://github.com/vid-io/vidiq-mcp/blob/1c094797d036577519e378e3ee4856682cbe1818/README.md#hermes-agent
+version: "0.1.5"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

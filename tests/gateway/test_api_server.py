@@ -3167,3 +3167,83 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+# ---------------------------------------------------------------------------
+# GOV-F25.c AC-6 — persist-gated idempotency (opt-in cache_if at the cache AND
+# the route). PR-B: gateway wake idempotency + persist receipt.
+# ---------------------------------------------------------------------------
+
+
+class TestGovF25cPersistGatedIdempotency:
+    """The idempotency cache's persist-gating is OPT-IN at both layers: omitting the opt-in keeps
+    the stock 'cache any completed result' behaviour, while a durable caller (X-Hermes-Require-Persist
+    at the route / cache_if at the cache) keeps an UNPERSISTED result OUT of the cache so a same-key
+    retry re-runs until the turn commits."""
+
+    @staticmethod
+    async def _cache_calls(*, cache_if, results_persisted):
+        """Drive _IdempotencyCache.get_or_set twice under one key and return how often compute ran."""
+        cache = _IdempotencyCache()
+        calls = {"n": 0}
+
+        async def compute():
+            calls["n"] += 1
+            return ({"turn_persisted": results_persisted}, {"total_tokens": 1})
+
+        await cache.get_or_set("k", "fp", compute, cache_if=cache_if)
+        await cache.get_or_set("k", "fp", compute, cache_if=cache_if)
+        return calls["n"]
+
+    @staticmethod
+    async def _route_runs(adapter, *, key, require_persist, persisted, repeats):
+        """Drive the real _run_idempotent under one key `repeats` times; return how often compute ran.
+
+        Exercises the route's X-Hermes-Require-Persist branch + _cache_if_persisted predicate against
+        a fresh process-global cache, so a cached repeat does not re-run compute."""
+        import gateway.platforms.api_server as _api
+        _api._idem_cache = _IdempotencyCache()  # isolate from other tests' shared global
+        request = MagicMock()
+        headers = {"Idempotency-Key": key}
+        if require_persist:
+            headers["X-Hermes-Require-Persist"] = "1"
+        request.headers = headers
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        calls = {"n": 0}
+
+        async def compute():
+            calls["n"] += 1
+            return ({"final_response": "ok", "turn_persisted": persisted}, {"total_tokens": 1})
+
+        token = _api_request_profile.set("profile-durable")
+        try:
+            for _ in range(repeats):
+                _outcome, err = await adapter._run_idempotent(
+                    request, body, compute, log_label="test",
+                    fingerprint_keys=["model", "messages"], route="chat_completions")
+                assert err is None
+        finally:
+            _api_request_profile.reset(token)
+        return calls["n"]
+
+    @pytest.mark.asyncio
+    async def test_ac_gov_f25_c_6(self, adapter, monkeypatch):
+        """_IdempotencyCache.get_or_set cache_if is OPT-IN at the cache AND the route: omit == stock caching; persist-required caches only committed results."""
+        # --- cache unit level ---
+        # omit cache_if -> stock behaviour: second same-key call is served from cache
+        assert await self._cache_calls(cache_if=None, results_persisted=False) == 1
+        # cache_if False -> not cached -> retry re-runs
+        assert await self._cache_calls(cache_if=lambda r: False, results_persisted=False) == 2
+
+        def _boom(_r):
+            raise RuntimeError("bad predicate")
+        # a raising predicate must fail toward re-running, never poison the cache
+        assert await self._cache_calls(cache_if=_boom, results_persisted=False) == 2
+
+        # --- route level (real _run_idempotent) ---
+        # ordinary Idempotency-Key request keeps stock caching (a repeated key is served once)
+        assert await self._route_runs(adapter, key="k-ord", require_persist=False, persisted=False, repeats=2) == 1
+        # X-Hermes-Require-Persist: an UNPERSISTED result is NOT cached (same-key retry re-runs)
+        assert await self._route_runs(adapter, key="k-rp", require_persist=True, persisted=False, repeats=2) == 2
+        # X-Hermes-Require-Persist: a PERSISTED result IS cached (same-key retry served once)
+        assert await self._route_runs(adapter, key="k-rp2", require_persist=True, persisted=True, repeats=2) == 1

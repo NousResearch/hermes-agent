@@ -182,3 +182,153 @@ def test_persist_delegation_delivery_raises_without_db():
         ))
 
 
+
+# ---------------------------------------------------------------------------
+# GOV-F25.c AC-7 / AC-8 — PR-B: durable wake self-post (idempotency + persist
+# receipt) on the DEFAULT-profile HTTP path and the SECONDARY in-process path.
+# ---------------------------------------------------------------------------
+
+
+def test_ac_gov_f25_c_7(monkeypatch):
+    """PR-B DEFAULT-profile HTTP branch: deliver_wake sends the opt-in headers and treats a 2xx without the persist ack as undelivered; no owner_profile."""
+    import inspect
+
+    from aiohttp import web
+
+    from gateway import wake
+
+    # signature contract: opt-in idempotency + persist ack, and NO owner_profile (secondary
+    # routing reuses the existing profile= parameter).
+    params = inspect.signature(wake.deliver_wake).parameters
+    assert "idempotency_key" in params and "require_persist_ack" in params
+    assert "owner_profile" not in params
+    assert "profile" in params
+
+    monkeypatch.setattr(wake, "_RETRY_DELAYS_SECONDS", (0.01, 0.01, 0.01))
+    state = {"persisted": None, "seen_headers": {}}
+
+    async def handler(request):
+        state["seen_headers"] = dict(request.headers)
+        resp_headers = {}
+        if state["persisted"] is not None:
+            resp_headers["X-Hermes-Turn-Persisted"] = state["persisted"]
+        return web.json_response({"choices": [{"message": {"content": "ok"}}]}, headers=resp_headers)
+
+    async def run():
+        runner, port = await _serve(handler)
+        try:
+            adapter = ApiServerLikeAdapter(port=port, key="sekrit")
+
+            # 2xx WITHOUT the server-generated persist ack -> undelivered -> raises (the durable
+            # caller RETAINS its fence rather than settling on an unpersisted turn).
+            state["persisted"] = None
+            with pytest.raises(Exception):
+                await wake.deliver_wake(
+                    adapter, text="t", session_id="s",
+                    idempotency_key="idem-1", require_persist_ack=True)
+            # the self-post carried the opt-in idempotency + persist-require headers
+            assert state["seen_headers"].get("Idempotency-Key") == "idem-1"
+            assert state["seen_headers"].get("X-Hermes-Require-Persist") == "1"
+
+            # 2xx WITH X-Hermes-Turn-Persisted:true -> delivered (no raise)
+            state["persisted"] = "true"
+            await wake.deliver_wake(
+                adapter, text="t", session_id="s",
+                idempotency_key="idem-1", require_persist_ack=True)
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+class _InProcAdapter:
+    """A non-push adapter whose run_internal_session_turn is the REAL in-process route
+    (api_server_runs.run_internal_session_turn) with only the turn-execution machinery stubbed to a
+    counter — so the opt-in persisted-result de-dup and the persist-return contract are exercised,
+    not re-implemented. No HTTP is ever made."""
+
+    supports_async_delivery = False
+
+    def __init__(self):
+        self._model_name = "hermes"
+        self.turn_runs = 0
+        self.http_calls = 0
+        self.ran_in_process = False
+        self._persisted = None
+
+    # knobs the test drives
+    def set_turn_persisted(self, value):
+        self._persisted = value
+
+    def reset_counts(self):
+        self.turn_runs = 0
+        self.http_calls = 0
+        self.ran_in_process = False
+
+    # seams the real _run_once_persist consumes (all cheap / hermetic)
+    def _draining_response(self):
+        return None
+
+    def _concurrency_limited_response(self):
+        return None
+
+    async def _ensure_session_db_async(self):
+        return None  # -> _resolve_live_session_id falls open to the raw session id
+
+    async def _get_existing_session_or_404(self, session_id):
+        from types import SimpleNamespace
+        return SimpleNamespace(id=session_id), None
+
+    async def _conversation_history_for_session(self, session_id):
+        return []
+
+    def _select_request_route(self, body, *, session_id, gateway_session_key, model_alias):
+        return {}, {}, None
+
+    async def _run_agent(self, **kwargs):
+        self.turn_runs += 1
+        self.ran_in_process = True
+        return {"turn_persisted": self._persisted}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    async def handle_message(self, event):  # pragma: no cover — must NOT be hit
+        raise AssertionError("non-push adapter must not receive handle_message wakes")
+
+    async def run_internal_session_turn(self, *, session_id, text, profile,
+                                        notification_category="result", idempotency_key=None):
+        from gateway.platforms import api_server as _api
+        from gateway.platforms import api_server_runs
+        return await api_server_runs.run_internal_session_turn(
+            self, session_id=session_id, text=text, profile=profile,
+            notification_category=notification_category, idempotency_key=idempotency_key,
+            _api_server=_api)
+
+
+def test_ac_gov_f25_c_8(monkeypatch):
+    """PR-B SECONDARY-profile in-process branch: deliver_wake gates on run_internal_session_turn's persist result AND dedups by idempotency_key (no HTTP, no header)."""
+    from gateway import wake
+    from gateway.platforms.api_server import _IdempotencyCache
+
+    # isolate the process-global cache the in-process de-dup reuses
+    monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+    monkeypatch.setattr(wake, "_RETRY_DELAYS_SECONDS", (0.01, 0.01, 0.01))
+    adapter = _InProcAdapter()
+
+    # not persisted -> raise (caller retains the fence); an unpersisted same-key retry RE-RUNS
+    adapter.set_turn_persisted(False)
+    for _ in range(2):
+        with pytest.raises(Exception):
+            asyncio.run(wake.deliver_wake(
+                adapter, text="t", session_id="s", profile="owner-b",
+                idempotency_key="idem-2", require_persist_ack=True))
+    assert adapter.ran_in_process is True
+    assert adapter.http_calls == 0
+    assert adapter.turn_runs == 2  # unpersisted retry re-ran
+
+    # persisted -> returns; a persisted same-key retry is deduped (turn runs once)
+    adapter.reset_counts()
+    adapter.set_turn_persisted(True)
+    for _ in range(2):
+        asyncio.run(wake.deliver_wake(
+            adapter, text="t", session_id="s", profile="owner-b",
+            idempotency_key="idem-3", require_persist_ack=True))
+    assert adapter.turn_runs == 1  # persisted same-key retry deduped

@@ -886,6 +886,7 @@
     "composer.hotkeys",
     "composer.images",
     "composer.listening",
+    "composer.lookupFailed",
     "composer.lookupLoading",
     "composer.lookupNoMatches",
     "composer.lookupOr",

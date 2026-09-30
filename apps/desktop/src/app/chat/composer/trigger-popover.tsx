@@ -2,6 +2,7 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { Fragment, useEffect, useRef } from 'react'
 
 import { referenceKind, referenceStyle } from '@/components/assistant-ui/reference-kinds'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
@@ -57,6 +58,8 @@ interface ComposerTriggerPopoverProps {
   items: readonly Unstable_TriggerItem[]
   kind: '@' | '/' | ':'
   loading: boolean
+  error?: boolean
+  onRetry?: () => void
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
   placement?: 'bottom' | 'top'
@@ -83,6 +86,8 @@ export function ComposerTriggerPopover({
   items,
   kind,
   loading,
+  error,
+  onRetry,
   onHover,
   onPick,
   placement = 'top',
@@ -167,6 +172,12 @@ export function ComposerTriggerPopover({
             <GlyphSpinner ariaLabel={copy.lookupLoading} className="text-foreground/70" spinner="braille" />
             <span>{copy.lookupLoading}</span>
           </div>
+        ) : error ? (
+          <CompletionDrawerEmpty title={copy.lookupFailed}>
+            <Button onClick={onRetry} size="inline" type="button" variant="textStrong">
+              {t.common.retry}
+            </Button>
+          </CompletionDrawerEmpty>
         ) : (
           <CompletionDrawerEmpty title={copy.lookupNoMatches}>
             {kind === '@' ? (

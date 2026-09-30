@@ -3242,6 +3242,7 @@ export interface Translations {
     wakeWordPausedVoice: (phrase: string) => string
     lookupLoading: string
     lookupNoMatches: string
+    lookupFailed: string
     lookupTry: string
     lookupOr: string
     commonCommands: string

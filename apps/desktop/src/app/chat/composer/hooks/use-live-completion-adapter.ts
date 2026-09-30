@@ -38,12 +38,13 @@ export function useLiveCompletionAdapter(options: {
    *  changed, because the adapter de-dupes on the query alone. */
   epoch?: number | string
   toItem: (entry: CompletionEntry, index: number) => Unstable_TriggerItem
-}): { adapter: Unstable_TriggerAdapter; loading: boolean } {
+}): { adapter: Unstable_TriggerAdapter; loading: boolean; error: boolean; retry: () => void } {
   const { enabled, debounceMs = 60, epoch = 0, fetcher, isCached, toItem } = options
 
-  const [state, setState] = useState<{ query: string; items: Unstable_TriggerItem[] }>({
+  const [state, setState] = useState<{ query: string; items: Unstable_TriggerItem[]; error: boolean }>({
     query: EMPTY_QUERY,
-    items: []
+    items: [],
+    error: false
   })
 
   const [loading, setLoading] = useState(false)
@@ -71,7 +72,7 @@ export function useLiveCompletionAdapter(options: {
     pendingQueryRef.current = null
     tokenRef.current += 1
     setLoading(false)
-    setState({ query: EMPTY_QUERY, items: [] })
+    setState({ query: EMPTY_QUERY, items: [], error: false })
   }, [cancelTimer, enabled])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -81,8 +82,13 @@ export function useLiveCompletionAdapter(options: {
     // lands — an open popover must not blink empty on a background refresh.
     // On mount this is already the state, so the first run is a no-op.
     pendingQueryRef.current = null
-    setState(current => (current.query === EMPTY_QUERY ? current : { ...current, query: EMPTY_QUERY }))
+    setState(current => (current.query === EMPTY_QUERY ? current : { ...current, query: EMPTY_QUERY, error: false }))
   }, [epoch])
+
+  const retry = useCallback(() => {
+    pendingQueryRef.current = null
+    setState(current => ({ ...current, query: EMPTY_QUERY }))
+  }, [])
 
   const scheduleFetch = useCallback(
     (query: string) => {
@@ -114,7 +120,8 @@ export function useLiveCompletionAdapter(options: {
 
             setState({
               query: payload.query,
-              items: payload.items.map((entry, index) => toItem(entry, index))
+              items: payload.items.map((entry, index) => toItem(entry, index)),
+              error: false
             })
           })
           .catch(() => {
@@ -122,7 +129,7 @@ export function useLiveCompletionAdapter(options: {
               return
             }
 
-            setState({ query, items: [] })
+            setState({ query, items: [], error: true })
           })
           .finally(() => {
             if (token === tokenRef.current) {
@@ -153,5 +160,5 @@ export function useLiveCompletionAdapter(options: {
     [scheduleFetch, state]
   )
 
-  return { adapter, loading }
+  return { adapter, loading, error: state.error, retry }
 }

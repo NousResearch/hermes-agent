@@ -88,6 +88,7 @@ export function rebuildAroundCaret(editor: HTMLDivElement, tokenLength: number, 
 interface CompletionSource {
   adapter: Unstable_TriggerAdapter | null
   loading: boolean
+  error?: boolean
 }
 
 interface UseComposerTriggerOptions {
@@ -231,7 +232,8 @@ export function useComposerTrigger({
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on
   // Space/Tab — neither should dead-end on a popover.
-  const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+  const argStageEmpty =
+    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !slash.error && !triggerItems.length
 
   const slashArgumentMode =
     trigger?.kind === '/' && slashArgStage(trigger.query)

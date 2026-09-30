@@ -2322,6 +2322,7 @@ export const ar = defineLocale({
     voiceDictation: 'إملاء صوتي',
     lookupLoading: 'جار البحث...',
     lookupNoMatches: 'لا توجد نتائج',
+    lookupFailed: 'الأوامر غير متاحة.',
     lookupTry: 'جرب',
     lookupOr: 'أو',
     commonCommands: 'الأوامر الشائعة',

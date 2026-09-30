@@ -4209,6 +4209,7 @@ export const esOverrides = {
     wakeWordPausedVoice: phrase => `Palabra de activación: "${phrase}" — pausada durante el chat de voz`,
     lookupLoading: 'Buscando…',
     lookupNoMatches: 'Sin coincidencias.',
+    lookupFailed: 'Comandos no disponibles.',
     lookupTry: 'Prueba',
     lookupOr: 'o',
     commonCommands: 'Comandos comunes',

@@ -71,6 +71,8 @@ export function useSlashCompletions(options: {
 }): {
   adapter: Unstable_TriggerAdapter
   loading: boolean
+  error: boolean
+  retry: () => void
 } {
   const { gateway, sessionId, profile, skinThemes, activeSkin } = options
   const { locale } = useI18n()
@@ -169,118 +171,112 @@ export function useSlashCompletions(options: {
         return { items, query }
       }
 
-      try {
-        if (!query) {
-          const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion(catalogKey, () =>
-              gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
-            )
+      if (!query) {
+        const catalog = filterDesktopCommandsCatalog(
+          await cachedSlashCompletion(catalogKey, () =>
+            gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
           )
-
-          // Prefer the categorized layout so the popover renders section headers
-          // (Session, Tools & Skills, ...). Fall back to the flat list when the
-          // backend didn't categorize.
-          const sections = catalog.categories?.length ? catalog.categories : [{ name: '', pairs: catalog.pairs ?? [] }]
-
-          const items = sections.flatMap<CompletionEntry>(section =>
-            section.pairs.map(([command, meta]) => ({
-              text: command,
-              display: command,
-              group: section.name || undefined,
-              meta
-            }))
-          )
-
-          // Skill commands reach us only through the flat `pairs` list — the
-          // backend categorizes registry commands but appends skills
-          // uncategorized, so the categorized layout alone drops every skill
-          // from the bare `/` list even though typing `/wo` offers them.
-          // Re-add the leftovers under one Skills header (which also gives them
-          // the skill pill accent and makes them offerable mid-message).
-          const categorized = new Set(items.map(item => item.text.toLowerCase()))
-          const skillRows: CompletionEntry[] = []
-
-          for (const [command, meta] of catalog.pairs ?? []) {
-            if (!categorized.has(command.toLowerCase()) && isDesktopSlashExtensionCommand(command)) {
-              skillRows.push({ text: command, display: command, group: 'Skills', meta })
-            }
-          }
-
-          // Browsing, not searching: rank the skills the user actually reaches
-          // for to the top and drop never-used built-ins entirely. Typing a
-          // query takes the other branch, where nothing is hidden.
-          items.push(...rankSkillCommands(skillRows, catalog.skills, { pruneUnusedBuiltins: true }))
-
-          return { items, query }
-        }
-
-        const result = await cachedSlashCompletion(`slash:${scopeKey}:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
-            text,
-            ...sessionParams
-          })
         )
 
-        // Arg-completion items (replace_from > 1) carry just the arg stub —
-        // e.g. complete.slash returns `{text: "alice"}` for `/personality alic`
-        // with replace_from = 14. Rewrite those entries so the popover inserts
-        // the full `/personality alice` token instead of stranding `/alice`.
-        const replaceFrom = typeof result.replace_from === 'number' ? result.replace_from : 1
-        const isArgCompletion = replaceFrom > 1
-        const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
+        // Prefer the categorized layout so the popover renders section headers
+        // (Session, Tools & Skills, ...). Fall back to the flat list when the
+        // backend didn't categorize.
+        const sections = catalog.categories?.length ? catalog.categories : [{ name: '', pairs: catalog.pairs ?? [] }]
 
-        // An alias the user typed to completion (`/reset`) must surface even
-        // though aliases are hidden while browsing — otherwise the popover
-        // says "no matches" for a command Enter happily executes (#57641).
-        // Only an EXACT match unlocks it; a partial prefix keeps hiding.
-        const exactAliasQuery = isArgCompletion ? undefined : commandText(query).toLowerCase()
-
-        const decorated = (result.items ?? [])
-          .map(item => {
-            if (!isArgCompletion) {
-              return item
-            }
-
-            const argText = typeof item.text === 'string' ? item.text : ''
-
-            return { ...item, text: `${prefix}${argText}` }
-          })
-          .filter(
-            item => isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
-          )
-          .map(item => ({
-            ...item,
-            // Arg suggestions (e.g. `/handoff <platform>`) live under one
-            // header; otherwise split skills out from built-in commands.
-            // Kind comes from the backend — the desktop table is a visibility
-            // gate (`isDesktopSlashSuggestion`), not a classifier.
-            group: isArgCompletion ? 'Options' : slashCompletionGroup(item.text, item.kind),
-            // Arg items carry their own meta (the personality/toolset/platform
-            // blurb). Only command rows get the registry description — looking
-            // one up for `/personality none` would clobber it with the parent
-            // command's text.
-            meta: isArgCompletion ? textValue(item.meta) : desktopSlashDescription(item.text, textValue(item.meta))
+        const items = sections.flatMap<CompletionEntry>(section =>
+          section.pairs.map(([command, meta]) => ({
+            text: command,
+            display: command,
+            group: section.name || undefined,
+            meta
           }))
+        )
 
-        // Keep each group contiguous so headers render once: Commands before
-        // Skills (stable within a group, preserving backend relevance order).
-        // Do not re-sort skills by usage here — complete.slash already ranked
-        // by fuzzy score, then usage. A second usage pass buried exact name
-        // matches that the table had mis-filed as skills.
-        const groupOrder = ['Commands', 'Skills', 'Options']
+        // Skill commands reach us only through the flat `pairs` list — the
+        // backend categorizes registry commands but appends skills
+        // uncategorized, so the categorized layout alone drops every skill
+        // from the bare `/` list even though typing `/wo` offers them.
+        // Re-add the leftovers under one Skills header (which also gives them
+        // the skill pill accent and makes them offerable mid-message).
+        const categorized = new Set(items.map(item => item.text.toLowerCase()))
+        const skillRows: CompletionEntry[] = []
 
-        if (isArgCompletion) {
-          return { items: decorated, query }
+        for (const [command, meta] of catalog.pairs ?? []) {
+          if (!categorized.has(command.toLowerCase()) && isDesktopSlashExtensionCommand(command)) {
+            skillRows.push({ text: command, display: command, group: 'Skills', meta })
+          }
         }
 
-        const items = [...decorated].sort(
-          (a, b) => groupOrder.indexOf(a.group ?? '') - groupOrder.indexOf(b.group ?? '')
-        )
+        // Browsing, not searching: rank the skills the user actually reaches
+        // for to the top and drop never-used built-ins entirely. Typing a
+        // query takes the other branch, where nothing is hidden.
+        items.push(...rankSkillCommands(skillRows, catalog.skills, { pruneUnusedBuiltins: true }))
 
         return { items, query }
-      } catch {
-        return { items: [], query }
       }
+
+      const result = await cachedSlashCompletion(`slash:${scopeKey}:${text.toLowerCase()}`, () =>
+        gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+          text,
+          ...sessionParams
+        })
+      )
+
+      // Arg-completion items (replace_from > 1) carry just the arg stub —
+      // e.g. complete.slash returns `{text: "alice"}` for `/personality alic`
+      // with replace_from = 14. Rewrite those entries so the popover inserts
+      // the full `/personality alice` token instead of stranding `/alice`.
+      const replaceFrom = typeof result.replace_from === 'number' ? result.replace_from : 1
+      const isArgCompletion = replaceFrom > 1
+      const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
+
+      // An alias the user typed to completion (`/reset`) must surface even
+      // though aliases are hidden while browsing — otherwise the popover
+      // says "no matches" for a command Enter happily executes (#57641).
+      // Only an EXACT match unlocks it; a partial prefix keeps hiding.
+      const exactAliasQuery = isArgCompletion ? undefined : commandText(query).toLowerCase()
+
+      const decorated = (result.items ?? [])
+        .map(item => {
+          if (!isArgCompletion) {
+            return item
+          }
+
+          const argText = typeof item.text === 'string' ? item.text : ''
+
+          return { ...item, text: `${prefix}${argText}` }
+        })
+        .filter(
+          item => isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
+        )
+        .map(item => ({
+          ...item,
+          // Arg suggestions (e.g. `/handoff <platform>`) live under one
+          // header; otherwise split skills out from built-in commands.
+          // Kind comes from the backend — the desktop table is a visibility
+          // gate (`isDesktopSlashSuggestion`), not a classifier.
+          group: isArgCompletion ? 'Options' : slashCompletionGroup(item.text, item.kind),
+          // Arg items carry their own meta (the personality/toolset/platform
+          // blurb). Only command rows get the registry description — looking
+          // one up for `/personality none` would clobber it with the parent
+          // command's text.
+          meta: isArgCompletion ? textValue(item.meta) : desktopSlashDescription(item.text, textValue(item.meta))
+        }))
+
+      // Keep each group contiguous so headers render once: Commands before
+      // Skills (stable within a group, preserving backend relevance order).
+      // Do not re-sort skills by usage here — complete.slash already ranked
+      // by fuzzy score, then usage. A second usage pass buried exact name
+      // matches that the table had mis-filed as skills.
+      const groupOrder = ['Commands', 'Skills', 'Options']
+
+      if (isArgCompletion) {
+        return { items: decorated, query }
+      }
+
+      const items = [...decorated].sort((a, b) => groupOrder.indexOf(a.group ?? '') - groupOrder.indexOf(b.group ?? ''))
+
+      return { items, query }
     },
     [gateway, skinThemes, activeSkin, scopeKey, catalogKey, sessionParams]
   )

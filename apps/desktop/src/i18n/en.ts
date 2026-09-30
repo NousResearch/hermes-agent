@@ -3837,6 +3837,7 @@ export const en: Translations = {
     wakeWordPausedVoice: phrase => `Wake word: "${phrase}" — paused during voice chat`,
     lookupLoading: 'Looking up…',
     lookupNoMatches: 'No matches.',
+    lookupFailed: 'Commands unavailable.',
     lookupTry: 'Try',
     lookupOr: 'or',
     commonCommands: 'Common commands',

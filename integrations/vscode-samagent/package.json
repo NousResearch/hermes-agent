@@ -1,0 +1,71 @@
+{
+  "name": "samagent-vscode",
+  "displayName": "SamAgent Local Platform Bridge",
+  "description": "Synchronizes your local VS Code workspace with the SamAgent Local Platform: live L0–L4 verification on save, Mission Control sidebar, and Pre-Production Deployment Gate.",
+  "version": "0.1.0",
+  "publisher": "samjuniors",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Testing",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "workspaceContains:.samagent/spec.yaml",
+    "onCommand:samagent.openMissionControl",
+    "onCommand:samagent.verifyWorkspace",
+    "onCommand:samagent.checkPreProdGate"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "samagent.openMissionControl",
+        "title": "SamAgent: Open Local Platform Mission Control"
+      },
+      {
+        "command": "samagent.verifyWorkspace",
+        "title": "SamAgent: Verify Local Workspace (L0–L4)"
+      },
+      {
+        "command": "samagent.checkPreProdGate",
+        "title": "SamAgent: Check Pre-Production Deployment Gate"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "samagent-sidebar",
+          "title": "SamAgent Platform",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "views": {
+      "samagent-sidebar": [
+        {
+          "type": "webview",
+          "id": "samagent.missionControlView",
+          "name": "Mission Control & Pre-Prod Gate"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SamAgent Local Platform",
+      "properties": {
+        "samagent.platformUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080",
+          "description": "URL of your locally installed SamAgent Platform daemon."
+        },
+        "samagent.verifyOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically trigger L0–L4 verification in the local SamAgent platform when saving files in VS Code."
+        }
+      }
+    }
+  }
+}

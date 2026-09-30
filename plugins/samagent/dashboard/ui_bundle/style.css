@@ -1,0 +1,289 @@
+/* SamAgent — Codex-Style Local Platform, Live To-Do Sidebar & VS Code Studio */
+.sam-root {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #e2e8f0;
+  background: #090d16;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.sam-topbar {
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  padding: 10px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.sam-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sam-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+  letter-spacing: -0.01em;
+}
+.sam-mono {
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sam-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.sam-pill-green {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.sam-pill-red {
+  background: rgba(239, 68, 68, 0.16);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+.sam-pill-blue {
+  background: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+.sam-pill-purple {
+  background: rgba(168, 85, 247, 0.16);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+.sam-pill-amber {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.sam-diff-add {
+  color: #34d399;
+  font-weight: 700;
+  font-size: 11px;
+  margin-right: 6px;
+}
+.sam-diff-del {
+  color: #f87171;
+  font-weight: 700;
+  font-size: 11px;
+}
+/* Codex 2-Column Body: Collapsible Left To-Do Sidebar + Main Workbench */
+.sam-layout {
+  display: flex;
+  flex: 1;
+  min-height: calc(100vh - 120px);
+}
+.sam-todo-sidebar {
+  width: 320px;
+  min-width: 290px;
+  background: #0d1322;
+  border-right: 1px solid #1e293b;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sam-main {
+  flex: 1;
+  padding: 16px 20px 90px;
+  overflow-y: auto;
+}
+.sam-progress-track {
+  width: 100%;
+  height: 6px;
+  background: #1e293b;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.sam-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2563eb, #10b981);
+  transition: width 0.25s ease;
+}
+.sam-todo-item {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sam-todo-item.running {
+  border-color: #3b82f6;
+  background: rgba(37, 99, 235, 0.12);
+}
+.sam-todo-item.completed {
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.sam-todo-item.failed {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.08);
+}
+.sam-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.sam-tab {
+  background: #111827;
+  color: #94a3b8;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 7px 13px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sam-tab.active {
+  background: #1d4ed8;
+  color: #ffffff;
+  border-color: #3b82f6;
+}
+.sam-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 14px;
+}
+.sam-card {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 14px;
+}
+.sam-card-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sam-textarea,
+.sam-input,
+.sam-select {
+  width: 100%;
+  box-sizing: border-box;
+  background: #090d16;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.sam-textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+.sam-btn {
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sam-btn:hover {
+  background: #334155;
+}
+.sam-btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #3b82f6;
+}
+.sam-btn-success {
+  background: #059669;
+  color: #ffffff;
+  border-color: #10b981;
+}
+.sam-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.sam-kpi {
+  background: #090d16;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.sam-kpi-label {
+  font-size: 10px;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+.sam-kpi-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-top: 3px;
+}
+.sam-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sam-list-item {
+  background: #090d16;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 7px 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.sam-pre {
+  background: #060911;
+  color: #cbd5e1;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 11px;
+  overflow: auto;
+  max-height: 190px;
+  margin: 0;
+}
+.sam-preview-frame {
+  width: 100%;
+  height: 220px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #ffffff;
+}
+/* Bottom Sticky Codex Composer Bar */
+.sam-codex-composer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(15, 23, 42, 0.96);
+  border-top: 1px solid #1e293b;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 50;
+}

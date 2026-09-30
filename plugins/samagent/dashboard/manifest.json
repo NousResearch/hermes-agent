@@ -1,0 +1,14 @@
+{
+  "name": "samagent",
+  "label": "Mission Control",
+  "description": "SamAgent Mission Control — Brief, Plan Card, Live Run & Preview, L0–L4 Review & Ship, and Project Ledger Memory with Simple/Pro toggle",
+  "icon": "Rocket",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/samagent",
+    "position": "before:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

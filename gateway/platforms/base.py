@@ -4064,6 +4064,7 @@ class BasePlatformAdapter(ABC):
         pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is not None:
+            self._stage_next_queued_event(session_key, pending_event)
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
@@ -4212,6 +4213,7 @@ class BasePlatformAdapter(ABC):
                 for owner in owners:
                     orphan = owner.get_pending_message(session_key)
                     if orphan is not None:
+                        owner._stage_next_queued_event(session_key, orphan)
                         owner._start_session_processing(orphan, session_key)
                         break
                 if orphan is None and not handled:
@@ -4609,6 +4611,7 @@ class BasePlatformAdapter(ABC):
                 logger.debug(
                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
                     self.name)
+                self._stage_next_queued_event(session_key, late_pending)
                 self._spawn_drain_task(late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
@@ -4706,6 +4709,7 @@ class BasePlatformAdapter(ABC):
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     self._pending_messages.pop(session_key)
+                    self._stage_next_queued_event(session_key, pending_event)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
@@ -4798,7 +4802,16 @@ class BasePlatformAdapter(ABC):
             if pending_event is None:  # consumed elsewhere during the back-off
                 self._cleanup_finished_session_task(session_key, guard)
                 return
+            self._stage_next_queued_event(session_key, pending_event)
         await self._process_message_background(pending_event, session_key)
+
+    def _stage_next_queued_event(self, session_key: str, started: MessageEvent) -> None:
+        """Move the runner's next queued event into the slot after ``started`` has left the slot to
+        start a turn. When the slot is empty and the runner's queue is not, the runner treats the
+        queue as orphaned and runs its head before ``started``, which arrived earlier."""
+        promote = getattr(self.gateway_runner, "_promote_queued_event", None)
+        if callable(promote):
+            promote(session_key, self, started)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""

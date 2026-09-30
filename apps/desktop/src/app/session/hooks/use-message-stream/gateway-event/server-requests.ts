@@ -12,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, normalizeQuestions, normalizeSetupChoose, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -173,10 +173,7 @@ export function windowReadClaimsSession(sessionId: string, activeSessionId: null
 
   const sessions = $sessions.get()
 
-  const shown = [
-    $selectedStoredSessionId.get(),
-    ...$sessionTiles.get().map(tile => tile.storedSessionId)
-  ]
+  const shown = [$selectedStoredSessionId.get(), ...$sessionTiles.get().map(tile => tile.storedSessionId)]
 
   return shown.some(
     stored =>
@@ -268,42 +265,8 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 // user focuses that chat. The Python side blocks on the response frame; without a
 // handler the channel answers -32601 and the tool fails fast instead of stalling.
 
-const clarify: Handler = ctx => {
+const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) => {
   const { deps, request, sessionId } = ctx
-  const p = request.params
-
-  if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({})
-
-    return
-  }
-
-  const questions = normalizeQuestions(p.questions)
-
-  // `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
-  const lockedAnswers =
-    typeof p.answers === 'object' && p.answers !== null
-      ? Object.fromEntries(
-          Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
-          )
-        )
-      : undefined
-
-  if (questions.length === 0) {
-    request.respond({})
-
-    return
-  }
-
-  const clarifyRequest = {
-    lockedAnswers,
-    questions,
-    receivedAt: Date.now() / 1000,
-    requestId: request.id,
-    sessionId: sessionId || null
-  }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -336,7 +299,58 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.map(q => q.question).join(' · '))
+  notifyInput(ctx, clarifyRequest.questions.map(q => q.question).join(' · '))
+}
+
+const clarify: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const p = request.params
+
+  if (sessionId && deps.sessionInterrupted(sessionId)) {
+    request.respond({})
+
+    return
+  }
+
+  const questions = normalizeQuestions(p.questions)
+
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
+  const lockedAnswers =
+    typeof p.answers === 'object' && p.answers !== null
+      ? Object.fromEntries(
+          Object.entries(p.answers as Record<string, unknown>).filter(
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
+          )
+        )
+      : undefined
+
+  if (questions.length === 0) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
+  })
+}
+
+const setupChoose: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const setup = normalizeSetupChoose(request.params)
+
+  if (!setup || (sessionId && deps.sessionInterrupted(sessionId))) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, { ...setup, receivedAt: Date.now() / 1000, requestId: request.id, sessionId: sessionId || null })
 }
 
 const approval: Handler = ctx => {
@@ -609,6 +623,7 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,
+  setup_choose: setupChoose,
   sudo,
   'terminal.read': terminalRead,
   tour,

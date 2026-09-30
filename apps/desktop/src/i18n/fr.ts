@@ -5733,6 +5733,30 @@ export const frOverrides = {
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
     },
+    setupChoose: {
+      kinds: {
+        accent: 'Couleur d’accent',
+        connectors: 'Apps',
+        layout: 'Disposition',
+        plugins: 'Plugins',
+        theme: 'Apparence'
+      },
+      loading: 'Chargement des options…',
+      unavailable: 'Cette liste n’est pas disponible pour le moment. Répondez plutôt dans le chat.',
+      findApp: 'Trouver une app',
+      customColor: 'Couleur personnalisée',
+      plugin: 'Plugin',
+      intent: { now: 'Maintenant', later: 'Au besoin', save: 'Juste noter' }
+    },
+    startChat: {
+      starting: title => `Démarrage de « ${title} »…`,
+      startingUntitled: 'Démarrage d’un chat…',
+      untitled: 'Nouveau chat',
+      notStarted: 'Le chat n’a pas démarré',
+      inProfile: profile => `Dans ${profile}`,
+      open: 'Ouvrir',
+      openFailed: 'Impossible d’ouvrir le chat'
+    },
     catalogInstall: {
       preparing: 'Préparation de l’installation…',
       install: 'Installer',
@@ -5933,6 +5957,12 @@ export const frOverrides = {
           pending: "Recherche dans l'historique de session en cours",
           pendingAction: 'Recherche en cours'
         },
+        setup_choose: {
+          done: 'Question de configuration posée',
+          pending: 'Pose une question de configuration',
+          pendingAction: 'Question en cours'
+        },
+        start_chat: { done: 'Chat démarré', pending: 'Démarrage d’un chat', pendingAction: 'Démarrage' },
         terminal: {
           done: 'Commande exécutée',
           pending: 'Exécution de la commande en cours',

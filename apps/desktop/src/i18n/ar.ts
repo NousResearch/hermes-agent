@@ -3366,6 +3366,30 @@ export const ar = defineLocale({
       confirmAndContinueLabel: 'تأكيد ومتابعة',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
+    setupChoose: {
+      kinds: {
+        accent: 'لون التمييز',
+        connectors: 'التطبيقات',
+        layout: 'التخطيط',
+        plugins: 'الإضافات',
+        theme: 'المظهر'
+      },
+      loading: 'جار تحميل الخيارات...',
+      unavailable: 'هذه القائمة غير متاحة الآن. رد في المحادثة بدلا من ذلك.',
+      findApp: 'ابحث عن تطبيق',
+      customColor: 'لون مخصص',
+      plugin: 'إضافة',
+      intent: { now: 'الآن', later: 'عند الحاجة', save: 'دوّنها فقط' }
+    },
+    startChat: {
+      starting: title => `جار بدء "${title}"...`,
+      startingUntitled: 'جار بدء محادثة...',
+      untitled: 'محادثة جديدة',
+      notStarted: 'لم تبدأ المحادثة',
+      inProfile: profile => `في ${profile}`,
+      open: 'فتح',
+      openFailed: 'تعذر فتح المحادثة'
+    },
     tool: {
       copyCode: 'نسخ الكود',
       renderingImage: 'جار عرض الصورة...',
@@ -3514,6 +3538,8 @@ export const ar = defineLocale({
           pending: 'جار البحث في سجل الجلسة',
           pendingAction: 'جار البحث'
         },
+        setup_choose: { done: 'طرح سؤال إعداد', pending: 'يطرح سؤال إعداد', pendingAction: 'يسأل' },
+        start_chat: { done: 'بدأ محادثة', pending: 'يبدأ محادثة', pendingAction: 'يبدأ' },
         terminal: {
           done: 'تم تشغيل الأمر',
           pending: 'جار تشغيل الأمر',

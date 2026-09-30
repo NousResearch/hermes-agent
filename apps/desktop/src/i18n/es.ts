@@ -5712,6 +5712,30 @@ export const esOverrides = {
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },
+    setupChoose: {
+      kinds: {
+        accent: 'Color de acento',
+        connectors: 'Apps',
+        layout: 'Diseño',
+        plugins: 'Plugins',
+        theme: 'Apariencia'
+      },
+      loading: 'Cargando opciones…',
+      unavailable: 'Esta lista no está disponible ahora. Responde en el chat.',
+      findApp: 'Buscar una app',
+      customColor: 'Color personalizado',
+      plugin: 'Plugin',
+      intent: { now: 'Ahora', later: 'Cuando haga falta', save: 'Solo anotarlo' }
+    },
+    startChat: {
+      starting: title => `Iniciando «${title}»…`,
+      startingUntitled: 'Iniciando un chat…',
+      untitled: 'Chat nuevo',
+      notStarted: 'El chat no se inició',
+      inProfile: profile => `En ${profile}`,
+      open: 'Abrir',
+      openFailed: 'No se pudo abrir el chat'
+    },
     catalogInstall: {
       preparing: 'Preparando la instalación…',
       install: 'Instalar',
@@ -5912,6 +5936,12 @@ export const esOverrides = {
           pending: 'Buscar en el historial de sesiones',
           pendingAction: 'Buscando'
         },
+        setup_choose: {
+          done: 'Hizo una pregunta de configuración',
+          pending: 'Haciendo una pregunta de configuración',
+          pendingAction: 'Preguntando'
+        },
+        start_chat: { done: 'Inició un chat', pending: 'Iniciando un chat', pendingAction: 'Iniciando' },
         terminal: {
           done: 'Comando ejecutado',
           pending: 'Ejecutar comando',

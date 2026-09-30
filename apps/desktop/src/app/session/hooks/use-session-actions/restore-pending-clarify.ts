@@ -1,4 +1,4 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type GatewayEventPayload, QUESTION_CARD_TOOLS } from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
@@ -26,7 +26,7 @@ export function restorePendingClarifyFromSnapshot(
   resumeStartedAt: number,
   requestIdAtStart?: string
 ): PendingClarifyResumeState {
-  const pending = (response.open_requests ?? []).find(entry => entry.method === 'clarify')
+  const pending = (response.open_requests ?? []).find(entry => QUESTION_CARD_TOOLS.has(entry.method))
 
   if (!pending) {
     const current = $clarifyRequests.get()[sessionId]
@@ -53,6 +53,20 @@ export function restorePendingClarifyFromSnapshot(
 }
 
 export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {
+  if (request.setup) {
+    return {
+      args: {
+        intent: request.setup.intent,
+        kind: request.setup.kind,
+        multi_select: request.setup.multiSelect,
+        options: request.setup.options ?? undefined,
+        question: request.questions[0]?.question
+      },
+      name: 'setup_choose',
+      tool_id: request.requestId
+    }
+  }
+
   return {
     args: {
       questions: request.questions.map(question => ({

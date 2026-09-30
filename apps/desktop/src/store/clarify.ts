@@ -1,3 +1,4 @@
+import type { SetupChooseKind, SetupChooseOption } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
@@ -10,6 +11,13 @@ export interface ClarifyQuestion {
   multiSelect: boolean
 }
 
+export interface SetupChooseSpec {
+  kind: SetupChooseKind
+  options: SetupChooseOption[] | null
+  multiSelect: boolean
+  intent: boolean
+}
+
 export interface ClarifyRequest {
   requestId: string
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
@@ -18,6 +26,7 @@ export interface ClarifyRequest {
   questions: ClarifyQuestion[]
   /** Answers already locked server-side (reconnect replay): qid → answer, null = skipped. */
   lockedAnswers?: Record<string, null | string>
+  setup?: SetupChooseSpec
 }
 
 /**
@@ -99,6 +108,37 @@ export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
   }
 
   return normalized
+}
+
+export const SETUP_CHOOSE_QID = 'setup_choose'
+
+const SETUP_CHOOSE_KINDS = new Set<unknown>(['accent', 'connectors', 'layout', 'plugins', 'question', 'theme'])
+
+export function normalizeSetupChoose(
+  params: Record<string, unknown>
+): Pick<ClarifyRequest, 'questions' | 'setup'> | null {
+  const question = typeof params.question === 'string' ? params.question.trim() : ''
+
+  if (!question || !SETUP_CHOOSE_KINDS.has(params.kind)) {
+    return null
+  }
+
+  const options =
+    Array.isArray(params.options) && params.options.length > 0 ? (params.options as SetupChooseOption[]) : null
+
+  const multiSelect = params.multi_select === true
+
+  return {
+    questions: [
+      {
+        choices: options ? options.map(option => option.label) : null,
+        multiSelect: multiSelect && options !== null,
+        qid: SETUP_CHOOSE_QID,
+        question
+      }
+    ],
+    setup: { intent: params.intent === true, kind: params.kind as SetupChooseKind, multiSelect, options }
+  }
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.

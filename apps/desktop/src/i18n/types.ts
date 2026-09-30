@@ -42,6 +42,8 @@ export type ToolTitleKey =
   | 'read_file'
   | 'search_files'
   | 'session_search_recall'
+  | 'setup_choose'
+  | 'start_chat'
   | 'terminal'
   | 'todo'
   | 'vision_analyze'
@@ -4429,6 +4431,24 @@ export interface Translations {
       confirmAndContinueLabel: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
+    }
+    setupChoose: {
+      kinds: Record<'accent' | 'connectors' | 'layout' | 'plugins' | 'theme', string>
+      loading: string
+      unavailable: string
+      findApp: string
+      customColor: string
+      plugin: string
+      intent: Record<'later' | 'now' | 'save', string>
+    }
+    startChat: {
+      starting: (title: string) => string
+      startingUntitled: string
+      untitled: string
+      notStarted: string
+      inProfile: (profile: string) => string
+      open: string
+      openFailed: string
     }
     catalogInstall: {
       preparing: string

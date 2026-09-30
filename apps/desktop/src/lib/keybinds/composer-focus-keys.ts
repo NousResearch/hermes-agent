@@ -122,7 +122,8 @@ export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
   }
 
   // "Other" is the row past the last choice, hence the +1.
-  const rows = Number(card.getAttribute('data-clarify-choices')) + 1
+  const rows =
+    Number(card.getAttribute('data-clarify-choices')) + (card.getAttribute('data-clarify-other') === 'false' ? 0 : 1)
 
   if (!Number.isFinite(rows)) {
     return false

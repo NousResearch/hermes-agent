@@ -6,19 +6,22 @@ import { useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
-import { sessionClarifyRequest } from '@/store/clarify'
+import { normalizeSetupChoose, sessionClarifyRequest } from '@/store/clarify'
 
 import { selectMessageRunning } from '../tool/fallback-model'
+import { parseMaybeObject } from '../tool/fallback-model/format'
 
 import { readClarifyArgs } from './parse'
 import { ClarifyToolPending } from './pending'
 import { ClarifyToolSettled } from './settled'
+import { SetupChoosePending } from './setup-pending'
+import { SetupChooseSettled } from './setup-settled'
 import { useUndeliveredClarify } from './use-undelivered'
 
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
-    return <ClarifyToolSettled {...props} />
+    return props.toolName === 'setup_choose' ? <SetupChooseSettled {...props} /> : <ClarifyToolSettled {...props} />
   }
 
   return <ClarifyToolLive {...props} />
@@ -29,8 +32,11 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
-  const request = useStore($request)
+  const setupCard = props.toolName === 'setup_choose'
+  const sessionRequest = useStore($request)
+  const request = sessionRequest && Boolean(sessionRequest.setup) === setupCard ? sessionRequest : null
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
+  const setupArgs = useMemo(() => normalizeSetupChoose(parseMaybeObject(props.args)), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
   // Answering clears the request a beat before `tool.complete` swaps in the
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
@@ -46,7 +52,14 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  return (
+  return setupCard ? (
+    <SetupChoosePending
+      fromArgs={setupArgs}
+      onAnswered={() => setAnswered(true)}
+      request={request}
+      undelivered={undelivered}
+    />
+  ) : (
     <ClarifyToolPending
       fromArgs={fromArgs}
       onAnswered={() => setAnswered(true)}

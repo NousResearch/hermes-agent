@@ -4102,6 +4102,30 @@ export const zhHant = defineLocale({
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
+    setupChoose: {
+      kinds: {
+        accent: '強調色',
+        connectors: '應用程式',
+        layout: '版面配置',
+        plugins: '外掛',
+        theme: '外觀'
+      },
+      loading: '正在載入選項…',
+      unavailable: '此清單暫時無法使用，請直接在聊天中回覆。',
+      findApp: '尋找應用程式',
+      customColor: '自訂顏色',
+      plugin: '外掛',
+      intent: { now: '現在', later: '需要時', save: '僅記下' }
+    },
+    startChat: {
+      starting: title => `正在啟動「${title}」…`,
+      startingUntitled: '正在啟動聊天…',
+      untitled: '新聊天',
+      notStarted: '聊天未能啟動',
+      inProfile: profile => `位於 ${profile}`,
+      open: '開啟',
+      openFailed: '無法開啟聊天'
+    },
     tool: {
       copyCode: '複製程式碼',
       renderingImage: '正在渲染圖片',
@@ -4187,6 +4211,8 @@ export const zhHant = defineLocale({
           pending: '正在搜尋工作階段歷史',
           pendingAction: '正在搜尋'
         },
+        setup_choose: { done: '已提出設定問題', pending: '正在提出設定問題', pendingAction: '正在提問' },
+        start_chat: { done: '已啟動聊天', pending: '正在啟動聊天', pendingAction: '正在啟動' },
         terminal: { done: '已執行指令', pending: '正在執行指令', pendingAction: '正在執行' },
         todo: { done: '已更新待辦', pending: '正在更新待辦', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析圖片', pending: '正在分析圖片', pendingAction: '正在分析' },

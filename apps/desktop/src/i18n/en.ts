@@ -5324,6 +5324,30 @@ export const en: Translations = {
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
     },
+    setupChoose: {
+      kinds: {
+        accent: 'Accent color',
+        connectors: 'Apps',
+        layout: 'Layout',
+        plugins: 'Plugins',
+        theme: 'Appearance'
+      },
+      loading: 'Loading options…',
+      unavailable: "This list isn't available right now. Reply in chat instead.",
+      findApp: 'Find an app',
+      customColor: 'Custom color',
+      plugin: 'Plugin',
+      intent: { now: 'Now', later: 'When needed', save: 'Just note it' }
+    },
+    startChat: {
+      starting: title => `Starting “${title}”…`,
+      startingUntitled: 'Starting a chat…',
+      untitled: 'New chat',
+      notStarted: "The chat didn't start",
+      inProfile: profile => `In ${profile}`,
+      open: 'Open',
+      openFailed: "Couldn't open the chat"
+    },
     catalogInstall: {
       preparing: 'Preparing the install…',
       install: 'Install',
@@ -5457,6 +5481,8 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
+        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
+        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },

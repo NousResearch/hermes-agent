@@ -10,6 +10,7 @@ interface ClarifyKeysOptions {
   onClear: (question: ClarifyQuestion) => void
   onConfirm: () => void
   onToggle: (question: ClarifyQuestion, choice: string) => void
+  other?: boolean
   questions: ClarifyQuestion[]
 }
 
@@ -20,13 +21,15 @@ export function useClarifyKeys({
   onClear,
   onConfirm,
   onToggle,
+  other = true,
   questions
 }: ClarifyKeysOptions) {
   const [cursor, setCursor] = useState({ question: 0, row: 0 })
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
-  const row = Math.min(cursor.row, choices.length)
+  const otherRows = other ? 1 : 0
+  const row = Math.min(cursor.row, choices.length - 1 + otherRows)
 
   const focusQuestion = useCallback(
     (index: number) => setCursor(current => (current.question === index ? current : { question: index, row: 0 })),
@@ -98,11 +101,11 @@ export function useClarifyKeys({
         onClear(active)
       }
 
-      const itemCount = choices.length + 1
+      const itemCount = choices.length + otherRows
 
       setCursor({ question: questionIndex, row: (row + delta + itemCount) % itemCount })
     },
-    [active, choices.length, onClear, questionIndex, row]
+    [active, choices.length, onClear, otherRows, questionIndex, row]
   )
 
   const activate = useCallback(() => {
@@ -142,7 +145,7 @@ export function useClarifyKeys({
       if (index < choices.length) {
         event.preventDefault()
         pick(questionIndex, index)
-      } else if (index === choices.length) {
+      } else if (other && index === choices.length) {
         event.preventDefault()
         focusOther(questionIndex)
       }
@@ -211,7 +214,7 @@ export function useClarifyKeys({
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activate, active, choices.length, enabled, focusOther, formRef, move, pick, questionIndex])
+  }, [activate, active, choices.length, enabled, focusOther, formRef, move, other, pick, questionIndex])
 
   return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, onOtherFocus, pick }
 }

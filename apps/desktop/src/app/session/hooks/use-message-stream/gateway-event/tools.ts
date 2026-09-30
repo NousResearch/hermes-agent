@@ -5,7 +5,8 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
-import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { $sessionStates, isSessionInForeground, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { markLiveStartChat, readStartChatResult } from '@/store/start-chat'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
@@ -99,6 +100,15 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       // Onboarding's first build paces its check-ins off real work done
       // (no-op in every other session).
       reportFirstBuildToolComplete(sessionId)
+
+      if (
+        !event.replayed &&
+        payload?.name === 'start_chat' &&
+        readStartChatResult(payload.result)?.status === 'started' &&
+        isSessionInForeground(storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+      ) {
+        markLiveStartChat(payload.tool_id || payload.tool_call_id || payload.id || '')
+      }
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })

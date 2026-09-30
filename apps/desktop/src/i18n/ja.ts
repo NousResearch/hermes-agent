@@ -3939,6 +3939,30 @@ export const ja = defineLocale({
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
     },
+    setupChoose: {
+      kinds: {
+        accent: 'アクセントカラー',
+        connectors: 'アプリ',
+        layout: 'レイアウト',
+        plugins: 'プラグイン',
+        theme: '外観'
+      },
+      loading: 'オプションを読み込み中…',
+      unavailable: 'このリストは現在利用できません。代わりにチャットで返信してください。',
+      findApp: 'アプリを検索',
+      customColor: 'カスタムカラー',
+      plugin: 'プラグイン',
+      intent: { now: '今すぐ', later: '必要なときに', save: 'メモだけ' }
+    },
+    startChat: {
+      starting: title => `「${title}」を開始中…`,
+      startingUntitled: 'チャットを開始中…',
+      untitled: '新しいチャット',
+      notStarted: 'チャットを開始できませんでした',
+      inProfile: profile => `${profile} 内`,
+      open: '開く',
+      openFailed: 'チャットを開けませんでした'
+    },
     tool: {
       copyCode: 'コードをコピー',
       renderingImage: '画像をレンダリング中',
@@ -4048,6 +4072,8 @@ export const ja = defineLocale({
           pending: 'セッション履歴を検索中',
           pendingAction: '検索中'
         },
+        setup_choose: { done: '設定の質問をしました', pending: '設定の質問をしています', pendingAction: '質問中' },
+        start_chat: { done: 'チャットを開始しました', pending: 'チャットを開始中', pendingAction: '開始中' },
         terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
         todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
         vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },

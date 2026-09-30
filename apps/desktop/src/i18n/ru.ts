@@ -4061,6 +4061,30 @@ export const ru = defineLocale({
       notDelivered:
         'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
     },
+    setupChoose: {
+      kinds: {
+        accent: 'Акцентный цвет',
+        connectors: 'Приложения',
+        layout: 'Раскладка',
+        plugins: 'Плагины',
+        theme: 'Оформление'
+      },
+      loading: 'Загружаю варианты…',
+      unavailable: 'Этот список сейчас недоступен. Ответьте в чате.',
+      findApp: 'Найти приложение',
+      customColor: 'Свой цвет',
+      plugin: 'Плагин',
+      intent: { now: 'Сейчас', later: 'Когда понадобится', save: 'Просто запомнить' }
+    },
+    startChat: {
+      starting: title => `Запускаю «${title}»…`,
+      startingUntitled: 'Запускаю чат…',
+      untitled: 'Новый чат',
+      notStarted: 'Чат не запустился',
+      inProfile: profile => `В ${profile}`,
+      open: 'Открыть',
+      openFailed: 'Не удалось открыть чат'
+    },
     catalogInstall: {
       preparing: 'Готовим установку…',
       install: 'Установить',
@@ -4203,6 +4227,12 @@ export const ru = defineLocale({
           pending: 'Ищу в истории сеансов',
           pendingAction: 'Ищу'
         },
+        setup_choose: {
+          done: 'Задан вопрос о настройке',
+          pending: 'Задаю вопрос о настройке',
+          pendingAction: 'Спрашиваю'
+        },
+        start_chat: { done: 'Чат запущен', pending: 'Запускаю чат', pendingAction: 'Запускаю' },
         terminal: { done: 'Команда выполнена', pending: 'Выполняю команду', pendingAction: 'Выполняю' },
         todo: { done: 'Todo обновлены', pending: 'Обновляю todo', pendingAction: 'Обновляю' },
         vision_analyze: {

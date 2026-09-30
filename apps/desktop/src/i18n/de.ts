@@ -5719,6 +5719,30 @@ export const deOverrides = {
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },
+    setupChoose: {
+      kinds: {
+        accent: 'Akzentfarbe',
+        connectors: 'Apps',
+        layout: 'Layout',
+        plugins: 'Plugins',
+        theme: 'Erscheinungsbild'
+      },
+      loading: 'Optionen werden geladen…',
+      unavailable: 'Diese Liste ist gerade nicht verfügbar. Antworten Sie stattdessen im Chat.',
+      findApp: 'App suchen',
+      customColor: 'Eigene Farbe',
+      plugin: 'Plugin',
+      intent: { now: 'Jetzt', later: 'Bei Bedarf', save: 'Nur merken' }
+    },
+    startChat: {
+      starting: title => `„${title}“ wird gestartet…`,
+      startingUntitled: 'Chat wird gestartet…',
+      untitled: 'Neuer Chat',
+      notStarted: 'Der Chat wurde nicht gestartet',
+      inProfile: profile => `In ${profile}`,
+      open: 'Öffnen',
+      openFailed: 'Der Chat konnte nicht geöffnet werden'
+    },
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',
       install: 'Installieren',
@@ -5919,6 +5943,12 @@ export const deOverrides = {
           pending: 'Durchsucht Session-Verlauf',
           pendingAction: 'Durchsucht'
         },
+        setup_choose: {
+          done: 'Einrichtungsfrage gestellt',
+          pending: 'Stellt eine Einrichtungsfrage',
+          pendingAction: 'Fragt'
+        },
+        start_chat: { done: 'Chat gestartet', pending: 'Startet einen Chat', pendingAction: 'Startet' },
         terminal: {
           done: 'Befehl ausgeführt',
           pending: 'Führt Befehl aus',

@@ -1798,6 +1798,26 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _sender_identity(event: MessageEvent) -> tuple[str, ...] | None:
+    source = getattr(event, "source", None)
+    if source is None:
+        return None
+    platform = _platform_name(getattr(source, "platform", None))
+    sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+    if sender:
+        return (platform, str(sender))
+    if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
+        return (platform, "dm", str(source.chat_id))
+    return None
+
+
+def same_message_sender(first: MessageEvent, second: MessageEvent) -> bool:
+    """Whether two events come from one known sender: the same platform user, or the same DM chat
+    when the platform gives no user ID."""
+    sender = _sender_identity(first)
+    return sender is not None and sender == _sender_identity(second)
+
+
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -3845,20 +3865,7 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def _same_text_debounce_sender(existing: MessageEvent, event: MessageEvent) -> bool:
         """Return True when two text debounce events came from the same sender."""
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
+        return same_message_sender(existing, event)
 
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""

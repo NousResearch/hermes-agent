@@ -1,7 +1,5 @@
 import type { ClientSessionState } from '@/app/types'
-import { toChatMessages } from '@/lib/chat-messages'
-
-import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
+import { finalizeInterruptedMessages, toChatMessages } from '@/lib/chat-messages'
 
 import type { GatewayEventContext } from './types'
 

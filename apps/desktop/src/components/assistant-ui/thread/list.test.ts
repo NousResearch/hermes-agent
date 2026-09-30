@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { toChatMessages } from '@/lib/chat-messages'
+
 import {
   buildGroups,
   firstVisibleGroupIndex,
@@ -16,6 +18,7 @@ import {
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
+  threadStructureSignature,
   transcriptPaneBudget
 } from './list'
 
@@ -180,6 +183,23 @@ describe('buildGroups', () => {
     const groups = buildGroups('0:a:assistant:0')
 
     expect(groups).toEqual([{ id: 'a', index: 0, kind: 'standalone', weight: 1 }])
+  })
+
+  it('groups persisted rows by their durable ids', () => {
+    // The structural signature is `index:id:role`, so a persisted message id
+    // must never carry a `:` or every row degrades to a standalone group.
+    const messages = toChatMessages([
+      { content: 'question', id: 7, role: 'user', timestamp: 1 },
+      { content: 'answer', id: 8, role: 'assistant', timestamp: 2 }
+    ])
+
+    const groups = buildGroups(
+      threadStructureSignature(
+        messages.map(message => ({ content: message.parts, id: message.id, role: message.role }))
+      )
+    )
+
+    expect(groups).toEqual([{ id: messages[0].id, indices: [0, 1], kind: 'turn', weight: 2 }])
   })
 })
 

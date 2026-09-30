@@ -2,11 +2,18 @@ import { useAuiState, useMessageRuntime } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MouseEvent, useCallback } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { QUICK_REACTIONS, toggleMessageReaction } from '@/store/reactions'
 import { $reactionsEnabled } from '@/store/reactions-enabled'
-import { $agentReactions, $localReactions, mergeReactions, setLocalReaction } from '@/store/reactions-local'
+import {
+  $agentReactions,
+  $localReactions,
+  localReactionKey,
+  mergeReactions,
+  setLocalReaction
+} from '@/store/reactions-local'
 import type { MessageReaction } from '@/types/hermes'
 
 // Stable empty identity — a fresh [] per render would re-run every consumer.
@@ -37,6 +44,7 @@ export function isTapbackDoubleClick(event: { detail: number; target: EventTarge
 
 /** Paint the tapback locally, then persist behind it. */
 function commitReaction(
+  localKey: string,
   messageId: string,
   role: ChatMessage['role'],
   rowId: number | undefined,
@@ -45,7 +53,7 @@ function commitReaction(
 ): void {
   // Flip the UI immediately — a tapback is direct manipulation and must never
   // wait on a round-trip. Persistence follows in the background.
-  setLocalReaction(messageId, emoji)
+  setLocalReaction(localKey, emoji)
   void toggleMessageReaction({ id: messageId, role, rowId, reactions } as ChatMessage, emoji)
 }
 
@@ -79,16 +87,17 @@ export function useMessageReactions(
   })
 
   const enabled = useStore($reactionsEnabled)
+  const localKey = localReactionKey(useStore(useSessionView().$storedId), messageId)
   const localAll = useStore($localReactions)
   const agentLive = useStore($agentReactions)
 
   return {
     enabled,
     react: useCallback(
-      (emoji: null | string) => commitReaction(messageId, role, rowId, reactions, emoji),
-      [messageId, reactions, role, rowId]
+      (emoji: null | string) => commitReaction(localKey, messageId, role, rowId, reactions, emoji),
+      [localKey, messageId, reactions, role, rowId]
     ),
-    reactions: mergeReactions(reactions, localAll[messageId], rowId === undefined ? undefined : agentLive[rowId])
+    reactions: mergeReactions(reactions, localAll[localKey], rowId === undefined ? undefined : agentLive[rowId])
   }
 }
 
@@ -106,6 +115,7 @@ export function useTapbackDoubleClick(
   role: ChatMessage['role']
 ): ((event: MouseEvent<HTMLElement>) => void) | undefined {
   const enabled = useStore($reactionsEnabled)
+  const $storedId = useSessionView().$storedId
   const messageRuntime = useMessageRuntime()
 
   const onDoubleClick = useCallback(
@@ -127,11 +137,14 @@ export function useTapbackDoubleClick(
       const reactions = custom.reactions ?? EMPTY_REACTIONS
 
       // Same toggle semantics as the picker: a second double-click retracts.
-      const mine = mergeReactions(reactions, $localReactions.get()[messageId]).find(
+      const localKey = localReactionKey($storedId.get(), messageId)
+
+      const mine = mergeReactions(reactions, $localReactions.get()[localKey]).find(
         reaction => reaction.author === 'user'
       )
 
       commitReaction(
+        localKey,
         messageId,
         role,
         custom.rowId,
@@ -139,7 +152,7 @@ export function useTapbackDoubleClick(
         mine?.emoji === DOUBLE_CLICK_REACTION ? null : DOUBLE_CLICK_REACTION
       )
     },
-    [messageId, messageRuntime, role]
+    [$storedId, messageId, messageRuntime, role]
   )
 
   return enabled ? onDoubleClick : undefined

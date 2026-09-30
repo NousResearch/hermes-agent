@@ -272,6 +272,13 @@ interface ThreadMessageListProps {
 // Group each user message with the assistant turn(s) that follow it so the
 // human bubble can `position: sticky` against the scroller across its whole
 // turn (see StickyHumanMessageContainer in thread.tsx).
+/** The `index:id:role` rows `buildGroups` parses — ids must never carry a `:`. */
+export function threadStructureSignature(
+  messages: readonly { id: string; metadata?: { custom?: Record<string, unknown> }; role: string; content: unknown }[]
+): string {
+  return messages.map((message, index) => `${index}:${message.id}:${responseMessageRole(message)}`).join('\n')
+}
+
 export function buildGroups(signature: string): MessageGroup[] {
   if (!signature) {
     return []
@@ -475,9 +482,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // new resetKey per appended part, which reconciled every turn's subtree on
   // every tick (measured: 540 wasted Block renders per explain() sample with
   // two threads streaming).
-  const structuralSignature = useAuiState(s =>
-    s.thread.messages.map((message, index) => `${index}:${message.id}:${responseMessageRole(message)}`).join('\n')
-  )
+  const structuralSignature = useAuiState(s => threadStructureSignature(s.thread.messages))
 
   const weightSignature = useAuiState(s =>
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')

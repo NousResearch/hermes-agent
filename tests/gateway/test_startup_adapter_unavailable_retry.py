@@ -500,3 +500,108 @@ async def test_reservation_released_when_retry_loop_exits(monkeypatch, tmp_path)
         assert runner._secondary_queued_claims.get(claim) == "prof3"
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_racing_retries_credential_change_selects_one_owner(monkeypatch, tmp_path):
+    """ehz0ah round 5: two secondaries queued with DISTINCT credentials both reconfigure to ONE
+    shared credential while their retries are pending. The queue still reserves the old tokens,
+    so attempt-time arbitration sees no owner for the new one and — the check not being atomic
+    with connect() — BOTH retries connect the same bot. The attempt must move its reservation to
+    the current credential and refuse the loser BEFORE awaiting connect(): exactly one connects,
+    the other stops terminally, and the winner's stale old-credential reservation is released."""
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+
+        tokens = {"prof2": "tok-old-a", "prof3": "tok-old-b"}
+
+        async def _load_cfg(name, home):
+            return SimpleNamespace(
+                platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token=tokens[name])})
+
+        async def _parked(*args, **kwargs):
+            return None, False  # plugin still missing: hold the backoff loop
+
+        monkeypatch.setattr(runner, "_load_secondary_profile_config", _load_cfg)
+        monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
+        monkeypatch.setattr(runner, "_secondary_reconnect_attempt", _parked)
+
+        async def _held(*args, **kwargs):
+            await asyncio.Event().wait()  # parked until cancelled at runner.stop()
+
+        monkeypatch.setattr(runner, "_run_secondary_profile_reconnect", _held)
+        runner._running = True
+        claimed = runner._primary_resource_claims("default")
+        await runner._start_one_profile_adapters("prof2", tmp_path, claimed)
+        await runner._start_one_profile_adapters("prof3", tmp_path, claimed)
+        claim_a = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="tok-old-a"))
+        claim_b = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="tok-old-b"))
+        assert runner._secondary_queued_claims.get(claim_a) == "prof2"
+        assert runner._secondary_queued_claims.get(claim_b) == "prof3"
+
+        # Both profiles reconfigure to ONE shared credential while queued; the plugin returns.
+        import contextlib
+
+        import gateway.run as gateway_run
+
+        @contextlib.contextmanager
+        def _fake_scope(profile_home, *, hydrate_secrets=True):
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _fake_scope)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: tmp_path)
+        monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: None)
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: SimpleNamespace(
+                platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok-new-shared")}),
+        )
+
+        def _create(platform, cfg):
+            adapter = _HealthyAdapter()
+            adapter.token = "tok-new-shared"
+            adapter.config.token = "tok-new-shared"
+            return adapter
+
+        monkeypatch.setattr(runner, "_create_adapter", _create)
+        monkeypatch.setattr(runner, "_configure_profile_adapter",
+                            lambda adapter, profile, platform: None)
+        # Hold both connects at one gate so a non-atomic check lets BOTH attempts through before
+        # either adapter goes live (the exact interleaving ehz0ah reproduced).
+        gate = asyncio.Event()
+
+        async def _gated_connect(adapter, platform, is_reconnect=False):
+            await gate.wait()
+            return await adapter.connect(is_reconnect=is_reconnect)
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _gated_connect)
+
+        real_attempt = GatewayRunner._secondary_reconnect_attempt
+        task2 = asyncio.create_task(real_attempt(runner, "prof2", Platform.TELEGRAM))
+        task3 = asyncio.create_task(real_attempt(runner, "prof3", Platform.TELEGRAM))
+        await asyncio.sleep(0.2)  # both attempts reach the check / the gate
+        gate.set()
+        result2, result3 = await asyncio.gather(task2, task3)
+
+        winners = {"prof2": result2, "prof3": result3}
+        connected = [name for name, (adapter, success) in winners.items()
+                     if adapter is not None and success]
+        stopped = [name for name, result in winners.items() if result == (None, None)]
+        assert len(connected) == 1, \
+            f"one credential, one owner: exactly one racing retry may connect, got {connected}"
+        assert stopped == [name for name in winners if name not in connected], \
+            "the losing retry must stop terminally, not connect a second poller"
+        winner = connected[0]
+        claim_new = runner._config_credential_claim(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="tok-new-shared"))
+        assert runner._secondary_queued_claims.get(claim_new) == winner, \
+            "the winner must hold the reservation on the CURRENT credential before connecting"
+        stale = claim_a if winner == "prof2" else claim_b
+        assert stale not in runner._secondary_queued_claims, \
+            "moving the reservation releases the credential the profile no longer uses"
+        await runner._safe_adapter_disconnect(winners[winner][0], Platform.TELEGRAM)
+    finally:
+        await runner.stop()

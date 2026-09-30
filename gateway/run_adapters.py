@@ -1462,6 +1462,14 @@ class GatewayAdapterLifecycleMixin:
             if credential_claim is not None:
                 from hermes_cli.profiles import get_active_profile_name
                 active = getattr(self, "_primary_profile_name", None) or get_active_profile_name() or "default"
+                # The check AND the reservation move are one synchronous block — no await
+                # between them, so two racing retries cannot both pass (#126749 review round 5):
+                # the queue reserved the credential the profile had at SCAN time, which may be
+                # stale (two queued profiles can reconfigure from distinct tokens to one shared
+                # token while waiting). The first attempt to run this block moves its
+                # reservation to the CURRENT credential; the second sees that reservation as the
+                # owner and stops — the ownership decision is made before either connect()
+                # awaits, so the check-plus-connect gap cannot admit two pollers.
                 owner = self._live_resource_claims(active).get(credential_claim)
                 if owner is not None and owner != profile_name:
                     logger.error(
@@ -1469,6 +1477,11 @@ class GatewayAdapterLifecycleMixin:
                         "(one credential cannot be consumed twice)", platform.value, owner,
                     )
                     return None, None
+                reservations = self._queued_secondary_claims()
+                for held in [c for c, holder in reservations.items()
+                             if holder == profile_name and c[0] == platform]:
+                    reservations.pop(held, None)
+                reservations[credential_claim] = profile_name
             carry_inbound_dedup(inbound_dedup, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)

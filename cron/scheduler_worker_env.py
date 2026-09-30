@@ -9,22 +9,18 @@ editable install maps a moved/deleted checkout -- the worker then dies with
 
 The shared subprocess sanitizer strips Hermes-owned PYTHONPATH entries because user
 children must not see our tree. This child IS Hermes, so the pin is applied *after* the
-env is built, on the sanitized env. On a self-managed (shell-installer / PM) install the
-sanitizer's drop of the runtime site-packages cannot stand this time: the worker inherits
-this process's interpreter, which is PM's store Python and owns no third-party
-dependencies, so the committed generation's site-packages is restored here too or the
-child dies at its first dependency import (``No module named 'ruamel'``, #122222) before
-it can publish its ownership acknowledgement.
+env is built, on the sanitized env. If a gateway was launched by a bare interpreter
+with its dependencies supplied by an external managed venv via PYTHONPATH, the worker
+also needs that already-loaded dependency tree: the sanitizer strips it, and the bare
+interpreter otherwise dies importing ruamel before acknowledging ownership.
 """
 
 from __future__ import annotations
 
-import logging
 import os
+import sys
 import sysconfig
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 
 def _installed_purelib() -> Path | None:
@@ -34,52 +30,43 @@ def _installed_purelib() -> Path | None:
         return None
 
 
-def _committed_dependency_site_packages(project_root: Path) -> Path | None:
-    """The dependency ``site-packages`` PM committed for this install, or ``None``.
+def _gateway_dependency_path(repo_root: Path) -> str | None:
+    """Find the external runtime that supplied this already-imported Hermes process.
 
-    Asked of PM's own committed selection -- the record ``activate_dependencies`` resolves
-    at process boot -- rather than re-derived from this process's ``sys.path``: the record
-    belongs to this install (``install_state_dir``, shared by every profile it serves). A
-    runner that owns its dependencies (wheel / pipx / developer venv / Nix: no committed
-    generation) has nothing to restore, so ``None`` means "pin the tree only" and nothing
-    is invented.
+    Only a bare interpreter needs this bridge. A venv has its dependencies on its
+    own sys.path, and adding another venv's site-packages can mix binary wheels.
+    The path must be a *pre-existing* sys.path entry and contain the dependency we
+    need, never a path invented from VIRTUAL_ENV or blindly copied from the launcher.
     """
+    if sys.prefix != sys.base_prefix:
+        return None
     try:
-        from pm.environments import committed_venv, site_packages
-
-        environment = committed_venv(project_root)
-    except Exception as exc:
-        # An unreadable record: pin the tree only. The cron worker's own boot re-reads it and
-        # fails the dispatch with PM's error.
-        logger.warning(
-            "cron worker: could not read the committed dependency environment: %s", exc
-        )
+        import ruamel.yaml
+    except ImportError:
         return None
-    if environment is None:
-        return None
-    selected = site_packages(environment)
-    return selected if selected.is_dir() else None
+    origin = Path(ruamel.yaml.__file__).resolve()
+    for entry in sys.path:
+        if not entry:
+            continue
+        candidate = Path(entry).resolve()
+        if candidate == repo_root.resolve() or candidate == _installed_purelib():
+            continue
+        if candidate.is_dir() and origin.is_relative_to(candidate):
+            return str(candidate)
+    return None
 
 
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
-    """Prepend ``repo_root`` -- and, when this runner has one, the committed dependency
-    generation's ``site-packages`` -- to the worker env's own PYTHONPATH (never
-    ``os.environ``'s).
+    """Pin checkout and, for bare-interpreter gateways, its loaded dependency tree.
 
-    Skipped when ``repo_root`` is the interpreter's ``purelib``: under a wheel / pipx /
-    uv-tool install ``cron/`` lives in site-packages itself, which is already importable,
-    and pinning it would move site-packages ahead of the stdlib on ``sys.path``.
-
-    Order (checkout, generation, sanitizer-kept) mirrors ``activate_dependencies``' own
-    ``sys.path``. For the cron worker, its boot (``cron/worker_bootstrap.py``) then re-selects
-    and leases the committed generation before any third-party import, and exits the worker
-    if it cannot.
+    Operates on the sanitized worker env only; never restore unrelated launcher paths.
+    A wheel/pipx checkout already in purelib must not hoist site-packages above stdlib.
     """
     root = str(repo_root)
     if _installed_purelib() == Path(root).resolve():
         return worker_env
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
-    dependency = _committed_dependency_site_packages(Path(root))
-    pinned = [root, *([str(dependency)] if dependency is not None else [])]
-    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([*pinned, *existing]))
+    dependency_path = _gateway_dependency_path(repo_root)
+    pinned = [root, *([dependency_path] if dependency_path else []), *existing]
+    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pinned))
     return worker_env

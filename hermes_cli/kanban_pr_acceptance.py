@@ -153,7 +153,7 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
 
 
 def fetch_pr_review_state(pr_url: str) -> dict:
-    """``{"review_decision", "state", "merged"}`` for the PR named by
+    """``{"review_decision", "state", "merged", "head_sha"}`` for the PR named by
     ``pr_url`` (``https://github.com/OWNER/REPO/pull/N``), or
     ``{"error": ...}`` on any failure (auth, network, malformed url) --
     never raises, so a dispatcher tick calling this in a loop can't be
@@ -171,7 +171,7 @@ def fetch_pr_review_state(pr_url: str) -> dict:
     repo, number = match[1], int(match[2])
     owner, name = repo.split("/")
     query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){
-        state reviewDecision merged}}}''' % (json.dumps(owner), json.dumps(name), number)
+        state reviewDecision merged headRefOid}}}''' % (json.dumps(owner), json.dumps(name), number)
     try:
         data = _api("graphql", query=query)["data"]["repository"]["pullRequest"]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
@@ -180,6 +180,7 @@ def fetch_pr_review_state(pr_url: str) -> dict:
         "review_decision": data.get("reviewDecision"),
         "state": data.get("state"),
         "merged": bool(data.get("merged")),
+        "head_sha": data.get("headRefOid"),
     }
 
 

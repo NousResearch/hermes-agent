@@ -130,3 +130,142 @@ def test_fetch_pr_review_state_rejects_malformed_url():
 
     result = fetch_pr_review_state("not-a-url")
     assert "error" in result
+
+
+def test_active_pr_recovery_routes_terminal_pr_to_recovery_block(conn):
+    """A closed linked PR is authoritative lifecycle evidence, unlike prose."""
+    task_id = kb.create_task(conn, title="terminal PR", assignee="builder")
+    kb.add_comment(conn, task_id, author="builder", body=f"Opened {PR_URL}")
+
+    recovered = kbd.reconcile_active_pr_recoveries(
+        conn,
+        enabled=True,
+        query_fn=lambda _url: {
+            "state": "CLOSED", "merged": False, "review_decision": None,
+            "head_sha": "a" * 40,
+        },
+    )
+
+    assert recovered == [{"id": task_id, "reason": "pr_terminal", "pr_url": PR_URL}]
+    task = kb.get_task(conn, task_id)
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    assert "active_pr_recovered" in [event.kind for event in kb.list_events(conn, task_id)]
+
+
+def test_active_pr_recovery_routes_distinct_exact_sha_verdict_to_review(conn):
+    """Only a distinct reviewer plus the matching recorded head can release it."""
+    task_id = kb.create_task(conn, title="reviewed PR", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+        metadata={"head_sha": "a" * 40},
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    assert kb.request_changes(
+        conn, task_id, reason="reconcile current PR", expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    kb.add_comment(conn, task_id, author="builder", body=f"Pushed {PR_URL}")
+
+    recovered = kbd.reconcile_active_pr_recoveries(
+        conn,
+        enabled=True,
+        query_fn=lambda _url: {
+            "state": "OPEN", "merged": False, "review_decision": "CHANGES_REQUESTED",
+            "head_sha": "a" * 40,
+        },
+    )
+
+    assert recovered == [{
+        "id": task_id, "reason": "distinct_exact_sha_review_verdict", "pr_url": PR_URL,
+    }]
+    task = kb.get_task(conn, task_id)
+    assert (task.status, task.assignee) == ("review", "reviewer")
+    assert kbd.check_respawn_guard(conn, task_id, lane="review") is None
+
+
+def test_active_pr_recovery_binds_verdict_to_matching_review_round(conn):
+    """A current older SHA must not adopt a later review round's reviewer."""
+    task_id = kb.create_task(conn, title="two review rounds", assignee="builder")
+    first_implementation = kb.claim_task(conn, task_id)
+    assert first_implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer_a",
+        expected_run_id=first_implementation.current_run_id,
+        metadata={"head_sha": "a" * 40},
+    )
+    first_review = kb.claim_review_task(conn, task_id)
+    assert first_review is not None
+    assert kb.request_changes(
+        conn, task_id, reason="first round", expected_run_id=first_review.current_run_id,
+    ) == (True, "builder")
+
+    second_implementation = kb.claim_task(conn, task_id)
+    assert second_implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer_b",
+        expected_run_id=second_implementation.current_run_id,
+        metadata={"head_sha": "b" * 40},
+    )
+    second_review = kb.claim_review_task(conn, task_id)
+    assert second_review is not None
+    assert kb.request_changes(
+        conn, task_id, reason="second round", expected_run_id=second_review.current_run_id,
+    ) == (True, "builder")
+    kb.add_comment(conn, task_id, author="builder", body=f"Pushed {PR_URL}")
+
+    recovered = kbd.reconcile_active_pr_recoveries(
+        conn,
+        enabled=True,
+        query_fn=lambda _url: {
+            "state": "OPEN", "merged": False, "review_decision": "CHANGES_REQUESTED",
+            "head_sha": "a" * 40,
+        },
+    )
+
+    assert recovered == [{
+        "id": task_id, "reason": "distinct_exact_sha_review_verdict", "pr_url": PR_URL,
+    }]
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert (task.status, task.assignee) == ("review", "reviewer_a")
+
+
+def test_active_pr_recovery_rejects_stale_review_sha(conn):
+    """A review attached to an old head cannot unlock a newer PR head."""
+    task_id = kb.create_task(conn, title="stale review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+        metadata={"head_sha": "a" * 40},
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    assert kb.request_changes(
+        conn, task_id, reason="old head", expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    kb.add_comment(conn, task_id, author="builder", body=f"Pushed {PR_URL}")
+
+    assert kbd.reconcile_active_pr_recoveries(
+        conn,
+        enabled=True,
+        query_fn=lambda _url: {
+            "state": "OPEN", "merged": False, "review_decision": "APPROVED",
+            "head_sha": "b" * 40,
+        },
+    ) == []
+    assert kb.get_task(conn, task_id).status == "ready"
+    assert kbd.check_respawn_guard(conn, task_id) == "active_pr"

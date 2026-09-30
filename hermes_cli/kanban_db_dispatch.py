@@ -1065,6 +1065,107 @@ def detect_stale_pr_review_ready(
     return escalated
 
 
+def _active_pr_comment(conn: sqlite3.Connection, task_id: str, cutoff: int):
+    """Newest recent PR announcement for ``task_id``, or ``None``.
+
+    Comments discover the link only; they never establish a review or merge
+    outcome.  Those facts are persisted below from an authoritative query.
+    """
+    for comment in conn.execute(
+        "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC", (task_id, cutoff),
+    ).fetchall():
+        body = _kb._lossy_text(comment["body"])
+        match = _RESPAWN_GUARD_PR_URL_RE.search(body or "")
+        if match:
+            return match.group(0)
+    return None
+
+
+def _distinct_exact_sha_review_verdict(conn: sqlite3.Connection, task_id: str, head_sha: str):
+    """Return a distinct reviewer only for a durable same-card exact-SHA verdict."""
+    reviews = conn.execute(
+        "SELECT e.id, e.payload, r.metadata FROM task_events e "
+        "LEFT JOIN task_runs r ON r.id = e.run_id "
+        "WHERE e.task_id = ? AND e.kind = 'review_requested' ORDER BY e.id DESC",
+        (task_id,),
+    ).fetchall()
+    for review in reviews:
+        payload = _kb._json_dict(review["payload"])
+        if _kb._json_dict(review["metadata"]).get("head_sha") != head_sha:
+            continue
+        verdict = conn.execute(
+            "SELECT c.payload FROM task_events c WHERE c.task_id = ? "
+            "AND c.kind = 'changes_requested' AND c.id > ? "
+            "AND NOT EXISTS (SELECT 1 FROM task_events later "
+            "WHERE later.task_id = c.task_id AND later.kind = 'review_requested' "
+            "AND later.id > ? AND later.id < c.id) "
+            "ORDER BY c.id DESC LIMIT 1",
+            (task_id, review["id"], review["id"]),
+        ).fetchone()
+        reviewer = _kb._json_dict(verdict["payload"] if verdict else None).get("reviewer")
+        if isinstance(reviewer, str) and reviewer.strip() and reviewer != payload.get("implementer"):
+            return reviewer
+    return None
+
+
+def reconcile_active_pr_recoveries(
+    conn: sqlite3.Connection, *, enabled: bool = False, query_fn=None,
+) -> list[dict]:
+    """Route objectively resolved ready ``active_pr`` cards out of ``ready``.
+
+    This opt-in network reconciliation retains the duplicate-PR guard for
+    ordinary ready work.  It accepts only durable facts: a terminal linked PR,
+    or a distinct-profile lifecycle verdict recorded against the exact current
+    head SHA.  Terminal PRs enter the recovery block; reviewed PRs return to
+    the reviewer lane, never a blind implementer respawn.
+    """
+    if not enabled:
+        return []
+    if query_fn is None:
+        from hermes_cli.kanban_pr_acceptance import fetch_pr_review_state as query_fn
+    now = int(time.time())
+    recovered: list[dict] = []
+    for row in conn.execute("SELECT id FROM tasks WHERE status = 'ready'").fetchall():
+        task_id = row["id"]
+        pr_url = _active_pr_comment(conn, task_id, now - _RESPAWN_GUARD_PR_WINDOW)
+        if not pr_url:
+            continue
+        state = query_fn(pr_url)
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "pr_review_checked", {"pr_url": pr_url, **state})
+        if state.get("error"):
+            continue
+        if state.get("merged") or state.get("state") in {"MERGED", "CLOSED"}:
+            if _kb.block_task(
+                conn, task_id,
+                reason=f"linked PR is {state.get('state') or 'merged'}; reconcile before rework",
+                kind="needs_input",
+            ):
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "active_pr_recovered", {
+                        "pr_url": pr_url, "reason": "pr_terminal", "state": state.get("state"),
+                        "head_sha": state.get("head_sha"),
+                    })
+                recovered.append({"id": task_id, "reason": "pr_terminal", "pr_url": pr_url})
+            continue
+        head_sha = state.get("head_sha")
+        reviewer = _distinct_exact_sha_review_verdict(conn, task_id, head_sha) if isinstance(head_sha, str) else None
+        if reviewer and _kb.request_review(
+            conn, task_id,
+            summary=("Active-PR recovery: a durable distinct-profile review verdict exists for "
+                     f"the current head {head_sha}; reconcile the PR without re-running implementation."),
+            reviewer=reviewer,
+        ):
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "active_pr_recovered", {
+                    "pr_url": pr_url, "reason": "distinct_exact_sha_review_verdict",
+                    "head_sha": head_sha, "reviewer": reviewer,
+                })
+            recovered.append({"id": task_id, "reason": "distinct_exact_sha_review_verdict", "pr_url": pr_url})
+    return recovered
+
+
 def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     """Requeue ``running`` cards with broken claim bookkeeping; returns their ids.
 
@@ -2414,6 +2515,7 @@ def _run_reclaim_phase(
     result.pr_review_ready = detect_stale_pr_review_ready(
         conn, enabled=pr_review_wakeup_enabled,
     )
+    reconcile_active_pr_recoveries(conn, enabled=pr_review_wakeup_enabled)
     result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.

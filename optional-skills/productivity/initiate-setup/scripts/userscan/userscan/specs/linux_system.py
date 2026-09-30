@@ -751,21 +751,17 @@ _IMPERIAL = ("US", "LR", "MM")
 @lp("locale.user", level="L1", family="locale")
 def locale_user(h, facts):
     """User format locale (Plasma Formats, then /etc/default/locale, then env) with date/time formats."""
-    import locale as _locale
     chosen, src = _user_locale()
     if not chosen:
         return None
     d = {"present": True, "locale": _bcp47(chosen), "LocaleName": _bcp47(chosen), "raw": chosen, "sources": src}
-    try:
-        old = _locale.setlocale(_locale.LC_TIME)
-        try:
-            _locale.setlocale(_locale.LC_TIME, chosen)
-            d["short_date"] = _locale.nl_langinfo(_locale.D_FMT)
-            d["time_format"] = _locale.nl_langinfo(_locale.T_FMT)
-        finally:
-            _locale.setlocale(_locale.LC_TIME, old)
-    except (_locale.Error, AttributeError):
-        pass
+    # A child reads the formats: setlocale() is process-wide and this can run inside the Hermes
+    # backend. `locale` falls back to C formats for a locale that is not installed, so check first.
+    norm = lambda s: s.strip().lower().replace("-", "")
+    if norm(chosen) in {norm(n) for n in (h.run(["locale", "-a"]) or "").splitlines()}:
+        fmts = (h.run(["locale", "d_fmt", "t_fmt"], env={"LC_ALL": chosen}) or "").splitlines()
+        if len(fmts) == 2:
+            d["short_date"], d["time_format"] = fmts
     tf = d.get("time_format") or ""
     d["clock_24h"] = ("%H" in tf or "%T" in tf) if tf else None
     country = (d["locale"] or "").split("-")[-1]

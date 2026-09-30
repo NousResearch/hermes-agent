@@ -28,7 +28,7 @@ class AggregateHostAccess(HostAccess):
     def copy_locked(self, path, dst_name=None, allow_vss=False):
         return None, "blocked"
 
-    def run(self, args, timeout_ms=5000, text=True):
+    def run(self, args, timeout_ms=5000, text=True, env=None):
         return None
 
     def powershell(self, script, timeout_ms=8000):

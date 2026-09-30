@@ -250,13 +250,13 @@ class HostAccess:
         return None, "failed"
 
     # -- powershell / subprocess -------------------------------------
-    def run(self, args, timeout_ms: int = 5000, text: bool = True):
+    def run(self, args, timeout_ms: int = 5000, text: bool = True, env: dict | None = None):
         """Run a command and return its stdout as str (decoded utf-8, errors replaced).
         The `text` argument is kept for backward compatibility and is ignored: every
-        caller wants str (regex on bytes raises TypeError)."""
+        caller wants str (regex on bytes raises TypeError). `env` entries go on top of child_env()."""
         try:
             r = subprocess.run(args, capture_output=True, timeout=timeout_ms / 1000.0, stdin=subprocess.DEVNULL,
-                               env=self.child_env(), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                               env=self.child_env(**(env or {})), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             return (r.stdout or b"").decode("utf-8", "replace")
         except Exception:
             return None

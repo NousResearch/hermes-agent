@@ -9,13 +9,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import hermes_yaml as yaml
 import pytest
 
+from agent import secret_scope
 from agent.context_references import preprocess_context_references_async
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import merge_pending_message_event
 from gateway.platforms.event import MessageType
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionStore
 from gateway.turn_context import TurnContext
@@ -580,6 +582,72 @@ async def test_coalesced_native_content_revalidates_each_authored_event(
         "descriptions": [mode == "text" and path in retained for path in all_paths],
         "redacted": removed,
     }
+
+
+@pytest.fixture
+def two_homes(tmp_path, monkeypatch):
+    launch = tmp_path / ".hermes"
+    routed = launch / "profiles" / "b"
+    routed.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    for home in (launch, routed):
+        (home / "config.yaml").write_text(yaml.safe_dump({}), encoding="utf-8")
+    secret_scope.set_multiplex_active(True)
+    yield launch, routed
+    secret_scope.set_multiplex_active(False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["native", "text"])
+async def test_withdrawn_sticker_leaves_the_input_of_a_routed_profile(
+    monkeypatch, tmp_path, two_homes, mode
+):
+    launch, routed = two_homes
+    adapter, received = _adapter(monkeypatch)
+    runner = _runner(adapter, tmp_path)
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: mode)
+
+    async def analyse(_text, paths):
+        return "\n\n".join(f"<pixels of {path}>" for path in paths)
+
+    monkeypatch.setattr(runner, "_enrich_message_with_vision", analyse)
+    turns = []
+    expected = []
+    for turn, home in enumerate((launch, routed, launch)):
+        pending = {}
+        for index in range(2):
+            raw = _event("sticker")
+            raw["event_id"] = f"$native{turn}.{index}"
+            await adapter._on_room_message(_typed(raw))
+            merge_pending_message_event(pending, "session", received.await_args.args[0])
+        event = pending["session"]
+        await adapter._on_redaction(
+            SimpleNamespace(room_id=ROOM, redacts=f"$native{turn}.1")
+        )
+        session_key = f"session{turn}"
+        runner._session_state(session_key)
+        with _profile_runtime_scope(home):
+            prepared = await runner._prepare_inbound_message_text(
+                event=event, source=event.source, history=[{}], session_key=session_key
+            )
+        kept, withdrawn = event.media_urls
+        turns.append(
+            {
+                "cache": [Path(path).parent == home / "cache" / "images" for path in (kept, withdrawn)],
+                "pixels": runner._session_state(session_key).persistent.native_image_paths,
+                "descriptions": [f"<pixels of {path}>" in prepared for path in (kept, withdrawn)],
+            }
+        )
+        expected.append(
+            {
+                "cache": [True, True],
+                "pixels": [kept] if mode == "native" else [],
+                "descriptions": [mode == "text", False],
+            }
+        )
+
+    assert turns == expected
 
 
 @pytest.mark.asyncio

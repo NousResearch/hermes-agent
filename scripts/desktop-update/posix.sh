@@ -715,9 +715,13 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   # every re-exec, causing this block to re-fire forever (self-exec loop,
   # unbounded argv growth) whenever relaunch args were present.
   /usr/bin/nohup /usr/bin/python3 -c '
-import os, sys
+import os, signal, sys
 env = os.environ.copy()
 os.setsid()
+# Ignore teardown signals before exec: Electron can signal this process
+# group while the shell is still starting, before its TERM trap is armed.
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
 os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
 ' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
   exit 0

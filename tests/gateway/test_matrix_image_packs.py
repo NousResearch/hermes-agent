@@ -761,6 +761,7 @@ async def test_gateway_rebinds_conversation_for_cached_turns_across_profiles(
                 entry = store.get_or_create_session(source)
                 adapter.set_session_store(store)
                 runner = object.__new__(GatewayRunner)
+                runner._gateway_loop = asyncio.get_running_loop()
                 monkeypatch.setattr(
                     runner,
                     "_delivery_adapter_for",

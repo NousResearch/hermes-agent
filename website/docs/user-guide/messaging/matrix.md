@@ -454,7 +454,7 @@ The read and reaction tools operate in the current room. Each call checks that t
 
 `matrix_followup` can enable one reaction-triggered follow-up for the current turn. The agent can restrict it to specific emoji. For ten minutes after the final reply is delivered, a new matching reaction from the requester to any part of that reply starts one follow-up turn in the same room and thread. The action is disabled by default, and the last call in the turn decides its setting.
 
-The `matrix_read` and `matrix_reaction` toolsets are enabled for Matrix sessions. Turn either off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
+The `matrix_read`, `matrix_reaction` and `matrix_followup` toolsets are enabled for Matrix sessions. Turn any of them off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
 
 Hermes has no agent tools for room creation or invites, and `matrix_reaction` redacts only the reactions that the agent added. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
 

@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import cron.scheduler
+import run_agent
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -100,12 +102,45 @@ class TestScriptModeArchives:
         assert "line two" in prompt
 
 
+def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatch):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
 
-def test_framed_answer_preserves_embedded_response_heading():
-    from cron.scheduler_prompt import _archive_answer
+    answer = "摘要 before heading\r\n\r\n## Response\nsubsection\n**Response Characters:** 4\n## Response\n\nbody\n\n  "
 
-    answer = 'Summary before embedded heading\n\n## Response\nThis is an answer subsection.\nConclusion.'
-    archive = ('# Cron Job: fixture\n\n## Prompt\nSynthetic prompt.\n\n'
-               + f'**Response Characters:** {len(answer)}\n## Response\n\n{answer}\n')
+    class Agent:
+        def __init__(self, *args, **kwargs):
+            pass
 
-    assert _archive_answer(archive) == answer
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": answer, "completed": True, "failed": False}
+
+    monkeypatch.setattr(run_agent, "AIAgent", Agent)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
+    job = create_job(prompt="Original prompt noise", schedule="0 8 * * *", context_from="self")
+    success, archive, final, error = cron.scheduler.run_job(job)
+    assert success, error
+    assert final == answer
+    save_job_output(job["id"], archive)
+    prompt, injected = _inject_context_from(job, "Next task")
+    assert injected
+    assert answer.replace("\r\n", "\n").strip() in prompt
+    assert "Original prompt noise" not in prompt
+
+
+def test_truncated_framed_archive_falls_back_to_older_answer(cron_env):
+    import os
+    from cron.jobs import create_job, OUTPUT_DIR
+    from cron.scheduler_prompt import _inject_context_from
+
+    job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+    _write_archive(cron_env, job["id"], "older.md", "## Response\n\nOLDER ANSWER\n")
+    _write_archive(cron_env, job["id"], "newer.md",
+                   "**Response Characters:** 80\n## Response\n\nTRUNCATED\n")
+    os.utime(OUTPUT_DIR / job["id"] / "older.md", (1, 1))
+    os.utime(OUTPUT_DIR / job["id"] / "newer.md", (2, 2))
+    prompt, injected = _inject_context_from(job, "Report")
+    assert injected
+    assert "OLDER ANSWER" in prompt
+    assert "TRUNCATED" not in prompt

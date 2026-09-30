@@ -13,18 +13,24 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# (label, pattern). Conservative, vendor-specific markers; the whole-page phrase is required
-# so an article that merely mentions CAPTCHAs does not trip it.
+# (label, pattern). Ambiguous error/gesture text needs nearby wall context;
+# a network error or a touch-gesture guide alone is not a bot-wall signature.
 _BLOCK_SIGNATURES = (
     ("akamai", re.compile(r"Access Denied[\s\S]{0,400}Reference\s*#\s*[\d.a-f]+", re.I)),
-    ("akamai", re.compile(r"ERR_HTTP2_PROTOCOL_ERROR")),
+    ("akamai", re.compile(
+        r"(?:Access Denied|Reference\s*#)[\s\S]{0,400}ERR_HTTP2_PROTOCOL_ERROR"
+        r"|ERR_HTTP2_PROTOCOL_ERROR[\s\S]{0,400}(?:Access Denied|Reference\s*#)", re.I,
+    )),
     ("perimeterx", re.compile(r"Access to this page has been denied", re.I)),
-    ("perimeterx", re.compile(r"Press\s*&\s*Hold", re.I)),
+    ("perimeterx", re.compile(
+        r"(?:PerimeterX|human verification)[\s\S]{0,400}Press\s*&\s*Hold"
+        r"|Press\s*&\s*Hold[\s\S]{0,400}(?:PerimeterX|human verification)", re.I,
+    )),
     ("cloudflare", re.compile(r"Attention Required!\s*\|\s*Cloudflare|cf-chl-|Verify you are human", re.I)),
     ("cloudflare", re.compile(r"'title':\s*'[^']*Just a moment\.\.\.", re.I)),
     ("datadome", re.compile(r"captcha-delivery\.com|geo\.captcha-delivery", re.I)),
     ("imperva", re.compile(r"Pardon Our Interruption|Request unsuccessful\. Incapsula", re.I)),
-    ("generic", re.compile(r"'title':\s*'[^']*(Access Denied|403 Forbidden|Request blocked)", re.I)),
+    ("generic", re.compile(r"'title':\s*'[^']*(403 Forbidden|Request blocked)", re.I)),
 )
 
 _SCAN_MAX_CHARS = 20_000

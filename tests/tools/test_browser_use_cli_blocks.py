@@ -20,7 +20,19 @@ CLOUDFLARE = "{'url': 'https://example.com/', 'title': 'Just a moment...'}\nVeri
 
 @pytest.mark.parametrize(
     ("output", "vendor"),
-    [(OPENTABLE_EDGE_DROP, "akamai"), (STREETEASY_PX, "perimeterx"), (AKAMAI, "akamai"), (CLOUDFLARE, "cloudflare")],
+    [
+        (STREETEASY_PX, "perimeterx"),
+        (AKAMAI, "akamai"),
+        (CLOUDFLARE, "cloudflare"),
+        ("Access Denied\nERR_HTTP2_PROTOCOL_ERROR", "akamai"),
+        ("ERR_HTTP2_PROTOCOL_ERROR\nAccess Denied", "akamai"),
+        ("Reference #18.abc\nERR_HTTP2_PROTOCOL_ERROR", "akamai"),
+        ("ERR_HTTP2_PROTOCOL_ERROR\nReference #18.abc", "akamai"),
+        ("PerimeterX\nPress & Hold to continue", "perimeterx"),
+        ("Press & Hold to continue\nPerimeterX", "perimeterx"),
+        ("Human verification\nPress & Hold", "perimeterx"),
+        ("Press & Hold\nHuman verification", "perimeterx"),
+    ],
 )
 def test_known_walls_are_detected(output, vendor):
     assert detect_block(output) == vendor
@@ -30,6 +42,18 @@ def test_known_walls_are_detected(output, vendor):
     "output",
     [
         "",
+        OPENTABLE_EDGE_DROP,
+        "{'url': 'https://support.apple.com/guide/iphone', 'title': 'iPhone guide'}\n"
+        "Press & Hold on an image to open the contextual menu",
+        "{'url': 'https://developer.android.com/touch', 'title': 'Touch gestures'}\n"
+        "Press & Hold to select an item",
+        "nginx error log: upstream connection failed: ERR_HTTP2_PROTOCOL_ERROR",
+        "If you see ERR_HTTP2_PROTOCOL_ERROR the peer sent an invalid frame",
+        "{'title': 'How to Fix Access Denied Errors in Nginx'}\nCheck file permissions.",
+        "Access Denied" + "x" * 401 + "ERR_HTTP2_PROTOCOL_ERROR",
+        "ERR_HTTP2_PROTOCOL_ERROR" + "x" * 401 + "Reference #18.abc",
+        "PerimeterX" + "x" * 401 + "Press & Hold",
+        "Press & Hold" + "x" * 401 + "human verification",
         "{'url': 'https://news.ycombinator.com/', 'title': 'Hacker News'}\n1. Show HN: ...",
         # An article ABOUT bot walls must not trip it.
         "{'url': 'https://blog.example/x', 'title': 'Why CAPTCHAs fail'}\nMany sites show an access denied page to bots.",

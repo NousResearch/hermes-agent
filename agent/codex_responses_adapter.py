@@ -1114,6 +1114,7 @@ class _OutputScan:
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
+        self.saw_leaked_tool_call_text = False
 
     def scan(self, output: List[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
         for item in output:
@@ -1150,22 +1151,22 @@ class _OutputScan:
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
+        self.saw_leaked_tool_call_text = self.saw_leaked_tool_call_text or _leaked_tool_call_text(message_text)
+        # Strip leaked tool-call markup before routing the text. The leak can appear in
+        # final-answer content as well as commentary, and structured calls do not make
+        # the textual copy safe to persist or replay (#125458).
+        stripped = _strip_leaked_tool_call_text(message_text)
+        if stripped != message_text:
+            logger.warning(
+                "Codex message text contained leaked tool-call markup (%d chars stripped); "
+                "removed before routing or persistence.", len(message_text) - len(stripped),
+            )
+        message_text = stripped
+        if not message_text:
+            return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
         if is_commentary_phase:
-            # The leak detector's ``not tool_calls`` guard exists because a leak beside a
-            # real call is late narration about it, not a failed call. Commentary routing
-            # has no such ambiguity: this channel never carries final answers, and the
-            # junk tokens here reach messaging-platform users as the live turn preview
-            # whether or not a structured call exists (#125458). Drop the leak markers;
-            # keep any surrounding narration.
-            stripped = _strip_leaked_tool_call_text(message_text)
-            if stripped != message_text:
-                logger.warning(
-                    "Codex commentary text contained leaked tool-call markup (%d chars stripped); "
-                    "removed so it is neither previewed nor persisted.", len(message_text) - len(stripped),
-                )
-            message_text = stripped
             if message_text:
                 self.reasoning_parts.append(message_text)
         else:
@@ -1214,7 +1215,7 @@ def _normalize_codex_response(
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.
-    leaked_tool_call_text = bool(final_text and not tool_calls and _leaked_tool_call_text(final_text))
+    leaked_tool_call_text = scan.saw_leaked_tool_call_text or bool(final_text and not tool_calls and _leaked_tool_call_text(final_text))
     if leaked_tool_call_text:
         logger.warning(
             "Codex response contains leaked tool-call text in assistant content (no structured function_call "

@@ -373,6 +373,28 @@ async function desktopSessionCreateParams(
   }
 }
 
+/**
+ * A desktop client can briefly outpace a pooled/remote backend during updates.
+ * `cwd_explicit` is a newer session.create field, so retry only that narrow
+ * contract mismatch without dropping the workspace cwd itself.
+ */
+function omitUnsupportedCwdExplicit(params: Record<string, unknown>): Record<string, unknown> {
+  const { cwd_explicit: _cwdExplicit, ...compatible } = params
+  return compatible
+}
+
+async function requestSessionCreate<T>(
+  params: Record<string, unknown>,
+  request: (requestParams: Record<string, unknown>) => Promise<T>
+): Promise<T> {
+  try {
+    return await request(params)
+  } catch (error) {
+    if (!String(error).includes('cwd_explicit')) throw error
+    return request(omitUnsupportedCwdExplicit(params))
+  }
+}
+
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
@@ -730,17 +752,19 @@ export function useSessionActions({
         let stored: null | string
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params,
-                undefined,
-                undefined,
-                { spawnPriority: 'foreground' }
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          created = await requestSessionCreate(params, requestParams =>
+            capturedRoute
+              ? requestGatewayForAgent<SessionCreateResponse>(
+                  capturedRoute.connectionId,
+                  capturedRoute.profile,
+                  'session.create',
+                  requestParams,
+                  undefined,
+                  undefined,
+                  { spawnPriority: 'foreground' }
+                )
+              : requestGateway<SessionCreateResponse>('session.create', requestParams)
+          )
 
           stored = created.stored_session_id ?? null
 
@@ -1019,17 +1043,19 @@ export function useSessionActions({
         let stored: string | undefined
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params,
-                undefined,
-                undefined,
-                { spawnPriority: 'foreground' }
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          created = await requestSessionCreate(params, requestParams =>
+            capturedRoute
+              ? requestGatewayForAgent<SessionCreateResponse>(
+                  capturedRoute.connectionId,
+                  capturedRoute.profile,
+                  'session.create',
+                  requestParams,
+                  undefined,
+                  undefined,
+                  { spawnPriority: 'foreground' }
+                )
+              : requestGateway<SessionCreateResponse>('session.create', requestParams)
+          )
 
           stored = created.stored_session_id
 

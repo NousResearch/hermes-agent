@@ -3612,7 +3612,10 @@ def systemd_install(
             # ever enabling, so even the migration's install path was no enablement guarantee
             # (#124922).
             if enable_on_startup:
-                _run_systemctl(["enable", get_service_name()], system=system, check=False, timeout=30)
+                enabled = _run_systemctl(["enable", get_service_name()], system=system, check=False, timeout=30)
+                if getattr(enabled, "returncode", 0) != 0:
+                    print(f"⚠ could not enable {get_service_name()} at boot "
+                          f"(systemctl enable exited {enabled.returncode}); a reboot may come up with no gateway")
         # Same post-install guarantee as a fresh install: a repaired user unit must survive logout too.
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:

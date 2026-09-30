@@ -251,7 +251,7 @@ def test_apply_clears_the_manifest_on_success_and_the_compensator_restores(fleet
     # the flock race and respawn at exit 75 forever.
     assert fleet.services == {"default": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == []
-    assert fleet.ops[-1] == ("default", "restart")
+    assert fleet.ops[-2:] == [("default", "restart"), ("default", "enable")]
     assert "coder, ops" in capsys.readouterr().out
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert runtime["served_profiles"] == []
@@ -716,7 +716,7 @@ def test_interruption_after_the_default_unit_exists_is_still_interrupted_not_alr
     assert plan.interrupted and not plan.already_multiplexed
     fleet.ops.clear()
     assert gm.apply_migration(plan, served_wait=5.0) is True
-    assert fleet.ops[-1] == ("default", "restart") and "serves 3 profiles" in capsys.readouterr().out
+    assert fleet.ops[-2:] == [("default", "restart"), ("default", "enable")] and "serves 3 profiles" in capsys.readouterr().out
     # Postcondition met: the next plan sees the live multiplexer and stops.
     assert gm.build_migration_plan().already_multiplexed
 

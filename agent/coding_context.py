@@ -528,7 +528,8 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
         f"- Root: {root}",
     ]
     if git_root is not None:
-        branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
+        status_raw = _git(root, "status", "--porcelain=2", "--branch")  # "" = probe failed
+        branch, counts = _parse_status(status_raw)
         head = branch.get("head", "")
         if head == "(detached)":
             lines.append("- Branch: (detached HEAD)")
@@ -546,7 +547,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
             lines.append("- Worktree: linked (git state shared with primary tree)")
 
         dirty = [f"{n} {label}" for label, n in counts.items() if n]
-        lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
+        lines.append("- Status: unknown (git status failed)" if not status_raw else f"- Status: {', '.join(dirty) if dirty else 'clean'}")
 
         recent = _git(root, "log", "-3", "--pretty=%h %s")
         if recent:

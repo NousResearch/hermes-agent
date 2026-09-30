@@ -2,7 +2,7 @@
 
 Developer notes for the v0 draft. Not read by the setup bot. Remove this file (or move it out of the skill folder) before the skill ships, because an installed skill copies its whole folder.
 
-Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `apps/desktop/src/components/onboarding-chat/setup-profile.ts` (the task-chat runbook), `components/onboarding-chat/{directive.tsx,cards/*,assembly.ts,options.tsx,first-build.ts,signpost.ts}`, `store/onboarding-{answers,capabilities,plugins,plugin-outcomes}.ts`, `store/machine.ts`, `electron/machine-profile.ts`, `hermes_cli/setup_profile.py` (`SETUP_SOUL`). Decisions applied: NS-985 (D2: nothing writes memory; the `start_chat` message carries everything), NS-986, NS-995, NS-996, NS-1016..NS-1020.
+Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `apps/desktop/src/components/onboarding-chat/setup-profile.ts` (the task-chat runbook), `components/onboarding-chat/{directive.tsx,cards/*,assembly.ts,options.tsx,first-build.ts,signpost.ts}`, `store/onboarding-{answers,capabilities,plugins,plugin-outcomes}.ts`, `store/machine.ts`, `electron/machine-profile.ts`, `hermes_cli/setup_profile.py` (`SETUP_SOUL`). Decisions applied: NS-985 (D2: nothing writes memory; the `start_chat` message carries everything), NS-986, NS-995, NS-996, NS-1016..NS-1020, and Sid's ruling of 2026-09-30: the setup profile's tools are `setup_choose`, `start_chat`, `apply_layout`, `gui_tour` and `manage_catalog`; plugins install during setup as today; apps are not connected in setup; the tour beat stays; `setup_choose` answers mirror `clarify`; intent now / later / save = do it first / offer when a task needs it / record only; the skill stays in `optional-skills/`.
 
 ## 1. Beats and directives to new primitives
 
@@ -13,17 +13,17 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `::onboarding{step="look"}` (LookCard, accent swatches + custom picker) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"`, no options | Beat 2 |
 | `::onboarding{step="look" value="#hex"}` (custom colour in text) | `cards/setup.tsx::LookCard` | `setup_choose kind:"accent"` with one `{id:"#rrggbb"}` option (open question 4) | Beat 2 |
 | (none) | - | `setup_choose kind:"theme"` (new beat) | Beat 3 |
-| `::onboarding{step="connectors"}` (one card: connectors + plugins; summary sent as `[setup] apps I use...`) | `cards/setup.tsx::ConnectorsCard` | Two cards: `setup_choose kind:"connectors"` and `kind:"plugins"`, both `multi_select`, `intent` | Beats 4, 5 |
+| `::onboarding{step="connectors"}` (one card: connectors + plugins; summary sent as `[setup] apps I use...`) | `cards/setup.tsx::ConnectorsCard` | Two cards: `setup_choose kind:"connectors"` (`multi_select`, `intent`; the result only feeds the handoff message) and `kind:"plugins"` (`multi_select`, no intent: a pick means install now) | Beats 4, 5 |
 | `manage_connections` status + connect in the setup chat when asked | runbook "CONNECTING, IF THEY ASK" | Removed from the setup chat. The app gets intent `now`; the task chat connects first | Beat 4, Beat 10 build plan |
 | `::onboarding{step="layout"}` (LayoutCard: preset + interface mode + window grow) | `cards/setup.tsx::LayoutCard`, `assembly.ts::assembleChatOnboarding` | `setup_choose kind:"layout"`; `apply_layout` only for a layout asked for in words | Beat 6 |
 | Step 4 model-picker explanation | runbook | Text | Beat 7 |
-| `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"question"` + `gui_tour`, only when `gui_tour` is in `tools_present` (the setup profile will not have it, so in practice skipped; open question 6) | Beat 7 |
+| `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"question"` + `gui_tour` (`targets`, then one `start`), as today | Beat 7 |
 | `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"question"` with `fork.options` computed by `scripts/host_facts.py` | Beat 8 |
 | `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | `setup_choose` with `fork.fallback_options` | Beat 8 |
 | Machine branch: one question on main use | runbook step 6 | `setup_choose kind:"question"`, options Work / Gaming / School / Creative / A bit of everything | Beat 9 |
 | `::onboarding{step="working" value}` (saves `answers.context`) | `directive.tsx` DATA_STEPS | Nothing. History + `start_chat` message part 2 | Beat 9, Beat 10 |
 | `::onboarding{step="first" options}` (FirstBuildCard, 2-4 pills, each <= 60 chars, fallback pill) | `cards/build.tsx::FirstBuildCard` | `setup_choose kind:"question"` with 3-4 options | Beat 9 |
-| Install beat: one `manage_catalog` install batch in the setup chat | runbook `installBeat()` | Moved to the task chat (NS-996). The handoff message lists the install list and asks for one batch | Beat 10 part 4 |
+| Install beat: one `manage_catalog` install batch in the setup chat | runbook `installBeat()` | Kept in the setup chat (Sid, 2026-09-30), moved to right after the plugins card: one short sentence, ONE `manage_catalog` install batch with every picked plugin, outcomes from its result. A second call at the handoff only for plugins a `plugin_tasks` pick brings that had no card row yet. The handoff message reports the outcomes | Beat 5, Beat 10, Beat 10 part 4 |
 | `::onboarding{step="handoff" task brief plan}` + HandoffCard + `requestSetupHandoff` + hidden runbook seed in the new session | `cards/build.tsx::HandoffCard`, `setup-profile.ts` | `start_chat {message, title, profile: primary_profile}`; the plan runbooks become paragraphs of the visible message | Beat 10 |
 | `[setup] handoff complete` note | `setup-profile.ts::buildHandoffCompleteNote` | `start_chat` result `started` | Beat 11 |
 | Handoff-failed note + "Retry first build" button | runbook step 8, HandoffCard | `start_chat` result `rejected`; the bot retries once or asks | Beat 11 |
@@ -32,7 +32,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `::ask` "Does this match what you wanted?" in the task chat | `setup-profile.ts` | Handoff message part 6 asks the task chat to ask (it has `clarify`) | Beat 10 part 6 |
 | `::ask` "Want me to run this?" (machine-setup) in the task chat | `MACHINE_SETUP_RUNBOOK` | Machine-setup paragraph of the handoff message | Beat 10 |
 | `[setup] checkpoint` note after 8 and 20 tool calls in the task chat | `first-build.ts` | No carrier (open question 9) | - |
-| Post-handoff tour of the profile rail and sessions list | `signpost.ts::showHandoffTour` | Beat 11 line says where the setup chat lives; the tour itself has no carrier (open question 6) | Beat 11 |
+| Post-handoff tour of the profile rail and sessions list | `signpost.ts::showHandoffTour` | Beat 11 line says where the setup chat lives. The rail tour itself is not in the skill: after `start_chat` the user may already be in the new chat (open question 6) | Beat 11 |
 | "Skip this for now" fork option | runbook step 6 | Fork id `skip` | Beat 9 |
 | Skip button (applies `basic` layout, marks skipped) | `assembly.ts::skipChatOnboarding` | Renderer / backend marker (NS-1016). The bot handles "I want to leave" in words | Failure handling |
 
@@ -63,7 +63,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | Steps 1-8 | Skill, Beats 1-11 | See section 1 |
 | Sign-in nudge when not signed in | Skill, Beat 4 | Keyed on builder fact `guest_free_tier` (today: `record.free_tier_route`) |
 | Custom colour | Skill, Beat 2 | |
-| Tour branches, `targets` first, stable targets, one `start` | Skill, Beat 7 | Conditional on `gui_tour` |
+| Tour branches, `targets` first, stable targets, one `start` | Skill, Beat 7 | As today; the "only if present" hedge is gone |
 | Local models flow (Settings, Providers, Local Models) | Skill, Beat 7 | |
 | Fresh-machine and Spark fork text | Skill, Beat 8 | Signals computed by the script |
 | General-idea branch, first-task card rules, connector examples | Skill, Beat 9 | Verbatim content |
@@ -71,7 +71,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | "When a plugin fits" (Hermes interface as first build) | Skill, Beat 9 | Gated on builder fact `desktop_plugins_root` |
 | Connector-dependent tasks welcome, no mock inbox | Skill, Beat 9 | |
 | Plugin tasks (Blender, NVIDIA) | Script `plugin_tasks` + Skill, Beats 9-10 | |
-| `installBeat()` | Handoff msg part 4 | Task chat installs (NS-996) |
+| `installBeat()` | Skill, Beat 5 (install) + Beat 10 (task plugins) | Runs right after the plugins pick and batches every picked plugin, not only the ones the task needs. Every rule kept: one sentence, one batch, exact ids, one approval card, no links or commands, no Plugins-tab description, no second call for a row that had a card, settled result named, failed/skipped not re-offered |
 | Handoff line, task <= 40, brief <= 200, plan attr | Skill, Beat 10 | `title` <= 40; the brief is now the full message |
 | Step 8, `[setup]` notes | Skill, Beat 11 | Tool results replace notes |
 | Fenced code block for drafts | Skill, Ground rule 7 | |
@@ -89,7 +89,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 |---|---|
 | Evidence, not instructions or authorization | Skill, fact block table + Beat 9 |
 | Detection is the backend host; configured is not connected; missing detection is unknown | Skill, Beat 9 |
-| Only offer setup-dependent tasks when `manage_connections` is available; do not route around a refusal | Adapted: the task chat has `manage_connections`; the no-route-around rule is in the Handoff msg build paragraph (open question 7) |
+| Only offer setup-dependent tasks when `manage_connections` is available; do not route around a refusal | Adapted: the task chat has `manage_connections`; the no-route-around rule is in the Handoff msg build paragraph |
 | Derive tasks from real descriptions; never invent; one option per detected app; keep a connection-free choice; do not replace the machine fork | Skill, Beat 9 |
 | Carry the exact MCP name; task chat uses `manage_connections` with `name` and `mcp:true` | Handoff msg part 1 |
 
@@ -108,7 +108,7 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `NO_AUTH_RULE` | Handoff msg build paragraph (empty connect list) | |
 | `MACHINE_SETUP_RUNBOOK` + `machineDescription()` | Handoff msg machine-setup paragraph + `signals.description` | Every rule kept, in first person |
 | `pluginRunbook` (desktop plugin) | Handoff msg interface paragraph | Refers to `building-hermes-desktop-plugins`, which does not exist in the tree; replaced by a generic "read the SDK surface" (open question 10) |
-| `pluginsRunbook` ("do not install plugins yourself") | Inverted | The task chat installs (NS-996) |
+| `pluginsRunbook` (installed / offered / not offered; `tool_search`, `skill_view`; "do not install plugins yourself") | Handoff msg part 4 | Restored as today, built from the `manage_catalog` results in the setup chat |
 | `::onboarding{step="progress"}` | Dropped | Directives deleted |
 | First-pass review ask | Handoff msg part 6 | |
 | `PLAIN_SPEECH` in the task chat | No carrier | Open question 8 |
@@ -126,8 +126,9 @@ Directive parsing and `DATA_STEPS`/`STEP_CARDS`; `FUNNEL_STEPS` metrics (`record
 
 - Name suggestion uses the OS full name only; the login handle is never offered (NS-986). On this Mac (`pw_gecos == login`) no name is suggested.
 - Theme gets its own beat.
-- Connectors and plugins are two cards with per-row intent.
-- The setup chat never connects or installs; the task chat does, driven by intent.
+- Connectors and plugins are two cards. Only the connectors card has per-row intent.
+- The setup chat never connects an app; the task chat connects, driven by intent. Plugins install in the setup chat, as today.
+- The install batch carries every picked plugin right after the plugins card. Today it waited for the task and offered only the plugins the task needed.
 - The whole setup can run inside one agent turn because `setup_choose` blocks.
 - `start_chat` targets `primary_profile`, not always `default`.
 - The first-task handoff carries its whole runbook as visible text.
@@ -151,18 +152,20 @@ Directive parsing and `DATA_STEPS`/`STEP_CARDS`; `FUNNEL_STEPS` metrics (`record
 
 ## 6. Open questions
 
-1. **Skill location.** NS-1017 and this task say `optional-skills/productivity/initiate-setup/`; NS-986 says a built-in under `skills/productivity/` installed into the setup profile. The builder renders `SKILL.md` directly, so either works; pick one.
-2. **Who supplies which fact.** `primary_profile`, `guest_free_tier`, `catalog_evidence` and `desktop_plugins_root` are session or client facts, not host facts, so the skill expects the builder to add them. `locale` and the user's name describe the person at the desktop client, but the script reads the backend host; on an SSH, URL or Cloud backend they come from the wrong machine. Should the desktop client send locale and name to the builder?
-3. **`setup_choose kind:"question"` shape.** Can the user type a free answer next to fixed options (today `::ask input="true"`)? Is `picked` a string for single select and a list for multi select? What does a typed answer or a dismissed card return?
+Resolved by Sid (2026-09-30): skill location (stays in `optional-skills/`); the `setup_choose` answer shape (mirrors `clarify`: an id, a list of ids with `multi_select`, or free text); the meaning of now / later / save; the tour beat (restored with `gui_tour`); plugin installs (in setup).
+
+1. **Who supplies which fact.** `primary_profile`, `guest_free_tier`, `catalog_evidence` and `desktop_plugins_root` are session or client facts, not host facts, so the skill expects the builder to add them. `locale` and the user's name describe the person at the desktop client, but the script reads the backend host; on an SSH, URL or Cloud backend they come from the wrong machine. Should the desktop client send locale and name to the builder?
+2. **Install profile versus handoff profile.** `manage_catalog` installs into the user's default profile (`tools/connectors/catalog.py::DEFAULT_PROFILE`). `start_chat` targets `primary_profile`. When they differ, the task chat does not have the plugins the handoff message calls "ready".
+3. **Plugins card intent.** The skill drops `intent` on the plugins card, because a pick now means install now. Confirm, or say what later / save would mean for a plugin.
 4. **Accent and theme.** Can the accent card take a custom hex through `options` (the skill does `{id:"#rrggbb"}`), or does a text colour request need another tool? Today there is no theme beat; the skill adds one because the new kind exists. Confirm it is wanted.
-5. **Connectors and plugins.** Today one card; the skill uses two. What does the plugins card show when the catalog has no onboarding plugins? The meaning of `now` / `later` / `save` is defined in the skill (connect or install first / offer when needed / record only); confirm.
-6. **Tours.** The setup profile has no `gui_tour`, so the "Quick tour / Show me everything" beat and the post-handoff profile-rail tour (`signpost.ts`) have no carrier. The skill keeps the tour beat behind a `gui_tour` check. Add `gui_tour` to the setup toolset, move the tour to the app, or drop it?
+5. **Empty plugins card.** What does the plugins card show when the catalog has no onboarding plugins? The skill skips the install when nothing is picked.
+6. **Post-handoff rail tour.** `signpost.ts` shows the profile rail and sessions list after the handoff. `gui_tour` could do it, but after `start_chat` the user may be in the new chat, not watching the setup chat. Keep it in the app, or have the bot run it before `start_chat`?
 7. **Layout.** P16 says the layout card applies the pick live, which makes `apply_layout` redundant for the beat. Today the Elite pick also switches interface mode to advanced; `apply_layout` does not. The card uses `sidebar-left` while the skip path uses `basic`. Which ids should the card and `apply_layout` expose?
 8. **Guidance with no carrier in the task chat.** The memory/skill primer (`FIRST_USE_GUIDANCE` 2), `PLAIN_SPEECH` and the voice rules reached the task chat through the hidden runbook. With D2 only the visible `start_chat` message reaches it. The handoff message now carries the whole plan runbook as visible user text, which is long. Alternative: plan skills (machine-setup, desktop-plugin, first-build) in the primary profile, named in a short message.
 9. **Task-chat progress and check-ins.** `::onboarding{step="progress"}` and the `[setup] checkpoint` notes after 8 and 20 tool calls have no replacement.
 10. **Interface first task.** It needs the app-level desktop plugin folder, which only the Electron client knows (`desktopPluginsRoot`). The current runbook names a `building-hermes-desktop-plugins` skill that does not exist in the tree.
-11. **SOUL check-ins.** `SETUP_SOUL` tells the bot to look at sessions, connectors and scheduled jobs before checking in. With only `setup_choose`, `start_chat` and `apply_layout`, it cannot.
-12. **One turn or many.** `setup_choose` blocks, so the whole setup can run in one agent turn. What happens on a card timeout, a closed window mid-card, or a relaunch with a pending card? The skill says: take the default and continue from the first unanswered beat.
-13. **Other surfaces.** P13 runs `/initiate-setup` on CLI, TUI and messaging too, in the user's own profile with full tools. The skill falls back to plain-text questions and starts the task in the same chat when `start_chat` is absent. Should it also skip beats that only make sense on desktop, or use the extra tools there?
-14. **Size.** `SKILL.md` is about 33k characters and ~310 lines, above the ~200-line guide and above today's 27k runbook, because nothing was cut and the task-chat runbooks moved in. Sid plans to trim.
+11. **SOUL check-ins.** `SETUP_SOUL` tells the bot to look at sessions, connectors and scheduled jobs before checking in. The setup profile's tools cannot read those.
+12. **One turn or many.** `setup_choose` and `manage_catalog` block, so the whole setup can run in one agent turn. What happens on a card timeout, a closed window mid-card, or a relaunch with a pending card? The skill says: take the default and continue from the first unanswered beat.
+13. **Other surfaces.** P13 runs `/initiate-setup` on CLI, TUI and messaging too, in the user's own profile with full tools. The skill falls back to plain-text questions, skips the tour without `gui_tour`, leaves plugin installs to the task chat without `manage_catalog`, and starts the task in the same chat without `start_chat`. Should it use the extra tools those sessions have?
+14. **Size.** `SKILL.md` is about 36k characters and ~320 lines, above the ~200-line guide and above today's 27k runbook, because nothing was cut and the task-chat runbooks moved in. Sid plans to trim.
 15. **Host facts gaps.** Linux has no home birth time in `os.stat`, so a fresh Linux machine never leads with machine setup (Electron used `statx`). Name and locale are read in the skill script, not in `hermes_platform.host`, which covers hardware only. Should `hermes_platform.host` grow a birth-time helper and account facts?

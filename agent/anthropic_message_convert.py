@@ -547,9 +547,11 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> List[Any]:
-    """Latest assistant turn on direct Anthropic: keep signed thinking, demote unsigned to text so
+    """One assistant turn on direct Anthropic: keep signed thinking, demote unsigned to text so
     the reasoning isn't lost. If orphan-stripping mutated THIS turn every signature is dead (and a
-    bare signed block with no tool_use is also invalid), so demote ALL of them."""
+    bare signed block with no tool_use is also invalid), so demote ALL of them. Applied to EVERY
+    assistant turn (not just the latest) so a turn's wire bytes never change between the request
+    that produced it and the next one — see ``_manage_thinking_signatures``."""
     new_content = []
     for b in content:
         if _block_type(b) not in _THINKING_TYPES:
@@ -567,20 +569,26 @@ def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> Lis
 def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
-    Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
-    (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
-    turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
-    Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
-    Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
-    native path despite not being anthropic.com.
+    Direct Anthropic (and Nous Portal, which proxies Claude with sticky sessions and validates the
+    same signatures): EVERY assistant turn replays its signed thinking blocks verbatim. Claude
+    4.6+ runs "preserved thinking" — prior-turn thinking is model-visible context and the API
+    contract is to pass every block back unchanged (Claude Code does exactly this); older Claude
+    models silently drop prior-turn blocks server-side, so replaying them is harmless there too.
+    The previous policy (keep only the LATEST turn's blocks) had two costs on Claude 4.6+/5.x:
+    the model lost its own reasoning chain on every request and re-derived the task state from
+    the visible text/tool_result trail (long "thinks forever, then acts" turns), and the turn that
+    was latest on request N lost its blocks on request N+1, so the prompt-cache prefix diverged
+    at that turn every single call. A truly invalid signature (transcript mutation) still 400s
+    once and ``turn_recovery`` strips ``reasoning_details`` and retries (#43667).
+    Signatures are proprietary: third-party endpoints strip all thinking. Kimi replays as-is;
+    DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
     is_kimi = _is_kimi_family_endpoint(base_url, model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)
     )
-    last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
-    for idx, m in _assistant_block_lists(result):
+    for _idx, m in _assistant_block_lists(result):
         if is_kimi:
             pass  # shared cleanup below still strips cache markers + the flag
         elif is_deepseek:
@@ -590,9 +598,10 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif is_third_party or idx != last_assistant_idx:
+        elif is_third_party:
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
+            # Native Anthropic / Nous Portal: same policy on every assistant turn (see docstring).
             new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
             m["content"] = new_content or [_text_block("(empty)")]
         # cache_control on thinking blocks interferes with signature validation.

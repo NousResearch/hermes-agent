@@ -1211,9 +1211,8 @@ class TestThinkingBlockSignatureManagement:
                 assert "cache_control" not in block
 
 
-    def test_multi_turn_conversation_preserves_only_last(self):
-        """Full multi-turn conversation: only last assistant keeps thinking."""
-        messages = [
+    def _three_turn_signed_conversation(self):
+        return [
             {"role": "user", "content": "Question 1"},
             {
                 "role": "assistant",
@@ -1239,31 +1238,40 @@ class TestThinkingBlockSignatureManagement:
                 ],
             },
         ]
-        _, result = convert_messages_to_anthropic(messages)
+
+    def test_multi_turn_conversation_preserves_every_turn(self):
+        """Direct Anthropic replays EVERY assistant turn's signed thinking verbatim (Claude 4.6+
+        preserved thinking: prior-turn blocks are model-visible context and must go back
+        unchanged). Keeping only the latest turn's blocks made the model re-derive its plan on
+        every request and moved the prompt-cache prefix every call."""
+        _, result = convert_messages_to_anthropic(self._three_turn_signed_conversation(), model="claude-opus-5-5")
 
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 3
+        for a, sig in zip(assistants, ("sig_1", "sig_2", "sig_3")):
+            thinking = [b for b in a["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
+            assert len(thinking) == 1
+            assert thinking[0]["signature"] == sig
+            assert a["content"][0] is thinking[0], "thinking must precede text/tool_use"
 
-        # First two: no thinking blocks
-        for a in assistants[:2]:
+    def test_multi_turn_wire_bytes_are_stable_as_the_conversation_grows(self):
+        """The turn that was latest on request N must serialize identically on request N+1 —
+        otherwise the cached prefix diverges at that turn on every call."""
+        convo = self._three_turn_signed_conversation()
+        _, shorter = convert_messages_to_anthropic(convo[:4], model="claude-opus-5-5")
+        _, longer = convert_messages_to_anthropic(convo, model="claude-opus-5-5")
+        assert longer[: len(shorter)] == shorter
+
+    def test_multi_turn_third_party_still_strips_all_thinking(self):
+        """Signatures are proprietary: a third-party Anthropic-compatible endpoint gets no thinking
+        blocks on any turn."""
+        _, result = convert_messages_to_anthropic(
+            self._three_turn_signed_conversation(), base_url="https://openrouter.ai/api/v1", model="claude-opus-5-5"
+        )
+        for a in (m for m in result if m["role"] == "assistant"):
             assert not any(
-                b.get("type") in {"thinking", "redacted_thinking"}
-                for b in a["content"]
-                if isinstance(b, dict)
+                b.get("type") in {"thinking", "redacted_thinking"} for b in a["content"] if isinstance(b, dict)
             )
-
-        # Last one: thinking preserved
-        last_thinking = [
-            b for b in assistants[2]["content"]
-            if isinstance(b, dict) and b.get("type") == "thinking"
-        ]
-        assert len(last_thinking) == 1
-        assert last_thinking[0]["signature"] == "sig_3"
-
-
-# ---------------------------------------------------------------------------
-# Tool choice
-# ---------------------------------------------------------------------------
 
 
 class TestToolChoice:

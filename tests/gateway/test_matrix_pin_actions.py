@@ -21,7 +21,7 @@ class _MissingState(RuntimeError):
 _ALICE_CAN_PIN = {"users": {"@alice:server": 50}}
 
 
-def _adapter(pins, send, *, power=_ALICE_CAN_PIN, room_version="10"):
+def _adapter(pins, send, *, power=_ALICE_CAN_PIN, room_version="10", create=None):
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
     async def request(_method, path, *, query_params=None, **_kwargs):
@@ -31,7 +31,8 @@ def _adapter(pins, send, *, power=_ALICE_CAN_PIN, room_version="10"):
         if event_type == "m.room.power_levels" and power is not None:
             return power
         if event_type == "m.room.create" and query_params == {"format": "event"}:
-            return {"type": "m.room.create", "sender": "@creator:server", "content": {"room_version": room_version}}
+            return create or {"type": "m.room.create", "sender": "@creator:server",
+                              "content": {"room_version": room_version}}
         raise _MissingState()
 
     adapter = object.__new__(MatrixAdapter)
@@ -145,11 +146,15 @@ async def test_pin_and_unpin_preserve_other_events_and_reject_unauthorized_reque
     ("@member:server", {"users": {"@member:server": 50}}, "10", None),
     ("@member:server", None, "10", None),
     ("@creator:server", {"users": {"@bot:server": 100}}, "12", None),
-], ids=["state-default", "explicit-levels", "member-has-power", "no-power-levels", "v12-creator"])
+    # A server that ignores format=event returns only the content, which names no
+    # creator from version 11, so without power levels the level is unknown.
+    ("@member:server", None, "11-content-only", {"required": 0, "level": None}),
+], ids=["state-default", "explicit-levels", "member-has-power", "no-power-levels", "v12-creator", "unknown-level"])
 async def test_requester_needs_room_power_to_change_pins(requester, power, room_version, refusal):
     send = AsyncMock(return_value="$state")
     adapter = _adapter(
         AsyncMock(return_value={"pinned": ["$admin_pin"]}), send, power=power, room_version=room_version,
+        create={"room_version": "11"} if room_version == "11-content-only" else None,
     )
 
     result = await _change_pin(adapter, "unpin", "!room:server", "$admin_pin", requester=requester)

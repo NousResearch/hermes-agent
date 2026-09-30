@@ -44,6 +44,83 @@ def _personalities_from_cli_config() -> Dict[str, Any]:
     return _personalities_memo[1]
 
 
+def _mtime_or_zero(path: str) -> float:
+    """Return a path's mtime, or 0.0 when it cannot be stat'ed (raced delete)."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
+# Project-file completions cap the listing, not just the displayed slice: `rg --files`
+# on a multi-million-file root needs 2 s+ to materialise and gets killed by the
+# completion timeout, leaving the picker empty (#127861).
+_PROJECT_FILE_LIMIT = 5000
+
+# Candidates one indexed query may bring back before fuzzy ranking: the picker shows ~20
+# rows and the query already filtered by name, so a small window is enough. The engine
+# multiplies it again for the paths its own filter drops.
+_INDEX_MATCH_LIMIT = 200
+
+
+def _bounded_listing_command(cmd: list[str]) -> list[str]:
+    """``cmd``, cut off after ``_PROJECT_FILE_LIMIT`` paths when a POSIX shell exists.
+
+    ``rg --files``/``fd`` stream while they walk, so piping into ``head`` returns the
+    first page in ~50 ms on a 3.3M-file tree (the child dies of SIGPIPE) instead of
+    buffering the whole listing past the caller's timeout. The engine is passed as
+    ``"$@"`` so the workdir needs no shell quoting; without ``sh``/``head`` the caller's
+    timeout is the only bound, which is the pre-existing behaviour."""
+    if not (shutil.which("sh") and shutil.which("head")):
+        return cmd
+    return ["sh", "-c", f'exec "$@" | head -n {_PROJECT_FILE_LIMIT}', "sh", *cmd]
+
+
+def _indexed_matches(cwd: str, query: str, limit: int) -> list[str] | None:
+    """Up to *limit* files under *cwd* whose path contains *query*, or None to walk instead.
+
+    A pattern query, not a listing: locate matches the whole path, so ``*query*`` comes
+    back from the entire index, while a listing's own ``-l`` bound is spent on whichever
+    subtree the index reaches first (path order) — a picker fed that page finds nothing
+    outside it. A query broader than the window still answers with a path-ordered slice of
+    its matches; narrowing the name is what makes the answer complete.
+
+    None — never an empty list — whenever the index cannot serve the request: a root
+    locate cannot scope (relative path), a git work-tree (where the walk is bounded and
+    ignore-filtered already), no locate binary, a missing or stale database, a query with
+    glob syntax locate cannot express, or a hit list the filter emptied. A snapshot's own
+    failure mode is the file created since the last updatedb, so an empty answer is
+    exactly what falls through to the walk.
+    """
+    from tools import file_search_index as index_engine
+
+    if not cwd.startswith("/") or index_engine.inside_worktree(cwd):
+        return None
+    # Substring, not the engine's default suffix glob: the picker is fed a name being
+    # typed, so `*tort*` must find tortoise.py. `*` crosses `/` in a locate pattern, so
+    # this also serves a query that already looks like a path.
+    argv = index_engine.indexed_argv(f"*{query}*", [cwd], index_engine.fetch_window(limit))
+    if argv is None:
+        return None
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=2,
+                              encoding="utf-8", errors="replace")
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    files: list[str] = []
+    for line in proc.stdout.splitlines():
+        path = line.strip()
+        if not path or not index_engine.keep_indexed_path(path, [cwd], "*"):
+            continue
+        try:
+            files.append(os.path.relpath(path, cwd))
+        except ValueError:
+            continue  # Windows: relpath raises across mounts/drive letters
+    return files[:limit] or None
+
+
 def _file_size_label(path: str) -> str:
     """Return a compact human-readable file size, or '' on error."""
     try:
@@ -280,6 +357,8 @@ class SlashCommandCompleter(Completer):
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
         self._file_cache_cwd: str = ""
+        # Indexed name matches, keyed by (cwd, query) — same 5s TTL as the walk page.
+        self._match_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
 
     def _command_allowed(self, slash_command: str) -> bool:
         try:
@@ -366,38 +445,71 @@ class SlashCommandCompleter(Completer):
         yield from self._fuzzy_file_completions(word, word[1:], limit)
 
     def _get_project_files(self) -> list[str]:
-        """Cached project file list (5s TTL); rg (gitignore-aware) then fd."""
+        """Cached project file list (5s TTL) from the bounded rg (gitignore-aware) walk,
+        then fd, newest-first.
+
+        Bounded at the source, because `rg --files` on a multi-million-file root is killed
+        by the timeout below and leaves the picker empty; ordered in Python, because
+        `--sortr=modified` turns the walk into a stat-per-file pass (19 s on a 3.3 M-file
+        root versus 1.3 s unsorted, for the same regression)."""
         cwd = os.getcwd()
         now = time.monotonic()
         if self._file_cache and self._file_cache_cwd == cwd and now - self._file_cache_time < 5.0:
             return self._file_cache
+        files = self._walk_project_files(cwd, _PROJECT_FILE_LIMIT)
+        files.sort(key=_mtime_or_zero, reverse=True)
+        self._file_cache, self._file_cache_time, self._file_cache_cwd = files, now, cwd
+        return files
+
+    def _indexed_file_matches(self, query: str) -> list[str] | None:
+        """Indexed name matches for *query* under cwd, memoised 5 s like the walk page."""
+        cwd = os.getcwd()
+        now = time.monotonic()
+        if (hit := self._match_cache.get((cwd, query))) and now - hit[0] < 5.0:
+            return hit[1] or None
+        files = _indexed_matches(cwd, query, _INDEX_MATCH_LIMIT)
+        if len(self._match_cache) > 64:
+            self._match_cache.clear()  # ponytail: whole-map clear; per-key LRU if it ever shows
+        self._match_cache[(cwd, query)] = (now, files or [])
+        return files
+
+    @staticmethod
+    def _walk_project_files(cwd: str, limit: int) -> list[str]:
+        """Bounded `rg --files` (then fd) listing of *cwd* as relative paths; [] when every
+        engine is missing, errors or times out."""
         files: list[str] = []
         for cmd in (
-            ["rg", "--files", "--sortr=modified", cwd],
             ["rg", "--files", cwd],
             ["fd", "--type", "f", "--base-directory", cwd]):
             if not shutil.which(cmd[0]):
                 continue
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=2,
+                    _bounded_listing_command(cmd), capture_output=True, text=True, timeout=2,
                     cwd=cwd, encoding="utf-8", errors="replace")
             except (subprocess.TimeoutExpired, OSError):
                 continue
             if proc.returncode != 0 or not proc.stdout.strip():
                 continue
-            for p in proc.stdout.strip().split("\n")[:5000]:
+            for p in proc.stdout.strip().split("\n")[:limit]:
                 try:
                     files.append(os.path.relpath(p, cwd) if os.path.isabs(p) else p)
                 except ValueError:
                     continue  # Windows: relpath raises across mounts/drive letters
             break
-        self._file_cache, self._file_cache_time, self._file_cache_cwd = files, now, cwd
         return files
 
     def _fuzzy_file_completions(self, word: str, query: str, limit: int = 20):
-        """Fuzzy file completions for bare @query (no query = recently modified files)."""
-        files = self._get_project_files()
+        """Fuzzy file completions for bare @query (no query = recently modified files).
+
+        A typed query goes to the locate index first (#127861): the walk page is the first
+        `_PROJECT_FILE_LIMIT` files the walk reaches, so on a large root it misses most of
+        the tree, while an index query answers with the name matches. The page still
+        answers the no-query listing (an index has no mtimes to order it by), every case
+        the index cannot serve, and a query the index has no match for."""
+        files = self._indexed_file_matches(query) if query else None
+        if files is None:
+            files = self._get_project_files()
         if query:
             scored = sorted(
                 ((s, fp) for fp in files if (s := _score_path(fp, query)) > 0),

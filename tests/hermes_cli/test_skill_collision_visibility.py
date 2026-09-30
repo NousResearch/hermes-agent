@@ -59,7 +59,7 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
     from hermes_cli.slash_exec import CommandContext, _exec_commands
 
     gateway_commands = _exec_commands(CommandContext(args="", options={"page_size": 500})).text
-    assert f"⚠ {NOTE}" in gateway_commands and "`/tidy-notes`" in gateway_commands
+    assert f"⚠ {NOTE}" in gateway_commands.splitlines() and "`/tidy-notes`" in gateway_commands
 
 
 @pytest.mark.parametrize("profile", [None, "work"])

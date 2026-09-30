@@ -29,6 +29,7 @@ class MatrixTurnContextUpdate(TurnContextUpdate):
 class MatrixQuotedAttachment:
     dependency: QuotedMediaDependency
     parent: MatrixEventContext | None
+    path: str | None
 
     async def refresh(self, adapter: Any) -> None:
         cache = adapter._event_context_cache
@@ -52,7 +53,7 @@ class MatrixQuotedAttachment:
             or parent.attachment_identity != self.dependency.content_id
         ):
             return None
-        return parent.media_path
+        return self.path
 
 
 @dataclass
@@ -71,6 +72,18 @@ class MatrixTurnContext:
         event: MessageEvent,
         parent: MatrixEventContext | None = None,
     ) -> MatrixTurnContext:
+        """Capture the reply context of *event*. The gateway's snapshot comes from
+        ``fetch_inbound_context``, which runs in the routed profile's scope after
+        ``rehome_inbound_media``, so each quoted image uses the event's own attachment entry.
+        The parent's cached ``media_path`` can refer to another profile's cache or to a file
+        that has since been moved. An entry that is still in the launch profile's cache is
+        dropped, because the gateway could not move it into the routed profile."""
+        from gateway.run_inbound import rehomed_media_path
+
+        def turn_path(dependency: QuotedMediaDependency) -> str | None:
+            path = event.media_urls[dependency.media_index]
+            return path if rehomed_media_path(path) == path else None
+
         room_id = event.source.chat_id
         dependencies = tuple(
             dependency
@@ -103,7 +116,9 @@ class MatrixTurnContext:
             ) or adapter._event_context_cache.retain(
                 dependency.room_id, dependency.event_id
             )
-            attachments.append(MatrixQuotedAttachment(dependency, retained))
+            attachments.append(
+                MatrixQuotedAttachment(dependency, retained, turn_path(dependency))
+            )
         return cls(
             adapter, room_id, replace(event), parent, attachments=tuple(attachments)
         )

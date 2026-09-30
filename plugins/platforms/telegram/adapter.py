@@ -6,6 +6,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import html as _html
 import re
@@ -541,27 +542,30 @@ class TelegramAdapter(BasePlatformAdapter):
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
 
     # Adaptive text-batch ingress ("feels instant"): ≤320 codepoints settle in ~180ms, ≤1024 in ~240ms,
-    # longer waits the configured cap; always clamped to ``_text_batch_delay_seconds``.
+    # longer waits the configured cap; always clamped to ``_text_batch_delay_seconds``. Only for the
+    # default delay: an explicit HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS applies to every batch.
     _TEXT_BATCH_FAST_LEN = 320
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    _text_batch_delay_explicit: bool = False
 
     @staticmethod
     def _env_float_clamped(name: str, default: float, *, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
-        """Read a float env var; non-finite → default; clamp to bounds (safe for asyncio.sleep)."""
+        """Read a float env var; non-finite/negative/unparseable → default; clamp to bounds (safe for asyncio.sleep)."""
         import math
         raw = os.getenv(name)
         try:
             value = float(raw) if raw is not None else float(default)
         except (TypeError, ValueError):
             value = float(default)
-        if not math.isfinite(value):
+        if not math.isfinite(value) or value < 0:
             value = float(default)
         if min_value is not None:
             value = max(value, min_value)
-        if max_value is not None:
-            value = min(value, max_value)
+        if max_value is not None and value > max_value:
+            logger.warning("%s=%s exceeds the %s ceiling; clamped", name, value, max_value)
+            value = max_value
         return value
 
     @property
@@ -621,14 +625,20 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
-        # Aggregate client-side splits of long messages into one MessageEvent; bounds are conservative
-        # for Telegram's ~1 edit/s flood envelope.
+        # Aggregate client-side splits of long messages into one MessageEvent; defaults are conservative
+        # for Telegram's ~1 edit/s flood envelope, an explicit value is honoured up to the shared safety cap.
         self._text_batch_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", self._TEXT_BATCH_DEFAULT_DELAY_S,
-            min_value=0.08, max_value=self._TEXT_BATCH_MAX_DELAY_S)
+            min_value=0.08, max_value=self._TEXT_BATCH_SAFETY_CAP_S)
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
-            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
+            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_SAFETY_CAP_S)
+        # Explicit only when the value is usable; anything _env_float_clamped replaced with the default is not.
+        try:
+            raw_delay = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", ""))
+        except ValueError:
+            raw_delay = math.nan
+        self._text_batch_delay_explicit = math.isfinite(raw_delay) and raw_delay >= 0
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).
@@ -6639,11 +6649,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
-        short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap)."""
+        short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap).
+        An explicitly configured delay skips the fast tiers: the operator asked for that quiet period."""
         last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
         total_len = len(getattr(pending, "text", "") or "") if pending else 0
         if last_len >= self._SPLIT_THRESHOLD:
             return self._text_batch_split_delay_seconds
+        if self._text_batch_delay_explicit:
+            return self._text_batch_delay_seconds
         if total_len <= self._TEXT_BATCH_FAST_LEN:
             return min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
         if total_len <= self._TEXT_BATCH_SHORT_LEN:

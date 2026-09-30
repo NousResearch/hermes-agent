@@ -309,7 +309,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
-        # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
+        # Telegram cadence by default (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:

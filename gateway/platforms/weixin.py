@@ -727,7 +727,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
-        # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
+        # trigger a separate agent run. Telegram cadence by default (#44883); ``0`` dispatches immediately.
         self._configure_text_batch_delays()
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:

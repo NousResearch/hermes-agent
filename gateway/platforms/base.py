@@ -2474,11 +2474,12 @@ class BasePlatformAdapter(ABC):
     _text_batch_split_delay_seconds: float = 0.0
     # Shared cadence for adapters that batch: a quiet period long enough to merge a client-side
     # split (Telegram's measured envelope), short enough that a single short message is not
-    # visibly delayed (#44883). Ceilings bound a misconfigured value fed to asyncio.sleep().
+    # visibly delayed (#44883). The defaults apply only when unset; an explicit value is the
+    # operator's policy (e.g. waiting for a user who types one question as several messages)
+    # and is honoured up to a safety cap that only keeps a typo out of asyncio.sleep().
     _TEXT_BATCH_DEFAULT_DELAY_S: float = 0.3
-    _TEXT_BATCH_MAX_DELAY_S: float = 2.0
     _TEXT_BATCH_DEFAULT_SPLIT_DELAY_S: float = 1.0
-    _TEXT_BATCH_MAX_SPLIT_DELAY_S: float = 4.0
+    _TEXT_BATCH_SAFETY_CAP_S: float = 600.0
 
     def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
         """Float from ``config.extra``; NaN/Inf/negative/unparseable → ``default``; clamped to ``[min_value, max_value]``."""
@@ -2498,10 +2499,10 @@ class BasePlatformAdapter(ABC):
     def _configure_text_batch_delays(self) -> None:
         """Read ``text_batch_delay_seconds`` / ``text_batch_split_delay_seconds`` from ``config.extra`` at the shared cadence."""
         self._text_batch_delay_seconds = self._coerce_float_extra(
-            "text_batch_delay_seconds", self._TEXT_BATCH_DEFAULT_DELAY_S, max_value=self._TEXT_BATCH_MAX_DELAY_S)
+            "text_batch_delay_seconds", self._TEXT_BATCH_DEFAULT_DELAY_S, max_value=self._TEXT_BATCH_SAFETY_CAP_S)
         self._text_batch_split_delay_seconds = self._coerce_float_extra(
             "text_batch_split_delay_seconds", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
-            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
+            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_SAFETY_CAP_S)
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""

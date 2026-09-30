@@ -214,8 +214,16 @@ class TestNativeStreamingThrottling:
     """Fire-and-forget: every delta is pushed immediately (no throttle)."""
 
     @pytest.mark.asyncio
-    async def test_tiny_increments_are_sent_immediately(self):
+    async def test_tiny_increments_are_sent_immediately(self, monkeypatch):
         """No throttling — each distinct cumulative text produces a frame."""
+        import gateway.stream_consumer as stream_consumer
+        import gateway.stream_consumer_transport as stream_consumer_transport
+
+        # With the clock frozen, a time-gated push never becomes due, so a
+        # throttle leaves a delta without a frame instead of only delaying it.
+        frozen_clock = SimpleNamespace(monotonic=lambda: 1000.0)
+        monkeypatch.setattr(stream_consumer, "time", frozen_clock)
+        monkeypatch.setattr(stream_consumer_transport, "time", frozen_clock)
         adapter = _make_native_streaming_adapter()
         cfg = StreamConsumerConfig(
             chat_type="dm", cursor="",

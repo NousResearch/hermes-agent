@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 import contextlib
+import threading
 
 from .method_ctx import bind_module
 
@@ -37,13 +38,37 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
 
     try:
         thread = spawn_context_thread(run, name=name)
-        if session is not None:
-            session["_run_thread"] = thread
-        thread.start()
+        if session is None:
+            thread.start()
+        else:
+            _start_turn_thread(session, thread)
         return thread
     except BaseException:
         retirement.release()
         raise
+
+
+_turn_thread_publish_lock = threading.Lock()
+
+
+def _start_turn_thread(
+    session: dict, thread: threading.Thread, *, turn_generation: int | None = None
+) -> bool:
+    """Start ``thread``, then publish it as ``session["_run_thread"]``. Other threads call ``is_alive()`` and
+    ``join()`` on that handle, so it must never refer to a thread that has not started.
+
+    The new thread can publish its own worker before or after this store, so the store replaces only the handle
+    seen before ``start()`` or the calling thread itself. A worker published by the new thread is kept, and a
+    worker always replaces the thread that started it."""
+    previous = session.get("_run_thread")
+    thread.start()
+    with session["history_lock"], _turn_thread_publish_lock:
+        if turn_generation is not None and not _holds_submit_claim(session, turn_generation):
+            return False
+        current = session.get("_run_thread")
+        if current is previous or current is threading.current_thread():
+            session["_run_thread"] = thread
+    return True
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> list[str]:

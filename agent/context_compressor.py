@@ -1329,7 +1329,20 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     # Charge the wire substitute, not both it and the clean display content.
     sidecar = msg.get("api_content")
     content = sidecar if isinstance(sidecar, str) and sidecar and msg.get("role") in ("user", "assistant") else msg.get("content") or ""
-    text_tokens = estimate_tokens_rough(content) if isinstance(content, str) else _content_length_for_budget(content) // _CHARS_PER_TOKEN
+    if isinstance(content, str):
+        text_tokens = estimate_tokens_rough(content)
+    elif isinstance(content, list):
+        from agent.image_token_cost import current_image_token_cost
+
+        image_cost = current_image_token_cost()
+        # List-wrapped text follows the same Unicode policy; image payload size is irrelevant.
+        text_tokens = sum(
+            image_cost if _is_image_part(part)
+            else estimate_tokens_rough((part.get("text", "") or "") if isinstance(part, dict) else str(part))
+            for part in content
+        )
+    else:
+        text_tokens = _content_length_for_budget(content) // _CHARS_PER_TOKEN
     tokens = text_tokens + 10  # +10 for role/key overhead
     tokens += sum(estimate_tokens_rough(str(tc)) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict))
     for key in _ALWAYS_REPLAYED_BUDGET_KEYS:

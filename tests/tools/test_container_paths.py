@@ -127,3 +127,34 @@ class TestTerminalScope:
         assert cp.to_host_dir("/workspace") == str(host.resolve())
         assert "TERMINAL_ENV" not in os.environ
         assert "TERMINAL_DOCKER_VOLUMES" not in os.environ
+
+
+class TestWindowsHostPaths:
+    """A Windows drive path on the host side keeps its drive colon when parsed."""
+
+    def test_drive_path_spec_is_parsed(self, monkeypatch, no_config):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps(["C:\\Users\\me\\project:/workspace", "D:/data:/data:ro"]),
+        )
+        assert cp._volume_specs() == [
+            ("c:/Users/me/project", "/workspace", False),
+            ("d:/data", "/data", True),
+        ]
+        assert cp.container_mount_map() == [("/workspace", "c:/Users/me/project")]
+
+    def test_drive_path_translates_to_container(self, docker_backend, monkeypatch):
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", json.dumps(["C:\\Users\\me\\project:/workspace"]),
+        )
+        assert cp.to_container_path("C:\\Users\\me\\project\\out\\report.md") == (
+            "/workspace/out/report.md"
+        )
+        assert cp.to_container_path("c:/Users/me/project") == "/workspace"
+        assert cp.to_container_path("C:\\Users\\me\\project-other\\x.md") is None
+
+    def test_bare_drive_letter_is_not_a_host_path(self, monkeypatch, no_config):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/workspace"]))
+        assert cp._volume_specs() == []

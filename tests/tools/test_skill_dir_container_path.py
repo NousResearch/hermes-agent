@@ -7,6 +7,7 @@ must be left alone.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -111,3 +112,35 @@ class TestSkillInvocationMessage:
 
         assert msg is not None
         assert f"[Skill directory: {skill_dir}]" in msg
+
+
+class TestSymlinkedSkillsTree:
+    """A skills tree holding a symlink is mounted from a sanitized temp copy.
+
+    The copy keeps the tree's layout and mounts at the same container root, so
+    the container path derived from the real skills directory must still name
+    a file inside the mounted copy. Translation must also leave the copy that
+    Docker already mounted in place.
+    """
+
+    def test_container_path_exists_in_the_sanitized_mount(self, docker_backend, skills_root, tmp_path):
+        from tools.credential_files import get_skills_directory_mount
+
+        skill_dir = _make_skill(skills_root, "linked")
+        outside = tmp_path / "outside.txt"
+        outside.write_text("not skill content\n", encoding="utf-8")
+        (skill_dir / "scripts" / "link.txt").symlink_to(outside)
+
+        mounts = get_skills_directory_mount("/root/.hermes")
+        assert len(mounts) == 1
+        source, target = mounts[0]["host_path"], mounts[0]["container_path"]
+        assert source != str(skills_root)  # the sanitized copy, not the raw dir
+
+        container = cp.to_container_path(str(skill_dir / "scripts" / "run.sh"))
+        assert container == "/root/.hermes/skills/linked/scripts/run.sh"
+        rel = container[len(target) + 1:]
+        assert (Path(source) / rel).is_file()
+
+        cp.host_mount_map()
+        cp.to_container_path(str(skill_dir))
+        assert Path(source).is_dir()  # translating never rebuilds the mounted copy

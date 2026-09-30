@@ -421,6 +421,28 @@ _MD_CODE_SPAN_RE = re.compile(r"`([^`\n]*)`")
 _OSC8_RUN_RE = re.compile(r"\x1b]8;[^\x1b]*\x1b\\")
 _LINK_PLACEHOLDER = "\x00L{}\x00"
 
+# An OSC 8 pair has no end-of-line semantics: the terminal applies an open link to everything
+# written after it, so an unterminated sequence (model output, or a streamed chunk cut mid-link)
+# would make every following line clickable. Links are closed at the end of each line instead.
+_OSC8_LINK_RE = re.compile(r"\x1b]8;;(?P<target>[^\x07\x1b]*)(?:\x07|\x1b\\)")
+_OSC8_CLOSE = "\x1b]8;;\x1b\\"
+
+
+def _balance_osc8_per_line(text: str) -> str:
+    """Close any hyperlink left open at the end of a line."""
+
+    def close(line: str) -> str:
+        opens = closes = 0
+        for match in _OSC8_LINK_RE.finditer(line):
+            if match.group("target"):
+                opens += 1
+            else:
+                closes += 1
+        return line + _OSC8_CLOSE * max(0, opens - closes)
+
+    return "\n".join(close(line) for line in text.split("\n"))
+
+
 
 def _markdown_links_as_osc8(plain: str) -> str:
     """Rewrap markdown links as OSC 8 pairs, then run the marker pass over the result.
@@ -442,7 +464,18 @@ def _markdown_links_as_osc8(plain: str) -> str:
     # marker pass on their own, because a placeholder hides them from the pass over the whole text
     # while the old behaviour stripped markers inside both a code span and a link label.
     plain = _OSC8_RUN_RE.sub(lambda m: stash(m.group(0)), plain)
-    plain = _MD_CODE_SPAN_RE.sub(lambda m: stash(_strip_markdown_markers(m.group(1))), plain)
+
+    # A backtick inside a link target belongs to the URL, not to a code span: the target is built
+    # from markdown further down, and the code-span pass would otherwise eat the backticks.
+    link_targets = [m.span(2) for m in _MD_INLINE_LINK_RE.finditer(plain)]
+
+    def _inside_link_target(pos: int) -> bool:
+        return any(start <= pos < end for start, end in link_targets)
+
+    plain = _MD_CODE_SPAN_RE.sub(
+        lambda m: m.group(0) if _inside_link_target(m.start()) else stash(_strip_markdown_markers(m.group(1))),
+        plain,
+    )
     plain = _MD_INLINE_LINK_RE.sub(
         lambda m: stash(_osc8_hyperlink(m.group(2).strip("<>"),
                                         _strip_markdown_markers(m.group(1)))), plain)
@@ -451,7 +484,7 @@ def _markdown_links_as_osc8(plain: str) -> str:
     # Reverse order so a placeholder stored inside another one (a code span in a link label) expands.
     for index in range(len(store) - 1, -1, -1):
         plain = plain.replace(_LINK_PLACEHOLDER.format(index), store[index])
-    return plain
+    return _balance_osc8_per_line(plain)
 
 
 def _strip_markdown_syntax_keep_links(text: str) -> str:
@@ -466,14 +499,29 @@ def _strip_markdown_syntax_keep_links(text: str) -> str:
     from cli import _rich_text_from_ansi
     source = _rich_text_from_ansi(text or "")
     plain = source.plain
+
+    def _link_of(span) -> str | None:
+        return getattr(span.style, "link", None) if span.style is not None else None
+
+    link_spans = [span for span in source.spans if _link_of(span)]
+    # An unterminated pair makes rich reopen the same link on every following line, which would
+    # leave the rest of the message clickable. A continuation span (same target, only a newline
+    # between) is therefore emitted as plain text: a link stays on the line where it started.
+    continuations = {
+        index
+        for index, (previous, current) in enumerate(zip(link_spans, link_spans[1:]), start=1)
+        if _link_of(previous) == _link_of(current) and plain[previous.end:current.start] == "\n"
+    }
+
     # Reverse order keeps the recorded offsets valid while earlier spans are rewritten.
-    for span in reversed(source.spans):
-        link = getattr(span.style, "link", None) if span.style is not None else None
-        if link:
-            plain = (
-                plain[:span.start] + f"\x1b]8;;{link}\x1b\\" + plain[span.start:span.end]
-                + "\x1b]8;;\x1b\\" + plain[span.end:]
-            )
+    for index in range(len(link_spans) - 1, -1, -1):
+        if index in continuations:
+            continue
+        span = link_spans[index]
+        plain = (
+            plain[:span.start] + f"\x1b]8;;{_link_of(span)}\x1b\\" + plain[span.start:span.end]
+            + _OSC8_CLOSE + plain[span.end:]
+        )
     return _markdown_links_as_osc8(plain)
 
 
@@ -516,12 +564,15 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
         stripped = _strip_markdown_syntax_keep_links(text)
-        if "\x1b]8;;" in stripped:
-            # Hyperlinks survive: rich re-parses them into link spans, so cell widths stay
-            # correct (a raw escape counted as printable would break the panel).
-            return _rich_text_from_ansi(stripped)
-        # Strip first (inline markdown changes cell width), then re-align padding.
-        return _RichText(realign_markdown_tables(stripped, panel_width))
+        # Hyperlinks survive as OSC 8 escapes, and markdown_tables measures visible text only,
+        # so the table realignment runs with links present as well — a single linked cell no
+        # longer leaves the whole message unpadded.
+        realigned = realign_markdown_tables(stripped, panel_width)
+        if "\x1b]8;;" in realigned:
+            # rich re-parses the escapes into link spans, so cell widths stay correct
+            # (a raw escape counted as printable would break the panel).
+            return _rich_text_from_ansi(realigned)
+        return _RichText(realigned)
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
@@ -841,7 +892,9 @@ def _write_links_raw(text: str) -> None:
     redraws afterwards, so the line is not painted over.
     """
     try:
-        os.write(sys.stdout.fileno(), (text + "\n").encode("utf-8", "replace"))
+        # A chunk can end mid-link (streamed flush, or model output that never closed the pair);
+        # closing it here keeps the next write from inheriting the link.
+        os.write(sys.stdout.fileno(), (_balance_osc8_per_line(text) + "\n").encode("utf-8", "replace"))
     except Exception:
         # Non-tty stdout (worker log, closed pipe): whatever holds the stream gets the bytes.
         with suppress(Exception):

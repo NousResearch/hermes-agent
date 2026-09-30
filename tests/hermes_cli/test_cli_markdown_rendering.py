@@ -2,6 +2,7 @@ import re
 import sys
 from io import StringIO
 
+import pytest
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -327,3 +328,88 @@ def test_cprint_links_raw_writes_directly_without_a_running_app(monkeypatch):
 
     assert len(written) == 1
     assert "\x1b]8;;https://example.test" in written[0]
+
+
+def test_strip_closes_a_link_at_the_end_of_every_line():
+    """An OSC 8 pair has no end-of-line semantics: an open one links every following line."""
+    source = "клик \x1b]8;;https://ex.com/leak\x1b\\CLICK\nстрока 2\nстрока 3"
+
+    stripped = _strip_markdown_syntax_keep_links(source)
+    lines = stripped.split("\n")
+
+    link_re = re.compile(r"\x1b]8;;(?P<target>[^\x07\x1b]*)(?:\x07|\x1b\\)")
+    for line in lines:
+        opens = sum(1 for m in link_re.finditer(line) if m.group("target"))
+        closes = sum(1 for m in link_re.finditer(line) if not m.group("target"))
+        assert opens == closes, f"незакрытая ссылка: {line!r}"
+    assert "https://ex.com/leak" in lines[0]
+    assert "https://ex.com/leak" not in "\n".join(lines[1:])
+
+
+def test_write_links_raw_closes_a_link_left_open_by_a_chunk(monkeypatch):
+    """A streamed chunk can end mid-link; the next write must not inherit the link."""
+    import hermes_cli.cli_render as render
+
+    written = []
+    monkeypatch.setattr(sys, "stdout", type("S", (), {"fileno": lambda self: 4242})())
+    monkeypatch.setattr(render.os, "write", lambda fd, data: written.append(data))
+
+    render._write_links_raw("клик \x1b]8;;https://ex.com/leak\x1b\\CLICK")
+
+    (payload,) = written
+    text = payload.decode()
+    assert text.count("\x1b]8;;") == 2 and text.count("\x1b]8;;\x1b\\") == 1
+    assert text.endswith("\x1b]8;;\x1b\\\n")
+
+
+def test_strip_realigns_a_table_whose_cell_is_a_link():
+    """A linked cell must not switch the whole message out of table realignment."""
+    table_with_link = (
+        "| ключ | ссылка |\n| --- | --- |\n"
+        "| ITT-1432 | [задача](https://jira.skala-r.ru/browse/ITT-1432) |"
+    )
+    table_plain = "| ключ | ссылка |\n| --- | --- |\n| ITT-1432 | задача |"
+
+    with_link = _render_to_text(_render_final_assistant_content(table_with_link, mode="strip"))
+    without = _render_to_text(_render_final_assistant_content(table_plain, mode="strip"))
+
+    with_lines, without_lines = with_link.split("\n"), without.split("\n")
+    assert with_lines[0] == without_lines[0]  # header row padded the same in both
+    assert with_lines[1] == without_lines[1]  # divider row
+    rows_with = [row for row in with_lines if "ITT-1432" in row]
+    rows_without = [row for row in without_lines if "ITT-1432" in row]
+    assert rows_with == rows_without and len(rows_with) == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ex.com/s?q=a*b",
+        "https://ex.com/a~~b",
+        "https://ex.com/x_[a](b)",
+        "https://ex.com/a`b`c",
+        "https://ex.com/a_b_c",
+        "https://ex.com/plain",
+    ],
+)
+def test_strip_keeps_marker_bearing_link_targets_intact(url):
+    """Markdown markers inside a target are not markup — the URL survives byte for byte."""
+    stripped = _strip_markdown_syntax_keep_links(f"\x1b]8;;{url}\x1b\\метка\x1b]8;;\x1b\\")
+
+    assert f"\x1b]8;;{url}\x1b\\" in stripped
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ex.com/s?q=a*b",
+        "https://ex.com/a~~b",
+        "https://ex.com/a_b_c",
+        "https://ex.com/a`b`c",
+    ],
+)
+def test_strip_keeps_marker_bearing_markdown_link_targets_intact(url):
+    """Same for a link the model writes as markdown: the pair is built before markers go."""
+    stripped = _strip_markdown_syntax_keep_links(f"[метка]({url})")
+
+    assert f"\x1b]8;;{url}\x1b\\" in stripped

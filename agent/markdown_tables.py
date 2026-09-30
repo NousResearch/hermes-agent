@@ -22,10 +22,28 @@ __all__ = ["is_table_divider", "looks_like_table_row", "realign_markdown_tables"
 _DIVIDER_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
 _MIN_COL_WIDTH = 3  # matches the divider's minimum dash run.
 
+# Escape sequences carry no display width: a cell holding an OSC 8 hyperlink (or ANSI colour)
+# must be padded by its visible text, otherwise every row with a link drifts right.
+_ESCAPE_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"  # CSI — SGR colours, cursor moves
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC — hyperlinks, title, other queries
+    r"|\x1b[@-Z\\-_]"  # remaining two-byte escapes
+)
+
+
+def _visible_text(s: str) -> str:
+    """``s`` without ANSI/OSC escapes — what the terminal actually paints."""
+    return _ESCAPE_RE.sub("", s)
+
 
 def _disp_width(s: str) -> int:
-    """``wcswidth`` clamped to >= 0 (it returns -1 for control/unknown sequences)."""
-    return max(wcswidth(s), 0)
+    """``wcswidth`` of the visible text, clamped to >= 0 (it returns -1 for control/unknown)."""
+    return max(wcswidth(_visible_text(s)), 0)
+
+
+def _pad_to(s: str, width: int) -> str:
+    """Pad ``s`` to ``width`` display cells, counting escapes as zero-width."""
+    return s + " " * max(0, width - _disp_width(s))
 
 
 def split_table_row(row: str) -> List[str]:
@@ -66,7 +84,7 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
         return _render_vertical(rows, ncols, available_width)
 
     def _row(cells: List[str]) -> str:
-        return "| " + " | ".join(c + " " * max(0, widths[k] - _disp_width(c)) for k, c in enumerate(cells)) + " |"
+        return "| " + " | ".join(_pad_to(c, widths[k]) for k, c in enumerate(cells)) + " |"
 
     out = [_row(rows[0]), "|" + "|".join("-" * (w + 2) for w in widths) + "|"]
     out.extend(_row(r) for r in rows[1:])

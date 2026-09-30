@@ -459,6 +459,25 @@ describe('retireLocalProfileGateways', () => {
 })
 
 describe('reconnectSecondaryGateways', () => {
+  it('probes an open secondary on an ordinary recovery signal', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+    await ensureGatewayForAgent('homelab', 'default')
+
+    const socket = gatewayMocks.instances[0]
+    socket.request = vi.fn(async () => ({ status: 'complete' }))
+
+    reconnectSecondaryGateways()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(socket.request).toHaveBeenCalled()
+    expect(socket.close).not.toHaveBeenCalled()
+  })
+
   it('force-redials an open secondary whose transport may be half-open after wake', async () => {
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
       descriptorFor(connectionId, profile)

@@ -22,6 +22,14 @@ from tools.matrix_tool_runtime import MatrixOwner
 
 _ACTIONS = frozenset({"create", "invite", "leave", "forget", "redact"})
 
+UNKNOWN_OUTCOME_STEPS = {
+    "create": "Ask the user whether the room was created before retrying, so that no duplicate room is created",
+    "invite": "Ask the user whether the invite arrived before retrying",
+    "leave": "Ask the user whether the bot is still in the room before retrying",
+    "forget": "Forget changes only the bot's account, so retrying it is harmless",
+    "redact": "Read the event with matrix_read kind=event before retrying",
+}
+
 
 def _enabled(home: Path) -> bool:
     from gateway.run import _profile_runtime_scope
@@ -203,6 +211,13 @@ async def _requester_is_only_other_member(context: _AdminContext, chat_type: str
 async def administer_matrix_room(
     adapter: Any, args: dict[str, Any], *, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
 ) -> dict[str, Any]:
+    sent = False
+
+    def send() -> None:
+        nonlocal sent
+        before_write()
+        sent = True
+
     try:
         context = _AdminContext.capture(adapter, interrupt_check, "Matrix administration")
         _validate(args)
@@ -247,7 +262,7 @@ async def administer_matrix_room(
             return refusal
         await context.access(chat_type, joined=action != "forget")
         await context.require_selection(chat_type, joined=action != "forget")
-        result = await _MUTATIONS[action](context, args, before_write)
+        result = await _MUTATIONS[action](context, args, send)
         try:
             context.check(chat_type, joined=action not in {"leave", "forget"})
         except ValueError as exc:
@@ -256,8 +271,12 @@ async def administer_matrix_room(
     except ValueError as exc:
         return {"error": str(exc)}
     except Exception as exc:
+        errcode = getattr(exc, "errcode", None)
+        if sent and errcode is None:
+            return {"error": "Matrix administration failed after the change was sent to the homeserver",
+                    "outcome": "unknown", "next_step": UNKNOWN_OUTCOME_STEPS[args["action"]]}
         result = {"error": f"Matrix administration failed: {type(exc).__name__}"}
-        if errcode := getattr(exc, "errcode", None):
+        if errcode:
             result.update(errcode=str(errcode), message=str(exc))
         return result
 

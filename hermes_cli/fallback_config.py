@@ -29,7 +29,8 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | Callable[[], st
         return inline
     if key_env := str(entry.get("key_env") or entry.get("api_key_env") or "").strip():
         from agent.secret_scope import get_secret
-        return (get_secret(key_env) or "").strip() or None
+        if key := (get_secret(key_env) or "").strip():
+            return key
     if (str(entry.get("provider") or "").strip().lower() == "azure-foundry"
             and str(entry.get("auth_mode") or "").strip().lower() == "entra_id"):
         from hermes_cli.runtime_provider_backends import _azure_entra_credentials

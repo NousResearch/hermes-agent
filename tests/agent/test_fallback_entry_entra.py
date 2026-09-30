@@ -86,7 +86,8 @@ def test_unselected_entra_is_not_acquired(monkeypatch, entry):
     assert resolve_entry_api_key(entry) is None
 
 
-def test_failed_entra_construction_keeps_walking_chain(monkeypatch):
+@pytest.mark.parametrize('error', [ImportError, RuntimeError, ValueError])
+def test_failed_entra_construction_keeps_walking_chain(monkeypatch, error):
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_with_fallback
     import hermes_cli.runtime_provider as rp
@@ -95,7 +96,7 @@ def test_failed_entra_construction_keeps_walking_chain(monkeypatch):
             raise AuthError('fixture primary unavailable')
         return {'provider': 'custom', 'api_key': kwargs['explicit_api_key']}
     def unavailable(**kwargs):
-        raise ImportError('fixture identity unavailable')
+        raise error('fixture identity unavailable')
     monkeypatch.setattr(rp, 'resolve_runtime_provider', resolve)
     monkeypatch.setattr('agent.azure_identity_adapter.build_token_provider', unavailable)
     last = {'provider': 'custom', 'model': 'fixture', 'api_key': 'last-key'}
@@ -104,3 +105,13 @@ def test_failed_entra_construction_keeps_walking_chain(monkeypatch):
     runtime, entry = resolve_runtime_with_fallback(config, requested='primary')
     assert entry == last
     assert runtime['api_key'] == 'last-key'
+
+
+@pytest.mark.parametrize('field', ['key_env', 'api_key_env'])
+def test_missing_static_override_still_uses_declared_entra(monkeypatch, field):
+    from hermes_cli.fallback_config import resolve_entry_api_key
+    source = lambda: 'fixture-token'
+    monkeypatch.delenv('UNSET_FIXTURE_KEY', raising=False)
+    monkeypatch.setattr('agent.azure_identity_adapter.build_token_provider', lambda **kw: source)
+    assert resolve_entry_api_key({'provider': 'azure-foundry', 'auth_mode': 'entra_id',
+        field: 'UNSET_FIXTURE_KEY'}) is source

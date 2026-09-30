@@ -217,7 +217,7 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
     return error
 
 
-def _remove_entry(store: Store, entry_name: str) -> None:
+def _remove_entry(store: Store, entry_name: str, *, best_effort: bool = False) -> None:
     """Remove a replaced or failed entry, retrying transient Windows holds.
 
     Corruption may leave a file where the directory belonged. Failure
@@ -237,6 +237,9 @@ def _remove_entry(store: Store, entry_name: str) -> None:
             return
         except OSError as e:
             if attempt == 4:
+                if best_effort:
+                    LOG.warning("could not remove stale package entry %s: %s", entry, e)
+                    return
                 raise
             time.sleep(0.2 * (attempt + 1))
 
@@ -290,7 +293,7 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
             _restore_previous_entry(store, entry, previous_entry)
         raise
     if previous_entry.exists():
-        _remove_entry(store, previous_entry.name)
+        _remove_entry(store, previous_entry.name, best_effort=True)
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
@@ -301,7 +304,7 @@ def _settle_previous_entry(package, store, entry, previous_entry, previous, targ
     # an interrupted stage always restores its prior usable bytes.
     if (previous and previous.get("entry") == entry.name
             and _entry_verified(package, previous, store, target)):
-        _remove_entry(store, previous_entry.name)
+        _remove_entry(store, previous_entry.name, best_effort=True)
     else:
         _restore_previous_entry(store, entry, previous_entry)
 

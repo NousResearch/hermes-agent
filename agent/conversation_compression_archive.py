@@ -14,6 +14,9 @@ ABSORBED_ROW_IDS = "_absorbed_row_ids"
 # How many durable rows an alternation repair folded into one user dict. A reload without row ids
 # has no other way to tell that dict from a prompt that was never persisted.
 MERGED_DURABLE_ROWS = "_merged_durable_rows"
+# How many durable rows the repair dropped behind a dict on a reload without row ids (a tool call
+# with no result, a result with no call). The caller was handed them, and nothing else names them.
+DROPPED_DURABLE_ROWS = "_dropped_durable_rows"
 
 
 def _positive_id(value: Any) -> Optional[int]:
@@ -82,9 +85,10 @@ def coverage_for_commit(
     """Coverage to pass into ``archive_and_compact``, or ``(None, None)`` to keep the watermark.
 
     ``None`` when the newest exact held row is already inactive (another compaction
-    won: archiving only the held ids would clone the winner) or when nothing held
-    is a durable row. A trailing unpersisted turn does not take this branch: the
-    rows above it stay unnamed and are cloned.
+    won: archiving only the held ids would clone the winner), when nothing held
+    is a durable row, or when a row the repair dropped has no id: naming the rest
+    would clone that one behind the running turn. A trailing unpersisted turn
+    does not take this branch: the rows above it stay unnamed and are cloned.
     """
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
@@ -93,6 +97,8 @@ def coverage_for_commit(
     if newest is not None and callable(role_of) and role_of(session_id, newest) is None:
         return None, None
     covered, unresolved = held_archive_coverage(messages, verbatim_tail)
+    if any(message.get(DROPPED_DURABLE_ROWS) for message in unresolved):
+        return None, None
     marked = [
         message for message in unresolved
         if isinstance(message, dict) and message.get(_DB_PERSISTED_MARKER)

@@ -417,6 +417,7 @@ async def _change_pin_state(
     if interrupt_check():
         return {"error": "Matrix pin update interrupted"}
 
+    dispatched = False
     try:
         permissions = await _permissions(context)
         actor, required = permissions["requester"], permissions["required"]["edit_pins"]
@@ -443,6 +444,7 @@ async def _change_pin_state(
             return {"error": "Matrix pin update interrupted"}
 
         before_write()
+        dispatched = True
         state_event_id = await asyncio.wait_for(
             context.client.send_state_event(context.room_id, "m.room.pinned_events", {**state, "pinned": updated}),
             timeout=10.0,
@@ -450,9 +452,14 @@ async def _change_pin_state(
     except _InspectionRejected as exc:
         return exc.error
     except Exception as exc:
-        if getattr(exc, "errcode", None) == "M_FORBIDDEN":
+        errcode = getattr(exc, "errcode", None)
+        if errcode == "M_FORBIDDEN":
             return {"error": "Matrix pin update was rejected", "errcode": "M_FORBIDDEN",
                     "message": str(exc)}
+        if dispatched and errcode is None:
+            return {"error": "Matrix pin update failed after the change was sent to the homeserver",
+                    "outcome": "unknown",
+                    "next_step": "Read the current pins with matrix_read kind=pins before retrying"}
         return {"error": f"Matrix pin update failed: {type(exc).__name__}"}
 
     return {"pinned": event_ids, "state_event_id": str(state_event_id)}

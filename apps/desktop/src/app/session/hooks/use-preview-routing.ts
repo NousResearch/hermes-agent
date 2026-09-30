@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
@@ -6,18 +7,19 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
-  closePreviewMatching,
+  closeBrowserPreviewMatchingLiveUrl,
+  closeDockedPreviewMatching,
   closeRightRail,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
+  renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
 
-type EventHandler = (event: RpcEvent) => void
+type EventHandler = (event: GatewayEvent) => void
 
 interface PreviewRoutingOptions {
   baseHandleGatewayEvent: EventHandler
@@ -100,7 +102,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
+              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
             }
           )
         }
@@ -125,10 +127,6 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           return
         }
 
-        if (closePreviewMatching(target)) {
-          return
-        }
-
         void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
           async resolved => {
             const candidates = [target]
@@ -141,7 +139,9 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               }
             }
 
-            closePreviewMatching(...candidates)
+            if (!closeBrowserPreviewMatchingLiveUrl(...candidates)) {
+              closeDockedPreviewMatching(...candidates)
+            }
           }
         )
 

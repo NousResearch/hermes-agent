@@ -9,6 +9,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPromptDrainFailures,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isSteerableEntry,
@@ -19,9 +20,11 @@ import {
   removeQueuedPrompt,
   shouldAutoDrain,
   unparkQueuedPrompts,
-  updateQueuedPrompt
+  updateQueuedPrompt,
+  withQueueDrainClaim
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { useComposerScope } from '../scope'
@@ -80,6 +83,7 @@ export function useComposerQueue({
   // is fine; the auto-drain effect below reads it as a gate.
   const parkedSessions = useStore($parkedQueueSessions)
   const queueParked = Boolean(activeQueueSessionKey && parkedSessions[activeQueueSessionKey])
+  const sessionsLoading = useStore($sessionsLoading)
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit
@@ -97,6 +101,7 @@ export function useComposerQueue({
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
   const drainFailuresRef = useRef(new Map<string, number>())
+  const [drainRetryTick, setDrainRetryTick] = useState(0)
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
@@ -190,55 +195,64 @@ export function useComposerQueue({
     }
 
     clearDraft()
-    scope.attachments.clear()
+    // Queue entry retains blob: previews; revoke when the entry is discarded
+    // or drained into a submit that takes ownership (see composer-queue).
+    scope.attachments.clear({ retainPreviewUrls: true })
     triggerHaptic('selection')
 
     return true
   }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
 
   // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
+  // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the
+  // queue as it stands inside the cross-window claim. Resolves null when there
+  // is nothing to send: another window already sent the picked entry.
   const runDrain = useCallback(
-    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
+    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean | null> => {
       if (drainingQueueRef.current || !activeQueueSessionKey) {
         return false
       }
 
       const drainQueueSessionKey = activeQueueSessionKey
       const drainRuntimeSessionId = sessionId ?? null
-      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
-
-      if (!entry) {
-        return false
-      }
 
       drainingQueueRef.current = true
 
       try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, {
-            attachments: entry.attachments,
-            ...(entry.displayText ? { displayText: entry.displayText } : {}),
-            fromQueue: true,
-            sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
-          })
-        )
+        return await withQueueDrainClaim(drainQueueSessionKey, async queue => {
+          const entry = pickEntry(queue)
 
-        if (accepted === false) {
-          return false
-        }
+          if (!entry) {
+            return null
+          }
 
-        drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(drainQueueSessionKey, entry.id)
-        resetBrowseState(drainRuntimeSessionId)
-        // A successful drain means the queue is flowing again — lift any park
-        // so the remaining entries follow. Manual drains (Enter on an empty
-        // composer, the per-row send arrow) are exactly the resume gestures a
-        // parked queue waits for; the auto path only reaches here unparked.
-        unparkQueuedPrompts(drainQueueSessionKey)
+          const accepted = await Promise.resolve(
+            onSubmit(entry.text, {
+              attachments: entry.attachments,
+              ...(entry.displayText ? { displayText: entry.displayText } : {}),
+              ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
+              fromQueue: true,
+              sessionId: drainRuntimeSessionId,
+              storedSessionId: drainQueueSessionKey
+            })
+          )
 
-        return true
+          if (accepted === false) {
+            return false
+          }
+
+          drainFailuresRef.current.delete(entry.id)
+          // Submit now owns the blob: previews (optimistic bubble); do not revoke.
+          removeQueuedPrompt(drainQueueSessionKey, entry.id, { retainPreviewUrls: true })
+          resetBrowseState(drainRuntimeSessionId)
+          // A successful drain means the queue is flowing again — lift any park
+          // so the remaining entries follow. Manual drains (Enter on an empty
+          // composer, the per-row send arrow) are exactly the resume gestures a
+          // parked queue waits for; the auto path only reaches here unparked.
+          unparkQueuedPrompts(drainQueueSessionKey)
+
+          return true
+        })
       } finally {
         drainingQueueRef.current = false
       }
@@ -255,7 +269,7 @@ export function useComposerQueue({
     [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
   )
 
-  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
+  const drainNextQueued = useCallback(async () => (await runDrain(pickDrainHead)) === true, [pickDrainHead, runDrain])
 
   const sendQueuedNow = useCallback(
     (id: string) => {
@@ -280,6 +294,9 @@ export function useComposerQueue({
       // A manual send clears the auto-drain backoff so a stuck entry the user
       // taps gets a fresh attempt (and re-enables auto-retry on success).
       drainFailuresRef.current.delete(id)
+      // Same for the persisted budget the background drain keeps on the
+      // entry (#98015) — a user gesture is fresh intent, not a replay.
+      clearQueuedPromptDrainFailures(activeQueueSessionKey, id)
 
       return runDrain(entries => entries.find(e => e.id === id))
     },
@@ -341,7 +358,14 @@ export function useComposerQueue({
       return
     }
 
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+
     const onFail = () => {
+      if (cancelled) {
+        return
+      }
+
       const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
       drainFailuresRef.current.set(entry.id, fails)
 
@@ -352,16 +376,27 @@ export function useComposerQueue({
           title: t.composer.queueStuckTitle,
           message: t.composer.queueStuckBody
         })
+      } else {
+        retryTimer = setTimeout(() => setDrainRetryTick(tick => tick + 1), 750 * fails)
       }
     }
 
-    void runDrain(() => entry)
+    // By id: inside the claim the head may already be gone — sent by another
+    // window — which is not a failed send.
+    void runDrain(entries => entries.find(e => e.id === entry.id))
       .then(sent => {
-        if (!sent) {
+        if (sent === false) {
           onFail()
         }
       })
       .catch(onFail)
+
+    // A pending rejection must not schedule into a different session, a parked
+    // queue, or an unmounted composer.
+    return () => {
+      cancelled = true
+      clearTimeout(retryTimer)
+    }
   }, [activeQueueSessionKey, busy, pickDrainHead, queueParked, queuedPrompts, runDrain, t])
 
   // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
@@ -385,10 +420,16 @@ export function useComposerQueue({
   // strand them. A park (explicit Stop/Esc) is the one gate: those entries wait
   // for the user. To cancel queued turns, the user deletes them from the panel.
   useEffect(() => {
-    if (shouldAutoDrain({ isBusy: busy, parked: queueParked, queueLength: queuedPrompts.length })) {
-      autoDrainNext()
+    // Match the background drainer: preserve the retry budget while session
+    // discovery runs at boot, on a gateway/profile switch, or over an empty list.
+    if (sessionsLoading) {
+      return
     }
-  }, [autoDrainNext, busy, queueParked, queuedPrompts.length])
+
+    if (shouldAutoDrain({ isBusy: busy, parked: queueParked, queueLength: queuedPrompts.length })) {
+      return autoDrainNext()
+    }
+  }, [autoDrainNext, busy, drainRetryTick, queueParked, queuedPrompts.length, sessionsLoading])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

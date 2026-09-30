@@ -1,17 +1,18 @@
 """Serve-process lifecycle: parent death watchdog, port-conflict preflight, READY announcement, browser open, trusted proxies.
 """
 
+import asyncio
 import logging
 import ipaddress
-import json
 import os
+import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn
@@ -75,7 +76,9 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    if result.returncode == 1 and not marker:
+    # Only known "missing pid" signals become ProcessLookupError; anything else stays OSError so the
+    # watchdog degrades to pid liveness instead of exiting on a healthy backend.
+    if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 
@@ -168,18 +171,22 @@ def _resolve_restart_drain_timeout() -> float:
 
 
 def _eager_reconcile_own_session_db() -> None:
-    """One writable open of this process's own state.db at startup.
+    """Bring this process's own state.db schema current at startup — read-only first.
 
-    ``SessionDB.__init__`` runs ``_init_schema`` → ``_reconcile_columns`` with
-    open-time lock patience. Never raises: an unfixable store still gets the
-    per-poll read-probe heal in :func:`_open_session_db_at_path`.
+    The dashboard is a view layer; the gateway owns the writer. A healthy store
+    must never see a second writable ``SessionDB`` from this process (its
+    close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
+    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
+    #79531 contract holds) live in the routers' own-store opener,
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
+    raises: an unfixable store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_state import _default_db_path
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_state_registry import release_or_close
 
-        db = acquire(Path(_default_db_path()))
-        release_or_close(db)
+        release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
@@ -204,25 +211,9 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     if not target:
         return
 
-    tmp_name = ""
     try:
-        path = Path(target)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp", delete=False
-        ) as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-            tmp_name = fh.name
-        os.replace(tmp_name, path)
+        atomic_json_write(Path(target), {"port": int(actual_port)}, indent=None, separators=(",", ":"))
     except Exception as exc:
-        if tmp_name:
-            try:
-                Path(tmp_name).unlink(missing_ok=True)
-            except Exception:
-                pass
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
@@ -278,22 +269,56 @@ def _is_serve_orphaned(
     try:
         if expected_start_marker is not None:
             probe = process_start_marker or _process_start_marker
-            actual_marker = probe(int(desktop_pid))
-            if _parent_start_markers_match(actual_marker, expected_start_marker):
-                return False
-            if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+            try:
+                actual_marker = probe(int(desktop_pid))
+            except ProcessLookupError:
                 return True
-            # Inconclusive marker: degrade to PID liveness instead of exiting.
+            except Exception:
+                actual_marker = None
+
+            if actual_marker is not None:
+                if _parent_start_markers_match(actual_marker, expected_start_marker):
+                    return False
+                if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+                    return True
+                # Inconclusive marker: degrade to PID liveness instead of exiting.
 
         if pid_exists is None:
             from gateway.status import _pid_exists
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
-    except ProcessLookupError:
-        return True
     except Exception:
         return False
+
+
+#: Ceiling on the post-orphan graceful unwind before the hard exit takes over.
+#: The desktop is already gone, so nothing escalates for us and this is the
+#: whole budget: comfortably past the 5s exit-flush budget
+#: (``HERMES_TUI_EXIT_FLUSH_BUDGET_S``), still short enough to keep the reap prompt.
+_ORPHAN_EXIT_CEILING_S = 10.0
+
+
+def _request_orphan_shutdown() -> threading.Timer:
+    """Ask this backend to shut itself down, with a hard-exit backstop.
+
+    ``os._exit`` here skipped the flush-on-kill handlers this same process
+    installs before serving (#96095, ``install_exit_flush_signal_handlers``)
+    and every ``atexit`` hook, so an unclean desktop exit dropped the in-memory
+    transcripts that a SIGTERM from a live desktop persists to ``state.db``.
+    Raise SIGTERM instead, and keep the reap guaranteed the way ``cli.py``'s
+    ``_arm_exit_watchdog`` does: a daemon timer that ``os._exit``\\ s if the
+    unwind stalls (it survives ``Py_FinalizeEx``'s non-daemon thread joins).
+    ``raise_signal`` reaches Python's handler on Windows too, where
+    ``os.kill(pid, SIGTERM)`` would terminate the process without running it.
+
+    Returns the armed ceiling timer.
+    """
+    ceiling = threading.Timer(_ORPHAN_EXIT_CEILING_S, os._exit, args=(0,))
+    ceiling.daemon = True
+    ceiling.start()
+    signal.raise_signal(signal.SIGTERM)
+    return ceiling
 
 
 def _start_parent_death_watchdog() -> None:
@@ -339,13 +364,13 @@ def _start_parent_death_watchdog() -> None:
             time.sleep(poll)
         try:
             _log.warning(
-                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); exiting.",
+                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); shutting down.",
                 desktop_pid,
                 start_marker,
             )
         except Exception:
             pass
-        os._exit(0)
+        _request_orphan_shutdown()
 
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
 

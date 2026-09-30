@@ -95,7 +95,10 @@ class TestRecordedGatewayHomeConflicts:
         )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock harness")
+# The lookalike's argv ("<stub> gateway run") is what the guard's real-gateway spawn check matches;
+# the child is a sleep stub the test kills in ``finally``, never a runtime.
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("posix")  # POSIX flock harness
 class TestCrossProfileStopRefusal:
     def test_stop_profile_gateway_refuses_other_profiles_pid(
         self, tmp_path, monkeypatch
@@ -163,7 +166,8 @@ class TestCrossProfileStopRefusal:
             proc.wait(timeout=10)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock harness")
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("posix")  # POSIX flock harness
 class TestProfileDeleteStopRefusal:
     def test_stop_gateway_process_refuses_other_profiles_pid(
         self, tmp_path, capsys

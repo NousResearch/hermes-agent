@@ -60,6 +60,12 @@ describe('generatedImageEchoSources', () => {
 })
 
 describe('dedupeGeneratedImageEchoesInParts', () => {
+  it('preserves timeline identity when there is nothing to strip', () => {
+    const parts = [{ result: {}, toolName: 'read_file', type: 'tool-call' }]
+
+    expect(dedupeGeneratedImageEchoesInParts(parts)).toBe(parts)
+  })
+
   it('keeps the agent prose while removing the duplicated image', () => {
     expect(
       dedupeGeneratedImageEchoesInParts([

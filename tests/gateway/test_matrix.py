@@ -1234,18 +1234,20 @@ def _make_room_adapter():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("body,expected_text", [
-    ("> quoted from elsewhere\n\nwhat does this mean?", "> quoted from elsewhere\n\nwhat does this mean?"),
-    ("> <@alice:example.org> root\n\n> my own quote\n\nquestion", "> my own quote\n\nquestion"),
-    ("> * <@alice:example.org> waves\n\nhello", "hello"),
-    ("> <@bob:example.org> said it failed\nI disagree", "> <@bob:example.org> said it failed\nI disagree"),
+@pytest.mark.parametrize("content,expected_text", [
+    ({"body": "> quoted from elsewhere\n\nwhat does this mean?"}, "> quoted from elsewhere\n\nwhat does this mean?"),
+    ({"body": "> <@alice:example.org> root\n\n> my own quote\n\nquestion"}, "> my own quote\n\nquestion"),
+    ({"body": "> * <@alice:example.org> waves\n\nhello"}, "hello"),
+    ({"body": "> <@bob:example.org> said it failed\nI disagree"}, "> <@bob:example.org> said it failed\nI disagree"),
+    ({"body": "> latest in thread\n\nmy answer", "format": "org.matrix.custom.html",
+      "formatted_body": "<mx-reply><blockquote>latest in thread</blockquote></mx-reply>my answer"}, "my answer"),
 ])
-async def test_thread_message_strips_only_the_reply_fallback(body, expected_text):
+async def test_thread_message_strips_only_the_reply_fallback(content, expected_text):
     adapter = _make_room_adapter()
 
     event = await adapter._build_inbound_event(
-        "!room:example.org", "@alice:example.org", "$message", body,
-        {"msgtype": "m.text", "body": body},
+        "!room:example.org", "@alice:example.org", "$message", content["body"],
+        {"msgtype": "m.text", **content},
         {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
          "m.in_reply_to": {"event_id": "$latest"}},
     )
@@ -1659,7 +1661,7 @@ async def test_formatted_reply_fallback_supplies_quote_without_parent_fetch():
 
     event = await adapter._build_inbound_event(
         "!room:example.org", "@alice:example.org", "$reply", "Continue",
-        {"msgtype": "m.text", "body": "Continue", "formatted_body":
+        {"msgtype": "m.text", "body": "Continue", "format": "org.matrix.custom.html", "formatted_body":
          '<mx-reply><blockquote><a>In reply to</a> <a>@alice</a><br/>Earlier '
          '<b>text</b></blockquote></mx-reply>Continue'},
         {"m.in_reply_to": {"event_id": "$parent"}},

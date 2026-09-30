@@ -67,8 +67,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 # (home, lang) -> merged catalog (packs over overlay over bundled). home -> supported tuple.
 _catalog_cache: dict[tuple[str, str], dict[str, str]] = {}
-# (path, mtime_ns, size) -> one parsed bundled file. Not cleared by reset_language_cache.
-_bundled_cache: dict[tuple[str, int, int], dict[str, str]] = {}
+# (path, st_dev, st_ino, mtime_ns, size) -> one parsed bundled file. Not cleared by reset_language_cache.
+_bundled_cache: dict[tuple[str, int, int, int, int], dict[str, str]] = {}
 _supported_cache: dict[str, tuple[str, ...]] = {}
 _catalog_lock = threading.Lock()
 
@@ -140,7 +140,7 @@ def _load_bundled(lang: str) -> dict[str, str]:
         return {}
     try:
         stat = path.stat()
-        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        key = (str(path), stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
         with _catalog_lock:
             cached = _bundled_cache.get(key)
         if cached is not None:

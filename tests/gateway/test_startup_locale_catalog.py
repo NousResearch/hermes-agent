@@ -88,15 +88,20 @@ async def test_shutdown_notice_after_a_locale_pack_registers_does_not_parse_on_t
     ))
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: adapter)
     assert await runner.start()
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", chat_type="dm", user_id="user-1")
-    session_key = build_session_key(source)
-    runner._running_agents[session_key] = object()
-    runner._cache_session_source(session_key, source)
-    pack = i18n_layers.register_pack("pl", i18n_layers.CORE_SURFACE, {"greeting": "Cześć"}, source="plugin:test")
     try:
-        await runner._notify_active_sessions_of_shutdown()
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", chat_type="dm", user_id="user-1")
+        session_key = build_session_key(source)
+        runner._running_agents[session_key] = object()
+        runner._cache_session_source(session_key, source)
+        pack = i18n_layers.register_pack("pl", i18n_layers.CORE_SURFACE, {"greeting": "Cześć"}, source="plugin:test")
+        try:
+            await runner._notify_active_sessions_of_shutdown()
+        finally:
+            i18n_layers.unregister_pack(pack)
+        sent, parsed = list(adapter.sent), sorted(parses)
     finally:
-        i18n_layers.unregister_pack(pack)
+        runner._running_agents.clear()
+        await runner.stop()
 
     notice = i18n.t("gateway.shutdown.notice_shutdown", lang="de")
-    assert (adapter.sent, sorted(parses)) == ([("chat-1", notice)], [("de.yaml", False), ("en.yaml", False)])
+    assert (sent, parsed) == ([("chat-1", notice)], [("de.yaml", False), ("en.yaml", False)])

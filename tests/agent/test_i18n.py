@@ -189,6 +189,32 @@ def test_bundled_catalog_is_parsed_once_across_profiles_and_cache_resets(tmp_pat
     assert (texts, parsed) == (["Hello"] * 3, [bundled / "en.yaml"])
 
 
+def test_bundled_catalog_replaced_with_same_size_and_mtime_is_read_again(tmp_path, monkeypatch):
+    """``tar``, ``rsync -t`` and ``cp -p`` replace a file by rename and keep its modification time, so a
+    same-size replacement differs from the parsed file only in its inode."""
+    import os
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    catalog = bundled / "en.yaml"
+    catalog.write_text("greeting: Hello\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundled))
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    i18n.reset_language_cache()
+    try:
+        texts = [i18n.t("greeting")]
+        replacement = bundled / "en.yaml.new"
+        replacement.write_text("greeting: Howdy\n", encoding="utf-8")
+        original = catalog.stat()
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        os.replace(replacement, catalog)
+        i18n.reset_language_cache()
+        texts.append(i18n.t("greeting"))
+    finally:
+        i18n.reset_language_cache()
+    assert texts == ["Hello", "Howdy"]
+
+
 
 
 # ---------------------------------------------------------------------------

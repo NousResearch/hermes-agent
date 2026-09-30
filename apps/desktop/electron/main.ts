@@ -409,6 +409,7 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS, POOL_LIMITS_MIN } from './pool-limits'
+import { partitionIdleReapable } from './pool-reaper'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
 import {
@@ -12236,8 +12237,9 @@ function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
 // overrides — `entry.process === null`) are excluded from the cap entirely:
 // they hold no local process, so counting them used to let a roster refresh
 // across N registered remote connections LRU-evict a REAL local backend that
-// was merely idle past the keepalive window. Descriptors are still reclaimed
-// by the idle reaper.
+// was merely idle past the keepalive window. Remote descriptors are never
+// reclaimed by the idle reaper either — their death is owned by liveness
+// revalidation (revalidatePooledRemoteBackends), not by an idle timer.
 async function evictLruPoolBackends(keep) {
   return poolRetirer.evictTo(Math.max(0, keep), POOL_KEEPALIVE_FRESH_MS)
 }
@@ -12250,30 +12252,31 @@ function startPoolIdleReaper() {
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
 
-    for (const [profile, entry] of [...backendPool.entries()]) {
-      // Remote descriptors hold no child/slot. Local children require the
-      // same admission authority as foreground and LRU reclamation.
-      // Pinned-tier TTL (#105239): the keepalive refreshes lastActiveAt for
-      // every open chat, so that clock alone never fires for the pinned tier.
-      // A local child whose last STREAMED turn (activeTurn touch) is older
-      // than POOL_PINNED_IDLE_MS is idle even while keepalive-fresh; entries
-      // without the stamp keep the legacy lastActiveAt clock.
-      const idleFor = now - (entry.lastActiveAt || 0)
-      const streamedIdleFor = entry.lastStreamedAt ? now - entry.lastStreamedAt : null
-      const reapable = idleFor > poolIdleMs() || (streamedIdleFor !== null && streamedIdleFor > POOL_PINNED_IDLE_MS)
+    // Remote pool entries (no local child process) are never idle-reaped: an
+    // idle-but-healthy remote backend is indistinguishable from a dead one to
+    // a timer, and reaping it silently strands the renderer's open sessions.
+    // Dead remotes are dropped by the liveness revalidation instead
+    // (revalidatePooledRemoteBackends / revalidateSuspectPoolAfterResume).
+    // The pinned-tier TTL (#105239) clock is applied inside the partition:
+    // a keepalive-fresh local child whose last streamed turn is older than
+    // POOL_PINNED_IDLE_MS is still reapable.
+    const { reap } = partitionIdleReapable(backendPool, now, poolIdleMs(), POOL_PINNED_IDLE_MS)
 
-      if (reapable) {
-        const retiring = entry.process
-          ? poolRetirer.retireIdle(profile, poolIdleMs(), candidate =>
-              Boolean(
-                Date.now() - (candidate.lastActiveAt || 0) > poolIdleMs() ||
-                  (candidate.lastStreamedAt ? Date.now() - candidate.lastStreamedAt > POOL_PINNED_IDLE_MS : false)
-              )
+    for (const { profile, idleMs } of reap) {
+      // Local children require the same admission authority as foreground and
+      // LRU reclamation: the retirer proves the backend is safe to stop.
+      rememberLog(`Retiring idle profile backend "${profile}" (idle > ${idleMs}s)`)
+      void poolRetirer
+        .retireIdle(
+          profile,
+          poolIdleMs(),
+          candidate =>
+            Boolean(
+              Date.now() - (candidate.lastActiveAt || 0) > poolIdleMs() ||
+                (candidate.lastStreamedAt ? Date.now() - candidate.lastStreamedAt > POOL_PINNED_IDLE_MS : false)
             )
-          : stopPoolBackend(profile)
-
-        void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
-      }
+        )
+        .catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
     }
 
     if (backendPool.size === 0 && poolIdleReaper) {

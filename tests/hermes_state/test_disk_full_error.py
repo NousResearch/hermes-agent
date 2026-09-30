@@ -111,6 +111,27 @@ def test_describe_sqlite_error_surfaces_errno_when_the_os_layer_raises_one():
     assert detail.startswith(f"OSError errno={errno.ENOSPC}:") and f"errno={errno.ENOSPC}" in detail
 
 
+def test_io_error_is_neither_a_space_nor_a_permission_failure():
+    """#RIC-103. ``SQLITE_IOERR`` ("disk I/O error") is not ENOSPC and not a permissions
+    failure, but it used to classify as "disk" because the bare word "disk" matched the
+    catch-all — and the operator copy for that bucket leads with "free some space". The
+    bucket and the two predicates are one contract: ``io_error`` implies NOT disk-full and
+    NOT read-only, and the space/read-only causes must stay in the ``disk`` bucket."""
+    from hermes_state_errors import classify_persistence_error, is_disk_io_error
+
+    io = sqlite3.OperationalError("disk I/O error")
+    assert is_disk_io_error(io) is True
+    assert is_disk_full_error(io) is False  # space is not the problem
+    assert classify_persistence_error(io) == "io_error"
+    assert classify_persistence_error("disk I/O error") == "io_error"  # RPC-wrapped string
+    assert classify_persistence_error("Input/output error") == "io_error"
+    # The neighbours must not move into the new bucket.
+    assert classify_persistence_error("database or disk is full") == "disk"
+    assert classify_persistence_error("attempt to write a readonly database") == "disk"
+    assert is_disk_io_error("database or disk is full") is False
+    assert is_disk_io_error("attempt to write a readonly database") is False
+
+
 def test_describe_sqlite_error_never_raises_on_odd_input():
     class _OddError(Exception):
         sqlite_errorcode = None

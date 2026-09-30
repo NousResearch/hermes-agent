@@ -27,6 +27,12 @@ def is_malformed_db_error(exc: BaseException) -> bool:
 # SQLITE_IOERR as a substring (wrapped strings still classify).
 _DISK_IO_ERROR_MARKER = "disk i/o error"
 
+# "The device or the file answered with an I/O error" substrings: a failing disk, a bad
+# sector, a filesystem that went read-only under a write. Never disk-FULL — the free-space
+# copy is the wrong lead — and never a permissions problem either, so these own a bucket
+# instead of falling into the catch-all (#RIC-103).
+_DISK_IO_ERROR_MARKERS = (_DISK_IO_ERROR_MARKER, "input/output error")
+
 # "Store BUSY, not gone" — HTTP callers map these to 503 instead of 500. Corruption
 # is deliberately absent: a malformed store must surface, not be retried into a timeout.
 _TRANSIENT_SQLITE_MARKERS = (
@@ -130,10 +136,21 @@ def describe_sqlite_error(exc_or_str) -> str:
     return f"{' '.join(parts)}: {exc_or_str}"
 
 
+def is_disk_io_error(exc_or_str) -> bool:
+    """SQLITE_IOERR / EIO: the store answered with an I/O error.
+
+    Not disk-FULL (``is_disk_full_error`` is False for these) and not a permissions
+    problem, so the disk-full / read-only guidance is the wrong lead — the device or the
+    file is failing underneath. Kept as plain substrings so sqlite3 exceptions and
+    RPC-wrapped strings both match, exactly like the neighbouring predicates."""
+    text = (exc_or_str if isinstance(exc_or_str, str) else str(exc_or_str)).lower()
+    return any(marker in text for marker in _DISK_IO_ERROR_MARKERS)
+
+
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
+    "io_error", "replaced", "deleted_wal", "disk", "unknown", "session_row_missing",
 )
 
 
@@ -298,6 +315,7 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("deleted state.db-wal", "deleted state.db-shm"), "deleted_wal"),
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
+    (_DISK_IO_ERROR_MARKERS, "io_error"),
     (("locked", "busy"), "locked"),
     # A flush rejected by the session-row FK: the row was removed under a live agent (#123583).
     (("foreign key constraint failed",), "session_row_missing"),
@@ -306,14 +324,17 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
 
 def classify_persistence_error(exc_or_str) -> str:
     """Coarse cause bucket (PERSISTENCE_ERROR_CAUSES) so the user's guidance
-    matches: "locked" = busy, retry; "disk" = full/read-only/permissions;
-    "compression" = a live lease refused the write; "compression_closed" = adopt
-    the rotated session id; "turn_lease" = fencing, not storage; "corrupt" =
-    file damage (repair path, not disk space); "fts_index" = SQLite scoped the
-    corruption to the FTS index (the transcript store is not damaged); "replaced" =
-    main-file replacement; "deleted_wal" = a retired sidecar generation requiring
-    capture inspection; "session_row_missing" = the session row was deleted under a
-    live agent (FK rejection; the flush recreates it)."""
+    matches: "locked" = busy, retry; "disk" = full or a write blocked by permissions
+    (the two causes where "free space / fix permissions" is the right lead);
+    "io_error" = the device or the file answered with an I/O error (SQLITE_IOERR /
+    EIO) — never disk-FULL and never a permissions problem, so it must not read as
+    "free some space" (#RIC-103); "compression" = a live lease refused the write;
+    "compression_closed" = adopt the rotated session id; "turn_lease" = fencing, not
+    storage; "corrupt" = file damage (repair path, not disk space); "fts_index" =
+    SQLite scoped the corruption to the FTS index (the transcript store is not
+    damaged); "replaced" = main-file replacement; "deleted_wal" = a retired sidecar
+    generation requiring capture inspection; "session_row_missing" = the session row was
+    deleted under a live agent (FK rejection; the flush recreates it)."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,

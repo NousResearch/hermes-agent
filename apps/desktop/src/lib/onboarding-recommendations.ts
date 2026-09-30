@@ -16,9 +16,13 @@ export interface OnboardingRecommendation {
   setupAction: 'install' | 'enable' | null
 }
 
-const words = (text: string): string => text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ')
+const words = (text: string): string =>
+  text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .join(' ')
 
-/** Rank evidence, not a fixed list of products. The model derives outcomes from catalog descriptions; curated examples are optional. */
 export function onboardingRecommendations(
   entries: readonly McpCatalogEntry[],
   { apps = [], context = '' }: OnboardingInterests = {}
@@ -29,13 +33,15 @@ export function onboardingRecommendations(
   const candidates = entries.flatMap(entry => {
     const examples = [...new Set(entry.suggest?.examples ?? [])].filter(text => text.trim())
 
-    const terms = [entry.name, ...(entry.suggest?.keywords ?? []), ...(entry.suggest?.applications ?? [])].map(words).filter(Boolean)
+    const terms = [entry.name, ...(entry.suggest?.keywords ?? []), ...(entry.suggest?.applications ?? [])]
+      .map(words)
+      .filter(Boolean)
+
     const preferred = terms.some(term => selected.has(term))
     const topical = terms.some(term => subject.includes(` ${term} `))
     const detectedApps = entry.detected_apps ?? []
     const configured = entry.installed && entry.enabled
 
-    // An explicit task can request a disabled integration; mere discovery must not undo that choice.
     if (entry.installed && !entry.enabled && !preferred && !topical) {
       return []
     }
@@ -62,11 +68,15 @@ export function onboardingRecommendations(
     return [{ recommendation, topical, preferred, configured, detected: detectedApps.length > 0 }]
   })
 
-  return candidates.sort((a, b) =>
-    Number(b.topical) - Number(a.topical)
-    || Number(b.preferred) - Number(a.preferred)
-    || Number(b.configured) - Number(a.configured)
-    || Number(b.detected) - Number(a.detected)
-    || a.recommendation.name.localeCompare(b.recommendation.name)
-  ).slice(0, 6).map(candidate => candidate.recommendation)
+  return candidates
+    .sort(
+      (a, b) =>
+        Number(b.topical) - Number(a.topical) ||
+        Number(b.preferred) - Number(a.preferred) ||
+        Number(b.configured) - Number(a.configured) ||
+        Number(b.detected) - Number(a.detected) ||
+        a.recommendation.name.localeCompare(b.recommendation.name)
+    )
+    .slice(0, 6)
+    .map(candidate => candidate.recommendation)
 }

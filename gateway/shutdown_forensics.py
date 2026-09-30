@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -67,7 +68,7 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
 def _read_marker(path: Path) -> Optional[str]:
     """Return the marker file's text, or None if absent/unreadable."""
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
 
@@ -101,7 +102,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
     with contextlib.suppress(Exception):  # noqa: BLE001 — never raise from a signal handler
-        hermes_home_str = os.environ.get("HERMES_HOME")
+        hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))
         if hermes_home_str:
             raw = _read_marker(Path(hermes_home_str) / ".gateway-takeover.json")
             if raw is not None:
@@ -120,9 +121,11 @@ def _async_diagnostic_script(signal_name: str, self_pid: int) -> str:
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
         "echo '--- ps (top 60 by cpu, comm only) ---'; "
-        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -60; "
+        # ``sort`` instead of GNU ``--sort=-pcpu`` so BSD ps (macOS) produces a listing too; the header
+        # line is echoed first so ``sort`` does not bury it among the 0.0-cpu rows.
+        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm 2>/dev/null | { IFS= read -r h; echo \"$h\"; sort -nrk4; } | head -60; "
         f"echo '--- pstree of self ---'; pstree -pl {self_pid} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; cat /proc/loadavg 2>/dev/null || true; "
+        "echo '--- loadavg ---'; cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg 2>/dev/null || true; "
         "echo '--- recent dmesg (oom/killed) ---'; "
         "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
         "echo '=== end ==='"
@@ -150,9 +153,13 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         return None
     with contextlib.suppress(OSError):  # tighten logs created 0644 by earlier releases
         os.fchmod(fd, 0o600)
+    # GNU ``timeout`` (Homebrew: ``gtimeout``) is absent from stock macOS; without it the detached
+    # script still cannot block teardown, so run it unbounded rather than skip the diagnostic.
+    timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+    bound = [timeout_bin, f"{timeout_seconds:.0f}"] if timeout_bin else []
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script], stdout=fd,
+            [*bound, "bash", "-c", script], stdout=fd,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:

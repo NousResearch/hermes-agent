@@ -24,6 +24,30 @@ const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
 // (the historical default) so a malformed override can't reintroduce the loop.
 const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
 
+// While the backend prints venv_sync's source-update completion banners it is
+// finishing an owed update tail BEFORE `hermes serve` starts, and that tail
+// legitimately runs minutes (dependency sync alone measured at ~19-22 min,
+// #122206) — far past the 90s cold-start budget, which is sized for imports
+// and AV scans, not repairs. Killing the child mid-repair and respawning it
+// (what the old timeout did) re-runs the repair from scratch on every boot.
+// While a banner is present the deadline is re-armed instead, up to this
+// total cap; a tail that outlasts the cap fails with the usual timeout and
+// the banner text in the output tail, which is truthful and actionable.
+const SOURCE_COMPLETION_BANNER_RE = /finishing an interrupted source update|completing source-update dependencies/
+const SOURCE_COMPLETION_GRACE_MS = 5 * 60_000
+const SOURCE_COMPLETION_MAX_TOTAL_MS = 30 * 60_000
+
+/**
+ * The source-completion grace resolves against the REAL clock, not the faked
+ * one: vitest's advanceTimersByTimeAsync advances Date.now() with the timers,
+ * so a `Date.now() + GRACE` deadline re-computed each tick stays GRACE away
+ * forever and the cap never fires under tests. The real clock also matches
+ * production semantics — the grace measures wall-clock repair time.
+ */
+function realNow() {
+  return Number(process.hrtime.bigint() / 1_000_000n)
+}
+
 /**
  * Resolve the port-announcement deadline. Honors the
  * HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS env override (for users on slow
@@ -74,6 +98,28 @@ function waitForDashboardPort(
     // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
     let done = false
+    // #122206: the child is finishing an owed source-update completion
+    // (venv_sync banners) before `hermes serve` starts. While that repair is
+    // visibly in progress the 90s deadline is re-armed, up to the total cap,
+    // instead of killing a healthy repair mid-run.
+    const startedAt = realNow()
+    let completionInProgress = false
+    let timer
+
+    function completionDeadline() {
+      return completionInProgress
+        ? Math.min(startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS, realNow() + SOURCE_COMPLETION_GRACE_MS)
+        : null
+    }
+
+    function rearmTimer() {
+      clearTimeout(timer)
+      const deadline = completionDeadline()
+      timer = setTimeout(() => {
+        cleanup()
+        reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)${deadline ? ' while an update completion was in progress' : ''}`))
+      }, Math.max(0, (deadline ?? startedAt + timeoutMs) - realNow()))
+    }
 
     function cleanup() {
       if (done) {
@@ -102,6 +148,14 @@ function waitForDashboardPort(
 
           return
         }
+
+        // venv_sync's banner is the signal that an owed source-update tail is
+        // running ahead of `hermes serve` (#122206): re-arm the deadline so a
+        // healthy multi-minute repair is not killed and re-run per boot.
+        if (SOURCE_COMPLETION_BANNER_RE.test(line)) {
+          completionInProgress = true
+          rearmTimer()
+        }
       }
     }
 
@@ -115,11 +169,7 @@ function waitForDashboardPort(
       reject(err)
     }
 
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
-    }, timeoutMs)
-
+    rearmTimer()
     child.stdout.on('data', onData)
     child.on('exit', onExit)
     child.on('error', onError)
@@ -137,6 +187,11 @@ function waitForDashboardPort(
       if (m) {
         cleanup()
         resolve(parseInt(m[1], 10))
+      } else if (alreadyBuffered && SOURCE_COMPLETION_BANNER_RE.test(alreadyBuffered)) {
+        // The repair started before this listener attached (the dormant-gap
+        // path above): seed the banner so the deadline re-arms like a live one.
+        completionInProgress = true
+        rearmTimer()
       }
     }
   })

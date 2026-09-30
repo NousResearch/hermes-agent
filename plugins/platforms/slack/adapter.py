@@ -3202,8 +3202,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Pad with U+200B OUTSIDE each delimiter when the adjacent char exists and is
         # neither whitespace nor ASCII punctuation (which Slack already accepts as a
         # boundary, e.g. "*bold*..."), and INSIDE before the closing * for case (a).
+        # A \x00 neighbour is an earlier placeholder (code span, link, entity), which
+        # restores to a delimiter Slack already treats as a boundary.
         def needs_pad(ch):
-            return bool(ch) and not ch.isspace() and ch not in string.punctuation
+            return (bool(ch) and ch != "\x00" and not ch.isspace()
+                    and ch not in string.punctuation)
 
         def _pads(m):
             start, end = m.start(), m.end()

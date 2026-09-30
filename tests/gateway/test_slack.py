@@ -2487,6 +2487,10 @@ class TestFormatMessage:
         ("use `x` here", "use `x` here"),
         ("~~gone~~", "~gone~"),
         ("日本語 **太字** です", "日本語 *太字* です"),
+        # Neighbouring placeholders restore to their own delimiters, which Slack
+        # already accepts as a boundary.
+        ("`code`**bold**", "`code`*bold*"),
+        ("[link](https://example.com)**太字**", "<https://example.com|link>*太字*"),
     ])
     def test_emphasis_already_bounded_by_whitespace_is_unchanged(self, adapter, source, expected):
         assert adapter.format_message(source) == expected

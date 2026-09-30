@@ -1,6 +1,7 @@
 """Session lifecycle contracts (``tui_gateway/methods_session.py``): create / resume / activate /
 close, the live-session snapshot those share, history + compression + undo, mid-turn corrections,
 listing/browsing stored rows, spawn-tree snapshots, event replay and the stateless one-shot LLM call.
+``session.start_chat`` lives in ``tui_gateway/methods_start_chat.py``.
 """
 
 from __future__ import annotations
@@ -759,3 +760,38 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+
+
+# ── start_chat ────────────────────────────────────────────────────────────────────────────────
+
+
+class StartChatArgs(Params):
+    """The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``)."""
+
+    message: str
+    title: str | None = None
+    profile: str | None = None
+
+
+class SessionStartChatParams(SessionParams):
+    args: StartChatArgs
+
+
+class StartChatStatus(WireEnum):
+    started = "started"
+    rejected = "rejected"
+
+
+class SessionStartChatResult(Result):
+    """``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason."""
+
+    status: StartChatStatus
+    session_id: str | None = None
+    profile: str | None = None
+    title: str | None = None
+    message: str | None = None
+    reason: str | None = None
+
+
+method("session.start_chat", params=SessionStartChatParams, result=SessionStartChatResult,
+       doc="Run a start_chat request again from the session that made it (the handoff card's Retry).")

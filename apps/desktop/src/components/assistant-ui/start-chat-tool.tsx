@@ -13,12 +13,19 @@ import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject } from '@/components/assistant-ui/tool/fallback-model/format'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { sessionTitle } from '@/lib/chat-runtime'
 import { Loader2, MessageCircle } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 import { $profiles, profileLabel } from '@/store/profile'
-import { setSessionOwnerHint } from '@/store/session'
+import { $sessions, sessionMatchesStoredId, setSessionOwnerHint } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
-import { isStartChatCallerWatched, readStartChatResult, takeLiveStartChat } from '@/store/start-chat'
+import {
+  $startChatRetries,
+  isStartChatCallerWatched,
+  readStartChatResult,
+  retryStartChat,
+  takeLiveStartChat
+} from '@/store/start-chat'
 
 const TITLE_LIMIT = 40
 
@@ -44,16 +51,37 @@ async function openStartedChat(
 export function StartChatTool(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.startChat
-  const callerId = useStore(useSessionView().$storedId)
+  const view = useSessionView()
+  const callerId = useStore(view.$storedId)
+  const callerRuntimeId = useStore(view.$runtimeId)
   const profiles = useStore($profiles)
+  const sessions = useStore($sessions)
+  const retry = useStore($startChatRetries)[props.toolCallId]
   const navigate = useNavigate()
-  const outcome = useMemo(() => readStartChatResult(props.result), [props.result])
+  const recorded = useMemo(() => readStartChatResult(props.result), [props.result])
+  const outcome = retry && retry !== 'pending' ? retry : recorded
   const started = outcome?.status === 'started' ? outcome : null
   const args = parseMaybeObject(props.args)
   const message = typeof args.message === 'string' ? args.message.trim() : ''
+  const row = started ? sessions.find(session => sessionMatchesStoredId(session, started.sessionId)) : undefined
 
-  const title =
-    started?.title || (typeof args.title === 'string' && args.title.trim()) || message.slice(0, TITLE_LIMIT) || null
+  const title = row
+    ? sessionTitle(row)
+    : started?.title || (typeof args.title === 'string' && args.title.trim()) || message.slice(0, TITLE_LIMIT) || null
+
+  const retryChat = () => {
+    if (!callerRuntimeId) {
+      return
+    }
+
+    void retryStartChat(props.toolCallId, callerRuntimeId, {
+      message: typeof args.message === 'string' ? args.message : '',
+      profile: typeof args.profile === 'string' ? args.profile : null,
+      title: typeof args.title === 'string' ? args.title : null
+    })
+      .then(next => (next?.status === 'started' ? openStartedChat(next, callerId, navigate) : undefined))
+      .catch(error => notifyError(error, copy.notStarted))
+  }
 
   useEffect(() => {
     if (!started || !takeLiveStartChat(props.toolCallId)) {
@@ -71,9 +99,23 @@ export function StartChatTool(props: ToolCallMessagePartProps) {
 
   if (outcome?.status === 'rejected') {
     return (
-      <ClarifyShell className="my-1.5 grid gap-0.5" data-slot="start-chat">
-        <span className="font-medium">{copy.notStarted}</span>
-        {outcome.reason ? <span className={CAPTION}>{outcome.reason}</span> : null}
+      <ClarifyShell className="my-1.5 flex items-center gap-2" data-slot="start-chat">
+        <div className="grid min-w-0 flex-1 gap-0.5">
+          <span className="font-medium">{copy.notStarted}</span>
+          {outcome.reason ? <span className={CAPTION}>{outcome.reason}</span> : null}
+        </div>
+        <Button
+          disabled={retry === 'pending' || !callerRuntimeId}
+          onClick={retryChat}
+          size="xs"
+          type="button"
+          variant="outline"
+        >
+          {retry === 'pending' ? (
+            <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
+          ) : null}
+          {copy.retry}
+        </Button>
       </ClarifyShell>
     )
   }

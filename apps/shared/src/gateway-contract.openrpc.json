@@ -3553,6 +3553,24 @@
       }
     },
     {
+      "name": "session.start_chat",
+      "summary": "Run a start_chat request again from the session that made it (the handoff card's Retry).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionStartChatParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionStartChatResult"
+        }
+      }
+    },
+    {
       "name": "session.status",
       "summary": "Rendered /status text for the session.",
       "params": [
@@ -31651,6 +31669,110 @@
         "title": "SessionSetHiddenResult",
         "type": "object"
       },
+      "SessionStartChatParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "args": {
+            "$ref": "#/components/schemas/StartChatArgs"
+          }
+        },
+        "required": [
+          "session_id",
+          "args"
+        ],
+        "title": "SessionStartChatParams",
+        "type": "object"
+      },
+      "SessionStartChatResult": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/StartChatStatus"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SessionStartChatResult",
+        "type": "object"
+      },
       "SessionStatusParams": {
         "additionalProperties": false,
         "properties": {
@@ -34291,6 +34413,53 @@
         ],
         "title": "SpawnTreeSaveResult",
         "type": "object"
+      },
+      "StartChatArgs": {
+        "additionalProperties": false,
+        "description": "The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``).",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "StartChatArgs",
+        "type": "object"
+      },
+      "StartChatStatus": {
+        "enum": [
+          "started",
+          "rejected"
+        ],
+        "title": "StartChatStatus",
+        "type": "string"
       },
       "StatusUpdatePayload": {
         "additionalProperties": false,

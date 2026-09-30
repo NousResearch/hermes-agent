@@ -8,7 +8,7 @@ def _rejected(reason: str) -> str:
     return json.dumps({"status": "rejected", "reason": reason})
 
 
-def start_chat(args: dict) -> str:
+def start_chat(args: dict, caller_id: str = "") -> str:
     from agent.onboarding import PROFILE_BUILD_FLAG, mark_seen
     from gateway.session_context import get_session_env
     from hermes_cli.profiles import SETUP_PROFILE_MARKER
@@ -17,7 +17,7 @@ def start_chat(args: dict) -> str:
     from tui_gateway import server
     from tui_gateway.transport import bind_transport, reset_transport
 
-    caller = server._sessions.get(get_session_env("HERMES_UI_SESSION_ID", ""))
+    caller = server._sessions.get(caller_id or get_session_env("HERMES_UI_SESSION_ID", ""))
     if caller is None:
         return _rejected("start_chat works only from a chat in the Hermes desktop app.")
     caller_home = Path(caller.get("profile_home") or server._hermes_home)

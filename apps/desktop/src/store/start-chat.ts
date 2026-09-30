@@ -1,5 +1,9 @@
+import type { SessionStartChatResult, StartChatArgs } from '@hermes/shared'
+import { atom } from 'nanostores'
+
 import { parseMaybeObject } from '@/components/assistant-ui/tool/fallback-model/format'
-import { $focusedStoredSessionId, isSessionInForeground } from '@/store/session-states'
+import { $gateway } from '@/store/gateway'
+import { $focusedStoredSessionId, isSessionInForeground, requestForOwnedSession } from '@/store/session-states'
 
 export type StartChatOutcome =
   | { profile: string; sessionId: string; status: 'started'; title: null | string }
@@ -36,4 +40,45 @@ export function takeLiveStartChat(toolCallId: string): boolean {
 
 export function isStartChatCallerWatched(storedId: string): boolean {
   return $focusedStoredSessionId.get() !== null && isSessionInForeground(storedId)
+}
+
+export const $startChatRetries = atom<Record<string, 'pending' | StartChatOutcome>>({})
+
+function setRetry(toolCallId: string, value: 'pending' | null | StartChatOutcome): void {
+  const { [toolCallId]: _previous, ...rest } = $startChatRetries.get()
+
+  $startChatRetries.set(value ? { ...rest, [toolCallId]: value } : rest)
+}
+
+export async function retryStartChat(
+  toolCallId: string,
+  callerRuntimeId: string,
+  args: StartChatArgs
+): Promise<null | StartChatOutcome> {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    throw new Error('Gateway not connected')
+  }
+
+  setRetry(toolCallId, 'pending')
+
+  try {
+    const outcome = readStartChatResult(
+      await requestForOwnedSession<SessionStartChatResult>(
+        callerRuntimeId,
+        gateway.request.bind(gateway) as typeof gateway.request,
+        'session.start_chat',
+        { args, session_id: callerRuntimeId }
+      )
+    )
+
+    setRetry(toolCallId, outcome)
+
+    return outcome
+  } catch (error) {
+    setRetry(toolCallId, null)
+
+    throw error
+  }
 }

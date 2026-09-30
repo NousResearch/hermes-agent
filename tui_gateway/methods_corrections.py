@@ -94,10 +94,11 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
-        if (verb == "redirect" and agent is None and session.get("running")) or _session_compression_in_flight(session):
+        compression_in_flight = _session_compression_in_flight(session)
+        if (verb == "redirect" and agent is None and session.get("running")) or compression_in_flight:
             transport = current_transport() or _stdio_transport
             with session["history_lock"]:
-                if not session.get("running"):
+                if not session.get("running") and not compression_in_flight:
                     record_outcome(session, input_batch, "failed_before_start", reason="build_ended")
                     return reply_submission(_err(rid, 4010, unsupported), reply_batch, "unresolved")
                 envelope = _enqueue_prompt(session, text, transport, turn_source=connection_source(transport),

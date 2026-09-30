@@ -621,6 +621,11 @@ export const frOverrides = {
     message: reason =>
       `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter les scintillements.`
   },
+
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `Rendu logiciel actif — solution de repli EGL NVIDIA activée (${reason}). L'accélération GPU est désactivée pour la stabilité. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 désactive cette solution de repli.`
+  },
   billingBlock: {
     titleNous: 'Plus de crédits Nous',
     titleProvider: provider => `Plus de crédits — ${provider}`,

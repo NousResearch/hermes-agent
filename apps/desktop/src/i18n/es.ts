@@ -622,6 +622,11 @@ export const esOverrides = {
     message: reason =>
       `Renderizado por software activo — se detectó una pantalla remota (${reason}). Se desactivó la aceleración por GPU para evitar parpadeos.`
   },
+
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `Renderizado por software activo — se activó la alternativa EGL de NVIDIA (${reason}). La aceleración por GPU se desactivó por estabilidad. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 desactiva esta alternativa.`
+  },
   billingBlock: {
     titleNous: 'Sin créditos de Nous',
     titleProvider: provider => `Sin créditos — ${provider}`,

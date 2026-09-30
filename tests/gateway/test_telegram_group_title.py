@@ -387,11 +387,14 @@ async def test_filtered_titles_and_rejection_do_not_interrupt_replies(tmp_path, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("disabled", [True, False])
 async def test_disable_group_auto_rename_knob(disabled):
-    """extra.disable_group_auto_rename=true suppresses the whole lane; absent/false keeps it on."""
+    """extra.disable_group_auto_rename=true suppresses the whole lane; absent/false keeps it on.
+    The knob is read from the live runner config at fire time, so flipping it takes effect on
+    the next rename without a gateway restart (spec criterion 11)."""
     adapter = _adapter()
     runner = _wired_runner(adapter)
+    extra = {"disable_group_auto_rename": disabled}
     runner.config = SimpleNamespace(platforms={
-        Platform.TELEGRAM: SimpleNamespace(extra={"disable_group_auto_rename": disabled}),
+        Platform.TELEGRAM: SimpleNamespace(extra=extra),
     })
     source = adapter.build_source(chat_id="-101", chat_type="group")
     db = _ambient_db()
@@ -399,9 +402,35 @@ async def test_disable_group_auto_rename_knob(disabled):
         _store_session(db, "session-knob", started_at=time.time())
         callback = _attach(runner, source, "session-knob")
         await asyncio.to_thread(callback, "Knobbed conversation", "llm")
-        # No _fire here: it waits for a rename, which the disabled lane must never issue.
-        await asyncio.sleep(0.05)
-        assert len(adapter._bot.renames) == (0 if disabled else 1)
+        if disabled:
+            # The knob is checked synchronously at schedule time, inside the callback thread:
+            # once the callback returns, no lane task was ever scheduled. The grace window only
+            # catches a lane that wrongly scheduled first; a disabled lane writes no outcome
+            # record, so there is no deterministic completion signal to await.
+            await asyncio.sleep(0.05)
+            assert adapter._bot.renames == []
+        else:
+            # The lane's terminal outcome record is the deterministic completion signal (same
+            # contract as _fire); a fixed sleep raced the scheduled coroutine and lost (~180ms
+            # for schedule + to_thread ownership recheck + get_chat read-back).
+            await asyncio.to_thread(
+                _await_meta, db, "tg_title:telegram:-101:session-knob", ":")
+            assert [text for _chat, text, _home in adapter._bot.renames] == ["Knobbed conversation"]
+        # Runtime toggle without restart: mutate the live config object (no reload, no new
+        # runner) and fire a newer session — the next rename must honor the flipped value.
+        extra["disable_group_auto_rename"] = not disabled
+        _store_session(db, "session-knob-flip", started_at=time.time() + 1)
+        callback = _attach(runner, source, "session-knob-flip")
+        await asyncio.to_thread(callback, "Flipped conversation", "llm")
+        if disabled:
+            # Was disabled, now enabled on the same runner: the flip's rename must land.
+            await asyncio.to_thread(
+                _await_meta, db, "tg_title:telegram:-101:session-knob-flip", ":")
+            assert [text for _c, text, _h in adapter._bot.renames] == ["Flipped conversation"]
+        else:
+            # Was enabled, now disabled on the same runner: never issues the flip's rename.
+            await asyncio.sleep(0.05)
+            assert [text for _c, text, _h in adapter._bot.renames] == ["Knobbed conversation"]
     finally:
         db.close()
 

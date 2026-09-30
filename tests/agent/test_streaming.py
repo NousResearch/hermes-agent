@@ -53,6 +53,16 @@ def _make_empty_chunk(model=None, usage=None):
     return SimpleNamespace(choices=[], model=model, usage=usage)
 
 
+def test_null_sse_frame_is_ignored(monkeypatch):
+    from agent.chat_completion_helpers import _iter_provider_stream_chunks
+
+    assert list(_iter_provider_stream_chunks([None, SimpleNamespace(choices=[])])) == [
+        None,
+        SimpleNamespace(choices=[]),
+    ]
+
+
+
 # ── Test: Streaming Accumulator ──────────────────────────────────────────
 
 

@@ -516,13 +516,14 @@ interface MarkdownTextSurfaceProps {
   textDirection?: 'ltr' | 'rtl'
 }
 
-// Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
+// Headings shrink to chat scale rather than the prose default (h1≈xl). In em,
+// so they step up from the body text wherever its token sits. Kept
 // table-driven so adding/tweaking levels is one row.
 const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
-  h1: 'text-[1rem] tracking-tight',
-  h2: 'text-[0.9375rem] tracking-tight',
-  h3: 'text-[0.875rem]',
-  h4: 'text-[0.8125rem]'
+  h1: 'text-[1.25em] tracking-tight',
+  h2: 'text-[1.15em] tracking-tight',
+  h3: 'text-[1.075em]',
+  h4: 'text-[1em]'
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
@@ -737,7 +738,7 @@ function MarkdownTextSurface({
         ),
         th: ResizableMarkdownTh,
         td: ({ children, className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+          <td className={cn('px-2.5 py-1.5 align-top leading-snug', className)} {...props}>
             {decorateText ? decorateText(children) : children}
           </td>
         ),

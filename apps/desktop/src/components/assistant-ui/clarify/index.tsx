@@ -27,6 +27,11 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   return <ClarifyToolLive {...props} />
 }
 
+// The request each tool row asked, remembered past its clearing and past a
+// remount (a session switch, a stopped turn): a skip or a typed answer settles
+// it in the store before (or without) `tool.complete`.
+const requestIdByToolCall = new Map<string, string>()
+
 function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
@@ -42,14 +47,12 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
-  // The request this row asked, remembered past its clearing: a skip or a
-  // typed answer settles it in the store before (or without) `tool.complete`.
-  const [requestId, setRequestId] = useState<null | string>(null)
   const settledResults = useStore($settledClarifyResults)
+  const requestId = requestIdByToolCall.get(props.toolCallId)
   const settledResult = requestId && request?.requestId !== requestId ? settledResults[requestId] : undefined
 
   if (request && !settledResult && request.requestId !== requestId) {
-    setRequestId(request.requestId)
+    requestIdByToolCall.set(props.toolCallId, request.requestId)
   }
 
   const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)

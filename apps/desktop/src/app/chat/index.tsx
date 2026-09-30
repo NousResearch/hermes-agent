@@ -13,7 +13,7 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
+import { useSetupChatView } from '@/components/onboarding-chat/assembly'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
@@ -526,13 +526,7 @@ const ChatViewContent = memo(function ChatViewContent({
   )
 
   const storedId = useStore(view.$storedId)
-  const onboardingSolo = useStore($chatOnboardingSolo)
-
-  const setupThread = useStoreSelector($chatOnboardingThreadIds, ids =>
-    [activeSessionId, storedId].some(id => id != null && ids.includes(id))
-  )
-
-  const setupChat = (isPrimary && onboardingSolo) || setupThread
+  const setupChat = useSetupChatView()
   // Multi-pane dimming: only the focused surface paints at full strength, so
   // two sessions side by side read as "this one, and that one over there".
   // A selector, not a plain useStore — the focused id changes on click, and a

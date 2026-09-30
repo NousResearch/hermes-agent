@@ -51,7 +51,7 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
       className="my-3 flex min-w-0 max-w-full flex-col gap-2 overflow-visible duration-300 animate-in fade-in-0 slide-in-from-bottom-2"
       data-onboarding-card
     >
-      <div className="text-[13px] font-medium">{question}</div>
+      <div className="text-[length:var(--conversation-text-font-size)] font-medium">{question}</div>
       {options.length > 0 && (
         <div className="flex min-w-0 max-w-full flex-wrap gap-2">
           {options.map(option => (

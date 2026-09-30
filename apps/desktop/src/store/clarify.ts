@@ -318,7 +318,7 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
  * Answer the card parked on `sessionId` with text the user typed in the
  * composer. A card blocks the agent inside its tool batch, so the typed words
  * ARE the answer: the tool returns them and the turn carries on, with no
- * interrupt. A batch takes the text as its first question's answer. False when
+ * interrupt. A batch takes the text as its first open question's answer. False when
  * no card is parked or its request is gone; the caller then sends the words as
  * an ordinary message.
  */
@@ -330,10 +330,16 @@ export function answerClarifyRequest(sessionId: string | null | undefined, text:
   }
 
   if (request.setup) {
-    const picked = request.setup.multiSelect ? [text] : text
+    // A multi-select picker keeps the rows already staged on the card, the
+    // same as its own Confirm: the typed words are one more pick.
+    const picked = request.setup.multiSelect ? [...setupChooseStage(request.requestId).picked, text] : text
 
     if (!respondToServerRequest(request.requestId, { picked })) {
       return false
+    }
+
+    if (request.setup.multiSelect) {
+      commitSetupChoose(request.requestId)
     }
 
     clearClarifyRequest(request.requestId, request.sessionId)
@@ -342,10 +348,12 @@ export function answerClarifyRequest(sessionId: string | null | undefined, text:
     return true
   }
 
-  // Only the first question goes on the wire: the backend keeps any answer
-  // already locked for the others, and the rest come back unanswered.
-  const [first] = request.questions
-  const answers = { [first.qid]: first.multiSelect ? JSON.stringify([text]) : text }
+  // A reconnect replay can arrive with answers already locked server-side;
+  // the backend merges this response over them, so the typed text goes to
+  // the first question still open and the locks stand.
+  const locked = request.lockedAnswers ?? {}
+  const target = request.questions.find(question => !(question.qid in locked)) ?? request.questions[0]
+  const answers = { [target.qid]: target.multiSelect ? JSON.stringify([text]) : text }
 
   if (!respondToServerRequest(request.requestId, { answers })) {
     return false
@@ -354,12 +362,37 @@ export function answerClarifyRequest(sessionId: string | null | undefined, text:
   clearClarifyRequest(request.requestId, request.sessionId)
   settleClarify(request, {
     outcome: 'submitted',
-    responses: request.questions.map((question, index) => ({
-      question: question.question,
-      status: index === 0 ? 'answered' : 'unanswered',
-      user_response: index === 0 ? (question.multiSelect ? [text] : text) : null
-    }))
+    responses: request.questions.map(question => settledResponse(question, { ...locked, ...answers }))
   })
 
   return true
+}
+
+/** One row of a clarify result, shaped like `tools/clarify_tool.py::_result`. */
+function settledResponse(question: ClarifyQuestion, answers: Record<string, null | string>) {
+  const raw = answers[question.qid]
+
+  if (!raw) {
+    return {
+      question: question.question,
+      status: question.qid in answers ? 'skipped' : 'unanswered',
+      user_response: null
+    }
+  }
+
+  let answer: string | string[] = raw
+
+  if (question.multiSelect) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+
+      if (Array.isArray(parsed)) {
+        answer = parsed.map(String)
+      }
+    } catch {
+      // A non-JSON multi-select answer stays one value.
+    }
+  }
+
+  return { question: question.question, status: 'answered', user_response: answer }
 }

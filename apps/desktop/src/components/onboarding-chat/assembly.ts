@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { allPaneIds, group, type LayoutNode } from '@/components/pane-shell/tree/model'
 import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
 import {
@@ -17,6 +18,7 @@ import {
 import { registry } from '@/contrib/registry'
 import { runtimeTranslations } from '@/i18n/runtime'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $interfaceMode, type InterfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { setSidebarOpen } from '@/store/layout'
 import { loadMachineProfile, machineUserName } from '@/store/machine'
@@ -207,4 +209,19 @@ export function useOnboardingChatActive(): boolean {
   return (
     solo || (runtimeId != null && threadIds.includes(runtimeId)) || (storedId != null && threadIds.includes(storedId))
   )
+}
+
+/** Whether the chat view this renders in (primary or a tile) shows the setup
+ *  chat. Solo covers the primary view before the guide's session ids are known. */
+export function useSetupChatView(): boolean {
+  const view = useSessionView()
+  const solo = useStore($chatOnboardingSolo)
+  const runtimeId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
+
+  const inThread = useStoreSelector($chatOnboardingThreadIds, ids =>
+    [runtimeId, storedId].some(id => id != null && ids.includes(id))
+  )
+
+  return (view.kind === 'primary' && solo) || inThread
 }

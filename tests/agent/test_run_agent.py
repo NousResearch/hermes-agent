@@ -1577,6 +1577,32 @@ class TestExecuteToolCalls:
         assert events[-2:] == ["post_tool_call", "transform_tool_result"]
         assert messages[0]["content"] == "transformed"
 
+    @pytest.mark.parametrize("name", ["web_search", "tool_call"])
+    def test_sequential_transform_fires_once_after_post(self, agent, monkeypatch, name):
+        events = []
+
+        def _invoke_hook(hook, **kwargs):
+            if hook in ("post_tool_call", "transform_tool_result"):
+                events.append(hook)
+            return [f"T({kwargs['result']})"] if hook == "transform_tool_result" else []
+
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _invoke_hook)
+        monkeypatch.setattr("model_tools._execute_tool", lambda *a, **k: "raw")
+        if name == "tool_call":
+            monkeypatch.setattr(
+                "model_tools._dispatch_bridge_tool",
+                lambda fn, args, *rest: ("unused", ("web_search", {})) if fn == "tool_call" else None,
+            )
+        messages = []
+        tc = _mock_tool_call(name=name, arguments="{}", call_id="double-fire")
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tc]), messages, "task-1"
+        )
+
+        assert events == ["post_tool_call", "transform_tool_result"]
+        assert messages[0]["content"] == "T(raw)"
+
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
         tc = _mock_tool_call(

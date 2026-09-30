@@ -370,6 +370,9 @@ export const zh = defineLocale({
       inputTitle: '需要输入',
       inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',
+      messageTitle: '新消息',
+      messageTitleNamed: session => `新消息 — ${session}`,
+      messageBody: '一条新消息到达了消息会话。',
       turnDoneTitle: 'Hermes 已完成',
       turnDoneBody: '',
       turnErrorTitle: '本轮失败',
@@ -815,6 +818,10 @@ export const zh = defineLocale({
         plugin: {
           label: '插件通知',
           description: 'Hermes 在后台时，桌面插件发送了通知。'
+        },
+        message: {
+          label: '来信通知',
+          description: 'Hermes 在后台时，消息平台会话收到了新消息。默认关闭；还需在 config.yaml 中启用 desktop.notify_incoming_messages。'
         }
       },
       test: '发送测试通知',

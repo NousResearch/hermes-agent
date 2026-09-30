@@ -659,6 +659,9 @@ export const en: Translations = {
       inputTitle: 'Input needed',
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
+      messageTitle: 'New message',
+      messageTitleNamed: session => `New message — ${session}`,
+      messageBody: 'An inbound message arrived on a messaging session.',
       turnDoneTitle: 'Hermes finished',
       turnDoneBody: '',
       turnErrorTitle: 'Turn failed',
@@ -1130,6 +1133,10 @@ export const en: Translations = {
         plugin: {
           label: 'Plugin notifications',
           description: 'A desktop plugin sent a notification while Hermes was in the background.'
+        },
+        message: {
+          label: 'Incoming messages',
+          description: 'An inbound message arrived on a messaging session while Hermes was in the background. Off by default; also needs desktop.notify_incoming_messages in config.yaml.'
         }
       },
       test: 'Send test notification',

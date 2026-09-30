@@ -342,6 +342,9 @@ export const ru = defineLocale({
       inputTitle: 'Требуется ввод',
       inputTitleNamed: session => `Требуется ввод — ${session}`,
       inputBody: 'Hermes ожидает ваш ответ.',
+      messageTitle: 'Новое сообщение',
+      messageTitleNamed: session => `Новое сообщение — ${session}`,
+      messageBody: 'В мессенджер-сессию пришло новое сообщение.',
       turnDoneTitle: 'Hermes завершил',
       turnDoneBody: '',
       turnErrorTitle: 'Ход не удался',
@@ -684,6 +687,10 @@ export const ru = defineLocale({
         plugin: {
           label: 'Уведомления плагинов',
           description: 'Плагин приложения отправил уведомление, пока Hermes был в фоне.'
+        },
+        message: {
+          label: 'Входящие сообщения',
+          description: 'Пока Hermes был в фоне, в мессенджер-сессию пришло новое сообщение. По умолчанию выключено; также нужен desktop.notify_incoming_messages в config.yaml.'
         }
       },
       test: 'Отправить тестовое уведомление',

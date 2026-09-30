@@ -8,6 +8,9 @@
  * context; registered panes render `<WiredPane part="…"/>` to consume them.
  */
 
+// Side-effect: registers the inbound messaging notification listener (#56187).
+import '@/store/messaging-inbound-notify'
+
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'

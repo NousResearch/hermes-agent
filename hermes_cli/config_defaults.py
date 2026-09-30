@@ -2623,6 +2623,11 @@ DEFAULT_CONFIG = {
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
+        # Native OS notification for an inbound messaging-platform message (Telegram/
+        # Discord/WhatsApp turn started on the gateway) while the Desktop window is
+        # unfocused. False = never fire: no unsolicited notifications. The Settings →
+        # Notifications "Incoming messages" toggle is an additional AND gate on top.
+        "notify_incoming_messages": False,
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],

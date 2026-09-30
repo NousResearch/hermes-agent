@@ -681,6 +681,9 @@ export interface Translations {
       inputTitle: string
       inputTitleNamed: (session: string) => string
       inputBody: string
+      messageTitle: string
+      messageTitleNamed: (session: string) => string
+      messageBody: string
       turnDoneTitle: string
       turnDoneBody: string
       turnErrorTitle: string
@@ -946,7 +949,7 @@ export interface Translations {
       enableAllDesc: string
       focusedHint: string
       kinds: Record<
-        'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
+        'approval' | 'backgroundDone' | 'credits' | 'input' | 'message' | 'plugin' | 'turnDone' | 'turnError',
         { label: string; description: string }
       >
       test: string

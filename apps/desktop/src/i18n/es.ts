@@ -610,6 +610,9 @@ export const esOverrides = {
       inputTitle: 'Se necesita información',
       inputTitleNamed: session => `Se necesita una respuesta — ${session}`,
       inputBody: 'Hermes espera tu respuesta.',
+      messageTitle: 'Nuevo mensaje',
+      messageTitleNamed: session => `Nuevo mensaje — ${session}`,
+      messageBody: 'Llegó un mensaje entrante a una sesión de mensajería.',
       turnDoneTitle: 'Hermes terminó',
       turnDoneBody: '',
       turnErrorTitle: 'El turno falló',
@@ -1088,6 +1091,11 @@ export const esOverrides = {
         plugin: {
           label: 'Notificaciones de complementos',
           description: 'Un complemento de escritorio envió una notificación mientras Hermes estaba en segundo plano.'
+        },
+        message: {
+          label: 'Mensajes entrantes',
+          description:
+            'Llegó un mensaje entrante a una sesión de mensajería mientras Hermes estaba en segundo plano. Desactivado por defecto; también requiere desktop.notify_incoming_messages en config.yaml.'
         }
       },
       test: 'Enviar notificación de prueba',

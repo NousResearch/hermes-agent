@@ -23,7 +23,7 @@ export type { HermesOpenTarget }
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
 export type NativeNotificationKind =
-  'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError'
+  'approval' | 'backgroundDone' | 'credits' | 'input' | 'message' | 'plugin' | 'turnDone' | 'turnError'
 
 export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'approval',
@@ -32,7 +32,8 @@ export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'turnError',
   'backgroundDone',
   'credits',
-  'plugin'
+  'plugin',
+  'message'
 ]
 
 // Blocking prompts — surface even while focused if they're for another session.
@@ -52,6 +53,7 @@ const DEFAULT_PREFS: NativeNotificationPrefs = {
     backgroundDone: true,
     credits: true,
     input: true,
+    message: false,
     plugin: true,
     turnDone: true,
     turnError: true
@@ -72,6 +74,8 @@ function readPrefs(): NativeNotificationPrefs {
     for (const kind of NATIVE_NOTIFICATION_KINDS) {
       const value = parsed.kinds?.[kind]
 
+      // Kinds absent from an older blob keep their DEFAULT_PREFS value —
+      // 'message' defaults false there, so it reads as never opted in.
       if (typeof value === 'boolean') {
         kinds[kind] = value
       }
@@ -154,6 +158,13 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
     return isBackgrounded() || (Boolean(sessionId) && sessionId !== $activeSessionId.get())
   }
 
+  // Inbound messaging-platform messages (#56187): any session, only while the
+  // user is away — the session the notification names is by definition not
+  // on screen (an open chat would have its own unread affordances).
+  if (kind === 'message') {
+    return isBackgrounded() && Boolean(sessionId)
+  }
+
   // Completion kinds: only the active session, only while away — so a busy
   // gateway (messaging, kanban, cron) can't spam a toast per background session.
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
@@ -168,7 +179,8 @@ const shortSessionId = (id: string) => `#${id.slice(-6)}`
  *  `title` stays the bare fallback for a prompt with no session. */
 const NAMED_TITLE_KEYS: Partial<Record<NativeNotificationKind, string>> = {
   approval: 'notifications.native.approvalTitleNamed',
-  input: 'notifications.native.inputTitleNamed'
+  input: 'notifications.native.inputTitleNamed',
+  message: 'notifications.native.messageTitleNamed'
 }
 
 /** Sidebar naming order (title → preview → short id) via the locale's

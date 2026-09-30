@@ -330,6 +330,9 @@ export const zhHant = defineLocale({
       inputTitle: '需要輸入',
       inputTitleNamed: session => `需要輸入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回應。',
+      messageTitle: '新訊息',
+      messageTitleNamed: session => `新訊息 — ${session}`,
+      messageBody: '一條新訊息到達了訊息會話。',
       turnDoneTitle: 'Hermes 已完成',
       turnDoneBody: '',
       turnErrorTitle: '本輪失敗',
@@ -599,6 +602,10 @@ export const zhHant = defineLocale({
         plugin: {
           label: '外掛通知',
           description: 'Hermes 在背景時，桌面外掛傳送了通知。'
+        },
+        message: {
+          label: '來信通知',
+          description: 'Hermes 在背景時，訊息平台會話收到了新訊息。預設關閉；還需在 config.yaml 中啟用 desktop.notify_incoming_messages。'
         }
       },
       test: '傳送測試通知',

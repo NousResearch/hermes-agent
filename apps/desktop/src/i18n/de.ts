@@ -609,6 +609,9 @@ export const deOverrides = {
       inputTitle: 'Eingabe erforderlich',
       inputTitleNamed: session => `Eingabe erforderlich — ${session}`,
       inputBody: 'Hermes wartet auf Ihre Antwort.',
+      messageTitle: 'Neue Nachricht',
+      messageTitleNamed: session => `Neue Nachricht — ${session}`,
+      messageBody: 'Eine eingehende Nachricht ist auf einer Messaging-Sitzung eingetroffen.',
       turnDoneTitle: 'Hermes fertig',
       turnDoneBody: '',
       turnErrorTitle: 'Turn fehlgeschlagen',
@@ -1087,6 +1090,11 @@ export const deOverrides = {
         plugin: {
           label: 'Plugin-Benachrichtigungen',
           description: 'Ein Desktop-Plugin hat eine Benachrichtigung gesendet, während Hermes im Hintergrund war.'
+        },
+        message: {
+          label: 'Eingehende Nachrichten',
+          description:
+            'Eine eingehende Nachricht ist auf einer Messaging-Sitzung eingetroffen, während Hermes im Hintergrund war. Standardmäßig deaktiviert; erfordert zusätzlich desktop.notify_incoming_messages in config.yaml.'
         }
       },
       test: 'Testbenachrichtigung senden',

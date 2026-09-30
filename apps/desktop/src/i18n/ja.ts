@@ -343,6 +343,9 @@ export const ja = defineLocale({
       inputTitle: '入力が必要です',
       inputTitleNamed: session => `入力が必要です — ${session}`,
       inputBody: 'Hermes が応答を待っています。',
+      messageTitle: '新着メッセージ',
+      messageTitleNamed: session => `新着メッセージ — ${session}`,
+      messageBody: 'メッセージセッションに新しいメッセージが届きました。',
       turnDoneTitle: 'Hermes が完了しました',
       turnDoneBody: '',
       turnErrorTitle: 'ターンが失敗しました',
@@ -652,6 +655,10 @@ export const ja = defineLocale({
         plugin: {
           label: 'プラグイン通知',
           description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
+        },
+        message: {
+          label: '受信メッセージ',
+          description: 'Hermes がバックグラウンドの間に、メッセージセッションに新しいメッセージが届きました。デフォルトでオフ。config.yaml の desktop.notify_incoming_messages も必要です。'
         }
       },
       test: 'テスト通知を送信',

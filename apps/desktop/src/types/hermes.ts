@@ -487,6 +487,7 @@ export interface HermesConfig {
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
+    notify_incoming_messages?: boolean
   }
   terminal?: {
     cwd?: string

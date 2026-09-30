@@ -609,6 +609,9 @@ export const frOverrides = {
       inputTitle: 'Saisie requise',
       inputTitleNamed: session => `Saisie requise — ${session}`,
       inputBody: 'Hermes attend votre réponse.',
+      messageTitle: 'Nouveau message',
+      messageTitleNamed: session => `Nouveau message — ${session}`,
+      messageBody: 'Un message entrant est arrivé sur une session de messagerie.',
       turnDoneTitle: 'Hermes a terminé',
       turnDoneBody: '',
       turnErrorTitle: 'Échec du tour',
@@ -1089,6 +1092,11 @@ export const frOverrides = {
         plugin: {
           label: 'Notifications des plugins',
           description: 'Un plugin desktop a envoyé une notification pendant que Hermes était en arrière-plan.'
+        },
+        message: {
+          label: 'Messages entrants',
+          description:
+            "Un message entrant est arrivé sur une session de messagerie pendant que Hermes était en arrière-plan. Désactivé par défaut ; nécessite aussi desktop.notify_incoming_messages dans config.yaml."
         }
       },
       test: 'Envoyer une notification de test',

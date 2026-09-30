@@ -7,6 +7,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import sqlite3
@@ -22,6 +23,8 @@ from hermes_cli.worktree_ops import release_lsp_clients
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
+
+_log = logging.getLogger(__name__)
 
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
@@ -580,6 +583,98 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     return requested, branch_name
 
 
+def _assignee_docker_volumes(assignee: Optional[str]) -> list:
+    """``terminal.docker_volumes`` from the ASSIGNEE's profile config.
+
+    The dispatcher runs inside a gateway that multiplexes every profile, so a
+    bare ``load_config()`` reads the launch profile's mounts, not the ones the
+    worker will actually get. Reads under the same profile scope the
+    dispatcher uses to resolve worker toolsets. Raises when the assignee is
+    unknown or its config can't load; the caller treats that as "no mounts".
+    """
+    from hermes_cli.config import load_config
+    from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+    home = resolve_profile_env(normalize_profile_name(assignee))
+    with _worker_profile_scope(home):
+        return list((load_config().get("terminal") or {}).get("docker_volumes") or [])
+
+
+def _container_volume_map(assignee: Optional[str]) -> list[tuple[Path, Path]]:
+    """Reverse map (container -> host) of the assignee's bind mounts.
+
+    Built from the assignee profile's ``terminal.docker_volumes``
+    (``host:container[:mode]``), sorted longest container prefix first so
+    nested mounts (e.g. ``/workspace/projects`` inside ``/workspace``) win
+    over their parent. Returns an empty list when there is no assignee or
+    its config can't be loaded. Never falls back to the dispatcher's own
+    mounts: those point at another profile's workspace, which exists, so the
+    worker would silently run in the wrong directory.
+    """
+    if not assignee:
+        return []
+    try:
+        vols = _assignee_docker_volumes(assignee)
+    except Exception as exc:
+        _log.warning(
+            "kanban: could not load terminal.docker_volumes for assignee %r (%s); "
+            "container workspace paths will not be translated",
+            assignee, exc,
+        )
+        return []
+    pairs: list[tuple[Path, Path]] = []
+    for spec in vols:
+        if not isinstance(spec, str):
+            continue
+        parts = spec.split(":")
+        if len(parts) >= 2 and parts[0].startswith("/") and parts[1].startswith("/"):
+            pairs.append((Path(parts[1]), Path(parts[0])))
+    pairs.sort(key=lambda cp: len(cp[0].parts), reverse=True)
+    return pairs
+
+
+def _translate_container_workspace_path(
+    p: Path, *, task_id: str, assignee: Optional[str]
+) -> Path:
+    """Best-effort rewrite of an in-container path to its host equivalent.
+
+    The dispatcher prepares ``dir``/``scratch`` workspaces on the HOST,
+    but agents run inside Docker where host dirs are bind-mounted (e.g.
+    ``~/.hermes/workspace`` -> ``/workspace``). Tasks created from inside
+    a container occasionally carry container paths; ``mkdir`` on those
+    fails on the host (macOS root is read-only -> ``[Errno 30]``) and
+    burns dispatch attempts until the task auto-blocks. When the path's
+    top-level anchor does not exist on this machine but the path sits
+    under the container side of a configured bind mount, rewrite it to
+    the host side instead. The mounts come from the assignee's profile,
+    since each profile mounts its own workspace at ``/workspace``. Longest
+    mount prefix wins, so ``/workspace/projects/...`` maps to the projects
+    mount rather than the workspace mount it is nested in.
+    """
+    if len(p.parts) < 2:
+        return p
+    anchor = Path(p.parts[0]) / p.parts[1]  # e.g. /workspace
+    if anchor.exists():
+        # Anchor is real on this machine (native path, or we *are* inside
+        # a container deployment) — nothing to translate.
+        return p
+    for container, host in _container_volume_map(assignee):
+        try:
+            rel = p.relative_to(container)
+        except ValueError:
+            continue
+        translated = host / rel
+        _log.warning(
+            "task %s: workspace_path %s looks like an in-container path "
+            "(no %s on this machine); using host equivalent %s from "
+            "%s's terminal.docker_volumes",
+            task_id, p, anchor, translated, assignee,
+        )
+        return translated
+    return p
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -617,8 +712,41 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             )
     else:
         raise ValueError(f"unknown workspace_kind: {kind}")
+    if task.workspace_path:
+        # Explicit paths may have been recorded from inside a container;
+        # remap to the host side of the bind mount before mkdir.
+        p = _translate_container_workspace_path(
+            p, task_id=task.id, assignee=task.assignee
+        )
+    if kind == "dir" and not p.exists():
+        _guard_missing_dir_workspace(p, task)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+class WorkspaceUnavailable(ValueError):
+    """A ``dir`` path that must not be created on the host; the dispatcher
+    blocks the card as ``needs_input`` instead of retrying."""
+
+
+def _guard_missing_dir_workspace(p: Path, task: Task) -> None:
+    """Refuse to invent a ``dir`` workspace outside the assignee's mounts.
+
+    A sandboxed assignee only sees its ``terminal.docker_volumes``; a mkdir
+    anywhere else creates a ghost dir the worker can never reach (and hides
+    the bad path from later checks). Creating it is allowed only under a
+    mount whose host root exists. Assignees without docker mounts keep the
+    legacy mkdir.
+    """
+    roots = [host for _c, host in _container_volume_map(task.assignee)]
+    if not roots:
+        return
+    for root in roots:
+        if root.is_dir() and (p.is_relative_to(root) or p.is_relative_to(root.resolve())):
+            return
+    raise WorkspaceUnavailable(
+        f"workspace path {p} does not exist on the host; use a mounted host path"
+    )
 
 
 def _set_task_column(conn: sqlite3.Connection, task_id: str, column: str, value: str) -> None:

@@ -277,6 +277,16 @@ it('hands a refused message back for editing and keeps other outcomes for an exa
   const ids = request.mock.calls.filter(call => call[1] === 'groups.send').map(call => call[2].event_id)
   expect(ids[0]).not.toBe(ids[1])
   expect(ids[2]).toBe(ids[1])
+
+  outcome = async () => ({ accepted: true, client_event_id: 'someone-else' })
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toHaveLength(4))
+  expect((await readCanonicalGroupSend(binding))?.params.event_id).toBe(kept?.params.event_id)
+
+  outcome = async () => ({ accepted: true, client_event_id: kept?.params.event_id, driver_started: true })
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+  await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+  await waitFor(() => expect(box().value).toBe(''))
 })
 
 it('returns a failed Send only to its own room when the view switches rooms', async () => {

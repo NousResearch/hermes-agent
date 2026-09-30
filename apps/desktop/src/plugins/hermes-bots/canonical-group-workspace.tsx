@@ -175,9 +175,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
       setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
 
       try {
-        const result = await canonicalGroupRequest<{ accepted?: boolean; event_id?: unknown } | undefined>(binding, 'groups.send', exact.params)
+        const result = await canonicalGroupRequest<{ accepted?: boolean; client_event_id?: unknown } | undefined>(binding, 'groups.send', exact.params)
 
-        if (result?.accepted === false || (typeof result?.event_id === 'string' && result.event_id !== exact.params.event_id)) {
+        if (result?.accepted === false || (typeof result?.client_event_id === 'string' && result.client_event_id !== exact.params.event_id)) {
           throw new Error(labels.unconfirmedSend)
         }
       } catch (error) {

@@ -166,8 +166,9 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
-# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply".
-_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^>\s*<(@[^>]+)>\s*(.*)$")
+# Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply". An emote
+# fallback starts with "> * <@alice:example.org>".
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^> (?:\* )?<(@[^>\s]+)>\s*(.*)")
 
 
 def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
@@ -257,9 +258,6 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
 
 
-_MATRIX_REPLY_FALLBACK_FIRST_LINE_RE = re.compile(r"^> (?:\* )?<@[^>\s]+>")
-
-
 def _has_reply_fallback(body: str, content: dict) -> bool:
     """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
 
@@ -275,7 +273,7 @@ def _has_reply_fallback(body: str, content: dict) -> bool:
     if (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
             and formatted_body.lstrip().startswith("<mx-reply>")):
         return True
-    if not _MATRIX_REPLY_FALLBACK_FIRST_LINE_RE.match(body):
+    if not _MATRIX_REPLY_FALLBACK_PILL_RE.match(body):
         return False
     quote_block, reply_text = _split_reply_fallback(body)
     return quote_block.endswith("\n\n") or not reply_text

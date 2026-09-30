@@ -253,6 +253,11 @@ class MessageEvent:
         self.channel_context = f"{self.channel_context.rstrip()}\n\n{block}" if self.channel_context else block
 
 
+    def text_with_channel_context(self, text: str) -> str:
+        """*text* after ``channel_context`` and a ``[New message]`` marker, as the model sees it."""
+        return f"{self.channel_context}\n\n[New message]\n{text}" if self.channel_context else text
+
+
     def absorb_channel_context(self, other: "MessageEvent") -> None:
         """Keep *other*'s ``channel_context`` when *other* is merged into this event."""
         if other.channel_context and other.channel_context != self.channel_context:

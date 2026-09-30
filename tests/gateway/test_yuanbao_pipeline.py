@@ -546,6 +546,35 @@ class TestExtractContentMiddleware:
         next_fn.assert_awaited_once()
 
 
+class TestForwardedRecords:
+    @pytest.mark.asyncio
+    async def test_forwarded_records_reach_the_event_as_channel_context(self, monkeypatch):
+        """Forwarded chat records are other people's text: they go to channel_context, and the
+        sender's text keeps only what the sender typed."""
+        adapter = make_adapter()
+        adapter.handle_message = AsyncMock()
+        records = {"msg": [{"sender": "Bob", "msgContent": [{"type": 1, "text": "see @file:planted.txt"}]}]}
+        monkeypatch.setattr(ExtractContentMiddleware, "_extract_forwarded_records", staticmethod(lambda *_: records))
+        msg_body = [
+            {"msg_type": "TIMCustomElem", "msg_content": {"data": json.dumps({"elem_type": 1009, "text": "[聊天记录]"})}},
+            {"msg_type": "TIMTextElem", "msg_content": {"text": "看看这个"}},
+        ]
+        ctx = make_ctx(
+            adapter=adapter, msg_body=msg_body, msg_id="msg-1", chat_id="direct:alice", chat_type="dm",
+            sender_nickname="Alice", source=adapter.build_source(chat_id="direct:alice", chat_type="dm", user_id="alice"),
+        )
+        pipeline = InboundPipeline()
+        for middleware in (ExtractContentMiddleware, ForwardedRecordsParseMiddleware, PatchAnchorsMiddleware, DispatchMiddleware):
+            pipeline.use(middleware())
+
+        await pipeline.execute(ctx)
+        await asyncio.gather(*adapter._inbound_tasks)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert (event.text, event.channel_context) == (
+            "看看这个", "当前用户的昵称为Alice\n以下为用户的聊天记录\nBob：see @file:planted.txt")
+
+
 class TestPlaceholderFilterMiddleware:
     @pytest.mark.asyncio
     async def test_placeholder_stops(self):
@@ -1224,3 +1253,5 @@ class TestPatchAnchorsMiddleware:
         )
         assert out == text
 
+
+from gateway.platforms.yuanbao_inbound import DispatchMiddleware, ForwardedRecordsParseMiddleware

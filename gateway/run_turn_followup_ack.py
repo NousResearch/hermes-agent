@@ -53,9 +53,11 @@ def _followup_cancel_outcome(adapter) -> ProcessingOutcome:
 def _turn_result_outcome(result) -> ProcessingOutcome:
     """Classify a returned agent result for the completion hook before its reply is delivered.
 
-    Only a turn stopped by gateway control flow (``/stop``, ``/new``, a timeout, shutdown) is
-    CANCELLED. A turn interrupted by new user input was superseded: the gateway answers that input
-    in a follow-up turn, so the interrupted message completes like any other."""
+    Only an interrupted result that a gateway control interrupt produced (``/stop``, ``/new``,
+    shutdown) is CANCELLED. A turn interrupted by new user input was superseded: the gateway answers
+    that input in a follow-up turn, so the interrupted message completes like any other. An
+    inactivity timeout usually returns a synthetic failed result without ``interrupted``, so that
+    turn completes with the delivery outcome of its timeout notice."""
     if not isinstance(result, dict) or not result.get("interrupted"):
         return ProcessingOutcome.SUCCESS
     from gateway.run import _is_control_interrupt_message

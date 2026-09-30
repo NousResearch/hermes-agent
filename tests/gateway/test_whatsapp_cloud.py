@@ -994,9 +994,24 @@ class TestContentlessEnvelopeGuard:
 class TestSendClarifyButtons:
     """``send_clarify`` outbound — picks button vs list mode by choice count."""
 
+    @pytest.mark.parametrize(
+        "choices, mode, text_labels",
+        [
+            (["Save to brain"], "button", True),
+            (["Save to brain", "Absorb it"], "button", True),
+            (["Save to brain", "Absorb it", "Just discuss"], "button", True),
+            (["  " + "A" * 20 + "  ", "Absorb it", "Just discuss"], "button", True),
+            (["Save to brain", "A" * 21, "Just discuss"], "button", False),
+            (["Save to brain", "Absorb it", "Just discuss", "Skip"], "list", True),
+            (["  " + "A" * 24 + "  ", "Absorb it", "Just discuss", "Skip"], "list", True),
+            (["Save to brain", "A" * 25, "Just discuss", "Skip"], "list", False),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_three_choices_uses_button_mode(self):
-        """1–3 choices → interactive.type=button (inline pills)."""
+    async def test_clarify_labels_fit_as_a_group(self, choices, mode, text_labels):
+        """Use full labels only when every choice fits the transport's title cap."""
+        from agent.i18n import t
+
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
@@ -1006,7 +1021,7 @@ class TestSendClarifyButtons:
         result = await adapter.send_clarify(
             chat_id="15551234567",
             question="Pick one",
-            choices=["Alpha", "Bravo", "Charlie"],
+            choices=choices,
             clarify_id="abc123",
             session_key="sess-1",
         )
@@ -1014,14 +1029,34 @@ class TestSendClarifyButtons:
         assert result.success
         payload = adapter._http_client.post.call_args.kwargs["json"]
         assert payload["type"] == "interactive"
-        assert payload["interactive"]["type"] == "button"
-        buttons = payload["interactive"]["action"]["buttons"]
-        assert len(buttons) == 3
-        assert [b["reply"]["title"] for b in buttons] == ["1", "2", "3"]
-        assert buttons[0]["reply"]["id"] == "cl:abc123:0"
-        assert buttons[2]["reply"]["id"] == "cl:abc123:2"
-        body_text = payload["interactive"]["body"]["text"]
-        assert "Alpha" in body_text and "Bravo" in body_text and "Charlie" in body_text
+        interactive = payload["interactive"]
+        assert interactive["type"] == mode
+        clean_choices = [choice.strip() for choice in choices]
+        if mode == "button":
+            options = [button["reply"] for button in interactive["action"]["buttons"]]
+        else:
+            rows = interactive["action"]["sections"][0]["rows"]
+            options = rows[:-1]
+            assert rows[-1] == {
+                "id": "cl:abc123:other",
+                "title": t("platform.whatsapp.clarify_other_title"),
+                "description": t("platform.whatsapp.clarify_other_description"),
+            }
+            assert [row.get("description") for row in options] == (
+                [None] * len(choices) if text_labels else clean_choices
+            )
+        assert [option["id"] for option in options] == [
+            f"cl:abc123:{idx}" for idx in range(len(choices))
+        ]
+        assert [option["title"] for option in options] == (
+            clean_choices if text_labels else [str(idx + 1) for idx in range(len(choices))]
+        )
+        expected_body = "❓ Pick one"
+        if not text_labels:
+            expected_body += "\n\n" + "\n".join(
+                f"{idx + 1}. {choice}" for idx, choice in enumerate(clean_choices)
+            )
+        assert interactive["body"]["text"] == expected_body
         assert adapter._clarify_state["abc123"] == "sess-1"
 
 
@@ -1093,6 +1128,44 @@ class TestSendSlashConfirmButtons:
 @pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplyClarify:
     """Inbound side: button-tap → clarify resolver."""
+
+    @pytest.mark.parametrize("reply_type", ["button_reply", "list_reply"])
+    @pytest.mark.parametrize("title", ["Save to brain", "1", ""])
+    @pytest.mark.asyncio
+    async def test_clarify_reply_resolves_choice_by_id(self, reply_type, title):
+        """The ID selects the canonical second choice, regardless of the display title."""
+        from tools import clarify_gateway
+
+        choices = ["Save to brain", "Absorb it", "Just discuss"]
+        if reply_type == "list_reply":
+            choices.append("Skip")
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.q1"}]})
+        )
+        entry = clarify_gateway.register("q1", "sess-1", "Pick one", choices)
+        try:
+            result = await adapter.send_clarify(
+                "15551234567", "Pick one", choices, "q1", "sess-1"
+            )
+            assert result.success
+            raw = {
+                "from": "15551234567",
+                "id": "wamid.tap1",
+                "type": "interactive",
+                "interactive": {
+                    "type": reply_type,
+                    reply_type: {"id": "cl:q1:1", "title": title},
+                },
+            }
+            event = await adapter._build_message_event_from_cloud(raw, {}, {})
+            assert event is None  # A resolved tap must not start a second agent turn.
+            assert entry.event.is_set()
+            assert entry.response == choices[1]
+            assert "q1" not in adapter._clarify_state
+        finally:
+            clarify_gateway.clear_session("sess-1")
 
 
     @pytest.mark.asyncio

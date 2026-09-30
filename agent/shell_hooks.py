@@ -324,6 +324,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return failed(f"command {spec.command!r} cannot be parsed: {exc}")
     if not argv:
         return failed("empty command")
+    missing_script = _missing_script(argv)
+    if missing_script is not None:
+        return failed(f"hook script missing: {missing_script}")
     t0 = time.monotonic()
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
@@ -582,6 +585,21 @@ def revoke(command: str) -> int:
 
 
 _SCRIPT_EXTENSIONS: Tuple[str, ...] = (".sh", ".bash", ".zsh", ".fish", ".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts")
+
+
+def _missing_script(argv: List[str]) -> Optional[str]:
+    """Return a missing absolute script argument, if the command names one.
+
+    Interpreters resolve script paths after ``Popen`` succeeds, so a missing
+    script otherwise looks like an exit-2 policy decision. Relative paths are
+    intentionally left to the child because their resolution depends on its
+    working directory.
+    """
+    for arg in argv[1:]:
+        path = os.path.expandvars(arg)
+        if path.lower().endswith(_SCRIPT_EXTENSIONS) and os.path.isabs(path) and not os.path.exists(path):
+            return path
+    return None
 
 
 def _command_script_path(command: str) -> str:

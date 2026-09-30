@@ -604,6 +604,24 @@ class TestFailSemanticsEndToEnd:
             "action": "block", "message": "rm -rf is not permitted",
         }
 
+    def test_missing_interpreter_script_fails_open(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f"python {tmp_path / 'gone.py'}",
+        )
+        result = shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "ls"})
+        assert result is None
+
+    def test_missing_interpreter_script_honors_fail_closed(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f"python {tmp_path / 'gone.py'}",
+            fail_closed=True,
+        )
+        result = shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "ls"})
+        assert result is not None and result["action"] == "block"
+        assert "hook script missing" in result["message"]
+
     def test_fail_closed_missing_command_blocks(self, tmp_path):
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call",

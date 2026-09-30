@@ -4271,7 +4271,11 @@ if __name__ == "__main__":
             setup_logging(hermes_home=_get_hermes_home(), mode="cron")
         except Exception:
             pass
-        raise SystemExit(
-            0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
-        )
+        try:
+            completed = _run_external_worker_payload(args.external_worker_file, args.ack_file)
+        except BaseException:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            completed = False
+        raise SystemExit(0 if completed else 1)
     tick(verbose=True)

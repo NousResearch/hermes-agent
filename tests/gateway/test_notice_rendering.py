@@ -8,39 +8,6 @@ from agent.credits_tracker import AgentNotice
 from gateway.run import render_notice_line
 
 
-class TestRenderNoticeLine:
-    """render_notice_line emits the notice text VERBATIM.
-
-    The notice policy already bakes the level glyph (⚠ / • / ✕ / ✓) into the
-    text, and the TUI + CLI REPL render it as-is — so messaging must NOT add a
-    second glyph, which would double it ("⚠ ⚠ Credits 90% used", "⛔ ✕ Credit
-    access paused").
-    """
-
-    def test_returns_text_verbatim_with_its_baked_glyph(self):
-        assert (
-            render_notice_line(AgentNotice(text="⚠ Credits 90% used · $20.00 cap", level="warn"))
-            == "⚠ Credits 90% used · $20.00 cap"
-        )
-        assert (
-            render_notice_line(AgentNotice(text="• Grant spent · $5.00 top-up left", level="info"))
-            == "• Grant spent · $5.00 top-up left"
-        )
-        assert (
-            render_notice_line(
-                AgentNotice(text="✕ Credit access paused · run /credits to top up", level="error")
-            )
-            == "✕ Credit access paused · run /credits to top up"
-        )
-
-    def test_does_not_prepend_a_second_glyph(self):
-        # Regression: the text already carries its glyph; the level must not add
-        # another (the bug produced "⚠ ⚠ …" / "⛔ ✕ …").
-        line = render_notice_line(AgentNotice(text="⚠ Credits 90% used", level="warn"))
-        assert line == "⚠ Credits 90% used"
-        assert "⚠ ⚠" not in line
-
-
 def test_real_policy_notices_render_without_doubling():
     """End-to-end regression: every notice evaluate_credits_notices emits already
     carries its glyph, so render_notice_line must return it unchanged (no second
@@ -84,7 +51,6 @@ def test_real_policy_notices_render_without_doubling():
 
 # ── Delivery seam: a rendered notice line goes out via _deliver_platform_notice ──
 
-import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

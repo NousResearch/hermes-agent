@@ -40,7 +40,7 @@ def _snapshot_child_pids() -> set:
         found: set = set()
         for tid in os.listdir(task_dir):
             try:
-                with open(f"{task_dir}/{tid}/children", encoding="utf-8") as f:
+                with open(f"{task_dir}/{tid}/children", encoding="utf-8-sig") as f:
                     found.update(int(p) for p in f.read().split() if p.strip())
             except (FileNotFoundError, OSError, ValueError):
                 continue  # thread exited between listdir and open
@@ -114,17 +114,20 @@ def _reregister_orphaned_adopters() -> None:
     from tools import mcp_tool_discovery as _discovery
     from tools.mcp_tool_config import _load_mcp_config
     for adopter, names in pending.items():
-        home_token = set_hermes_home_override(adopter)
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(adopter)))
+        home_token = secret_token = None
         try:
+            home_token = set_hermes_home_override(adopter)
+            secret_token = set_secret_scope(build_profile_secret_scope(Path(adopter)), profile_home=adopter)
             servers = {n: c for n, c in (_load_mcp_config() or {}).items() if n in names}
             if servers:
                 _discovery.register_mcp_servers(servers)
         except Exception:
             logger.debug("MCP: re-registration for profile scope %s failed", adopter, exc_info=True)
         finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
 
 
 def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None,
@@ -263,6 +266,36 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
         os.kill(pid, sig)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+    if os.name == "nt":  # Windows has no pgid reaching reparented grandchildren — kill the tree
+        _kill_windows_process_tree(pid, sig)
+
+
+def _kill_windows_process_tree(pid: int, sig: int) -> None:
+    """Windows counterpart of the POSIX killpg path (#61059): after the direct child is signalled,
+    terminate every still-alive descendant (npx.cmd → node.exe) so graceful teardown cannot leave
+    orphans reparented with ParentId=null. Best-effort, per-descendant; never raises."""
+    import signal as _signal
+    try:
+        import psutil
+    except ImportError:
+        return
+    try:
+        parent = psutil.Process(pid)
+        descendants = parent.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return
+    for child in descendants:
+        try:
+            child.terminate()
+        except Exception:  # noqa: BLE001 - raced away or refused; sweep continues
+            pass
+    if sig == getattr(_signal, "SIGKILL", _signal.SIGTERM):  # force pass: don't wait for graceful exit
+        _, alive = psutil.wait_procs(descendants, timeout=0)
+        for child in alive:
+            try:
+                child.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optional[str] = None) -> None:

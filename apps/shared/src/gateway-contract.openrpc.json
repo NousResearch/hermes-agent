@@ -565,8 +565,62 @@
       }
     },
     {
+      "name": "connectors.accounts",
+      "summary": "The scoped member's hosted connector accounts, optionally filtered by connector slug.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorAccountsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorAccountsResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.accounts.remove",
+      "summary": "Remove one hosted connector account owned by the scoped member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorAccountsRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorAccountsRemoveResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.catalog",
+      "summary": "The hosted connector catalog available to the scoped member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorsCatalogResult"
+        }
+      }
+    },
+    {
       "name": "connectors.connect",
-      "summary": "Start (or re-initiate) authorization for named connectors on the session's connection operation.",
+      "summary": "Start or re-initiate authorization for named connectors on a session or account operation.",
       "params": [
         {
           "name": "params",
@@ -584,7 +638,7 @@
     },
     {
       "name": "connectors.list",
-      "summary": "Connector catalog + connection state for one owned session (``available=False`` when the toolset is off).",
+      "summary": "Connector catalog + connection state for one session or profile account owner.",
       "params": [
         {
           "name": "params",
@@ -602,7 +656,7 @@
     },
     {
       "name": "connectors.operation.status",
-      "summary": "The current snapshot of one open operation on an owned session.",
+      "summary": "The current snapshot of one open session or account operation.",
       "params": [
         {
           "name": "params",
@@ -633,6 +687,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ConnectionWakeResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.policy.get",
+      "summary": "Policy layers for the scoped member, from organization to member scope.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorPolicyGetResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.policy.set",
+      "summary": "Apply one scoped member connector or tool-list policy change.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorPolicySetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorPolicySetResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.tools",
+      "summary": "The scoped profile's cached or current tool list for one connector.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorToolsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorToolsResult"
         }
       }
     },
@@ -705,6 +813,168 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/DiagnosticsShareNousResult"
+        }
+      }
+    },
+    {
+      "name": "display.install",
+      "summary": "Run the distro package install on the gateway host; progress streams as display.install.log/.done.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayInstallResult"
+        }
+      }
+    },
+    {
+      "name": "display.lease.acquire",
+      "summary": "Take over: the human named by a viewer id this connection minted controls the screen.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayLeaseAcquireParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayLeaseResult"
+        }
+      }
+    },
+    {
+      "name": "display.lease.release",
+      "summary": "Hand back. Without a viewer id the release is refused while a human holds unless force.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayLeaseReleaseParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayLeaseResult"
+        }
+      }
+    },
+    {
+      "name": "display.observe",
+      "summary": "Mint a single-use ticket for /api/display/ws and the server-minted viewer id for this connection.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayObserveResult"
+        }
+      }
+    },
+    {
+      "name": "display.start",
+      "summary": "Start this profile's Xvnc + Xfce (idempotent); blocks until the display is published.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayStatus"
+        }
+      }
+    },
+    {
+      "name": "display.status",
+      "summary": "Runtime + lease snapshot for this profile's screen.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayStatus"
+        }
+      }
+    },
+    {
+      "name": "display.stop",
+      "summary": "Stop the screen. Refused (5300, code viewer_mismatch) while a human holds unless force.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayStopParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayStopResult"
+        }
+      }
+    },
+    {
+      "name": "display.switchSandboxImage",
+      "summary": "Decide the pending default sandbox image switch for this profile; refused when none is pending.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplaySwitchSandboxImageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplaySwitchSandboxImageResult"
+        }
+      }
+    },
+    {
+      "name": "display.thumbnail",
+      "summary": "One JPEG grab of the bot's screen; read-only, never changes the lease.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayThumbnailResult"
         }
       }
     },
@@ -1177,6 +1447,42 @@
       }
     },
     {
+      "name": "i18n.catalog",
+      "summary": "Pack + overlay messages for one language and surface; the renderer merges them over its bundled catalog.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/I18nCatalogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/I18nCatalogResult"
+        }
+      }
+    },
+    {
+      "name": "i18n.languages",
+      "summary": "Every language some layer supplies (bundled \u222a user overlay \u222a plugin packs), en first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/I18nLanguagesResult"
+        }
+      }
+    },
+    {
       "name": "image.attach",
       "summary": "Queue a gateway-visible image file for the next turn.",
       "params": [
@@ -1641,6 +1947,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ModelSaveKeyResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.ensure_setup_profile",
+      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingEnsureSetupProfileResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.reset_setup_profile",
+      "summary": "Restore the setup profile to its created state in place (soul, memories, skills, sessions).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingResetSetupProfileResult"
         }
       }
     },
@@ -2689,6 +3031,24 @@
       }
     },
     {
+      "name": "session.archive",
+      "summary": "Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionArchiveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionArchiveResult"
+        }
+      }
+    },
+    {
       "name": "session.branch",
       "summary": "Fork a live session into a new stored child that shares the parent's history so far.",
       "params": [
@@ -2703,6 +3063,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionBranchResult"
+        }
+      }
+    },
+    {
+      "name": "session.branch_stored",
+      "summary": "Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBranchStoredParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBranchStoredResult"
+        }
+      }
+    },
+    {
+      "name": "session.branch_whole",
+      "summary": "session.branch of the whole history without echoing the copied transcript back.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBranchWholeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBranchWholeResult"
         }
       }
     },
@@ -3225,6 +3621,186 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SetupStatusResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_daily",
+      "summary": "Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopDailyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsDesktopDailyResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_dislike",
+      "summary": "Count one Desktop dislike signal (fire-and-forget; capped per signal per day; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopDislikeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_feature_use",
+      "summary": "Count one Desktop area used today (fire-and-forget; once per area per UTC day; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopFeatureUseParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_friction",
+      "summary": "Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopFrictionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_onboarding",
+      "summary": "Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopOnboardingParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.set",
+      "summary": "Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsSetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsConsentResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.slash_command",
+      "summary": "Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsSlashCommandParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsSlashCommandResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.startup_latency",
+      "summary": "Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsStartupLatencyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsStartupLatencyResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.status",
+      "summary": "Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsConsentResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.update_run",
+      "summary": "Count one Desktop packaged self-update outcome (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsUpdateRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsUpdateRunResult"
         }
       }
     },
@@ -3951,6 +4527,21 @@
   ],
   "components": {
     "schemas": {
+      "AccountOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "account",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "AccountOwner",
+        "type": "object"
+      },
       "ActiveIdResult": {
         "additionalProperties": false,
         "properties": {
@@ -4133,6 +4724,13 @@
             "title": "Has Desktop Half",
             "type": "boolean"
           },
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/PluginServerRow"
+            },
+            "title": "Servers",
+            "type": "array"
+          },
           "catalog_name": {
             "anyOf": [
               {
@@ -4216,6 +4814,21 @@
             ],
             "default": null,
             "title": "Pinned Sha"
+          },
+          "settings_schema": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginSettingField"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Settings Schema"
           }
         },
         "required": [
@@ -4227,7 +4840,8 @@
           "status",
           "portable",
           "install_dir",
-          "has_desktop_half"
+          "has_desktop_half",
+          "servers"
         ],
         "title": "AgentPluginRow",
         "type": "object"
@@ -4292,6 +4906,44 @@
           }
         },
         "title": "AgentsListResult",
+        "type": "object"
+      },
+      "ApprovalCancelledPayload": {
+        "additionalProperties": false,
+        "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "cancelled_count": {
+            "title": "Cancelled Count",
+            "type": "integer"
+          },
+          "request_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Request Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "reason",
+          "cancelled_count",
+          "request_ids"
+        ],
+        "title": "ApprovalCancelledPayload",
         "type": "object"
       },
       "ApprovalChoice": {
@@ -5794,7 +6446,7 @@
       },
       "BillingStateResult": {
         "additionalProperties": false,
-        "description": "``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only\n``ok / logged_in / free_tier / error``, so everything else is optional.",
+        "description": "``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only\n``ok / logged_in / free_tier_account / error``, so everything else is optional.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -5804,9 +6456,9 @@
             "title": "Logged In",
             "type": "boolean"
           },
-          "free_tier": {
+          "free_tier_account": {
             "default": false,
-            "title": "Free Tier",
+            "title": "Free Tier Account",
             "type": "boolean"
           },
           "free_tier_model": {
@@ -6853,6 +7505,53 @@
         "title": "CapabilityEntry",
         "type": "object"
       },
+      "CatalogAppState": {
+        "description": "The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration.",
+        "enum": [
+          "present",
+          "missing_app",
+          "app_not_running",
+          "unknown"
+        ],
+        "title": "CatalogAppState",
+        "type": "string"
+      },
+      "CatalogScan": {
+        "additionalProperties": false,
+        "description": "The catalog's security scan of the pinned commit; read-only on the card.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/CatalogScanStatus"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "summary"
+        ],
+        "title": "CatalogScan",
+        "type": "object"
+      },
+      "CatalogScanStatus": {
+        "enum": [
+          "passed",
+          "warnings",
+          "failed"
+        ],
+        "title": "CatalogScanStatus",
+        "type": "string"
+      },
+      "CatalogTier": {
+        "enum": [
+          "official",
+          "community"
+        ],
+        "title": "CatalogTier",
+        "type": "string"
+      },
       "ChangeSignalPayload": {
         "additionalProperties": true,
         "description": "``change_watcher._CHANGE_WATCHES`` payload fn \u2014 ``{}`` for every watch except pet.changed.",
@@ -6973,71 +7672,31 @@
       },
       "ClarifyRequestParams": {
         "additionalProperties": false,
-        "description": "Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``.\n``answers`` rides only on a reconnect replay (locks the server already accepted).",
+        "description": "``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped).",
         "properties": {
           "session_id": {
             "title": "Session Id",
             "type": "string"
           },
-          "question": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Question"
-          },
-          "choices": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Choices"
-          },
-          "multi_select": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Multi Select"
-          },
           "questions": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/ClarifyQuestion"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Questions"
+            "items": {
+              "$ref": "#/components/schemas/ClarifyQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
           },
           "answers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -7050,32 +7709,28 @@
           }
         },
         "required": [
-          "session_id"
+          "session_id",
+          "questions"
         ],
         "title": "ClarifyRequestParams",
         "type": "object"
       },
       "ClarifyResult": {
         "additionalProperties": false,
-        "description": "Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through\nthe ``clarify.lock`` RPC); a response with neither is cancel-all.",
+        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all.",
         "properties": {
-          "answer": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Answer"
-          },
           "answers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -7188,6 +7843,11 @@
             },
             "title": "Server Requests",
             "type": "array"
+          },
+          "declines_not_shown": {
+            "default": false,
+            "title": "Declines Not Shown",
+            "type": "boolean"
           }
         },
         "required": [
@@ -7633,7 +8293,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills);\n``profile`` scopes a session-less request (a new-chat draft).",
         "properties": {
           "text": {
             "anyOf": [
@@ -7658,6 +8318,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "CompleteSlashParams",
@@ -8428,9 +9100,23 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "op_id": {
             "title": "Op Id",
@@ -8438,7 +9124,7 @@
           }
         },
         "required": [
-          "session_id",
+          "owner",
           "op_id"
         ],
         "title": "ConnectionOperationParams",
@@ -8635,6 +9321,165 @@
             ],
             "default": null,
             "title": "Hint"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "platforms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Platforms"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repo"
+          },
+          "sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha"
+          },
+          "subdir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subdir"
+          },
+          "scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogScan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Requirements"
+          },
+          "has_desktop_half": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Has Desktop Half"
+          },
+          "target_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Profile"
+          },
+          "app_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogAppState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "skill": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skill"
           }
         },
         "required": [
@@ -8711,9 +9556,23 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "op_id": {
             "title": "Op Id",
@@ -8724,7 +9583,7 @@
           }
         },
         "required": [
-          "session_id",
+          "owner",
           "op_id",
           "result"
         ],
@@ -8735,6 +9594,7 @@
         "additionalProperties": false,
         "properties": {
           "status": {
+            "const": "ok",
             "title": "Status",
             "type": "string"
           },
@@ -8756,8 +9616,7 @@
           "all_resolved",
           "continue",
           "deadline",
-          "interrupt",
-          "unavailable"
+          "interrupt"
         ],
         "title": "ConnectionSettleReason",
         "type": "string"
@@ -8818,7 +9677,9 @@
       "ConnectionTargetKind": {
         "enum": [
           "connector",
-          "mcp"
+          "mcp",
+          "plugin",
+          "skill"
         ],
         "title": "ConnectionTargetKind",
         "type": "string"
@@ -8832,7 +9693,6 @@
           "skipped",
           "failed",
           "expired",
-          "unavailable",
           "not_connected"
         ],
         "title": "ConnectionTargetState",
@@ -8887,6 +9747,24 @@
             },
             "title": "Targets",
             "type": "array"
+          },
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "target": {
             "anyOf": [
@@ -8951,7 +9829,8 @@
           "seq",
           "deadline_at",
           "settled",
-          "targets"
+          "targets",
+          "owner"
         ],
         "title": "ConnectionUpdatePayload",
         "type": "object"
@@ -8960,6 +9839,7 @@
         "additionalProperties": false,
         "properties": {
           "status": {
+            "const": "ok",
             "title": "Status",
             "type": "string"
           }
@@ -8970,40 +9850,21 @@
         "title": "ConnectionWakeResult",
         "type": "object"
       },
-      "ConnectorRow": {
-        "additionalProperties": true,
-        "description": "One ``manage_connections`` status entry after ``connector_ui_payload`` redaction; the\nconnector service owns the closed key set, so unknown metadata passes through.",
+      "ConnectorAccountRow": {
+        "additionalProperties": false,
         "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
           "connector": {
-            "default": "",
             "title": "Connector",
             "type": "string"
           },
-          "connected": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Connected"
+          "status": {
+            "$ref": "#/components/schemas/ConnectorAccountStatus"
           },
-          "enabled": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Enabled"
-          },
-          "connectionStatus": {
+          "status_reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -9013,9 +9874,13 @@
               }
             ],
             "default": null,
-            "title": "Connectionstatus"
+            "title": "Status Reason"
           },
-          "name": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "alias": {
             "anyOf": [
               {
                 "type": "string"
@@ -9025,22 +9890,967 @@
               }
             ],
             "default": null,
-            "title": "Name"
+            "title": "Alias"
           },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Description"
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
           }
         },
+        "required": [
+          "connection_id",
+          "connector",
+          "status",
+          "label",
+          "active",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ConnectorAccountRow",
+        "type": "object"
+      },
+      "ConnectorAccountStatus": {
+        "enum": [
+          "pending",
+          "active",
+          "failed",
+          "expired",
+          "revoked",
+          "inactive"
+        ],
+        "title": "ConnectorAccountStatus",
+        "type": "string"
+      },
+      "ConnectorAccountsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "connector": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connector"
+          }
+        },
+        "title": "ConnectorAccountsParams",
+        "type": "object"
+      },
+      "ConnectorAccountsRemoveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "connection_id": {
+            "minLength": 1,
+            "title": "Connection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id"
+        ],
+        "title": "ConnectorAccountsRemoveParams",
+        "type": "object"
+      },
+      "ConnectorAccountsRemoveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "status": {
+            "const": "removed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "connector",
+          "status"
+        ],
+        "title": "ConnectorAccountsRemoveResult",
+        "type": "object"
+      },
+      "ConnectorAccountsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorAccountRow"
+            },
+            "title": "Accounts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "title": "ConnectorAccountsResult",
+        "type": "object"
+      },
+      "ConnectorCatalogRow": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Logo Url"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "description",
+          "category"
+        ],
+        "title": "ConnectorCatalogRow",
+        "type": "object"
+      },
+      "ConnectorChange": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "connector",
+            "title": "Type",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "connector",
+          "enabled"
+        ],
+        "title": "ConnectorChange",
+        "type": "object"
+      },
+      "ConnectorPolicyAllowBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "allow",
+            "title": "Mode",
+            "type": "string"
+          },
+          "connectors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Connectors",
+            "type": "array"
+          },
+          "tools": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tools",
+            "type": "object"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyTags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "mode",
+          "connectors",
+          "tools"
+        ],
+        "title": "ConnectorPolicyAllowBody",
+        "type": "object"
+      },
+      "ConnectorPolicyDenyAllBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "deny-all",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ConnectorPolicyDenyAllBody",
+        "type": "object"
+      },
+      "ConnectorPolicyDenyBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "deny",
+            "title": "Mode",
+            "type": "string"
+          },
+          "disabled_connectors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Connectors",
+            "type": "array"
+          },
+          "tools": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tools",
+            "type": "object"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyTags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "mode",
+          "disabled_connectors",
+          "tools"
+        ],
+        "title": "ConnectorPolicyDenyBody",
+        "type": "object"
+      },
+      "ConnectorPolicyEffectiveAllow": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "issued_at_ms": {
+            "title": "Issued At Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "const": "allow",
+            "title": "Mode",
+            "type": "string"
+          },
+          "connectors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Connectors",
+            "type": "array"
+          },
+          "tools": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tools",
+            "type": "object"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyTags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "issued_at_ms",
+          "mode",
+          "connectors",
+          "tools"
+        ],
+        "title": "ConnectorPolicyEffectiveAllow",
+        "type": "object"
+      },
+      "ConnectorPolicyEffectiveDeny": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "issued_at_ms": {
+            "title": "Issued At Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "const": "deny",
+            "title": "Mode",
+            "type": "string"
+          },
+          "disabled_connectors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Connectors",
+            "type": "array"
+          },
+          "tools": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tools",
+            "type": "object"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyTags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "issued_at_ms",
+          "mode",
+          "disabled_connectors",
+          "tools"
+        ],
+        "title": "ConnectorPolicyEffectiveDeny",
+        "type": "object"
+      },
+      "ConnectorPolicyEffectiveDenyAll": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "issued_at_ms": {
+            "title": "Issued At Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "const": "deny-all",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "issued_at_ms",
+          "mode"
+        ],
+        "title": "ConnectorPolicyEffectiveDenyAll",
+        "type": "object"
+      },
+      "ConnectorPolicyEffectiveUnrestricted": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "issued_at_ms": {
+            "title": "Issued At Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "const": "unrestricted",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "issued_at_ms",
+          "mode"
+        ],
+        "title": "ConnectorPolicyEffectiveUnrestricted",
+        "type": "object"
+      },
+      "ConnectorPolicyGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "layers": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorPolicyLayer"
+            },
+            "title": "Layers",
+            "type": "array"
+          },
+          "effective": {
+            "discriminator": {
+              "mapping": {
+                "allow": "#/components/schemas/ConnectorPolicyEffectiveAllow",
+                "deny": "#/components/schemas/ConnectorPolicyEffectiveDeny",
+                "deny-all": "#/components/schemas/ConnectorPolicyEffectiveDenyAll",
+                "unrestricted": "#/components/schemas/ConnectorPolicyEffectiveUnrestricted"
+              },
+              "propertyName": "mode"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveUnrestricted"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveDenyAll"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveAllow"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveDeny"
+              }
+            ],
+            "title": "Effective"
+          }
+        },
+        "required": [
+          "layers",
+          "effective"
+        ],
+        "title": "ConnectorPolicyGetResult",
+        "type": "object"
+      },
+      "ConnectorPolicyLayer": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConnectorPolicyLayerKind"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "body": {
+            "discriminator": {
+              "mapping": {
+                "allow": "#/components/schemas/ConnectorPolicyAllowBody",
+                "deny": "#/components/schemas/ConnectorPolicyDenyBody",
+                "deny-all": "#/components/schemas/ConnectorPolicyDenyAllBody",
+                "unrestricted": "#/components/schemas/ConnectorPolicyUnrestrictedBody"
+              },
+              "propertyName": "mode"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyUnrestrictedBody"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyDenyAllBody"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyAllowBody"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyDenyBody"
+              }
+            ],
+            "title": "Body"
+          }
+        },
+        "required": [
+          "kind",
+          "revision",
+          "body"
+        ],
+        "title": "ConnectorPolicyLayer",
+        "type": "object"
+      },
+      "ConnectorPolicyLayerKind": {
+        "enum": [
+          "org",
+          "role",
+          "member"
+        ],
+        "title": "ConnectorPolicyLayerKind",
+        "type": "string"
+      },
+      "ConnectorPolicySetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "change": {
+            "discriminator": {
+              "mapping": {
+                "connector": "#/components/schemas/ConnectorChange",
+                "tools": "#/components/schemas/ToolsChange"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ToolsChange"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorChange"
+              }
+            ],
+            "title": "Change"
+          },
+          "expected_revision": {
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "title": "Expected Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "change",
+          "expected_revision"
+        ],
+        "title": "ConnectorPolicySetParams",
+        "type": "object"
+      },
+      "ConnectorPolicySetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "effective": {
+            "discriminator": {
+              "mapping": {
+                "allow": "#/components/schemas/ConnectorPolicyEffectiveAllow",
+                "deny": "#/components/schemas/ConnectorPolicyEffectiveDeny",
+                "deny-all": "#/components/schemas/ConnectorPolicyEffectiveDenyAll",
+                "unrestricted": "#/components/schemas/ConnectorPolicyEffectiveUnrestricted"
+              },
+              "propertyName": "mode"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveUnrestricted"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveDenyAll"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveAllow"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyEffectiveDeny"
+              }
+            ],
+            "title": "Effective"
+          }
+        },
+        "required": [
+          "revision",
+          "effective"
+        ],
+        "title": "ConnectorPolicySetResult",
+        "type": "object"
+      },
+      "ConnectorPolicyTags": {
+        "additionalProperties": false,
+        "properties": {
+          "enable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enable"
+          },
+          "disable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disable"
+          }
+        },
+        "title": "ConnectorPolicyTags",
+        "type": "object"
+      },
+      "ConnectorPolicyUnrestrictedBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "unrestricted",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ConnectorPolicyUnrestrictedBody",
+        "type": "object"
+      },
+      "ConnectorRow": {
+        "additionalProperties": false,
+        "properties": {
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "connection_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "active",
+                  "failed",
+                  "expired",
+                  "revoked",
+                  "inactive"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Status"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "gateway_disabled_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Gateway Disabled Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connector",
+          "enabled",
+          "connected",
+          "connection_status",
+          "status_reason",
+          "gateway_disabled_tools"
+        ],
         "title": "ConnectorRow",
+        "type": "object"
+      },
+      "ConnectorToolFacet": {
+        "enum": [
+          "read",
+          "write",
+          "destructive",
+          "unclassified"
+        ],
+        "title": "ConnectorToolFacet",
+        "type": "string"
+      },
+      "ConnectorToolRow": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "facet": {
+            "$ref": "#/components/schemas/ConnectorToolFacet"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hints",
+            "type": "array"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "no_auth": {
+            "title": "No Auth",
+            "type": "boolean"
+          },
+          "deprecated": {
+            "title": "Deprecated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "description",
+          "facet",
+          "hints",
+          "categories",
+          "no_auth",
+          "deprecated"
+        ],
+        "title": "ConnectorToolRow",
+        "type": "object"
+      },
+      "ConnectorToolsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "refresh": {
+            "default": false,
+            "title": "Refresh",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "ConnectorToolsParams",
+        "type": "object"
+      },
+      "ConnectorToolsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "toolkit_version": {
+            "title": "Toolkit Version",
+            "type": "string"
+          },
+          "etag": {
+            "title": "Etag",
+            "type": "string"
+          },
+          "fetched_at": {
+            "title": "Fetched At",
+            "type": "number"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConnectorToolsSource"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorToolRow"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connector",
+          "toolkit_version",
+          "etag",
+          "fetched_at",
+          "source",
+          "stale",
+          "tools"
+        ],
+        "title": "ConnectorToolsResult",
+        "type": "object"
+      },
+      "ConnectorToolsSource": {
+        "enum": [
+          "cache",
+          "network",
+          "revalidated"
+        ],
+        "title": "ConnectorToolsSource",
+        "type": "string"
+      },
+      "ConnectorsCatalogResult": {
+        "additionalProperties": false,
+        "properties": {
+          "connectors": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorCatalogRow"
+            },
+            "title": "Connectors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connectors"
+        ],
+        "title": "ConnectorsCatalogResult",
         "type": "object"
       },
       "ConnectorsConnectParams": {
@@ -9058,14 +10868,30 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "connectors": {
             "items": {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
               "type": "string"
             },
+            "minItems": 1,
             "title": "Connectors",
             "type": "array"
           },
@@ -9076,7 +10902,7 @@
           }
         },
         "required": [
-          "session_id",
+          "owner",
           "connectors"
         ],
         "title": "ConnectorsConnectParams",
@@ -9084,7 +10910,7 @@
       },
       "ConnectorsConnectResult": {
         "additionalProperties": false,
-        "description": "The operation the connect opened (or re-minted on): ``tools/connectors/managed.py``\n``_off_desktop_result`` / ``methods_connectors._reissue``. ``status``/``note`` ride along from\nthe tool result when the call ran through ``manage_connections``.",
+        "description": "``methods_connectors._reissue`` / ``managed._off_desktop_result``: the operation the connect opened; ``status``/``note`` ride along from the tool result.",
         "properties": {
           "op_id": {
             "title": "Op Id",
@@ -9135,6 +10961,10 @@
           "status": {
             "anyOf": [
               {
+                "enum": [
+                  "initiated",
+                  "settled"
+                ],
                 "type": "string"
               },
               {
@@ -9182,13 +11012,27 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           }
         },
         "required": [
-          "session_id"
+          "owner"
         ],
         "title": "ConnectorsListParams",
         "type": "object"
@@ -10468,6 +12312,1240 @@
         "title": "DispatchType",
         "type": "string"
       },
+      "DisplayImageSwitch": {
+        "additionalProperties": false,
+        "description": "A persisted Docker sandbox kept on the previous default image; the user decides the switch.",
+        "properties": {
+          "current_image": {
+            "title": "Current Image",
+            "type": "string"
+          },
+          "target_image": {
+            "title": "Target Image",
+            "type": "string"
+          },
+          "containers": {
+            "title": "Containers",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "current_image",
+          "target_image",
+          "containers"
+        ],
+        "title": "DisplayImageSwitch",
+        "type": "object"
+      },
+      "DisplayInstallDonePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DisplayStatus"
+          }
+        },
+        "required": [
+          "profile_key",
+          "code",
+          "status"
+        ],
+        "title": "DisplayInstallDonePayload",
+        "type": "object"
+      },
+      "DisplayInstallLogPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_key",
+          "line"
+        ],
+        "title": "DisplayInstallLogPayload",
+        "type": "object"
+      },
+      "DisplayInstallResult": {
+        "additionalProperties": false,
+        "properties": {
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "started",
+          "profile_key"
+        ],
+        "title": "DisplayInstallResult",
+        "type": "object"
+      },
+      "DisplayInstallSudoParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "profile_key"
+        ],
+        "title": "DisplayInstallSudoParams",
+        "type": "object"
+      },
+      "DisplayLease": {
+        "additionalProperties": false,
+        "description": "``tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a\ncapability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself.",
+        "properties": {
+          "holder": {
+            "$ref": "#/components/schemas/LeaseHolder"
+          },
+          "viewer_id": {
+            "default": null,
+            "title": "Viewer Id",
+            "type": "null"
+          },
+          "viewer_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Hash"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "holder",
+          "since",
+          "epoch"
+        ],
+        "title": "DisplayLease",
+        "type": "object"
+      },
+      "DisplayLeaseAcquireParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "title": "Viewer Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "viewer_id"
+        ],
+        "title": "DisplayLeaseAcquireParams",
+        "type": "object"
+      },
+      "DisplayLeasePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          }
+        },
+        "required": [
+          "profile_key",
+          "lease"
+        ],
+        "title": "DisplayLeasePayload",
+        "type": "object"
+      },
+      "DisplayLeaseReleaseParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Id"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Force"
+          }
+        },
+        "title": "DisplayLeaseReleaseParams",
+        "type": "object"
+      },
+      "DisplayLeaseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          }
+        },
+        "required": [
+          "lease"
+        ],
+        "title": "DisplayLeaseResult",
+        "type": "object"
+      },
+      "DisplayObserveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Id"
+          }
+        },
+        "title": "DisplayObserveParams",
+        "type": "object"
+      },
+      "DisplayObserveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "ticket": {
+            "title": "Ticket",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "viewer_id": {
+            "title": "Viewer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key",
+          "ticket",
+          "path",
+          "viewer_id"
+        ],
+        "title": "DisplayObserveResult",
+        "type": "object"
+      },
+      "DisplayStatus": {
+        "additionalProperties": false,
+        "description": "``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for.",
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key"
+        ],
+        "title": "DisplayStatus",
+        "type": "object"
+      },
+      "DisplayStatusPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key"
+        ],
+        "title": "DisplayStatusPayload",
+        "type": "object"
+      },
+      "DisplayStopParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Force"
+          }
+        },
+        "title": "DisplayStopParams",
+        "type": "object"
+      },
+      "DisplayStopResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "stopped": {
+            "title": "Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key",
+          "stopped"
+        ],
+        "title": "DisplayStopResult",
+        "type": "object"
+      },
+      "DisplaySwitchSandboxImageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "approve": {
+            "default": true,
+            "title": "Approve",
+            "type": "boolean"
+          }
+        },
+        "title": "DisplaySwitchSandboxImageParams",
+        "type": "object"
+      },
+      "DisplaySwitchSandboxImageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "docker_image": {
+            "title": "Docker Image",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key",
+          "docker_image"
+        ],
+        "title": "DisplaySwitchSandboxImageResult",
+        "type": "object"
+      },
+      "DisplayThumbnailResult": {
+        "additionalProperties": false,
+        "description": "``data_url`` is null while the screen is stopped or while a human holds the lease\n(``suppressed``): the frame may show what they are typing.",
+        "properties": {
+          "data_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data Url"
+          },
+          "suppressed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Suppressed"
+          }
+        },
+        "title": "DisplayThumbnailResult",
+        "type": "object"
+      },
       "EmptyRequestParams": {
         "additionalProperties": false,
         "properties": {
@@ -10556,6 +13634,72 @@
           "retryable"
         ],
         "title": "ErrorSurface",
+        "type": "object"
+      },
+      "FailedDelegation": {
+        "additionalProperties": false,
+        "description": "``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation.",
+        "properties": {
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "task_index": {
+            "default": 0,
+            "title": "Task Index",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dispatched At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          }
+        },
+        "required": [
+          "delegation_id",
+          "status"
+        ],
+        "title": "FailedDelegation",
         "type": "object"
       },
       "FileAttachParams": {
@@ -10779,6 +13923,42 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
           }
         },
         "required": [
@@ -10790,7 +13970,7 @@
       },
       "FreeTierStatusResult": {
         "additionalProperties": false,
-        "description": "``available`` = an identity exists AND the tier is on; whether inference runs on it is\n``setup.runtime_check.free_tier``'s question.",
+        "description": "``available`` = an identity exists AND the tier is on; whether inference runs on it is\n``setup.runtime_check.free_tier_route``'s question.",
         "properties": {
           "has_guest": {
             "title": "Has Guest",
@@ -10815,6 +13995,54 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
           }
         },
         "required": [
@@ -12601,6 +15829,80 @@
         "title": "HeartbeatSnapshot",
         "type": "object"
       },
+      "I18nCatalogParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "lang": {
+            "title": "Lang",
+            "type": "string"
+          },
+          "surface": {
+            "$ref": "#/components/schemas/LocaleSurface",
+            "default": "core"
+          }
+        },
+        "required": [
+          "lang"
+        ],
+        "title": "I18nCatalogParams",
+        "type": "object"
+      },
+      "I18nCatalogResult": {
+        "additionalProperties": false,
+        "description": "``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the\nclient merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request\nresolved to (``pt-BR`` \u2192 ``pt-br``; an unknown id resolves to ``en`` with an empty layer).",
+        "properties": {
+          "lang": {
+            "title": "Lang",
+            "type": "string"
+          },
+          "surface": {
+            "$ref": "#/components/schemas/LocaleSurface"
+          },
+          "messages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "object"
+          }
+        },
+        "required": [
+          "lang",
+          "surface",
+          "messages"
+        ],
+        "title": "I18nCatalogResult",
+        "type": "object"
+      },
+      "I18nLanguagesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "languages": {
+            "items": {
+              "$ref": "#/components/schemas/LanguageOption"
+            },
+            "title": "Languages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "languages"
+        ],
+        "title": "I18nLanguagesResult",
+        "type": "object"
+      },
       "ImageAttachBytesParams": {
         "additionalProperties": false,
         "description": "``content_base64`` (or the ``data`` alias) carries the bytes; ``filename`` / ``ext`` only hint\nthe extension \u2014 magic bytes decide.",
@@ -13212,6 +16514,36 @@
         "title": "InterruptStatus",
         "type": "string"
       },
+      "LanguageOption": {
+        "additionalProperties": false,
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "endonym": {
+            "title": "Endonym",
+            "type": "string"
+          },
+          "rtl": {
+            "title": "Rtl",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "endonym",
+          "rtl",
+          "source"
+        ],
+        "title": "LanguageOption",
+        "type": "object"
+      },
       "LayoutApplyPayload": {
         "additionalProperties": true,
         "description": "``tools/apply_layout_tool.py``.",
@@ -13708,6 +17040,14 @@
         "title": "LearningNodeRow",
         "type": "object"
       },
+      "LeaseHolder": {
+        "enum": [
+          "agent",
+          "human"
+        ],
+        "title": "LeaseHolder",
+        "type": "string"
+      },
       "LegacyPluginRow": {
         "additionalProperties": false,
         "properties": {
@@ -13875,6 +17215,15 @@
         "title": "LlmOneshotResult",
         "type": "object"
       },
+      "LocaleSurface": {
+        "enum": [
+          "core",
+          "tui",
+          "desktop"
+        ],
+        "title": "LocaleSurface",
+        "type": "string"
+      },
       "LoopSnapshot": {
         "additionalProperties": false,
         "description": "``_safe_loop_snapshot`` \u2014 persisted LoopState fields, never its route.",
@@ -13989,6 +17338,18 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "connector_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connector Slug"
           },
           "installed": {
             "title": "Installed",
@@ -14478,6 +17839,21 @@
           },
           "status": {
             "$ref": "#/components/schemas/McpRuntimeStatus"
+          },
+          "source": {
+            "$ref": "#/components/schemas/McpServerSource"
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugin"
           }
         },
         "required": [
@@ -14486,10 +17862,19 @@
           "tools",
           "connected",
           "disabled",
-          "status"
+          "status",
+          "source"
         ],
         "title": "McpServerRuntimeRow",
         "type": "object"
+      },
+      "McpServerSource": {
+        "enum": [
+          "config",
+          "plugin"
+        ],
+        "title": "McpServerSource",
+        "type": "string"
       },
       "McpServerStatus": {
         "additionalProperties": true,
@@ -14626,6 +18011,21 @@
             ],
             "default": null,
             "title": "Tools"
+          },
+          "source": {
+            "$ref": "#/components/schemas/McpServerSource"
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugin"
           }
         },
         "required": [
@@ -14633,7 +18033,8 @@
           "transport",
           "args",
           "env",
-          "enabled"
+          "enabled",
+          "source"
         ],
         "title": "McpServerSummary",
         "type": "object"
@@ -15002,6 +18403,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_transformed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Transformed"
+          },
           "billing": {
             "anyOf": [
               {
@@ -15083,6 +18496,17 @@
             ],
             "default": null,
             "title": "Partial"
+          },
+          "persisted_turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersistedTurn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "MessageCompletePayload",
@@ -16133,9 +19557,125 @@
             ],
             "default": null,
             "title": "Connectors"
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugins"
           }
         },
         "title": "OnboardingAnswers",
+        "type": "object"
+      },
+      "OnboardingCatalogPlugin": {
+        "additionalProperties": false,
+        "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/CatalogTier"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "app_state": {
+            "$ref": "#/components/schemas/CatalogAppState"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "description",
+          "tier",
+          "platforms",
+          "app_state",
+          "sentence"
+        ],
+        "title": "OnboardingCatalogPlugin",
+        "type": "object"
+      },
+      "OnboardingEnsureSetupProfileResult": {
+        "additionalProperties": false,
+        "description": "``created`` is false when an existing setup profile was found (and returned untouched).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "role": {
+            "const": "setup",
+            "default": "setup",
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "created"
+        ],
+        "title": "OnboardingEnsureSetupProfileResult",
+        "type": "object"
+      },
+      "OnboardingResetSetupProfileResult": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "reset": {
+            "default": true,
+            "title": "Reset",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "title": "OnboardingResetSetupProfileResult",
         "type": "object"
       },
       "OpenRequestEntry": {
@@ -16195,6 +19735,13 @@
           "pane"
         ],
         "title": "PaneRevealPayload",
+        "type": "object"
+      },
+      "Params": {
+        "additionalProperties": false,
+        "description": "Client\u2192server method params / server\u2192client request params. Unknown keys are rejected.",
+        "properties": {},
+        "title": "Params",
         "type": "object"
       },
       "PasteCollapseParams": {
@@ -16613,6 +20160,53 @@
           }
         },
         "title": "PendingApproval",
+        "type": "object"
+      },
+      "PersistedTurn": {
+        "additionalProperties": false,
+        "description": "Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are\nunproven, never negative acknowledgements. ``complete`` permits retiring the whole local\nturn only when the original turn boundary, every row and final body are still accounted\nfor; compaction, redirects and partial writes conservatively leave it false. Row ids are\nscoped to the owning profile's store, as in ``SessionMessage.row_id``.",
+        "properties": {
+          "row_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Row Ids",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "user_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Id"
+          },
+          "final_assistant_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Assistant Row Id"
+          }
+        },
+        "required": [
+          "row_ids",
+          "complete"
+        ],
+        "title": "PersistedTurn",
         "type": "object"
       },
       "PetCancelParams": {
@@ -18167,13 +21761,288 @@
         "title": "PingResult",
         "type": "object"
       },
+      "PluginActivation": {
+        "additionalProperties": false,
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "activated_now": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Activated Now",
+            "type": "object"
+          },
+          "live_now": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginLiveNow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "deferred": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Deferred",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "key"
+        ],
+        "title": "PluginActivation",
+        "type": "object"
+      },
+      "PluginLiveNow": {
+        "additionalProperties": false,
+        "properties": {
+          "mcp_servers": {
+            "items": {
+              "$ref": "#/components/schemas/PluginLiveServer"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/PluginLiveSkill"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "title": "PluginLiveNow",
+        "type": "object"
+      },
+      "PluginLiveServer": {
+        "additionalProperties": false,
+        "description": "One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "name",
+          "connected"
+        ],
+        "title": "PluginLiveServer",
+        "type": "object"
+      },
+      "PluginLiveSkill": {
+        "additionalProperties": false,
+        "description": "One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PluginLiveSkill",
+        "type": "object"
+      },
+      "PluginServerRow": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PluginServerState"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "state",
+          "sentence"
+        ],
+        "title": "PluginServerRow",
+        "type": "object"
+      },
+      "PluginServerState": {
+        "enum": [
+          "connected",
+          "app_not_running",
+          "hermes_not_connected",
+          "endpoint_unavailable",
+          "no_interactive_session",
+          "version_too_old",
+          "missing_app",
+          "unknown"
+        ],
+        "title": "PluginServerState",
+        "type": "string"
+      },
+      "PluginSettingField": {
+        "additionalProperties": false,
+        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PluginSettingFieldType"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          },
+          "default": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Choices"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Env"
+          },
+          "has_value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Has Value"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "label",
+          "description",
+          "required"
+        ],
+        "title": "PluginSettingField",
+        "type": "object"
+      },
+      "PluginSettingFieldType": {
+        "enum": [
+          "string",
+          "number",
+          "boolean",
+          "enum",
+          "secret",
+          "json"
+        ],
+        "title": "PluginSettingFieldType",
+        "type": "string"
+      },
       "PluginsAction": {
         "enum": [
           "list",
           "toggle",
           "install",
           "update",
-          "remove"
+          "remove",
+          "settings",
+          "onboarding"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -18203,7 +22072,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``remove``: ``name`` (user installs only).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18316,6 +22185,31 @@
             ],
             "default": null,
             "title": "Ref"
+          },
+          "accept_capabilities": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accept Capabilities"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Values"
           }
         },
         "title": "PluginsManageParams",
@@ -18323,7 +22217,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``; ``remove`` \u2192 ``ok``/``name``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -18387,6 +22281,53 @@
             ],
             "default": null,
             "title": "Unchanged"
+          },
+          "restart_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Restart Required"
+          },
+          "gateway_reloaded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gateway Reloaded"
+          },
+          "activation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginActivation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cleared_memory_provider": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cleared Memory Provider"
           },
           "name": {
             "anyOf": [
@@ -18453,6 +22394,36 @@
             "default": null,
             "title": "Missing Env"
           },
+          "python_dependencies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Python Dependencies"
+          },
+          "known_issues": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Known Issues"
+          },
           "after_install_path": {
             "anyOf": [
               {
@@ -18488,6 +22459,93 @@
             ],
             "default": null,
             "title": "Sha"
+          },
+          "consent_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Consent Required"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta"
+          },
+          "delta_lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta Lines"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "written": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Written"
+          },
+          "onboarding": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OnboardingCatalogPlugin"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Onboarding"
           }
         },
         "title": "PluginsManageResult",
@@ -18612,6 +22670,18 @@
             ],
             "default": null,
             "title": "Max"
+          },
+          "allow_shortcut": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Shortcut"
           }
         },
         "required": [
@@ -19389,6 +23459,26 @@
             "default": 0,
             "title": "Skill Count",
             "type": "integer"
+          },
+          "previous_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Names",
+            "type": "array"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "const": "setup",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Role"
           },
           "last_session": {
             "anyOf": [
@@ -20842,6 +24932,11 @@
             "title": "Iskanban",
             "type": "boolean"
           },
+          "isGit": {
+            "default": true,
+            "title": "Isgit",
+            "type": "boolean"
+          },
           "sessions": {
             "items": {
               "$ref": "#/components/schemas/ProjectTreeSession"
@@ -21282,6 +25377,18 @@
             ],
             "default": null,
             "title": "Lineage Ids"
+          },
+          "continuation_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Kind"
           },
           "profile": {
             "anyOf": [
@@ -22189,6 +26296,18 @@
             ],
             "default": null,
             "title": "Voice Stopped"
+          },
+          "user_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Id"
           },
           "survivor_user_row_ids": {
             "anyOf": [
@@ -24381,6 +28500,74 @@
         "title": "SessionActiveListResult",
         "type": "object"
       },
+      "SessionArchiveParams": {
+        "additionalProperties": false,
+        "description": "``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "session_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Key"
+          },
+          "archived": {
+            "default": true,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "SessionArchiveParams",
+        "type": "object"
+      },
+      "SessionArchiveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archived",
+          "session_key"
+        ],
+        "title": "SessionArchiveResult",
+        "type": "object"
+      },
       "SessionBranchParams": {
         "additionalProperties": false,
         "properties": {
@@ -24475,6 +28662,183 @@
           "info"
         ],
         "title": "SessionBranchResult",
+        "type": "object"
+      },
+      "SessionBranchStoredParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "parent_session_id": {
+            "minLength": 1,
+            "title": "Parent Session Id",
+            "type": "string"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "parent_session_id"
+        ],
+        "title": "SessionBranchStoredParams",
+        "type": "object"
+      },
+      "SessionBranchStoredResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages_omitted": {
+            "title": "Messages Omitted",
+            "type": "boolean"
+          },
+          "info": {
+            "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "message_count",
+          "messages_omitted",
+          "info"
+        ],
+        "title": "SessionBranchStoredResult",
+        "type": "object"
+      },
+      "SessionBranchWholeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionBranchWholeParams",
+        "type": "object"
+      },
+      "SessionBranchWholeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "parent": {
+            "title": "Parent",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages_omitted": {
+            "title": "Messages Omitted",
+            "type": "boolean"
+          },
+          "info": {
+            "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "title",
+          "parent",
+          "message_count",
+          "messages_omitted",
+          "info"
+        ],
+        "title": "SessionBranchWholeResult",
         "type": "object"
       },
       "SessionCloseParams": {
@@ -25197,6 +29561,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "cwd_explicit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd Explicit"
           },
           "messages": {
             "anyOf": [
@@ -26546,6 +30922,27 @@
         "title": "SessionMostRecentResult",
         "type": "object"
       },
+      "SessionOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "session",
+            "title": "Type",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "session_id"
+        ],
+        "title": "SessionOwner",
+        "type": "object"
+      },
       "SessionParams": {
         "additionalProperties": false,
         "description": "Any method addressed at one live session.",
@@ -26665,6 +31062,11 @@
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
+            "type": "boolean"
+          },
+          "inline_images": {
+            "default": true,
+            "title": "Inline Images",
             "type": "boolean"
           }
         },
@@ -26992,7 +31394,6 @@
             "type": "string"
           },
           "hidden": {
-            "default": true,
             "title": "Hidden",
             "type": "boolean"
           },
@@ -27010,7 +31411,8 @@
           }
         },
         "required": [
-          "session_id"
+          "session_id",
+          "hidden"
         ],
         "title": "SessionSetHiddenParams",
         "type": "object"
@@ -27188,6 +31590,17 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoIntent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -27573,8 +31986,12 @@
             "title": "Inference Provider",
             "type": "string"
           },
-          "free_tier": {
-            "title": "Free Tier",
+          "free_tier_account": {
+            "title": "Free Tier Account",
+            "type": "boolean"
+          },
+          "free_tier_route": {
+            "title": "Free Tier Route",
             "type": "boolean"
           },
           "has_identity": {
@@ -27634,7 +32051,8 @@
         "required": [
           "provider_configured",
           "inference_provider",
-          "free_tier",
+          "free_tier_account",
+          "free_tier_route",
           "has_identity",
           "other_providers",
           "finished_at"
@@ -27675,7 +32093,7 @@
       },
       "SetupRuntimeCheckResult": {
         "additionalProperties": false,
-        "description": "``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the\nselected route is the welcome host.",
+        "description": "``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the\nselected route is the welcome host.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -27729,7 +32147,7 @@
             "default": null,
             "title": "Error"
           },
-          "free_tier": {
+          "free_tier_route": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -27739,7 +32157,7 @@
               }
             ],
             "default": null,
-            "title": "Free Tier"
+            "title": "Free Tier Route"
           },
           "profile": {
             "anyOf": [
@@ -27762,7 +32180,7 @@
       },
       "SetupStatusResult": {
         "additionalProperties": false,
-        "description": "``provider_configured`` is the loose answer; the boot record's fields (``ready``,\n``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile.\nAn unknown ``profile`` answers ``ok=False`` + ``error``.",
+        "description": "``provider_configured`` is the loose answer; the boot record's fields (``ready``,\n``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along\non the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``.",
         "properties": {
           "provider_configured": {
             "anyOf": [
@@ -27788,7 +32206,7 @@
             "default": null,
             "title": "Ready"
           },
-          "free_tier": {
+          "free_tier_account": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -27798,7 +32216,19 @@
               }
             ],
             "default": null,
-            "title": "Free Tier"
+            "title": "Free Tier Account"
+          },
+          "free_tier_route": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Free Tier Route"
           },
           "other_providers": {
             "anyOf": [
@@ -27859,9 +32289,571 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
           }
         },
         "title": "SetupStatusResult",
+        "type": "object"
+      },
+      "SharedMetricsConsentResult": {
+        "additionalProperties": false,
+        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer).",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "send": {
+            "title": "Send",
+            "type": "boolean"
+          },
+          "decided": {
+            "title": "Decided",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "send",
+          "decided"
+        ],
+        "title": "SharedMetricsConsentResult",
+        "type": "object"
+      },
+      "SharedMetricsDesktopActionDay": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "via": {
+            "enum": [
+              "click",
+              "menu",
+              "palette",
+              "shortcut"
+            ],
+            "title": "Via",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "via",
+          "count"
+        ],
+        "title": "SharedMetricsDesktopActionDay",
+        "type": "object"
+      },
+      "SharedMetricsDesktopDailyParams": {
+        "additionalProperties": false,
+        "description": "One finished UTC day of Desktop use, aggregated on the client. ``day`` (YYYY-MM-DD) only latches\na resend and is never recorded; the raw counts are bucketed by the backend.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "bot_count": {
+            "default": 0,
+            "title": "Bot Count",
+            "type": "integer"
+          },
+          "modes": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopModeDay"
+            },
+            "title": "Modes",
+            "type": "array"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopActionDay"
+            },
+            "title": "Actions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SharedMetricsDesktopDailyParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopDailyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "recorded": {
+            "title": "Recorded",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recorded"
+        ],
+        "title": "SharedMetricsDesktopDailyResult",
+        "type": "object"
+      },
+      "SharedMetricsDesktopDislikeParams": {
+        "additionalProperties": false,
+        "description": "``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a\nclosed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a\nconfig key for setting_off_default only (the value is never sent \u2014 the backend compares it to the\ndefault).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "signal": {
+            "title": "Signal",
+            "type": "string"
+          },
+          "target": {
+            "default": "",
+            "title": "Target",
+            "type": "string"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Setting"
+          }
+        },
+        "required": [
+          "signal"
+        ],
+        "title": "SharedMetricsDesktopDislikeParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopFeatureUseParams": {
+        "additionalProperties": false,
+        "description": "``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` \u2026);\nthe backend collapses anything outside its closed set to ``other``.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "area": {
+            "title": "Area",
+            "type": "string"
+          }
+        },
+        "required": [
+          "area"
+        ],
+        "title": "SharedMetricsDesktopFeatureUseParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopFrictionParams": {
+        "additionalProperties": false,
+        "description": "``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a\nclosed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame\nduration bucket), never message text.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "title": "SharedMetricsDesktopFrictionParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopModeDay": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "bots",
+              "sessions"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "active_ms": {
+            "default": 0,
+            "title": "Active Ms",
+            "type": "number"
+          },
+          "messages_sent": {
+            "default": 0,
+            "title": "Messages Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "SharedMetricsDesktopModeDay",
+        "type": "object"
+      },
+      "SharedMetricsDesktopOnboardingParams": {
+        "additionalProperties": false,
+        "description": "``step`` a Desktop first-run step id; ``event`` reached|completed|abandoned.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "step": {
+            "title": "Step",
+            "type": "string"
+          },
+          "event": {
+            "title": "Event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "event"
+        ],
+        "title": "SharedMetricsDesktopOnboardingParams",
+        "type": "object"
+      },
+      "SharedMetricsSetParams": {
+        "additionalProperties": false,
+        "description": "``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "send": {
+            "default": false,
+            "title": "Send",
+            "type": "boolean"
+          },
+          "first_run": {
+            "default": false,
+            "title": "First Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SharedMetricsSetParams",
+        "type": "object"
+      },
+      "SharedMetricsSlashCommandParams": {
+        "additionalProperties": false,
+        "description": "``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it\nagainst the published registry. ``session_id`` scopes the count to that session's profile.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "SharedMetricsSlashCommandParams",
+        "type": "object"
+      },
+      "SharedMetricsSlashCommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsSlashCommandResult",
+        "type": "object"
+      },
+      "SharedMetricsStartupLatencyParams": {
+        "additionalProperties": false,
+        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.\n``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a\nreconnect re-sending the same launch counts once while a new launch counts again.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "number"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "enum": [
+                  "desktop_attach",
+                  "tui"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Surface"
+          },
+          "launch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Launch Id"
+          }
+        },
+        "required": [
+          "elapsed_ms"
+        ],
+        "title": "SharedMetricsStartupLatencyParams",
+        "type": "object"
+      },
+      "SharedMetricsStartupLatencyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsStartupLatencyResult",
+        "type": "object"
+      },
+      "SharedMetricsUpdateRunParams": {
+        "additionalProperties": false,
+        "description": "One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout\nhand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the\nbackend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage``\ndownload|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall\ntime, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "failed_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Failed Stage"
+          },
+          "mechanism": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mechanism"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Ms"
+          },
+          "from_commit_date": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Commit Date"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "SharedMetricsUpdateRunParams",
+        "type": "object"
+      },
+      "SharedMetricsUpdateRunResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsUpdateRunResult",
         "type": "object"
       },
       "ShellExecParams": {
@@ -28401,7 +33393,7 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills);\n``profile`` scopes a session-less rescan.",
         "properties": {
           "session_id": {
             "anyOf": [
@@ -28414,6 +33406,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "SkillsReloadParams",
@@ -29369,7 +34373,7 @@
       },
       "SubagentListResult": {
         "additionalProperties": false,
-        "description": "``delegations`` is reserved for async delegation records and is currently always empty.",
+        "description": "``delegations``: recently failed async delegation tasks for the session (durable store), newest first.",
         "properties": {
           "subagents": {
             "items": {
@@ -29380,8 +34384,7 @@
           },
           "delegations": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/FailedDelegation"
             },
             "title": "Delegations",
             "type": "array"
@@ -30754,6 +35757,21 @@
             ],
             "default": null,
             "title": "Revision"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Labels"
           }
         },
         "required": [
@@ -30777,6 +35795,60 @@
         ],
         "title": "ToolGeneratingPayload",
         "type": "object"
+      },
+      "ToolLabel": {
+        "additionalProperties": false,
+        "description": "``tools.tool_labels.ToolLabel`` \u2014 what one call executed through the tool_search bridge is,\nin words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse\nthe tool name themselves.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ToolLabelKind"
+          },
+          "app": {
+            "title": "App",
+            "type": "string"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "emoji": {
+            "title": "Emoji",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "preview": {
+            "default": "",
+            "title": "Preview",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "app",
+          "action",
+          "emoji",
+          "text",
+          "name"
+        ],
+        "title": "ToolLabel",
+        "type": "object"
+      },
+      "ToolLabelKind": {
+        "description": "Which surface one inner call of a bridged ``tool_call`` runs on.",
+        "enum": [
+          "connector",
+          "mcp",
+          "tool"
+        ],
+        "title": "ToolLabelKind",
+        "type": "string"
       },
       "ToolOutputRiskPayload": {
         "additionalProperties": false,
@@ -30917,6 +35989,21 @@
             ],
             "default": null,
             "title": "Preview"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Labels"
           }
         },
         "required": [
@@ -30933,6 +36020,35 @@
         ],
         "title": "ToolsAction",
         "type": "string"
+      },
+      "ToolsChange": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "tools",
+            "title": "Type",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "disabled_tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2000,
+            "title": "Disabled Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "type",
+          "connector",
+          "disabled_tools"
+        ],
+        "title": "ToolsChange",
+        "type": "object"
       },
       "ToolsConfigureParams": {
         "additionalProperties": false,
@@ -31319,7 +36435,7 @@
       },
       "TranscriptMessage": {
         "additionalProperties": true,
-        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the\ndurable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
+        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``\nrewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
         "properties": {
           "role": {
             "title": "Role",
@@ -31336,6 +36452,28 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "content": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Call Id"
           },
           "timestamp": {
             "anyOf": [
@@ -31420,6 +36558,21 @@
             "default": null,
             "title": "Args"
           },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolLabel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Labels"
+          },
           "reasoning": {
             "anyOf": [
               {
@@ -31464,6 +36617,14 @@
         },
         "title": "UiMetaConflict",
         "type": "object"
+      },
+      "UndoIntent": {
+        "enum": [
+          "retry",
+          "undo"
+        ],
+        "title": "UndoIntent",
+        "type": "string"
       },
       "Usage": {
         "additionalProperties": true,
@@ -33784,6 +38945,34 @@
         },
         "title": "_SessionScoped",
         "type": "object"
+      },
+      "ConnectorErrorReason": {
+        "type": "string",
+        "enum": [
+          "INVALID_PARAMS",
+          "NOT_OWNER",
+          "UNSUPPORTED_RUNTIME",
+          "CONNECTOR_REQUEST_FAILED",
+          "INVALID_CONNECTOR_RESPONSE",
+          "UNKNOWN_TARGET",
+          "LINK_STILL_VALID",
+          "REISSUE_REFUSED",
+          "UNKNOWN_OPERATION",
+          "INVALID_ANSWER",
+          "NEEDS_NOUS_AUTH",
+          "CONNECTOR_NOT_FOUND",
+          "TOOLS_UNAVAILABLE",
+          "CONNECTORS_UNAVAILABLE",
+          "CATALOG_UNAVAILABLE",
+          "ACCOUNTS_UNAVAILABLE",
+          "CONNECTION_NOT_FOUND",
+          "POLICY_UNAVAILABLE",
+          "POLICY_CONFLICT",
+          "FORBIDDEN_SCOPE",
+          "ORG_REQUIRED",
+          "ORG_ACCESS_DENIED",
+          "INVALID_POLICY"
+        ]
       }
     }
   },
@@ -33808,7 +38997,7 @@
     },
     {
       "name": "clarify",
-      "summary": "The clarify tool: ask the user one question or a batch.",
+      "summary": "The clarify tool: ask the user 1-5 questions.",
       "params": [
         {
           "name": "params",
@@ -33821,6 +39010,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ClarifyResult"
+        }
+      }
+    },
+    {
+      "name": "display.install.sudo",
+      "summary": "Masked sudo password for the Bot Screen package install; app-level (empty session).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallSudoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
         }
       }
     },
@@ -34019,6 +39226,18 @@
       ]
     },
     {
+      "name": "approval.cancelled",
+      "summary": "Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalCancelledPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "background.complete",
       "summary": "A /background side agent finished.",
       "params": [
@@ -34134,6 +39353,54 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.install.done",
+      "summary": "The install ended (0 ok, -1 cancelled, -2 no sudo: the command to run by hand was streamed).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallDonePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.install.log",
+      "summary": "One line of package-manager output.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallLogPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.lease",
+      "summary": "The takeover lease changed hands; every client repaints.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayLeasePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.status",
+      "summary": "This profile's screen started or stopped (also for transitions made outside hermes serve).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayStatusPayload"
           }
         }
       ]
@@ -34435,6 +39702,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/PreviewRestartProgressPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "projects.changed",
+      "summary": "projects.db moved; refetch the project list + tree.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

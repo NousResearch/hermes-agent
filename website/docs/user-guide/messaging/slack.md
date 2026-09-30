@@ -675,6 +675,10 @@ Set this to `true` in busy workspaces where Slack's default "the bot remembers t
 Set this to `true` when the bot follows busy threads (via thread auto-engagement or `free_response_channels`) and butts in on messages humans address to each other. It is a narrower tool than `strict_mention`: plain follow-ups in an engaged thread still get answers; only messages that open by @mentioning another person are skipped. **1:1 DMs are unaffected**; group DMs (MPIMs) and channels both apply it, matching the shared-surface policy below. Broadcast tokens (`@here`, `@channel`) and channel references address the room, not a person, so they are never skipped.
 :::
 
+:::note Silence markers on messages not addressed to the bot
+When the bot answers a human message with only a [silence token](index.md#intentional-silence-tokens), Hermes normally posts a short notice instead so a question never goes unanswered. On Slack the token is allowed to stand when the message opened by @mentioning someone else, or was an unmentioned top-level message in a `free_response_channels` channel that starts its own thread (the default `reply_in_thread: true`). A 1:1 DM, a mention of the bot, a command, a reaction trigger, or a plain follow-up in a conversation the bot is part of (a thread, or a `reply_in_thread: false` channel) still gets the notice.
+:::
+
 :::info
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention.
 :::
@@ -816,7 +820,7 @@ slack:
 After gateway config changes, deploys, or restarts, run this synthetic smoke target:
 
 ```bash
-uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+scripts/run_tests.sh tests/gateway/test_slack_peer_agent_smoke.py -q
 ```
 
 This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.

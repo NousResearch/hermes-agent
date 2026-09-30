@@ -64,36 +64,80 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 
 
+def _lexical_path(path: Path | str) -> Path:
+    """Absolute, ``..``-collapsed, NFC form of *path* WITHOUT following symlinks."""
+    return Path(_path_key(os.path.abspath(path)))
+
+
 def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
-    """Return whether *p* is managed scratch storage and the matching board."""
+    """Return whether *p* is managed scratch storage and the matching board.
+
+    *p* must be strictly below a managed root both after resolving symlinks
+    AND lexically (as spelled, without resolving). Resolved containment alone
+    is not enough: when a root is itself a symlink to a broad directory
+    (relocated storage, or a planted link), every path inside the link target
+    would resolve "under" the root, so a scratch task naming such a path
+    directly would get it rmtree'd. Tasks created through the root are spelled
+    through it, so the lexical check keeps them managed. A root's lexical form
+    is accepted both as configured and with its anchor (kanban home, or the
+    override's parent) resolved, so a process spelling a symlinked home by its
+    real path still matches; the managed ``kanban/.../workspaces`` components
+    themselves are never resolved for the lexical check.
+    """
     try:
         p_abs = p.resolve(strict=False)
     except OSError:
         return False, None
-    roots: list[tuple[Path, Optional[str]]] = []
+    p_lex = _lexical_path(p)
+    # (resolved root, lexical spellings of the root, board)
+    roots: list[tuple[Path, tuple[Path, ...], Optional[str]]] = []
+
+    def _add_root(
+        anchor: Path, anchor_real: Path, parts: tuple[str, ...], board: Optional[str]
+    ) -> None:
+        root = anchor.joinpath(*parts)
+        with contextlib.suppress(OSError):
+            roots.append((
+                root.resolve(strict=False),
+                (_lexical_path(root), _lexical_path(anchor_real.joinpath(*parts))),
+                board,
+            ))
+
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
+        override_root = Path(override).expanduser()
         with contextlib.suppress(OSError):
-            roots.append((Path(override).expanduser().resolve(strict=False), None))
+            override_parent = override_root.parent
+            _add_root(
+                override_parent,
+                override_parent.resolve(strict=False),
+                (override_root.name,),
+                None,
+            )
     try:
         home = _kb.kanban_home()
+        # Resolve the shared anchor once, not once per board root.
+        home_real = home.resolve(strict=False)
     except OSError:
         home = None
     if home is not None:
-        with contextlib.suppress(OSError):
-            roots.append(((home / "kanban" / "workspaces").resolve(strict=False), _kb.DEFAULT_BOARD))
+        _add_root(home, home_real, ("kanban", "workspaces"), _kb.DEFAULT_BOARD)
         entries: list[Path] = []
         with contextlib.suppress(OSError):
             entries = list((home / "kanban" / "boards").resolve(strict=False).iterdir())
         for entry in entries:
             with contextlib.suppress(OSError):
                 if entry.is_dir():
-                    roots.append(((entry / "workspaces").resolve(strict=False), entry.name))
-    for root, board in roots:
+                    _add_root(
+                        home, home_real, ("kanban", "boards", entry.name, "workspaces"), entry.name
+                    )
+    for root, lexical_roots, board in roots:
         if p_abs == root:
             continue
         try:
-            if p_abs.is_relative_to(root):
+            if p_abs.is_relative_to(root) and any(
+                p_lex != lex and p_lex.is_relative_to(lex) for lex in lexical_roots
+            ):
                 return True, board
         except ValueError:
             continue

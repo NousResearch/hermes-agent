@@ -214,6 +214,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                         "message_agent is unavailable. Do not retry.")
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
+    from hermes_cli.observability.shared_metrics_signals import record_feature_used
+    record_feature_used("bot_mode", hermes_home=home)
 
     root, me = _hermes_root(Path(home)), _self_profile_name(Path(home))
     roster_homes = dict(_roster(root))
@@ -262,6 +264,13 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
+    # A connection-qualified target ('hermes@mini') names a relay row outright; it is the form the relay itself
+    # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
+    # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
+    if "@" in raw_target.strip().lstrip("@"):
+        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        if relayed is not None:
+            return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
     resolved = _resolve_local_name(raw_target, roster, root)
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
@@ -416,7 +425,7 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
 
     def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=turn_env)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
 
     proc = _turn()
     if proc.returncode != 0:
@@ -462,6 +471,11 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     return proc.returncode
 
 
+def _live_intent_file(dm_file: "str | os.PathLike") -> str:
+    """The pinned live-delivery intent beside a DM file (the cache sweep globs ``*.live.json``)."""
+    return f"{os.fspath(dm_file)}.live.json"
+
+
 def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
     """One delivery id per DM file: the dispatch ack, the live-owner intent and every retry
     of the runner derive it the same way, so the sender can correlate all of them."""
@@ -474,21 +488,21 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     from utils import fsync_directory
 
     intent: dict[str, Any]
-    intent_path = Path(dm_file + ".live.json")
+    intent_path = Path(_live_intent_file(dm_file))
     if intent_path.exists():
-        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
         assert profile_home is not None
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
             return None
-        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
+        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
                       delivery_id=_dm_delivery_id(dm_file),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(intent, stream)
@@ -516,7 +530,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
         # The intent carries the message plaintext so a retry can replay the SAME delivery id;
         # once the owner settled it nothing retries, so it goes along with the dm file (same
         # plaintext) — the live branch returns before _run_delivery's own unlink.
-        _unlink_dm_file(str(dm_file) + ".live.json")
+        _unlink_dm_file(_live_intent_file(dm_file))
         _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
     return 0 if status in ("settled", "queued", "claimed") else 1
@@ -529,6 +543,29 @@ def _local_delivery_home(argv: list[str]) -> Path | None:
     from tools.bot_mode_probe import _hermes_root, _roster
 
     return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
+
+
+def _live_outcome_unknown(dm_file: str, cause: object) -> str:
+    """The runner's stdout when a live admission may have happened but its outcome is unknown."""
+    return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
+                       "error": f"Live admission outcome unknown: {cause}. Do not resend.",
+                       "evidence_file": dm_file})
+
+
+def _runner_argv(args: list[str]) -> tuple[Optional[str], str, str, list[str]] | None:
+    """Split ``--run-delivery [--author <json>] <mode> <dm_file> <argv…>`` into
+    ``(author_json, mode, dm_file, argv)``; None when malformed. Stdlib only: the boot-failure
+    report runs it when no Hermes import is available."""
+    if args[:1] != ["--run-delivery"]:
+        return None
+    rest, author = args[1:], None
+    if rest[:1] == ["--author"]:
+        if len(rest) < 2:
+            return None
+        author, rest = rest[1], rest[2:]
+    if len(rest) < 2 or rest[0] not in ("stdin", "query-file"):
+        return None
+    return author, rest[0], rest[1], rest[2:]
 
 
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
@@ -548,13 +585,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
-        if home is not None or Path(dm_file + ".live.json").exists():
+        if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
-                print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
-                    "error": f"Live admission outcome unknown: {exc}. Do not resend.",
-                    "evidence_file": dm_file}))
+                print(_live_outcome_unknown(dm_file, exc))
                 return 1
             if record is not None:
                 return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
@@ -567,8 +602,9 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                 return _run_local_turn(argv, dm_file, env=env)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8") as stream:
-                return subprocess.run(argv, stdin=stream, check=False, env=env).returncode
+            with open(dm_file, "r", encoding="utf-8-sig") as stream:
+                # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
+                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
     finally:
         _unlink_dm_file(dm_file)
 
@@ -741,7 +777,7 @@ def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
         return 2
     while time.time() < deadline:
         if os.path.exists(reply_path):
-            with open(reply_path, encoding="utf-8") as fh:
+            with open(reply_path, encoding="utf-8-sig") as fh:
                 d = json.load(fh)
             if d.get("error"):
                 # Typed reason code rides ahead of the free text so the sender can branch on it
@@ -765,23 +801,22 @@ def _delivery_main(args: list[str]) -> int:
     Malformed argv exits 2 without touching the DM file."""
     if args[:1] == ["--wait-reply"]:
         return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
-    if not args or args[0] != "--run-delivery":
+    parsed = _runner_argv(args)
+    if parsed is None:
         return 2
-    rest, author = args[1:], None
-    if rest[:1] == ["--author"]:
+    author_json, mode, dm_file, argv = parsed
+    author = None
+    if author_json is not None:
         from agent.turn_author import parse_turn_author
 
-        author = parse_turn_author(rest[1]) if len(rest) > 1 else None
+        author = parse_turn_author(author_json)
         if author is None:
             return 2
-        rest = rest[2:]
-    if len(rest) < 2 or rest[0] not in ("stdin", "query-file"):
-        return 2
     try:
-        argv, profile_home = rest[2:], None
+        profile_home = None
         if len(argv) >= 2 and argv[0] == "--profile-home":
             profile_home, argv = Path(argv[1]), argv[2:]
-        return _run_delivery(argv, rest[1], stdin_file=rest[0] == "stdin", profile_home=profile_home, author=author)
+        return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
         # Every refusal ships a typed reason on stdout so the completion notification carries it
         # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
@@ -816,5 +851,24 @@ def _session_title(agent: Any) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
+    # Spawned as a script with the sender's sys.executable, which under PM is the bare store
+    # interpreter (dependencies are activated in-process, never inherited), so boot like every
+    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the
+    # sender's wake-up, and any other argv exits 2 before a Hermes import.
+    if sys.argv[1:2] == ["--run-delivery"]:
+        try:
+            import hermes_bootstrap  # noqa: F401
+        except (Exception, SystemExit) as exc:
+            # A pinned live intent means the sender may already have admitted this DM and was
+            # told not to resend; a bare repair hint would read as "NOT delivered". Without an
+            # intent nothing was handed over, so the plain failure is the truth. A relaunched
+            # child (Windows) already printed its own outcome.
+            booted = getattr(exc, "relaunched", False) or (isinstance(exc, SystemExit) and not exc.code)
+            parsed = _runner_argv(sys.argv[1:])
+            if not booted and parsed and os.path.exists(_live_intent_file(parsed[2])):
+                print(_live_outcome_unknown(parsed[2], "the delivery runner could not activate "
+                                                       "Hermes dependencies (see stderr)"))
+            raise
     raise SystemExit(_delivery_main(sys.argv[1:]))

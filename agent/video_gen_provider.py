@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import abc
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent import provider_media
 from agent.provider_base import CatalogProviderBase
+from agent.secret_scope import get_secret_str
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,8 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
     _poll_deadline_s: float = 900.0
 
     def _api_key(self) -> str:
-        return os.environ.get(self._env_key, "").strip()
+        # Through the profile secret scope: under multiplexing os.environ holds another profile's key.
+        return get_secret_str(self._env_key).strip()
 
     def is_available(self) -> bool:
         return bool(self._api_key())
@@ -176,7 +177,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
         return video
 
     def _base_url(self) -> str:
-        return os.environ.get(f"{self.name.upper()}_BASE_URL", "").strip() or self._default_base_url
+        return get_secret_str(f"{self.name.upper()}_BASE_URL").strip() or self._default_base_url
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,
@@ -195,7 +196,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             import openai
         except ImportError:
             return error_response(
-                error="openai Python package not installed (pip install openai)",
+                error="openai Python package not installed. Run: hermes pm repair",
                 error_type="missing_dependency", provider=self.name,
             )
 
@@ -283,13 +284,3 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import base64  # noqa: F401,E402
-import datetime  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

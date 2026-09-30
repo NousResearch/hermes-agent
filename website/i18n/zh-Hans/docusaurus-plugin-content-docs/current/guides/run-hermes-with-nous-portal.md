@@ -14,7 +14,7 @@ description: "完整操作指南：订阅、配置、切换模型、启用 gatew
 - 在你正在配置的机器上有可用的浏览器（或 SSH 端口转发——参见 [OAuth over SSH](./oauth-over-ssh.md)）
 - 约 5 分钟时间
 
-你**不需要**：OpenAI 密钥、Anthropic 密钥、Firecrawl 账号、FAL 账号、Browser Use 账号，或任何其他按供应商分配的凭证。这正是 Portal 的意义所在。
+你**不需要**：OpenAI 密钥、Anthropic 密钥、网页搜索账号、FAL 账号、Browser Use 账号，或任何其他按供应商分配的凭证。这正是 Portal 的意义所在。
 
 ## 1. 获取订阅
 
@@ -91,7 +91,7 @@ hermes chat
 Hey, search the web for "Hermes Agent release notes" and summarize the top 3 hits.
 ```
 
-你应该看到 Hermes 调用 `web_search`（通过 gateway 由 Firecrawl 提供支持）并返回摘要。如果搜索正常执行且响应内容合理，说明配置完成——Portal 已端到端连通。
+你应该看到 Hermes 调用 `web_search`（通过 gateway）并返回摘要。如果搜索正常执行且响应内容合理，说明配置完成——Portal 已端到端连通。
 
 ## 5. 选择你实际需要的模型
 
@@ -254,7 +254,7 @@ hermes auth logout nous       # 清除本地 refresh token
 | 不使用 Portal | 使用 Portal |
 |----------------|-------------|
 | 1 个 OpenRouter / Anthropic / OpenAI 密钥写入 `.env` | 1 个 OAuth refresh token，无需 `.env` 密钥 |
-| 1 个 Firecrawl 密钥用于网页搜索 | 网页搜索通过 gateway 路由 |
+| 1 个网页搜索密钥 | 网页搜索通过 gateway 路由 |
 | 1 个 FAL 密钥用于图像生成 | 图像生成通过 gateway 路由 |
 | 1 个 Browser Use / Browserbase 密钥用于浏览器 | 浏览器通过 gateway 路由 |
 | 1 个 OpenAI 密钥用于 TTS / 语音模式 | TTS 通过 gateway 路由 |

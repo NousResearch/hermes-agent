@@ -702,14 +702,24 @@ def _complete_logical(
         if lease.session is None:
             return
         try:
-            (operation_lease or lease.host).run_in_session(
-                lease.session, relay_runtime.pop_relay_scope, lease.host.relay, handle,
+            # Close through the top-guard: a sibling turn of the same session may hold a live
+            # scope above this one, and popping through it would close the sibling's scope.
+            # Letting the binding raise instead logs a traceback per overlap (#115471). The
+            # skipped scope is reclaimed by the session-close drain (``_close_scope_handle``),
+            # so the handle can still leave ``logical_llm_calls`` either way.
+            popped = (operation_lease or lease.host).run_in_session(
+                lease.session, relay_runtime.pop_relay_scope_if_top, lease.host.relay, handle,
                 output=output, metadata=relay_runtime.runtime_metadata(lease.host.runtime_id),
             )
         except Exception:
             # Provider result is authoritative; retain the handle so turn finalization can retry.
             logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
             return
+        if popped is False:
+            logger.debug(
+                "Left logical LLM scope %s under a concurrent turn's scope; session close drains it",
+                request_id,
+            )
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 del turn.logical_llm_calls[request_id]
@@ -922,11 +932,3 @@ def _run_awaitable(
     if _has_running_event_loop():
         raise RuntimeError(loop_error)
     return asyncio.run(value)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import dataclass  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

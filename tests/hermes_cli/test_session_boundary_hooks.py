@@ -1,13 +1,9 @@
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
-from hermes_cli.plugins import VALID_HOOKS, PluginManager
+from hermes_cli.plugins import PluginManager
 from cli import HermesCLI
 
 
-def test_session_hooks_in_valid_hooks():
-    """Verify on_session_finalize and on_session_reset are registered as valid hooks."""
-    assert "on_session_finalize" in VALID_HOOKS
-    assert "on_session_reset" in VALID_HOOKS
 
 
 # These tests pin CLI ownership of the finalize request. The end-to-end

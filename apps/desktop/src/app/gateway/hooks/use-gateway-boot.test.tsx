@@ -1,8 +1,9 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopConnectionsRegistry } from '@/global'
+import type { DesktopBootstrapState, DesktopConnectionsRegistry } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { $desktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
@@ -374,6 +375,77 @@ async function flushAsync() {
   })
 }
 
+it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
+  const desktop = fakeDesktop()
+  const bootFetch = deferred<void>()
+  type Listener = Parameters<NonNullable<Window['hermesDesktop']['connections']['onChanged']>>[0]
+  const listeners = new Set<Listener>()
+
+  let registry: DesktopConnectionsRegistry = {
+    version: 2,
+    primary: primaryConn.connectionId,
+    secureTokenStorage: true,
+    connections: [
+      { id: primaryConn.connectionId, kind: 'remote', label: 'Primary', tokenPreview: null, tokenSet: false },
+      { id: coderConn.connectionId, kind: 'remote', label: 'Coder', tokenPreview: null, tokenSet: false }
+    ]
+  }
+
+  const list = vi.fn(async () => registry)
+  const setLastUsed = vi.fn(async () => ({ ok: true, registry }))
+
+  Object.assign(desktop, {
+    connections: {
+      list,
+      setLastUsed,
+      onChanged: (callback: Listener) => {
+        listeners.add(callback)
+
+        return () => listeners.delete(callback)
+      }
+    }
+  })
+  ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+  // Only the real gateway lifecycle mounts; no optional UI can load the cache.
+  const view = render(<Harness refreshSessions={() => bootFetch.promise} />)
+  await flushAsync()
+
+  expect($connectionsRegistry.get()).toEqual(registry)
+  expect($desktopBoot.get().running).toBe(true)
+  expect(setLastUsed).not.toHaveBeenCalled()
+
+  bootFetch.resolve()
+  await flushAsync()
+  expect($desktopBoot.get().running).toBe(false)
+  expect(setLastUsed).toHaveBeenCalledExactlyOnceWith(primaryConn.connectionId)
+
+  const activeConnection = $connection.get()
+  registry = {
+    ...registry,
+    connections: registry.connections.map(entry => ({ ...entry, label: `${entry.label} renamed` }))
+  }
+  await act(async () => {
+    for (const callback of listeners) {
+      callback({ connectionId: coderConn.connectionId, reason: 'saved' })
+    }
+  })
+  expect($connectionsRegistry.get()).toEqual(registry)
+
+  registry = { ...registry, connections: registry.connections.slice(0, 1) }
+  await act(async () => {
+    for (const callback of listeners) {
+      callback({ connectionId: coderConn.connectionId, reason: 'removed' })
+    }
+  })
+  expect($connectionsRegistry.get()).toEqual(registry)
+  expect($connection.get()).toBe(activeConnection)
+  expect(setLastUsed).toHaveBeenCalledTimes(1)
+
+  view.unmount()
+  expect(listeners.size).toBe(0)
+})
+
 // Drive the exponential backoff forward by its full cap so the next scheduled
 // reconnect attempt actually runs (1s,2s,4s,8s,15s,15s…). Returns after the
 // attempt's async work settles.
@@ -384,6 +456,41 @@ async function advanceBackoff() {
 }
 
 describe('default-route profile adoption', () => {
+  it.each(['peer=1', 'win=secondary&watch=1'])(
+    'keeps %s on its registered gateway across boot, reconnect and soft switch',
+    async marker => {
+      const originalUrl = window.location.href
+      window.history.replaceState(null, '', `/?${marker}&profile=coder&connectionId=coder-remote`)
+
+      const desktop = {
+        ...fakeDesktop(),
+        getConnection: vi.fn(async profile => (profile ? primaryConn : { ...coderConn, registryScoped: true })),
+        getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+        getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+      try {
+        render(<Harness />)
+        await flushAsync()
+        expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+        FakeWebSocket.instances.at(-1)!.drop()
+        await advanceBackoff()
+        expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+        act(() => connectionApplied?.())
+        await flushAsync()
+        expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+        expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'coder-remote', profile: 'coder' })
+        expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+      } finally {
+        window.history.replaceState(null, '', originalUrl)
+      }
+    }
+  )
+
   it.each([null, 'coder-remote'])(
     'dials the saved startup route before an ambient sender can replace it (%s)',
     async connectionId => {
@@ -576,6 +683,18 @@ describe('primary failure foreground isolation', () => {
 
       const desktop = Object.assign(fakeDesktop(), {
         getRecentLogs: vi.fn(async () => ({ lines: [] })),
+        getBootstrapState: vi.fn(async (): Promise<DesktopBootstrapState> => ({
+          active: false,
+          manifest: null,
+          stages: {},
+          error: null,
+          log: [],
+          startedAt: null,
+          completedAt: null,
+          setupChoice: null,
+          unsupportedPlatform: null,
+          bundled: false
+        })),
         getConnectionConfig: vi.fn(async () => ({ mode: 'cloud', remoteAuthMode: 'oauth', remoteUrl: cloud.baseUrl })),
         getConnectionFor: vi.fn(async () => ({
           ...coderConn,
@@ -1666,11 +1785,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeNull()
 
-    // Advance past the shared backend-boot budget (45s) — the
+    // Advance past the shared backend-boot budget — the
     // stalled await must reject on its own so boot()'s catch runs instead of
     // waiting indefinitely on main.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
@@ -1704,11 +1823,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewaySwitching.get()).toBe(true)
 
-    // Advance past the shared backend-boot budget (45s) — the
+    // Advance past the shared backend-boot budget — the
     // stalled await must reject so the `finally` clears $gatewaySwitching
     // instead of latching the switch UI frozen forever.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
     })
 
     expect($gatewaySwitching.get()).toBe(false)
@@ -2537,6 +2656,97 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(20_000)
     })
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  // A restart recovery handed over from system-actions must not blind-close a
+  // socket the restart never touched: `serve` dies with the app but the
+  // messaging gateway survives it, so the common case is a HEALTHY socket.
+  // Force-closing it rejects every in-flight RPC and forces a full re-bind —
+  // the recovery would self-inflict the reconnect it exists to perform.
+  it('explicit reconnect: a healthy socket answers the probe and is left untouched', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Default FakeWebSocket.pingMode='pong': the probe answers, so the
+    // handler must return without close() and without a redial.
+    await act(async () => {
+      await expect(reconnectGateway({ source: 'restart-followthrough' })).resolves.toBeUndefined()
+    })
+
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('explicit reconnect: a mid-turn inconclusive probe defers the teardown like the wake path', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    act(() => {
+      publishSessionState('rt-restart-turn', {
+        ...createClientSessionState(null),
+        storedSessionId: 's-restart-turn',
+        busy: true
+      })
+    })
+    expect($workingSessionIds.get()).toContain('s-restart-turn')
+
+    // Busy-but-alive: the ping is swallowed, the first failure is inconclusive.
+    FakeWebSocket.pingMode = 'silent'
+
+    await act(async () => {
+      const recovery = reconnectGateway({ source: 'restart-followthrough' })
+
+      // The 5s probe budget must elapse before the deferral is decided.
+      await vi.advanceTimersByTimeAsync(5_100)
+      await expect(recovery).resolves.toBeUndefined()
+    })
+
+    // Deferred: the socket that the in-flight turn rides on is untouched.
+    expect($gatewayState.get()).toBe('open')
+    const survivingSocket = FakeWebSocket.instances[socketCountBefore - 1]
+    expect(survivingSocket.readyState).toBe(FakeWebSocket.OPEN)
+
+    clearAllSessionStates()
+
+    // The deferral is bounded: the scheduled re-probe also goes unanswered and
+    // no work is in flight anymore, so the socket is rebuilt after all.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000)
+    })
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
+
+    FakeWebSocket.pingMode = 'pong'
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('explicit reconnect: a dead idle socket is still force-closed and rebuilt', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // No turn in flight: silence has no innocent explanation.
+    FakeWebSocket.pingMode = 'silent'
+
+    await act(async () => {
+      const recovery = reconnectGateway({ source: 'restart-followthrough' })
+
+      // The probe budget elapses, the close fires, the backoff loop takes over.
+      await vi.advanceTimersByTimeAsync(5_100)
+      await expect(recovery).resolves.toBeUndefined()
+    })
+    await advanceBackoff()
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
     expect($gatewayState.get()).toBe('open')
   })
 })

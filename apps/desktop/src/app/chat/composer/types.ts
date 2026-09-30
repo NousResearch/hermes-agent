@@ -40,11 +40,15 @@ export interface ChatBarProps {
   busy: boolean
   disabled: boolean
   focusKey?: string | null
+  /** Durable scope for the current sessionless new-chat lifecycle. */
+  freshDraftKey?: string
   maxRecordingSeconds?: number
   state: ChatBarState
   gateway?: HermesGateway | null
   queueSessionKey?: string | null
   sessionId?: string | null
+  /** The tile's routed profile: scopes the slash palette while a draft has no session yet. */
+  profile?: string | null
   cwd?: string | null
   onCancel: () => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void

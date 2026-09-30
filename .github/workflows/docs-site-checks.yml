@@ -13,15 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Set up the locked site toolchain
+        uses: ./.github/actions/setup-pm
         with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-
-      - name: grab npm 12
-        run: |
-          npm i -g npm@12
+          toolchain: all
+          node-cache-dependency-path: website/package-lock.json
 
       - name: Install website dependencies
         uses: ./.github/actions/retry
@@ -29,14 +25,10 @@ jobs:
           command: npm ci
           working-directory: website
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.11"
-
       - name: Install ascii-guard
         uses: ./.github/actions/retry
         with:
-          command: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
+          command: python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

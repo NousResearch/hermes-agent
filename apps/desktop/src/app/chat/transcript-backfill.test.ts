@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { messagesIfTranscriptBehind } from '@/lib/stale-transcript-guard'
 import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
   _resetTranscriptBackfillForTests,
   backfillOlderTranscriptPage,
+  extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
   transcriptBackfillAvailable
@@ -122,6 +124,33 @@ describe('mergeOlderTranscriptPage', () => {
     expect(mergeOlderTranscriptPage(existing, older).map(m => m.rowId)).toEqual([1, 2, 3])
   })
 
+  it('keeps newer rows after an old tail when a drifting offset returns both overlap and subsequent turns', () => {
+    // A page initially ending at row 6 was cached. New turns persisted before
+    // the older-page request, so its offset now lands across rows 4–8.
+    const existing = [
+      chat('one', 1),
+      chat('two', 2),
+      chat('three', 3),
+      chat('four', 4),
+      chat('five', 5),
+      chat('six', 6)
+    ]
+
+    const fetched = [
+      chat('four-refetched', 4),
+      chat('five-refetched', 5),
+      chat('six-refetched', 6),
+      chat('seven', 7),
+      chat('eight', 8)
+    ]
+
+    const merged = mergeOlderTranscriptPage(existing, fetched)
+
+    expect(merged.map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    expect(merged.slice(0, 6)).toEqual(existing)
+    expect(mergeOlderTranscriptPage(merged, fetched)).toBe(merged)
+  })
+
   it('keeps reference identity when every older row is already present', () => {
     const existing = [chat('a', 1), chat('b', 2)]
     const older = [chat('a', 1)]
@@ -151,11 +180,123 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
   })
 
+  it('moves an older row that was glued on after the tail back to stored order', () => {
+    const previous = [chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746), chat('kcsie', 662)]
+    const refreshed = [chat('kcsie', 662), chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
+      662, 700, 701, 746
+    ])
+
+    // A page that starts mid-turn opens with a tool fold that has no stored
+    // id. It stays in front of the stored row it preceded.
+    const behindEarlier = [chat('earlier', 500), ...previous]
+    const withFold = [chat('fold-tools'), ...refreshed, chat('next', 747)]
+
+    expect(graftRefreshedTailOntoBackfill(withFold, behindEarlier).map(message => message.id)).toEqual([
+      'earlier',
+      'fold-tools',
+      'kcsie',
+      'tail-a',
+      'tail-b',
+      'tail-c',
+      'next'
+    ])
+  })
+
+  it('keeps the fresh page copy when the same stored id is on both sides', () => {
+    const previous = [chat('tail-a', 700), chat('stale-b', 701), chat('tail-c', 746)]
+    const refreshed = [chat('kcsie', 662), chat('fresh-b', 701), chat('tail-c', 746)]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshed, previous)
+
+    expect(merged.map(message => message.rowId)).toEqual([662, 700, 701, 746])
+    expect(merged.find(message => message.rowId === 701)).toBe(refreshed[1])
+  })
+
+  it('keeps the earlier transcript when a page-local fold precedes a shared durable row', () => {
+    const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
+    const refreshed = [chat('page-local-fold'), chat('reply-refetched', 3), chat('new-reply', 4)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, undefined, 3, 4])
+  })
+
+  it('does not treat a page that opens on its own orphan tool fold as behind itself (#124311)', () => {
+    const page = [chat('orphan-tools'), chat('user', 122886), chat('assistant', 122887)]
+
+    expect(graftRefreshedTailOntoBackfill(page, page)).toBe(page)
+    expect(messagesIfTranscriptBehind(page, page)).toBeNull()
+
+    const grown = [...page, chat('later', 122890)]
+
+    expect(messagesIfTranscriptBehind(page, grown)).toBe(grown)
+  })
+
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {
     const previous = [chat('a', 1)]
     const refreshed = [chat('a', 1), chat('b', 2)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+})
+
+describe('messagesIfTranscriptBehind retention tips (#123909)', () => {
+  it('treats a retention-trimmed store ending on the page tip as current', () => {
+    // Retention released the head: the store holds fewer messages than the
+    // latest page renders, but its last durable row IS the page's own tip.
+    // The count comparison refused every send on that shape.
+    const trimmed = [chat('old-a', 110), chat('old-b', 111), chat('tip-user', 118), chat('tip-reply', 119)]
+
+    const page = [
+      chat('old-a', 110),
+      chat('old-b', 111),
+      chat('mid-turn', 115),
+      chat('tip-user', 118),
+      chat('tip-reply', 119)
+    ]
+
+    expect(page.length).toBeGreaterThan(trimmed.length)
+
+    expect(messagesIfTranscriptBehind(trimmed, page)).toBeNull()
+  })
+
+  it('skips unpersisted tail rows when establishing the local tip', () => {
+    // The guard runs on a baseline that may still end on a live row past the
+    // last durable one; the durable tip decides, not the stream bubble.
+    const local = [chat('durable-reply', 119), chat('live-stream')]
+    const page = [chat('older', 118), chat('durable-reply', 119)]
+
+    expect(messagesIfTranscriptBehind(local, page)).toBeNull()
+  })
+
+  it("still refuses when a peer window's newer row changes the tip (#65047)", () => {
+    const local = [chat('a', 118), chat('b', 119)]
+    const page = [...local, chat('peer-turn', 120)]
+
+    expect(messagesIfTranscriptBehind(local, page)).toBe(page)
+  })
+
+  it('falls back to counts when neither side carries a durable row id', () => {
+    const local = [chat('a'), chat('b')]
+    const page = [chat('a'), chat('b'), chat('c')]
+
+    expect(messagesIfTranscriptBehind(local, page)).toBe(page)
+  })
+})
+
+describe('extendRefreshPageToOverlap', () => {
+  it('reads older pages until a long refresh shares a durable row with the rendered transcript', async () => {
+    const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
+    const readOlderPage = vi.fn().mockResolvedValueOnce([chat('reply-refetched', 3), chat('tool-fold', 4)])
+
+    const extended = await extendRefreshPageToOverlap(
+      [chat('new-tool', 5), chat('new-reply', 6)],
+      previous,
+      readOlderPage
+    )
+
+    expect(readOlderPage).toHaveBeenCalledTimes(1)
+    expect(graftRefreshedTailOntoBackfill(extended, previous).map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6])
   })
 })
 
@@ -199,6 +340,52 @@ describe('backfillOlderTranscriptPage', () => {
     expect(applyOlderPage.mock.calls[0][0].map((m: ChatMessage) => m.rowId)).toEqual([1, 2])
     // A short older page means the transcript is now fully loaded.
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
+  })
+
+  it('keeps the live tail in order when the fetched offset page includes subsequently persisted rows', async () => {
+    recordTranscriptTail('stored-1', {
+      messages: [row(4, 'four'), row(5, 'five'), row(6, 'six')],
+      pagination: { limit: 3, offset: 0, order: 'latest', returned: 3 }
+    })
+    // Four rows persisted since hydration. Offset 3 now selects rows 5–7,
+    // rather than a page wholly before the cached 4–6 tail.
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [row(5, 'five'), row(6, 'six'), row(7, 'seven')],
+      pagination: { limit: 3, offset: 3, order: 'latest', returned: 3 },
+      session_id: 'stored-1'
+    } as never)
+
+    let visible = [chat('four', 4), chat('five', 5), chat('six', 6)]
+
+    const applied = await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage: page => {
+        visible = mergeOlderTranscriptPage(visible, page)
+      }
+    })
+
+    expect(applied).toBe(true)
+    expect(getOlderSessionMessages).toHaveBeenCalledWith('stored-1', undefined, 3)
+    expect(visible.map(message => message.rowId)).toEqual([4, 5, 6, 7])
+    expect(transcriptTailState('stored-1')?.nextOffset).toBe(6)
+
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [row(2, 'two'), row(3, 'three'), row(4, 'four')],
+      pagination: { limit: 3, offset: 6, order: 'latest', returned: 3 },
+      session_id: 'stored-1'
+    } as never)
+
+    await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage: page => {
+        visible = mergeOlderTranscriptPage(visible, page)
+      }
+    })
+
+    expect(getOlderSessionMessages).toHaveBeenLastCalledWith('stored-1', undefined, 6)
+    expect(visible.map(message => message.rowId)).toEqual([2, 3, 4, 5, 6, 7])
   })
 
   it('backfills the matching connection when two owners share one session id', async () => {
@@ -293,6 +480,7 @@ describe('backfillOlderTranscriptPage', () => {
     truncatedTail()
     let resolvePage!: (value: unknown) => void
     vi.mocked(getOlderSessionMessages).mockReturnValue(
+      // SAFETY: this controlled promise resolves with the exact RPC response shape below.
       new Promise(resolve => {
         resolvePage = resolve
       }) as never
@@ -327,6 +515,7 @@ describe('backfillOlderTranscriptPage', () => {
     let resolvePage: (value: unknown) => void = () => {}
 
     vi.mocked(getOlderSessionMessages).mockReturnValue(
+      // SAFETY: this controlled promise resolves with the exact RPC response shape below.
       new Promise(resolve => {
         resolvePage = resolve
       }) as never

@@ -5,6 +5,7 @@ import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
+import { $voiceStopPhrases } from '@/store/voice-prefs'
 
 import type { ConversationStatus } from './use-voice-conversation'
 
@@ -234,7 +235,7 @@ export function useVoiceLiveConversation({
           const utterance = userUtteranceRef.current
           userUtteranceRef.current = ''
 
-          if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
+          if (sessionRef.current === session && isVoiceStopCommand(utterance, $voiceStopPhrases.get())) {
             void end()
             latest.current.onStopWord?.()
           }
@@ -266,7 +267,7 @@ export function useVoiceLiveConversation({
         const { context: voiceContext, prompt } = delegationPrompt(context)
 
         // A spoken stop command ends the conversation instead of becoming a turn.
-        if (prompt && isVoiceStopCommand(prompt)) {
+        if (prompt && isVoiceStopCommand(prompt, $voiceStopPhrases.get())) {
           void end()
           latest.current.onStopWord?.()
 

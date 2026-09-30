@@ -155,7 +155,7 @@ it('shows Korean delay units while preserving the schedule sent to the backend',
       target: { value: 'Summarize yesterday.' }
     }
   )
-  fireEvent.click(screen.getByRole('button', { name: 'Cron 생성' }))
+  fireEvent.click(screen.getByRole('button', { name: '예약 작업 생성' }))
 
   await waitFor(() => expect(request).toHaveBeenCalled())
   expect(request.mock.calls[0][1]).toMatchObject({ schedule: '30d', profile: 'ops' })

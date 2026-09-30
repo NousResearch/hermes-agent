@@ -119,6 +119,28 @@ async function deleteTheNamedProfile() {
 }
 
 describe('ProfilesView', () => {
+  it('searches the displayed name as well as the canonical name and model across Unicode forms', async () => {
+    const displayName = '한글 프로필'.normalize('NFD')
+    vi.mocked(refreshProfiles).mockResolvedValue([
+      { ...makeProfile('default', true), display_name: displayName, model: 'example-model' },
+      makeProfile('other')
+    ])
+
+    await renderProfilesView()
+    const search = screen.getByRole('textbox', { name: 'Search profiles...' })
+
+    for (const query of ['한글', '한글'.normalize('NFD'), 'DEFAULT', 'example-model']) {
+      fireEvent.change(search, { target: { value: query } })
+      expect(screen.getByRole('button', { expanded: false, name: displayName })).toBeTruthy()
+      expect(screen.queryByRole('button', { expanded: false, name: 'other' })).toBeNull()
+    }
+
+    fireEvent.change(search, { target: { value: '없는 프로필' } })
+    expect(screen.queryByRole('button', { expanded: false, name: displayName })).toBeNull()
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.getByRole('button', { expanded: false, name: 'other' })).toBeTruthy()
+  })
+
   it('opens the shared create dialog with the SOUL.md field (parity with the rail)', async () => {
     vi.mocked(refreshProfiles).mockResolvedValue([])
 

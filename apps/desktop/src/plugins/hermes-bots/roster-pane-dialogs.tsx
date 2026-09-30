@@ -100,20 +100,19 @@ export function renderRosterDialogs({
       />
       {grouping ? <GroupDialog bot={grouping} onClose={() => setGrouping(null)} /> : null}
       <ConfirmDialog
-        busyLabel="Deleting…"
         confirmLabel={t.common.delete}
         description={
           deleting ? (
             <span>
-              {'This will permanently delete the bot '}
+              {b.bot.deleteDescPrefix}
               <span className="font-medium text-foreground">{deleting.name}</span>
-              {' and its associated Hermes profile at '}
-              <span className="font-mono text-xs">{deleting.path}</span>. This cannot be undone.
+              {b.bot.deleteDescBetween}
+              <span className="font-mono text-xs">{deleting.path}</span>
+              {b.bot.deleteDescSuffix}
             </span>
           ) : null
         }
         destructive
-        doneLabel="Deleted"
         onClose={() => setDeleting(null)}
         onConfirm={async () => {
           if (!deleting) {
@@ -125,22 +124,16 @@ export function renderRosterDialogs({
           await refetch()
           host.notify({
             kind: 'success',
-            message: `Deleted profile ${name}`
+            message: b.bot.deleteSuccess(name)
           })
         }}
         open={Boolean(deleting)}
         title={b.bot.deleteTitle}
       />
       <ConfirmDialog
-        busyLabel="Deleting…"
         confirmLabel={b.group.deleteAction}
-        description={
-          deletingGroup
-            ? `This removes “${deletingGroup.name}” from its bots and clears the shared room log. The bots and their individual chats are kept.`
-            : null
-        }
+        description={deletingGroup ? b.group.deleteDesc(deletingGroup.name) : null}
         destructive
-        doneLabel="Deleted"
         onClose={() => setDeletingGroup(null)}
         onConfirm={async () => {
           if (!deletingGroup) {
@@ -150,7 +143,7 @@ export function renderRosterDialogs({
           await disbandGroupChat(deletingGroup.name, deletingGroup.members)
           host.notify({
             kind: 'success',
-            message: `Deleted group “${deletingGroup.name}”`
+            message: b.group.deleteSuccess(deletingGroup.name)
           })
         }}
         open={Boolean(deletingGroup)}

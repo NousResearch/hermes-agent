@@ -1,6 +1,7 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { persistBoolean, readKey, storedBoolean } from '@/lib/storage'
+import { DEFAULT_VOICE_STOP_PHRASES } from '@/lib/voice-stop-word'
 
 // Desktop read-aloud is local; voice.auto_tts belongs to the messaging gateway.
 const AUTO_SPEAK_KEY = 'hermes.desktop.autoSpeakReplies'
@@ -19,7 +20,8 @@ export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown 
 // the voice chat" notice shown when a voice conversation starts. `null` means
 // the user disabled stop phrases (`stop_phrases: []`), so no notice is shown.
 // Defaults to "stop" (the backend default) before config loads.
-export const $voiceStopPhrase = atom<string | null>('stop')
+export const $voiceStopPhrases = atom<readonly string[]>(DEFAULT_VOICE_STOP_PHRASES)
+export const $voiceStopPhrase = computed($voiceStopPhrases, phrases => phrases[0] ?? null)
 
 /** Seed the stop-phrase atom from a loaded config payload (mount / refresh). */
 export function applyVoiceStopPhraseFromConfig(
@@ -27,17 +29,21 @@ export function applyVoiceStopPhraseFromConfig(
 ) {
   const raw = config?.voice?.stop_phrases
 
-  if (raw === undefined) {
-    // Key absent — backend default applies.
-    $voiceStopPhrase.set('stop')
+  if (!Array.isArray(raw) && typeof raw !== 'string') {
+    // Missing or malformed containers use the backend default.
+    $voiceStopPhrases.set(DEFAULT_VOICE_STOP_PHRASES)
 
     return
   }
 
-  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
-  const first = list.map(entry => String(entry).trim()).find(entry => entry.length > 0)
+  const list = Array.isArray(raw) ? raw : [raw]
 
-  $voiceStopPhrase.set(first ?? null)
+  const phrases = list
+    .filter(entry => typeof entry === 'string' || typeof entry === 'number')
+    .map(entry => String(entry).trim())
+    .filter(Boolean)
+
+  $voiceStopPhrases.set(phrases)
 }
 
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a

@@ -1,3 +1,5 @@
+import { translateNow } from '@/i18n'
+
 import type { BillingStateResponse } from './types'
 import { EMPTY_BILLING_VALUE } from './use-billing-state'
 
@@ -51,20 +53,20 @@ export function validateAutoReloadInputs(
   reloadToRaw: string,
   bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
 ): { error?: string; values?: { reloadTo: string; threshold: string } } {
-  const threshold = validateBillingAmount('Threshold', thresholdRaw, bounds)
+  const threshold = validateBillingAmount(translateNow('billingRisk.amount.threshold'), thresholdRaw, bounds)
 
   if (threshold.error || threshold.amount == null) {
     return { error: threshold.error }
   }
 
-  const reloadTo = validateBillingAmount('Reload-to', reloadToRaw, bounds)
+  const reloadTo = validateBillingAmount(translateNow('billingRisk.amount.reloadTo'), reloadToRaw, bounds)
 
   if (reloadTo.error || reloadTo.amount == null) {
     return { error: reloadTo.error }
   }
 
   if (reloadTo.amount <= threshold.amount) {
-    return { error: 'Reload-to amount must be greater than the threshold.' }
+    return { error: translateNow('billingRisk.amount.reloadGreater') }
   }
 
   return {
@@ -83,25 +85,25 @@ export function validateBillingAmount(
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 
   if (!cleaned || !/^\d+(\.\d{1,2})?$/.test(cleaned)) {
-    return { error: `${label}: enter a dollar amount with at most 2 decimal places.` }
+    return { error: translateNow('billingRisk.amount.decimal', label) }
   }
 
   const amount = Number(cleaned)
 
   if (!(amount > 0)) {
-    return { error: `${label}: amount must be greater than $0.` }
+    return { error: translateNow('billingRisk.amount.positive', label) }
   }
 
   const min = parseAmount(bounds.min_usd)
 
   if (min != null && amount < min) {
-    return { error: `${label}: minimum is ${formatMoney(min)}.` }
+    return { error: translateNow('billingRisk.amount.minimum', label, formatMoney(min)) }
   }
 
   const max = parseAmount(bounds.max_usd)
 
   if (max != null && amount > max) {
-    return { error: `${label}: maximum is ${formatMoney(max)}.` }
+    return { error: translateNow('billingRisk.amount.maximum', label, formatMoney(max)) }
   }
 
   return { amount }

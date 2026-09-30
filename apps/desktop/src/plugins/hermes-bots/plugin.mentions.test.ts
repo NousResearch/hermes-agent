@@ -144,17 +144,12 @@ async function contributions({
   const plugin = (await import('./plugin')).default
   const registered: Contribution[] = []
 
-  try {
-    plugin.register({
-      i18n: { register: () => () => undefined },
-      onDispose: () => undefined,
-      register: (contribution: Contribution) => registered.push(contribution),
-      storage: { get: async () => undefined, remove: async () => undefined, set: async () => undefined }
-    } as never)
-  } catch {
-    // Registration walks UI surfaces the stub does not fully model; the
-    // contributions registered before any throw are what these tests drive.
-  }
+  plugin.register({
+    i18n: { register: () => () => undefined, t: (key: string) => key },
+    onDispose: () => undefined,
+    register: (contribution: Contribution) => registered.push(contribution),
+    storage: { get: async () => undefined, remove: async () => undefined, set: async () => undefined }
+  } as never)
 
   const completions = registered.find(entry => entry.id === 'mention-completions')
   const middleware = registered.find(entry => entry.id === 'mention-middleware')

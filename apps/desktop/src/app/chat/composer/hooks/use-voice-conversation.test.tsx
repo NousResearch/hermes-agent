@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
+import { applyVoiceStopPhraseFromConfig } from '@/store/voice-prefs'
 
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -140,9 +141,60 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     vi.clearAllMocks()
     micHandle.start.mockResolvedValue(undefined)
     micHandle.stop.mockResolvedValue(null)
+    applyVoiceStopPhraseFromConfig(null)
   })
 
   afterEach(cleanup)
+
+  it('uses refreshed stop settings for listening turns, including disabled and multilingual phrases', async () => {
+    for (const { phrases, transcript, stops } of [
+      { phrases: ['그만', '대화 종료'], transcript: '대화 종료!', stops: true },
+      { phrases: ['그만'], transcript: '그만'.normalize('NFD'), stops: true },
+      { phrases: 'halt', transcript: 'HALT!', stops: true },
+      { phrases: [], transcript: 'stop', stops: false },
+      { phrases: ['그만'], transcript: 'stop', stops: false },
+      { phrases: ['stop'], transcript: 'stop the docker container', stops: false }
+    ]) {
+      const onStopWord = vi.fn()
+      const onSubmit = vi.fn()
+
+      const hook = renderHook(() =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          onStopWord,
+          onSubmit,
+          onTranscribeAudio: async () => transcript,
+          pendingResponse: () => null
+        })
+      )
+
+      await act(() => hook.result.current.start())
+      // A loaded/refreshed config must also affect an already-open microphone.
+      applyVoiceStopPhraseFromConfig({ voice: { stop_phrases: phrases } })
+      micHandle.stop.mockResolvedValueOnce({ audio: new Blob(['voice']), durationMs: 900, heardSpeech: true })
+      await act(async () => hook.result.current.stopTurn())
+      await waitFor(() => expect(onStopWord.mock.calls.length + onSubmit.mock.calls.length).toBe(1))
+      expect(onStopWord).toHaveBeenCalledTimes(stops ? 1 : 0)
+      expect(onSubmit).toHaveBeenCalledTimes(stops ? 0 : 1)
+      await act(() => hook.result.current.end())
+      hook.unmount()
+    }
+  })
+
+  it('uses the configured stop phrase in barge captures', async () => {
+    applyVoiceStopPhraseFromConfig({ voice: { stop_phrases: ['그만'] } })
+    const { hook, onStopWord, onSubmit } = renderConversation({ transcript: '그만!' })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+    const monitor = monitorCalls.at(-1)
+    act(() => monitor?.onSpeech())
+    hook.rerender({ busy: false })
+    await act(async () => monitor?.onUtterance?.(new Blob(['voice'])))
+    await waitFor(() => expect(onStopWord).toHaveBeenCalledTimes(1))
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
 
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()

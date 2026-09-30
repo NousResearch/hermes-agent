@@ -268,6 +268,47 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
     })
   }
 
+  it('keeps native oversize failures visible without evaluating partial code, but still drops vanished files', async () => {
+    ;(window.hermesDesktop as unknown as { readPluginSource: unknown }).readPluginSource = readPluginSource
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    const evaluate = vi.spyOn(URL, 'createObjectURL')
+
+    const failures = [
+      { name: 'native-large-code', error: Object.assign(new Error('read limit exceeded'), { code: 'EFBIG' }) },
+      {
+        name: 'native-large-ipc',
+        error: new Error(
+          "Error invoking remote method 'hermes:readPluginSource': Error: " +
+            'Plugin source failed: file is too large (16777217 bytes; limit 16777216 bytes).'
+        )
+      }
+    ]
+
+    try {
+      for (const { name, error } of failures) {
+        standaloneRootWith(name)
+        readPluginSource.mockRejectedValue(error)
+        watchPreviewFile.mockResolvedValue({ id: `watch-${name}` })
+
+        await discoverRuntimePlugins()
+
+        expect($pluginRecords.get()[name]).toMatchObject({ kind: 'disk', status: 'error' })
+        expect($pluginRecords.get()[name].error).toBeTruthy()
+        expect(watchPreviewFile).toHaveBeenCalledWith(`/local/.hermes/desktop-plugins/${name}/plugin.js`)
+      }
+
+      standaloneRootWith('vanished')
+      readPluginSource.mockRejectedValue(Object.assign(new Error('file does not exist'), { code: 'ENOENT' }))
+      await discoverRuntimePlugins()
+
+      expect($pluginRecords.get().vanished).toBeUndefined()
+      expect(evaluate).not.toHaveBeenCalled()
+      expect(readFileText).not.toHaveBeenCalled()
+    } finally {
+      evaluate.mockRestore()
+    }
+  })
+
   it('loads the full source via readPluginSource when the shell offers it', async () => {
     ;(window.hermesDesktop as unknown as { readPluginSource: unknown }).readPluginSource = readPluginSource
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')

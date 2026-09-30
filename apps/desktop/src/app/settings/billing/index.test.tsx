@@ -4,6 +4,8 @@ import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider, setRuntimeI18nLocale } from '@/i18n'
+
 import { formatMoney } from './billing-amounts'
 import {
   billingDevFixtures,
@@ -48,13 +50,15 @@ vi.mock('./api', () => ({
   })
 }))
 
-function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
+function renderBilling(initialEntries: string[] = ['/settings?tab=billing'], locale: 'en' | 'ko' = 'en') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
     <MemoryRouter initialEntries={initialEntries}>
       <QueryClientProvider client={client}>
-        <BillingSettings />
+        <I18nProvider configClient={null} initialLocale={locale}>
+          <BillingSettings />
+        </I18nProvider>
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -75,6 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  setRuntimeI18nLocale('en')
   vi.clearAllMocks()
 })
 
@@ -691,4 +696,19 @@ describe('BillingSettings', () => {
     expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
     expect(screen.queryByText(/Updated/)).toBeNull()
   })
+})
+
+it('shows Korean auto-refill confirmation and leaves payment settings untouched when cancelled', async () => {
+  apiMocks.fetchBillingState.mockResolvedValue(okBilling(todayBillingState))
+  apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(todaySubscriptionState))
+  renderBilling(undefined, 'ko')
+  fireEvent.click(await screen.findByRole('button', { name: '관리' }))
+  expect(screen.getByRole('spinbutton', { name: '자동 충전 기준 잔액' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '끄기' }))
+  expect(screen.getByText('자동 충전을 끄시겠습니까?')).toBeTruthy()
+  const cancels = screen.getAllByRole('button', { name: '취소' })
+  fireEvent.click(cancels[0])
+  expect(screen.queryByText('자동 충전을 끄시겠습니까?')).toBeNull()
+  expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
+  expect(apiMocks.charge).not.toHaveBeenCalled()
 })

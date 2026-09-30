@@ -29,7 +29,7 @@ import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { $threadScrolledUp } from '@/store/thread-scroll'
-import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $voiceStopPhrases } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
@@ -150,7 +150,9 @@ export function ChatBar({
       // Outside a voice conversation, typed "stop" is a normal message.
       const voiceStop = voiceStopRef.current
 
-      if (interceptsTypedVoiceStop(voiceStop.active, value, options?.attachments?.length ?? 0)) {
+      if (
+        interceptsTypedVoiceStop(voiceStop.active, value, options?.attachments?.length ?? 0, $voiceStopPhrases.get())
+      ) {
         voiceStop.end()
 
         // Consumed (not rejected): report accepted so the submit engine

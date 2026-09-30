@@ -11,7 +11,7 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
-import { normalize } from '@/lib/text'
+import { includesQuery, normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 
@@ -86,8 +86,8 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       return profiles ?? []
     }
 
-    return profiles.filter(
-      profile => profile.name.toLowerCase().includes(q) || (profile.model ?? '').toLowerCase().includes(q)
+    return profiles.filter(profile =>
+      [profile.name, profileLabel(profile), profile.model].some(value => includesQuery(value, q))
     )
   }, [profiles, query])
 

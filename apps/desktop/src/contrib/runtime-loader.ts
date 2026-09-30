@@ -28,6 +28,7 @@
  * trust seam.
  */
 
+import { translateNow } from '@/i18n'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -337,15 +338,29 @@ async function readPluginSourceText(file: string): Promise<string> {
   const desktop = window.hermesDesktop!
 
   if (desktop.readPluginSource) {
-    return (await desktop.readPluginSource(file)).text
+    try {
+      return (await desktop.readPluginSource(file)).text
+    } catch (error) {
+      // Electron's invoke rejection can drop custom Error fields, including
+      // EFBIG. Older shells expose only the hardened read's message envelope.
+      const code = (error as { code?: string } | null)?.code
+      const message = error instanceof Error ? error.message : String(error)
+
+      if (
+        code === 'EFBIG' ||
+        /Plugin source failed: file is too large \(\d+ bytes; limit \d+ bytes\)\.?$/.test(message)
+      ) {
+        throw new PluginSourceOversizeError(translateNow('settings.plugins.sourceTooLarge'), { cause: error })
+      }
+
+      throw error
+    }
   }
 
   const result = await desktop.readFileText(file)
 
   if (result.truncated) {
-    throw new PluginSourceOversizeError(
-      "plugin.js exceeds this shell's 512 KiB read limit — update Hermes Desktop to load larger plugins"
-    )
+    throw new PluginSourceOversizeError(translateNow('settings.plugins.sourcePreviewTruncated'))
   }
 
   return result.text
@@ -392,7 +407,7 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
     // file vanishing mid-read, where false lets the caller reconcile/unload.
     if (error instanceof PluginSourceOversizeError) {
       console.error(`[plugins] ${entry.origin}: ${error.message}`)
-      notifyError(error, `Plugin "${entry.origin}" failed to load`)
+      notifyError(error, translateNow('settings.plugins.loadFailed', entry.origin))
       publishPlugin({
         id: entry.origin,
         name: entry.origin,

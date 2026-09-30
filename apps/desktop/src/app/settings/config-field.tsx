@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useId } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -43,6 +43,7 @@ export function ConfigField({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  const fieldId = useId()
 
   const label =
     fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
@@ -77,8 +78,19 @@ export function ConfigField({
   // Every config row is addressable by its canonical schema key, so a tour can
   // point at one setting (`[data-tour="field-model"]`) without hunting through
   // the section for an nth-child path. See lib/tour.
+  const accessibility = {
+    'aria-labelledby': `${fieldId}-label`,
+    'aria-describedby': descriptionNode ? `${fieldId}-description` : undefined
+  }
+
   const row = (action: ReactNode, wide = false) => (
-    <ListRow action={action} data-tour={`field-${schemaKey}`} description={descriptionNode} title={label} wide={wide} />
+    <ListRow
+      action={action}
+      data-tour={`field-${schemaKey}`}
+      description={descriptionNode ? <span id={`${fieldId}-description`}>{descriptionNode}</span> : undefined}
+      title={<span id={`${fieldId}-label`}>{label}</span>}
+      wide={wide}
+    />
   )
 
   // `fallback_providers` is a list of {provider, model} objects; the generic
@@ -91,7 +103,7 @@ export function ConfigField({
   if (schema.type === 'boolean') {
     return row(
       <div className="flex items-center justify-end">
-        <Switch checked={Boolean(value)} onCheckedChange={onChange} />
+        <Switch {...accessibility} checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )
   }
@@ -105,6 +117,7 @@ export function ConfigField({
   if (selectOptions && schema.searchable) {
     return row(
       <SearchableSelect
+        {...accessibility}
         clearLabel={schema.clearable ? c.systemDefault : undefined}
         emptyMessage={c.noResults}
         onChange={next => onChange(next)}
@@ -123,6 +136,7 @@ export function ConfigField({
   if (selectOptions && FREE_INPUT_KEYS.has(schemaKey)) {
     return row(
       <ComboboxInput
+        {...accessibility}
         className={CONTROL_TEXT}
         onChange={onChange}
         optionLabels={optionLabels}
@@ -139,7 +153,7 @@ export function ConfigField({
         onValueChange={next => onChange(next === EMPTY_SELECT_VALUE ? '' : next)}
         value={String(value ?? '') || EMPTY_SELECT_VALUE}
       >
-        <SelectTrigger className={CONTROL_TEXT}>
+        <SelectTrigger {...accessibility} className={CONTROL_TEXT}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -162,6 +176,7 @@ export function ConfigField({
   if (schema.type === 'number') {
     return row(
       <Input
+        {...accessibility}
         className={CONTROL_TEXT}
         onChange={e => {
           const raw = e.target.value
@@ -181,6 +196,7 @@ export function ConfigField({
   if (schema.type === 'list') {
     return row(
       <Input
+        {...accessibility}
         className={CONTROL_TEXT}
         onChange={e =>
           onChange(
@@ -199,6 +215,7 @@ export function ConfigField({
   if (typeof value === 'object' && value !== null) {
     return row(
       <Textarea
+        {...accessibility}
         className={cn('min-h-28 resize-y bg-background font-mono', CONTROL_TEXT)}
         onChange={e => {
           try {
@@ -220,6 +237,7 @@ export function ConfigField({
   return row(
     isLong ? (
       <Textarea
+        {...accessibility}
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
         placeholder={c.notSet}
@@ -227,6 +245,7 @@ export function ConfigField({
       />
     ) : (
       <Input
+        {...accessibility}
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
         placeholder={c.notSet}

@@ -7,6 +7,7 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useI18n } from '@/i18n'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -257,12 +258,13 @@ function BuyCreditsOutcome({
   onRetry: () => void
   outcome: ReturnType<typeof useChargeFlow>['outcome']
 }) {
+  const { t } = useI18n()
   const stepUp = useStepUpFlow()
 
   if (busy) {
     return (
       <div className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Processing… checking settlement
+        {t.billingRisk.charge.processing}
       </div>
     )
   }
@@ -274,7 +276,7 @@ function BuyCreditsOutcome({
   if (outcome.kind === 'success') {
     return (
       <div className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {formatMoney(outcome.amountUsd ?? amount)} added. Balance is refreshing.
+        {t.billingRisk.charge.balanceRefreshing(formatMoney(outcome.amountUsd ?? amount))}
       </div>
     )
   }
@@ -287,7 +289,7 @@ function BuyCreditsOutcome({
         </span>
         {outcome.portalUrl && (
           <Button onClick={() => onPortal(outcome.portalUrl)} size="sm" type="button" variant="outline">
-            Open portal
+            {t.billingRisk.verification.portal}
             <ExternalLink className="size-3.5" />
           </Button>
         )}
@@ -310,7 +312,7 @@ function BuyCreditsOutcome({
       {outcome.action?.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => onPortal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {t.billingRisk.verification.portal}
           <ExternalLink className="size-3.5" />
         </Button>
       )}

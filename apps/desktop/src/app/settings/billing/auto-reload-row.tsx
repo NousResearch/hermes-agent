@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { ListRow, Pill } from '../primitives'
@@ -24,6 +25,7 @@ export function AutoReloadRow({
   bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
   row: BillingAccountRowView
 }) {
+  useI18n()
   const api = useBillingApi()
   const queryClient = useQueryClient()
   const [confirmDisable, setConfirmDisable] = useState(false)
@@ -95,7 +97,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill updated.' })
+    setMessage({ kind: 'success', text: translateNow('billingRisk.autoReload.updated') })
     setEditing(false)
   }
 
@@ -125,7 +127,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill turned off.' })
+    setMessage({ kind: 'success', text: translateNow('billingRisk.autoReload.disabled') })
     setEditing(false)
   }
 
@@ -178,9 +180,9 @@ export function AutoReloadRow({
             <div aria-hidden={!editing} className={cn('space-y-2 [grid-area:stack]', !editing && 'invisible')}>
               <div className="grid gap-2 @2xl:grid-cols-2">
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  Threshold
+                  {translateNow('billingRisk.amount.threshold')}
                   <Input
-                    aria-label="Auto-refill threshold"
+                    aria-label={translateNow('billingRisk.autoReload.thresholdLabel')}
                     className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
@@ -195,9 +197,9 @@ export function AutoReloadRow({
                   />
                 </label>
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  Reload to
+                  {translateNow('billingRisk.autoReload.reloadTo')}
                   <Input
-                    aria-label="Auto-refill reload-to amount"
+                    aria-label={translateNow('billingRisk.autoReload.reloadToLabel')}
                     className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
@@ -218,9 +220,9 @@ export function AutoReloadRow({
               </div>
               {confirmDisable ? (
                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  <span>Turn off auto-refill?</span>
+                  <span>{translateNow('billingRisk.autoReload.disableConfirm')}</span>
                   <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
-                    Turn off
+                    {translateNow('billingRisk.autoReload.turnOff')}
                   </Button>
                   <Button
                     disabled={busy}
@@ -229,7 +231,7 @@ export function AutoReloadRow({
                     type="button"
                     variant="ghost"
                   >
-                    Cancel
+                    {translateNow('common.cancel')}
                   </Button>
                 </div>
               ) : (
@@ -241,7 +243,7 @@ export function AutoReloadRow({
                   type="button"
                   variant="outline"
                 >
-                  Disable
+                  {translateNow('billingRisk.autoReload.disable')}
                 </Button>
               )}
               {/* Refusal stays INSIDE the reserved layer so it never pushes Usage. */}
@@ -261,15 +263,15 @@ export function AutoReloadRow({
           {editing ? (
             <>
               <Button disabled={busy || !validation.values} onClick={() => void save()} size="sm" type="button">
-                {busy ? 'Saving…' : 'Save'}
+                {busy ? translateNow('common.saving') : translateNow('common.save')}
               </Button>
               <Button disabled={busy} onClick={cancelEdit} size="sm" type="button" variant="outline">
-                Cancel
+                {translateNow('common.cancel')}
               </Button>
             </>
           ) : (
             <Button onClick={openEdit} size="sm" type="button" variant="outline">
-              Manage
+              {translateNow('billingRisk.autoReload.manage')}
             </Button>
           )}
         </div>

@@ -290,6 +290,8 @@ export function useModelControls({
             confirmLabel: t.common.confirm,
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
+            summaryMessage: t.permissionModel.modelSwitch.summary,
+            title: t.permissionModel.modelSwitch.title,
             finish: finishSwitch,
             // Staleness guard — the warning can linger while the user picks
             // a different model or switches sessions. Clicking Confirm must
@@ -340,6 +342,8 @@ export function useModelControls({
       queryClient,
       requestGateway,
       t.common.confirm,
+      t.permissionModel.modelSwitch.summary,
+      t.permissionModel.modelSwitch.title,
       updateModelOptionsCache
     ]
   )

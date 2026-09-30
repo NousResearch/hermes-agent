@@ -13,6 +13,9 @@ export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c
  *  was hand-written at ~30 filter/lookup sites. */
 export const normalize = (v: unknown): string => asText(v).trim().toLowerCase()
 
+/** Canonical Unicode equivalence for search keys, not display/highlight offsets. */
+export const normalizeSearch = (v: unknown): string => normalize(v).normalize('NFC')
+
 /** Uppercase the first character, leave the rest. Matches the
  *  `s.charAt(0).toUpperCase() + s.slice(1)` idiom (empty-safe). */
 export const capitalize = (v: string): string => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v)

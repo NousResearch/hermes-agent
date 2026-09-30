@@ -329,10 +329,29 @@ function scheduleLabel(schedule: string | undefined, c: BotsText['cron'], labels
 
 /** Absolute + relative rendering of a cron timestamp, or null when the job
  *  has never carried one (a job that has not run yet has no `last_run_at`). */
-function routineTimestamp(value: string | undefined): null | string {
+function routineTimestamp(value: string | undefined, locale?: string): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
 
-  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+  return Number.isFinite(ms) ? `${relativeTime(ms, Date.now(), locale)} · ${new Date(ms).toLocaleString(locale)}` : null
+}
+
+/** Humanize only the gateway's known repeat values; future formats pass through. */
+function routineRepeat(value: RoutineJob['repeat'], c: BotsText['cron']): null | string {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  if (value === 'forever') {
+    return c.repeatForever
+  }
+
+  if (value === 'once') {
+    return c.repeatTimes(1)
+  }
+
+  const times = /^([1-9]\d*) times$/.exec(value)
+
+  return times ? c.repeatTimes(times[1]) : value
 }
 
 /** The scheduler's `last_status` literals, spelled out for the inspector. The
@@ -379,9 +398,11 @@ export function routineDetailRows(
       daily: translateNow('cron.scheduleLabels.daily'),
       hourly: translateNow('cron.scheduleLabels.hourly')
     }
-  }
+  },
+  locale?: string
 ): Array<{ label: string; value: string }> {
-  const paused = job?.enabled === false || job?.state === 'paused'
+  const completed = job?.state === 'completed'
+  const paused = completed || job?.enabled === false || job?.state === 'paused'
   const label = scheduleLabel(job?.schedule, c, core.scheduleLabels)
   const raw = String(job?.schedule || '').trim()
 
@@ -390,16 +411,16 @@ export function routineDetailRows(
   // that narrowing into the map, so the rows are typed as filtered.
   return (
     [
-      [c.detailStatus, paused ? c.detailPaused : c.detailActive],
+      [c.detailStatus, completed ? c.detailCompleted : paused ? c.detailPaused : c.detailActive],
       [c.detailSchedule, label],
       // `scheduleLabel` humanizes "every 1440m" and cron expressions; keep the
       // raw string when it says something the label dropped.
       [c.detailRawSchedule, raw && raw !== label ? raw : null],
-      [c.detailRepeat, job?.repeat],
-      [c.detailNextRun, paused ? null : routineTimestamp(job?.next_run_at)],
-      [c.detailLastRun, routineTimestamp(job?.last_run_at)],
+      [c.detailRepeat, routineRepeat(job?.repeat, c)],
+      [c.detailNextRun, paused ? null : routineTimestamp(job?.next_run_at, locale)],
+      [c.detailLastRun, routineTimestamp(job?.last_run_at, locale)],
       [c.detailLastResult, routineLastResult(job?.last_status, c)],
-      [core.deliverLabel, job?.deliver],
+      [core.deliverLabel, job?.deliver === 'local' ? c.runHistoryOnly : job?.deliver],
       [core.modelLabel, job?.model],
       [c.detailWorkdir, job?.workdir]
     ] as Array<[string, string]>
@@ -415,7 +436,7 @@ export function routineDetailRows(
  *  "paused"; the scheduler's own reason and the last fire/delivery failures
  *  had no surface in Bot Mode at all. */
 export function routineDetailIssue(job: RoutineJob | null | undefined): null | string {
-  const reasons = [job?.last_fire_error, job?.last_delivery_error, job?.paused_reason]
+  const reasons = [job?.last_fire_error, job?.last_error, job?.last_delivery_error, job?.paused_reason]
   const first = reasons.find(value => typeof value === 'string' && value.trim())
 
   return first ? first.trim() : null
@@ -432,8 +453,8 @@ interface RoutineDetailDialogProps {
  *  row's own switch and delete. */
 export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
   const b = useBots()
-  const { t } = useI18n()
-  const rows = job ? routineDetailRows(job, b.cron, t.cron) : []
+  const { locale, t } = useI18n()
+  const rows = job ? routineDetailRows(job, b.cron, t.cron, locale) : []
   const issue = job ? routineDetailIssue(job) : null
   const instruction = String(job?.prompt_preview || '').trim()
 
@@ -494,7 +515,7 @@ interface RoutineRowProps {
 
 export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   const b = useBots()
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.cron
   const profile = typeof owner === 'string' ? owner : owner?.name
   const [busy, setBusy] = useState(false)
@@ -502,7 +523,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   // toggle so the switch responds even before the refetch lands.
   const [pendingActive, setPendingActive] = useState<boolean | null>(null)
   const legacyUnsafe = isLegacyDelegatedRoutine(job)
-  const serverActive = !legacyUnsafe && job.enabled !== false && job.state !== 'paused'
+  const serverActive = !legacyUnsafe && job.enabled !== false && job.state !== 'paused' && job.state !== 'completed'
   const active = pendingActive === null ? serverActive : pendingActive
 
   if (pendingActive !== null && pendingActive === serverActive) {
@@ -591,8 +612,10 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
         </span>
         <span className="truncate text-[0.65rem] text-(--ui-text-quaternary)">
           {active && job.next_run_at
-            ? `${c.next} ${relativeTime(new Date(job.next_run_at).getTime())}`
-            : c.states.paused}
+            ? `${c.next} ${relativeTime(new Date(job.next_run_at).getTime(), Date.now(), locale)}`
+            : job.state === 'completed'
+              ? b.cron.detailCompleted
+              : c.states.paused}
         </span>
       </div>
       {legacyUnsafe ? (

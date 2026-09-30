@@ -173,6 +173,10 @@ type BotsMessages = {
     duplicate: string
     duplicateFailed: string
     deleteTitle: string
+    deleteDescPrefix: string
+    deleteDescBetween: string
+    deleteDescSuffix: string
+    deleteSuccess: (name: string) => string
     removeFromAllGroups: string
     createFirstHint: string
     createFailed: string
@@ -262,6 +266,8 @@ type BotsMessages = {
     disbandTitle: string
     deleteTitle: string
     deleteAction: string
+    deleteDesc: (name: string) => string
+    deleteSuccess: (name: string) => string
     composerPlaceholder: string
     slashCommandsUnsupported: string
     attachHint: string
@@ -336,6 +342,9 @@ type BotsMessages = {
     detailStatus: string
     detailActive: string
     detailPaused: string
+    detailCompleted: string
+    repeatForever: string
+    repeatTimes: (count: number | string) => string
     detailSchedule: string
     detailRawSchedule: string
     detailRepeat: string
@@ -552,6 +561,10 @@ const en: BotsMessages = {
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',
+    deleteDescPrefix: 'This will permanently delete the bot ',
+    deleteDescBetween: ' and its associated Hermes profile at ',
+    deleteDescSuffix: '. This cannot be undone.',
+    deleteSuccess: name => `Deleted profile ${name}`,
     removeFromAllGroups: 'Remove from all groups',
     createFirstHint: 'Open the Bots pane and hit “New Bot”.',
     createFailed: 'Could not create the profile yet',
@@ -638,6 +651,9 @@ const en: BotsMessages = {
     disbandTitle: 'Disband group chat?',
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
+    deleteDesc: name =>
+      `This removes “${name}” from its bots and clears the shared room log. The bots and their individual chats are kept.`,
+    deleteSuccess: name => `Deleted group “${name}”`,
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
     slashCommandsUnsupported:
       'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
@@ -708,6 +724,9 @@ const en: BotsMessages = {
     detailStatus: 'Status',
     detailActive: 'Active',
     detailPaused: 'Paused',
+    detailCompleted: 'Completed',
+    repeatForever: 'Forever',
+    repeatTimes: count => `${count} ${String(count) === '1' ? 'time' : 'times'}`,
     detailSchedule: 'Schedule',
     detailRawSchedule: 'Schedule (raw)',
     detailRepeat: 'Repeat',
@@ -910,6 +929,10 @@ const ko: BotsMessages = {
     duplicate: '복제',
     duplicateFailed: '복제하지 못했습니다',
     deleteTitle: '봇과 프로필을 삭제할까요?',
+    deleteDescPrefix: '봇 ',
+    deleteDescBetween: ' 및 다음 경로의 연결된 Hermes 프로필을 영구 삭제합니다: ',
+    deleteDescSuffix: '. 이 작업은 되돌릴 수 없습니다.',
+    deleteSuccess: name => `${name} 프로필 삭제됨`,
     removeFromAllGroups: '모든 그룹에서 제외',
     createFirstHint: '봇 패널에서 “새 봇”을 누르세요.',
     createFailed: '아직 프로필을 만들지 못했습니다',
@@ -997,6 +1020,9 @@ const ko: BotsMessages = {
     disbandTitle: '그룹 대화를 해체할까요?',
     deleteTitle: '그룹 대화를 삭제할까요?',
     deleteAction: '삭제',
+    deleteDesc: name =>
+      `봇에서 “${name}” 그룹을 해제하고 공유 대화 기록을 지웁니다. 봇과 각 봇의 개별 대화는 유지됩니다.`,
+    deleteSuccess: name => `“${name}” 그룹 삭제됨`,
     composerPlaceholder: '메시지를 보내세요. 이 그룹의 모든 봇에게 전달됩니다.',
     slashCommandsUnsupported: '그룹 대화에서는 슬래시 명령을 지원하지 않습니다. 개별 봇 대화에서 사용하세요.',
     attachHint: '파일 첨부 — 응답하는 모든 봇이 파일을 볼 수 있습니다',
@@ -1066,6 +1092,9 @@ const ko: BotsMessages = {
     detailStatus: '상태',
     detailActive: '활성',
     detailPaused: '일시 중지',
+    detailCompleted: '완료',
+    repeatForever: '계속 반복',
+    repeatTimes: count => `${count}회`,
     detailSchedule: '일정',
     detailRawSchedule: '일정 (원문)',
     detailRepeat: '반복',
@@ -1271,6 +1300,10 @@ const ja: BotsMessages = {
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
     deleteTitle: 'ボットとプロファイルを削除しますか？',
+    deleteDescPrefix: 'ボット ',
+    deleteDescBetween: ' と、次の場所にある対応する Hermes プロファイルを完全に削除します: ',
+    deleteDescSuffix: '。この操作は元に戻せません。',
+    deleteSuccess: name => `プロファイル ${name} を削除しました`,
     removeFromAllGroups: 'すべてのグループから外す',
     createFirstHint: 'ボットパネルを開いて「新しいボット」を押してください。',
     createFailed: 'プロファイルをまだ作成できませんでした',
@@ -1357,6 +1390,9 @@ const ja: BotsMessages = {
     disbandTitle: 'グループチャットを解散しますか？',
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
+    deleteDesc: name =>
+      `ボットから「${name}」グループを外し、共有ルームのログを消去します。ボットとそれぞれの個別チャットは保持されます。`,
+    deleteSuccess: name => `グループ「${name}」を削除しました`,
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
     slashCommandsUnsupported:
       'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
@@ -1427,6 +1463,9 @@ const ja: BotsMessages = {
     detailStatus: '状態',
     detailActive: '有効',
     detailPaused: '一時停止',
+    detailCompleted: '完了',
+    repeatForever: '無期限',
+    repeatTimes: count => `${count}回`,
     detailSchedule: 'スケジュール',
     detailRawSchedule: 'スケジュール（元の形式）',
     detailRepeat: '繰り返し',
@@ -1625,6 +1664,10 @@ const zh: BotsMessages = {
     duplicate: '复制',
     duplicateFailed: '复制失败',
     deleteTitle: '删除机器人和配置档案？',
+    deleteDescPrefix: '这将永久删除机器人 ',
+    deleteDescBetween: ' 及其关联的 Hermes 配置档案，路径为 ',
+    deleteDescSuffix: '。此操作无法撤销。',
+    deleteSuccess: name => `已删除配置档案 ${name}`,
     removeFromAllGroups: '从所有群组中移除',
     createFirstHint: '打开机器人面板，点击“新建机器人”。',
     createFailed: '暂时无法创建配置档案',
@@ -1710,6 +1753,8 @@ const zh: BotsMessages = {
     disbandTitle: '解散群聊？',
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
+    deleteDesc: name => `这会从机器人中移除“${name}”群组并清空共享聊天记录。机器人及其各自的聊天会保留。`,
+    deleteSuccess: name => `已删除群组“${name}”`,
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
     slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
@@ -1779,6 +1824,9 @@ const zh: BotsMessages = {
     detailStatus: '状态',
     detailActive: '已启用',
     detailPaused: '已暂停',
+    detailCompleted: '已完成',
+    repeatForever: '无限重复',
+    repeatTimes: count => `${count}次`,
     detailSchedule: '计划',
     detailRawSchedule: '计划（原始格式）',
     detailRepeat: '重复',
@@ -1976,6 +2024,10 @@ const zhHant: BotsMessages = {
     duplicate: '複製',
     duplicateFailed: '複製失敗',
     deleteTitle: '刪除機器人和設定檔？',
+    deleteDescPrefix: '這將永久刪除機器人 ',
+    deleteDescBetween: ' 及其關聯的 Hermes 設定檔，路徑為 ',
+    deleteDescSuffix: '。此操作無法復原。',
+    deleteSuccess: name => `已刪除設定檔 ${name}`,
     removeFromAllGroups: '從所有群組中移除',
     createFirstHint: '開啟機器人面板，點「新增機器人」。',
     createFailed: '暫時無法建立設定檔',
@@ -2061,6 +2113,8 @@ const zhHant: BotsMessages = {
     disbandTitle: '解散群組聊天？',
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
+    deleteDesc: name => `這會從機器人中移除「${name}」群組並清空共用聊天記錄。機器人及其各自的聊天會保留。`,
+    deleteSuccess: name => `已刪除群組「${name}」`,
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
     slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
@@ -2130,6 +2184,9 @@ const zhHant: BotsMessages = {
     detailStatus: '狀態',
     detailActive: '已啟用',
     detailPaused: '已暫停',
+    detailCompleted: '已完成',
+    repeatForever: '無限重複',
+    repeatTimes: count => `${count}次`,
     detailSchedule: '排程',
     detailRawSchedule: '排程（原始格式）',
     detailRepeat: '重複',

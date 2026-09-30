@@ -52,6 +52,27 @@ describe('managedUpdatesSupported', () => {
 })
 
 describe('runManagedUpdate', () => {
+  it('preserves the failure reason when the native summary and receipt also carry messages', async () => {
+    const reason = 'git checkout refused: local changes would be overwritten'
+    updateManaged.mockResolvedValue(
+      managedResult({
+        ok: false,
+        outcome: 'update-failed',
+        updateOk: false,
+        message: 'The update failed; all profiles were restored.',
+        error: reason,
+        receipt: { correlationId: 'run-failed', outcome: 'failed', stopReason: reason }
+      })
+    )
+
+    const state = await runManagedUpdate('linux-ssh')
+
+    expect(state.status).toBe('failed')
+    expect(state.message).toBe('The update failed; all profiles were restored.')
+    expect(state.details).toEqual([reason])
+    expect(state.scopes).toEqual([{ profile: 'default', restored: true }])
+  })
+
   it('routes through the managed drain/update/restore bridge and lands on updated with the receipt', async () => {
     const pending = runManagedUpdate('linux-ssh')
 

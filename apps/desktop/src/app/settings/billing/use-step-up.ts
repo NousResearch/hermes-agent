@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { translateNow } from '@/i18n'
 import { $gateway } from '@/store/gateway'
 
 import { useBillingApi } from './api'
@@ -116,8 +117,8 @@ export function useStepUpFlow() {
     if (!result.data.granted) {
       setMessage({
         kind: 'error',
-        text: 'Verification finished without allowing Remote Spending for this terminal.',
-        title: 'Verification was not approved'
+        text: translateNow('billingRisk.verification.deniedMessage'),
+        title: translateNow('billingRisk.verification.deniedTitle')
       })
 
       return
@@ -129,8 +130,8 @@ export function useStepUpFlow() {
     ])
     setMessage({
       kind: 'success',
-      text: 'Remote Spending is allowed for this terminal.',
-      title: 'Verification complete'
+      text: translateNow('billingRisk.verification.grantedMessage'),
+      title: translateNow('billingRisk.verification.grantedTitle')
     })
   }, [api, gateway, queryClient, unsubscribe])
 

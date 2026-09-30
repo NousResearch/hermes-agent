@@ -3,6 +3,8 @@ import { act, renderHook } from '@testing-library/react'
 import { createElement, type PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
+
 import type { BillingResult } from './api'
 import type { BillingChargeStatusResponse } from './types'
 
@@ -67,6 +69,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setRuntimeI18nLocale('en')
   vi.clearAllMocks()
 })
 
@@ -229,4 +232,27 @@ describe('useChargeFlow', () => {
     expect(apiMocks.charge).toHaveBeenNthCalledWith(1, '25', undefined)
     expect(apiMocks.charge).toHaveBeenNthCalledWith(2, '25', 'key-1')
   })
+})
+
+it('keeps Korean settlement timeouts ambiguous and reports settled USD amounts unchanged', async () => {
+  setRuntimeI18nLocale('ko')
+
+  const pending = await pollChargeSettlement(
+    { chargeStatus: vi.fn().mockResolvedValue(status()) },
+    'local-fixture',
+    controlledClock()
+  )
+
+  expect(pending).toMatchObject({ kind: 'ambiguous' })
+  expect(pending.message).toContain('다시 시도')
+
+  const settled = await pollChargeSettlement(
+    { chargeStatus: vi.fn().mockResolvedValue(status({ status: 'settled', amount_usd: '12.50' })) },
+    'local-fixture',
+    controlledClock()
+  )
+
+  expect(settled).toMatchObject({ kind: 'success', amountUsd: '12.50' })
+  expect(settled.message).toContain('$12.50')
+  expect(settled.message).toContain('충전')
 })

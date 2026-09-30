@@ -1,8 +1,13 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
+import { billingRiskEn as billingRiskCopy } from './billing-risk-copy'
+import { en as permissionModelCopy } from './permission-model-copy'
+import { settingsRiskCopyEn } from './settings-risk-copy'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy,
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',
@@ -485,6 +490,10 @@ export const en: Translations = {
       vault: 'Passwords & Logins'
     },
     plugins: {
+      sourceTooLarge: 'The plugin file exceeds this app’s read limit. Reduce its size before reloading it.',
+      sourcePreviewTruncated:
+        'This older app can only read the first 512 KiB of plugin.js. Update Hermes Desktop to load this plugin.',
+      loadFailed: name => `Plugin “${name}” failed to load`,
       title: 'Desktop plugins',
       blurb:
         'Extend this app, not an agent — installed once for the whole app, whichever profile, gateway, or machine you connect to. Bundled or dropped into the desktop-plugins folder; toggles apply live.',
@@ -854,6 +863,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: {
+      ...settingsRiskCopyEn.uninstallSection,
       dangerZone: 'Danger zone',
       confirmUninstall: 'Confirm uninstall',
       uninstallHermes: 'Uninstall Hermes'
@@ -865,6 +875,7 @@ export const en: Translations = {
       backendIdleTimeoutTitle: 'Backend Idle Timeout'
     },
     customEndpoints: {
+      ...settingsRiskCopyEn.customEndpoints,
       title: 'Custom Endpoints',
       deleteEndpoint: 'Delete endpoint',
       emptyDescription: 'Add an OpenAI-compatible endpoint below.',
@@ -1037,6 +1048,13 @@ export const en: Translations = {
       empty: 'No connections registered yet.'
     },
     managedUpdates: {
+      receiptOutcomes: {
+        success: 'Succeeded',
+        failed: 'Failed',
+        partial: 'Partially completed',
+        running: 'In progress',
+        refused: 'Refused'
+      },
       title: 'Managed updates',
       intro:
         'Update Desktop-managed SSH installs transactionally: sessions drain, the remote checkout updates, and every profile is restored with a correlated receipt.',

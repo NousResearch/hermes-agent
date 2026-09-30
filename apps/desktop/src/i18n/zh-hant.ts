@@ -1,8 +1,13 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { billingRiskZhHant as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
+import { zhHant as permissionModelCopy } from './permission-model-copy'
+import { settingsRiskCopyZhHant } from './settings-risk-copy'
 
 export const zhHant = defineLocale({
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy,
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -294,10 +299,22 @@ export const zhHant = defineLocale({
 
   settings: {
     plugins: {
+      sourceTooLarge: '外掛檔案超過此應用程式的讀取大小限制。請縮小檔案後重新載入。',
+      sourcePreviewTruncated: '此舊版應用程式只能讀取 plugin.js 的前 512 KiB。請更新 Hermes Desktop 以載入此外掛。',
+      loadFailed: name => `無法載入外掛「${name}」`,
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
+    managedUpdates: {
+      receiptOutcomes: {
+        success: '成功',
+        failed: '失敗',
+        partial: '部分完成',
+        running: '執行中',
+        refused: '已拒絕'
       }
     },
     closeSettings: '關閉設定',
@@ -878,6 +895,7 @@ export const zhHant = defineLocale({
       }
     }),
     uninstallSection: {
+      ...settingsRiskCopyZhHant.uninstallSection,
       dangerZone: '危險操作',
       confirmUninstall: '確認解除安裝',
       uninstallHermes: '解除安裝 Hermes'
@@ -889,6 +907,7 @@ export const zhHant = defineLocale({
       backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
     },
     customEndpoints: {
+      ...settingsRiskCopyZhHant.customEndpoints,
       title: '自訂端點',
       deleteEndpoint: '刪除端點',
       emptyDescription: '在下方新增 OpenAI 相容端點。',

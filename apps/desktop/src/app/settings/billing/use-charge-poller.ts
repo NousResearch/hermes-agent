@@ -7,6 +7,8 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useRef, useState } from 'react'
 
+import { translateNow } from '@/i18n'
+
 import type { BillingApi, BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
@@ -96,7 +98,9 @@ export async function pollChargeSettlement(
       return {
         amountUsd: settlement.status.amount_usd,
         kind: 'success',
-        message: settlement.status.amount_usd ? `$${settlement.status.amount_usd} added.` : 'Credits added.'
+        message: settlement.status.amount_usd
+          ? translateNow('billingRisk.charge.added', settlement.status.amount_usd)
+          : translateNow('billingRisk.charge.creditsAdded')
       }
 
     case 'failed':
@@ -105,7 +109,7 @@ export async function pollChargeSettlement(
         kind: 'failure',
         message: renderChargeFailed(settlement.status.reason),
         retryFreshKey: true,
-        title: 'Charge failed'
+        title: translateNow('billingRisk.charge.failedTitle')
       }
     case 'ambiguous': {
       if (settlement.status && refusalPolicy(settlement.error).ambiguousMidPoll) {
@@ -115,26 +119,27 @@ export async function pollChargeSettlement(
 
         return {
           kind: 'ambiguous',
-          message: `${resolved.message} Your last charge's outcome is unconfirmed - check your balance/history before retrying.`,
+          message: translateNow('billingRisk.charge.unconfirmedMessage', resolved.message),
           portalUrl: portalUrl ?? opts.portalUrl ?? undefined,
-          title: 'Charge outcome unconfirmed'
+          title: translateNow('billingRisk.charge.unconfirmedTitle')
         }
       }
 
       return {
         kind: 'failure',
-        message: observed.refusal?.message || 'Could not check the charge.',
+        message: observed.refusal?.message || translateNow('billingRisk.charge.checkMessage'),
         retryFreshKey: true,
-        title: 'Could not check charge'
+        title: translateNow('billingRisk.charge.checkTitle')
       }
     }
 
     case 'refused':
       return {
         kind: 'failure',
-        message: observed.refusal?.message || settlement.status.message || 'Could not check the charge.',
+        message:
+          observed.refusal?.message || settlement.status.message || translateNow('billingRisk.charge.checkMessage'),
         retryFreshKey: true,
-        title: 'Could not check charge'
+        title: translateNow('billingRisk.charge.checkTitle')
       }
 
     case 'cancelled':
@@ -239,9 +244,9 @@ export function useChargeFlow() {
       if (!chargeId) {
         setOutcome({
           kind: 'failure',
-          message: 'The billing service accepted the request but did not return a charge id.',
+          message: translateNow('billingRisk.charge.missingIdMessage'),
           retryFreshKey: true,
-          title: 'Charge could not be tracked'
+          title: translateNow('billingRisk.charge.missingIdTitle')
         })
         setPhaseState('done')
 
@@ -274,24 +279,24 @@ function shouldReuseIdempotencyKey(refusal: BillingRefusal): boolean {
 function timeoutOutcome(portalUrl?: null | string): ChargeFlowOutcome {
   return {
     kind: 'ambiguous',
-    message: 'Charge may still settle. Check the portal before retrying.',
+    message: translateNow('billingRisk.charge.timeoutMessage'),
     portalUrl: portalUrl ?? undefined,
-    title: 'Still processing after 5 minutes'
+    title: translateNow('billingRisk.charge.timeoutTitle')
   }
 }
 
 function renderChargeFailed(reason?: null | string): string {
   switch ((reason || '').trim()) {
     case 'authentication_required':
-      return 'Your bank requires verification (3DS). Complete it on the portal to finish this purchase.'
+      return translateNow('billingRisk.charge.authentication')
 
     case 'payment_method_expired':
-      return 'Your card has expired. Update it on the portal.'
+      return translateNow('billingRisk.charge.expired')
 
     case 'card_declined':
-      return 'Your card was declined. Try another card on the portal.'
+      return translateNow('billingRisk.charge.declined')
 
     default:
-      return `The charge didn't go through (${reason || 'processing_error'}).`
+      return translateNow('billingRisk.charge.failedReason', reason || 'processing_error')
   }
 }

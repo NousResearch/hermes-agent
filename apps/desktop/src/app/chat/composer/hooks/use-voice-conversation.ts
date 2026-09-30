@@ -13,6 +13,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $voiceStopPhrases } from '@/store/voice-prefs'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -171,11 +172,11 @@ export function useVoiceConversation({
             return
           }
 
-          // A spoken "stop" (or "never mind", "goodbye", …) ends the
+          // A configured stop phrase ends the
           // conversation instead of being submitted as a turn. Only whole-
           // utterance stop commands match, so "stop the container" still goes
           // through as a real request.
-          if (isVoiceStopCommand(transcript)) {
+          if (isVoiceStopCommand(transcript, $voiceStopPhrases.get())) {
             dropSpeechSession()
             setStatus('idle')
             onStopWordRef.current?.()
@@ -335,7 +336,7 @@ export function useVoiceConversation({
         // A spoken stop command while barging means "stop everything" — the
         // turn/playback was already cut at trip time; now end the conversation
         // instead of submitting "stop" as a new prompt.
-        if (isVoiceStopCommand(transcript)) {
+        if (isVoiceStopCommand(transcript, $voiceStopPhrases.get())) {
           dropSpeechSession()
           setStatus('idle')
           onStopWordRef.current?.()

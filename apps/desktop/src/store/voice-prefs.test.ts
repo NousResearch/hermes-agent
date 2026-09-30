@@ -7,7 +7,7 @@ vi.mock('@/hermes', () => ({
 
 import { saveHermesConfig } from '@/hermes'
 
-import { $voiceStopPhrase, applyVoiceStopPhraseFromConfig } from './voice-prefs'
+import { $voiceStopPhrase, $voiceStopPhrases, applyVoiceStopPhraseFromConfig } from './voice-prefs'
 
 it('keeps the desktop toggle local across config refreshes', async () => {
   for (const fails of [false, true]) {
@@ -15,7 +15,7 @@ it('keeps the desktop toggle local across config refreshes', async () => {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
+      const write = vi.spyOn(Storage.prototype, 'setItem')
 
       if (fails) {
         write.mockImplementation(() => {
@@ -44,7 +44,7 @@ it('migrates the legacy preference once, not on every refresh', async () => {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
+      const write = vi.spyOn(Storage.prototype, 'setItem')
 
       if (fails) {
         write.mockImplementation(() => {
@@ -67,6 +67,24 @@ it('migrates the legacy preference once, not on every refresh', async () => {
 })
 
 describe('applyVoiceStopPhraseFromConfig', () => {
+  it('keeps the hint and the complete matcher list on the same parsed configuration', () => {
+    for (const [raw, expected] of [
+      [undefined, ['stop']],
+      [null, ['stop']],
+      [{ phrase: 'halt' }, ['stop']],
+      [' halt ', ['halt']],
+      [
+        ['  ', {}, null, ' 그만 ', '대화 종료', 123],
+        ['그만', '대화 종료', '123']
+      ],
+      [[], []]
+    ] as const) {
+      applyVoiceStopPhraseFromConfig({ voice: { stop_phrases: raw } })
+      expect($voiceStopPhrases.get()).toEqual(expected)
+      expect($voiceStopPhrase.get()).toBe(expected[0] ?? null)
+    }
+  })
+
   it('defaults to "stop" when the key is absent (backend default applies)', () => {
     applyVoiceStopPhraseFromConfig({ voice: {} })
     expect($voiceStopPhrase.get()).toBe('stop')

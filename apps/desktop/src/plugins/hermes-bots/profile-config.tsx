@@ -16,7 +16,8 @@ import {
   Input,
   queryClient,
   surfaceModelSwitchConfirm,
-  Textarea
+  Textarea,
+  translateNow
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
@@ -616,9 +617,11 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
   if (result?.confirm_required && payload.model && payload.provider) {
     delete merged.model
     surfaceModelSwitchConfirm({
-      confirmLabel: 'Confirm',
+      confirmLabel: translateNow('common.confirm'),
       confirmMessage: result.confirm_message,
-      failureMessage: 'Model switch failed',
+      failureMessage: translateNow('desktop.modelSwitchFailed'),
+      summaryMessage: translateNow('permissionModel.modelSwitch.summary'),
+      title: translateNow('permissionModel.modelSwitch.title'),
       finish: () =>
         queryClient.invalidateQueries({
           queryKey: ROSTER_KEY

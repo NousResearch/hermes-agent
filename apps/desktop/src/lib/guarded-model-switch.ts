@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n/runtime'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 
 /** The gateway's model-switch handshake shape — shared by `config.set model`
@@ -19,6 +20,8 @@ export interface SurfaceModelSwitchConfirmOptions<T extends GuardedModelSwitchRe
   failureMessage: string
   /** Message when the gateway sent no `confirm_message`. */
   fallbackMessage?: string
+  /** Localized guidance shown alongside, never instead of, the gateway warning. */
+  summaryMessage?: string
   /** Runs after the confirmed resend succeeds (cache invalidation etc.). */
   finish?: (result: T | undefined) => void
   /** Staleness guard — the warning can linger while the user picks a
@@ -76,13 +79,16 @@ export function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResult>(
     }
   }
 
+  const summary = options.summaryMessage || translateNow('permissionModel.modelSwitch.summary')
+  const warning = options.confirmMessage?.trim() ? options.confirmMessage : options.fallbackMessage
+
   const notificationId = notify({
     action: {
       label: options.confirmLabel,
       onClick: applyConfirmedSwitch
     },
     kind: 'warning',
-    message: options.confirmMessage?.trim() || options.fallbackMessage || 'Confirm this model switch?',
+    message: [summary, warning].filter(Boolean).join('\n\n'),
     title: options.title ?? options.confirmLabel
   })
 

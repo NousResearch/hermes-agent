@@ -194,6 +194,59 @@ describe('the row is reachable', () => {
 })
 
 describe('the inspector', () => {
+  it('distinguishes completed jobs and exposes execution failures without changing backend values', () => {
+    const completed = { ...activeJob, enabled: false, state: 'completed', last_error: 'agent execution failed' }
+    expect(valueOf(routineDetailRows(completed), 'Status')).toBe('Completed')
+    expect(valueOf(routineDetailRows(completed), 'Next run')).toBeUndefined()
+    expect(routineDetailIssue(completed)).toBe('agent execution failed')
+    expect(routineDetailIssue({ ...completed, last_delivery_error: 'delivery failed' })).toBe('agent execution failed')
+    expect(routineDetailIssue({ ...completed, last_fire_error: 'dispatch failed' })).toBe('dispatch failed')
+
+    render(<RoutineRow job={completed} onOpen={() => undefined} owner={{ name: 'notetaker' }} />)
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.queryByText('paused')).toBeNull()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('switches known display values and both timestamp parts with UI language, preserving raw identifiers', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-08-23T09:05:00Z').getTime())
+    const job = Object.freeze({ ...activeJob, deliver: 'local', repeat: '3 times', model: 'vendor/model:1' })
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SwitchLanguage />
+        <RoutineDetailDialog job={job} onClose={() => undefined} open />
+      </I18nProvider>
+    )
+
+    const timestamp = (locale: string) =>
+      `${new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' }).format(-5, 'minute')} · ${new Date(job.last_run_at!).toLocaleString(locale)}`
+
+    expect(screen.getByText(timestamp('en'))).toBeTruthy()
+    fireEvent.click(screen.getByText('Switch language'))
+    expect(screen.getByText(timestamp('ko'))).toBeTruthy()
+    expect(screen.queryByText(timestamp('en'))).toBeNull()
+    expect(screen.getByText('3회')).toBeTruthy()
+    expect(screen.getByText('실행 기록에만 저장')).toBeTruthy()
+    expect(screen.getByText('vendor/model:1')).toBeTruthy()
+    expect(screen.getByText(job.prompt_preview!)).toBeTruthy()
+
+    for (const [repeat, expected] of [
+      ['forever', '계속 반복'],
+      ['once', '1회'],
+      ['1/3', '1/3'],
+      ['unknown-repeat', 'unknown-repeat']
+    ]) {
+      const rows = routineDetailRows({ ...job, repeat, deliver: 'unknown-target' })
+      expect(rows.some(row => row.value === expected)).toBe(true)
+      expect(rows.some(row => row.value === 'unknown-target')).toBe(true)
+    }
+
+    expect(job.repeat).toBe('3 times')
+    expect(job.deliver).toBe('local')
+    expect(request).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
   it('translates its facts while preserving the backend payload and delivery failure meaning', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">

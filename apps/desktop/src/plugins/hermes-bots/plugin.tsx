@@ -61,6 +61,8 @@ import { BOTS_LOCALES, useBots } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
+import { RosterDialogHost } from './roster-dialog-host'
+import { resetRosterDialogs } from './roster-dialog-state'
 import {
   botChatOwnsWorkspace,
   BotsPane,
@@ -371,6 +373,14 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
+
+    // Dialog drafts belong to the window, not the sidebar instance that can
+    // unmount on zoom/resize. Keep inline rendering on older desktop hosts.
+    if (host.dialogArea) {
+      ctx.register({ id: 'dialogs', area: host.dialogArea, render: () => <RosterDialogHost /> })
+    }
+
+    ctx.onDispose(resetRosterDialogs)
     ctx.register({
       id: 'pane',
       area: 'panes',

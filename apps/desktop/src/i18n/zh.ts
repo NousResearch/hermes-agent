@@ -1,8 +1,13 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { billingRiskZh as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
+import { zh as permissionModelCopy } from './permission-model-copy'
+import { settingsRiskCopyZh } from './settings-risk-copy'
 
 export const zh = defineLocale({
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy,
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -537,6 +542,9 @@ export const zh = defineLocale({
       }
     },
     plugins: {
+      sourceTooLarge: '插件文件超出此应用的读取大小限制。请缩小文件后重新加载。',
+      sourcePreviewTruncated: '此旧版本应用只能读取 plugin.js 的前 512 KiB。请更新 Hermes Desktop 以加载此插件。',
+      loadFailed: name => `无法加载插件“${name}”`,
       title: '桌面插件',
       blurb:
         '加载到此应用中的界面扩展——随构建捆绑，或放入 desktop-plugins 文件夹（包括 Hermes 编写的插件）。禁用会即时卸载插件并在重启后保持。',
@@ -1083,6 +1091,7 @@ export const zh = defineLocale({
       }
     }),
     uninstallSection: {
+      ...settingsRiskCopyZh.uninstallSection,
       dangerZone: '危险操作',
       confirmUninstall: '确认卸载',
       uninstallHermes: '卸载 Hermes'
@@ -1094,6 +1103,7 @@ export const zh = defineLocale({
       backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
     },
     customEndpoints: {
+      ...settingsRiskCopyZh.customEndpoints,
       title: '自定义端点',
       deleteEndpoint: '删除端点',
       emptyDescription: '在下方添加兼容 OpenAI 的端点。',
@@ -1261,6 +1271,13 @@ export const zh = defineLocale({
       empty: '尚未注册任何连接。'
     },
     managedUpdates: {
+      receiptOutcomes: {
+        success: '成功',
+        failed: '失败',
+        partial: '部分完成',
+        running: '进行中',
+        refused: '已拒绝'
+      },
       title: '托管更新',
       intro:
         '以事务方式更新由桌面端托管的 SSH 安装：先排空会话，再更新远端检出，最后恢复每个 profile，并生成关联回执。',

@@ -1,8 +1,13 @@
 // Korean: original translations by @dalgme (PR #40716).
 // Additional catalog coverage by Dante (@dandacompany); integrated without replacing original copy.
+import { billingRiskKo as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
+import { ko as permissionModelCopy } from './permission-model-copy'
+import { settingsRiskCopyKo } from './settings-risk-copy'
 
 export const ko = defineLocale({
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy,
   sessionImport: {
     title: '다른 앱에서 하던 대화 이어가기',
     subtitle: '대화를 Hermes로 가져와 이어서 진행하세요.',
@@ -99,7 +104,7 @@ export const ko = defineLocale({
     ready: 'Hermes Desktop 준비 완료',
     desktopBootFailedWithMessage: message => `데스크톱 시작 실패: ${message}`,
     steps: {
-      connectingGateway: '라이브 데스크톱 Gateway 연결 중',
+      connectingGateway: '라이브 데스크톱 게이트웨이 연결 중',
       loadingSettings: 'Hermes 설정 불러오는 중',
       loadingSessions: '최근 세션 불러오는 중',
       retryingRemoteBackend: '원격 Hermes 백엔드에 다시 연결하는 중…',
@@ -114,19 +119,19 @@ export const ko = defineLocale({
       gatewayConnectionLost: '게이트웨이 연결이 끊겼습니다',
       gatewayConnectionLostDetail:
         '백그라운드에서 계속 연결을 시도하고 있습니다. 대화를 읽거나 초안을 작성할 수 있습니다. 문제가 지속되면 게이트웨이 설정을 확인하세요.',
-      gatewaySignInRequired: 'Gateway 로그인이 필요합니다',
+      gatewaySignInRequired: '게이트웨이 로그인이 필요합니다',
       ipcBridgeUnavailable: '데스크톱 IPC 브리지를 사용할 수 없습니다.'
     },
     failure: {
       title: 'Hermes를 시작할 수 없습니다',
       description:
-        '백그라운드 Gateway가 시작되지 않았습니다. 아래 복구 단계 중 하나를 시도하세요. 채팅이나 설정은 삭제되지 않습니다.',
-      remoteTitle: '원격 Gateway 로그인이 필요합니다',
+        '백그라운드 게이트웨이가 시작되지 않았습니다. 아래 복구 단계 중 하나를 시도하세요. 채팅이나 설정은 삭제되지 않습니다.',
+      remoteTitle: '원격 게이트웨이 로그인이 필요합니다',
       remoteDescription:
-        '원격 Gateway 세션이 만료되었습니다. 다시 로그인하여 재연결하세요. 채팅이나 설정은 삭제되지 않습니다.',
+        '원격 게이트웨이 세션이 만료되었습니다. 다시 로그인하여 재연결하세요. 채팅이나 설정은 삭제되지 않습니다.',
       retry: '재시도',
       repairInstall: '설치 복구',
-      useLocalGateway: '로컬 Gateway 사용',
+      useLocalGateway: '로컬 게이트웨이 사용',
       gatewaySettings: '게이트웨이 설정',
       back: '뒤로',
       openLogs: '로그 열기',
@@ -145,11 +150,11 @@ export const ko = defineLocale({
       hideRecentLogs: '최근 로그 숨기기',
       showRecentLogs: '최근 로그 보기',
       signedInTitle: '로그인됨',
-      signedInMessage: '원격 Gateway에 재연결 중…',
+      signedInMessage: '원격 게이트웨이에 재연결 중…',
       signInIncompleteTitle: '로그인 미완료',
       signInIncompleteMessage: '인증이 완료되기 전에 로그인 창이 닫혔습니다.',
       signInFailed: '로그인 실패',
-      signInToRemoteGateway: '원격 Gateway에 로그인',
+      signInToRemoteGateway: '원격 게이트웨이에 로그인',
       signInWithProvider: provider => `${provider}(으)로 로그인`,
       identityProvider: 'ID 제공자'
     }
@@ -326,10 +331,10 @@ export const ko = defineLocale({
       'session.prev': '이전 세션',
       'session.slot.1': '최근 세션 1로 전환',
       'session.slot.2': '최근 세션 2로 전환',
-      'session.slot.3': '최근 세션 3로 전환',
+      'session.slot.3': '최근 세션 3으로 전환',
       'session.slot.4': '최근 세션 4로 전환',
       'session.slot.5': '최근 세션 5로 전환',
-      'session.slot.6': '최근 세션 6로 전환',
+      'session.slot.6': '최근 세션 6으로 전환',
       'session.slot.7': '최근 세션 7로 전환',
       'session.slot.8': '최근 세션 8로 전환',
       'session.slot.9': '최근 세션 9로 전환',
@@ -397,7 +402,7 @@ export const ko = defineLocale({
       'composer.slash': '슬래시 명령 팔레트',
       'composer.help': '빠른 도움말',
       'composer.history': '팝오버/기록 순환',
-      'composer.cancel': '팝오버 닫기 · 실행 취소'
+      'composer.cancel': '팝오버 닫기 · 실행 중단'
     }
   },
   findInPage: {
@@ -427,7 +432,7 @@ export const ko = defineLocale({
       providerApiKeys: 'API 키',
       providerCustomEndpoints: '사용자 지정 엔드포인트',
       providerLocalModels: '로컬 모델',
-      gateway: 'Gateway',
+      gateway: '게이트웨이',
       apiKeys: '도구와 키',
       keybinds: '키보드 단축키',
       keysTools: '도구',
@@ -440,6 +445,10 @@ export const ko = defineLocale({
       vault: '비밀번호 및 로그인'
     },
     plugins: {
+      sourceTooLarge: '플러그인 파일이 이 앱의 읽기 용량 제한을 초과했습니다. 파일 크기를 줄인 뒤 다시 불러오세요.',
+      sourcePreviewTruncated:
+        '이 구버전 앱은 plugin.js의 처음 512 KiB만 읽을 수 있습니다. 이 플러그인을 불러오려면 Hermes Desktop을 업데이트하세요.',
+      loadFailed: name => `플러그인 “${name}”을(를) 불러오지 못했습니다`,
       title: '데스크톱 플러그인',
       blurb:
         '앱을 확장하는 플러그인입니다. 앱 전체에 한 번 설치되며 연결한 프로필, 게이트웨이, 컴퓨터와 관계없이 적용됩니다. 앱에 포함되거나 desktop-plugins 폴더에 추가되며, 켜기·끄기는 즉시 적용됩니다.',
@@ -569,7 +578,7 @@ export const ko = defineLocale({
     searchPlaceholder: {
       about: 'Hermes Desktop 정보',
       config: '설정 검색...',
-      gateway: 'Gateway 연결...',
+      gateway: '게이트웨이 연결...',
       keys: 'API 키 검색...',
       mcp: 'MCP 서버 검색...',
       sessions: '보관된 세션 검색...'
@@ -841,7 +850,7 @@ export const ko = defineLocale({
       'delegation.maxIterations': '서브에이전트 턴 한도',
       'delegation.maxConcurrentChildren': '병렬 서브에이전트',
       'delegation.childTimeoutSeconds': '서브에이전트 시간 초과',
-      'delegation.reasoningEffort': '서브에이전트 추론 노력',
+      'delegation.reasoningEffort': '서브에이전트 추론 강도',
       'updates.nonInteractiveLocalChanges': '앱 내 업데이트 시 로컬 변경 처리',
       'voice.voiceChatMode': '음성 대화 모드',
       'voice.gptLive.voice': 'GPT-Live 음성',
@@ -1066,6 +1075,7 @@ export const ko = defineLocale({
       empty: '아직 등록된 연결이 없습니다.'
     },
     managedUpdates: {
+      receiptOutcomes: { success: '성공', failed: '실패', partial: '일부 완료', running: '진행 중', refused: '거부됨' },
       title: '관리형 업데이트',
       intro:
         '데스크톱이 관리하는 SSH 설치 환경을 일관된 절차로 업데이트합니다. 세션 종료를 기다린 뒤 원격 체크아웃을 업데이트하고, 각 프로필을 복원하며 결과 기록을 남깁니다.',
@@ -1084,10 +1094,10 @@ export const ko = defineLocale({
       scopeNotRestored: (profile: string, error: string) => `“${profile}” 프로필 복원 실패: ${error}`
     },
     gateway: {
-      loading: 'Gateway 설정 불러오는 중...',
-      unavailableTitle: 'Gateway 설정 사용 불가',
-      unavailableDesc: '데스크톱 IPC 브리지가 Gateway 설정을 노출하지 않습니다.',
-      title: 'Gateway 연결',
+      loading: '게이트웨이 설정 불러오는 중...',
+      unavailableTitle: '게이트웨이 설정 사용 불가',
+      unavailableDesc: '데스크톱 IPC 브리지가 게이트웨이 설정을 노출하지 않습니다.',
+      title: '게이트웨이 연결',
       envOverride: '환경 변수 오버라이드',
       intro:
         '기본적으로 로컬 백엔드를 사용합니다. 다른 컴퓨터의 Hermes 백엔드에 연결하려면 원격 연결을 사용하세요. 게이트웨이 연결은 기기 단위로 관리하며, 프로필은 연결한 게이트웨이에서 불러옵니다.',
@@ -1095,11 +1105,10 @@ export const ko = defineLocale({
       envOverrideDesc:
         '아래 저장된 설정을 사용하려면 HERMES_DESKTOP_REMOTE_URL과 HERMES_DESKTOP_REMOTE_TOKEN의 설정을 해제하세요.',
       modeTitle: '연결 모드',
-      localTitle: '로컬 Gateway',
+      localTitle: '로컬 게이트웨이',
       localDesc: 'localhost에서 개인 Hermes 백엔드를 시작합니다. 기본값이며 오프라인에서도 작동합니다.',
-      remoteTitle: '원격 Gateway',
-      remoteDesc:
-        '이 데스크톱 셸을 원격 Hermes 백엔드에 연결합니다. 호스팅된 Gateway는 OAuth 또는 사용자명·비밀번호를 사용하며 자체 호스팅은 세션 토큰을 사용할 수 있습니다.',
+      remoteTitle: '원격 게이트웨이',
+      remoteDesc: '이 데스크톱 앱을 원격 Hermes 백엔드에 연결합니다.',
       remoteAuthHint:
         '호스팅 게이트웨이는 OAuth 또는 사용자 이름과 비밀번호를 사용합니다. 자체 호스팅 게이트웨이는 세션 토큰을 사용할 수 있습니다.',
       cloudTitle: 'Hermes Cloud',
@@ -1135,19 +1144,19 @@ export const ko = defineLocale({
       cloudStatusLabel: status => `상태: ${status}`,
       remoteUrlTitle: '원격 URL',
       remoteUrlDesc: '원격 대시보드 백엔드의 기본 URL입니다. 경로 접두사(예: /hermes)도 지원됩니다.',
-      probing: 'Gateway 인증 방식을 확인하는 중…',
-      probeError: '아직 Gateway에 도달할 수 없습니다. URL을 확인하세요 — 응답이 오면 인증 방식이 표시됩니다.',
+      probing: '게이트웨이 인증 방식을 확인하는 중…',
+      probeError: '아직 게이트웨이에 도달할 수 없습니다. URL을 확인하세요 — 응답이 오면 인증 방식이 표시됩니다.',
       signedIn: '로그인됨',
       signIn: '로그인',
       signOut: '로그아웃',
       signInWith: provider => `${provider}(으)로 로그인`,
       authTitle: '인증',
       authSignedInPassword:
-        '이 Gateway는 사용자명과 비밀번호를 사용합니다. 로그인되었으며 세션은 자동으로 새로 고쳐집니다.',
-      authSignedInOauth: '이 Gateway는 OAuth를 사용합니다. 로그인되었으며 세션은 자동으로 새로 고쳐집니다.',
-      authNeedsPassword: '이 Gateway는 사용자명과 비밀번호를 사용합니다. 이 데스크톱 앱을 인증하려면 로그인하세요.',
+        '이 게이트웨이는 사용자명과 비밀번호를 사용합니다. 로그인되었으며 세션은 자동으로 새로 고쳐집니다.',
+      authSignedInOauth: '이 게이트웨이는 OAuth를 사용합니다. 로그인되었으며 세션은 자동으로 새로 고쳐집니다.',
+      authNeedsPassword: '이 게이트웨이는 사용자명과 비밀번호를 사용합니다. 이 데스크톱 앱을 인증하려면 로그인하세요.',
       authNeedsOauth: provider =>
-        `이 Gateway는 OAuth를 사용합니다. ${provider}(으)로 로그인하여 이 데스크톱 앱을 인증하세요.`,
+        `이 게이트웨이는 OAuth를 사용합니다. ${provider}(으)로 로그인하여 이 데스크톱 앱을 인증하세요.`,
       tokenTitle: '세션 토큰',
       tokenDesc: 'REST와 WebSocket 액세스에 사용되는 대시보드 세션 토큰입니다. 저장된 토큰을 유지하려면 비워두세요.',
       existingToken: value => `기존 토큰 ${value}`,
@@ -1168,28 +1177,28 @@ export const ko = defineLocale({
       saveForRestart: '다음 재시작용으로 저장',
       saveAndReconnect: '저장하고 재연결',
       diagnostics: '진단',
-      diagnosticsDesc: '파일 관리자에서 desktop.log를 엽니다 — Gateway 시작 실패 시 유용합니다.',
+      diagnosticsDesc: '파일 관리자에서 desktop.log를 엽니다 — 게이트웨이 시작 실패 시 유용합니다.',
       openLogs: '로그 열기',
-      incompleteTitle: '원격 Gateway 정보 불완전',
+      incompleteTitle: '원격 게이트웨이 정보 불완전',
       incompleteSignIn: '원격으로 전환하기 전에 원격 URL을 입력하고 로그인하세요.',
       incompleteToken: '원격으로 전환하기 전에 원격 URL과 세션 토큰을 입력하세요.',
       incompleteSignInTest: '테스트하기 전에 원격 URL을 입력하고 로그인하세요.',
       incompleteTokenTest: '테스트하기 전에 원격 URL과 세션 토큰을 입력하세요.',
       enterUrlFirst: '먼저 원격 URL을 입력하세요.',
-      restartingTitle: 'Gateway 연결 재시작 중',
-      savedTitle: 'Gateway 설정 저장됨',
+      restartingTitle: '게이트웨이 연결 재시작 중',
+      savedTitle: '게이트웨이 설정 저장됨',
       restartingMessage: 'Hermes Desktop이 저장된 설정으로 재연결합니다.',
       savedMessage: '다음 재시작용으로 저장되었습니다.',
       connectedTo: (baseUrl, version) => `${baseUrl}에 연결됨${version ? ` · Hermes ${version}` : ''}`,
-      reachableTitle: '원격 Gateway 연결 가능',
+      reachableTitle: '원격 게이트웨이 연결 가능',
       signedOutTitle: '로그아웃됨',
-      signedOutMessage: '원격 Gateway 세션이 지워졌습니다.',
-      failedLoad: 'Gateway 설정 불러오기 실패',
+      signedOutMessage: '원격 게이트웨이 세션이 지워졌습니다.',
+      failedLoad: '게이트웨이 설정 불러오기 실패',
       signInFailed: '로그인 실패',
       signOutFailed: '로그아웃 실패',
-      testFailed: '원격 Gateway 테스트 실패',
-      applyFailed: 'Gateway 설정을 적용할 수 없습니다',
-      saveFailed: 'Gateway 설정을 저장할 수 없습니다',
+      testFailed: '원격 게이트웨이 테스트 실패',
+      applyFailed: '게이트웨이 설정을 적용할 수 없습니다',
+      saveFailed: '게이트웨이 설정을 저장할 수 없습니다',
       sshTitle: 'SSH로 연결',
       sshDesc:
         'SSH로 원격 Hermes를 실행하고 이 앱에 터널링합니다. 직접 시작하거나 외부에 공개할 필요가 없습니다. 해당 호스트에 키 기반 SSH 접속이 가능해야 합니다.',
@@ -1255,8 +1264,8 @@ export const ko = defineLocale({
       invalidJson: '잘못된 MCP JSON',
       saveFailed: '저장 실패',
       removeFailed: '제거 실패',
-      gatewayUnavailableTitle: 'Gateway 사용 불가',
-      gatewayUnavailableMessage: 'MCP를 다시 로드하기 전에 Gateway를 재연결하세요.',
+      gatewayUnavailableTitle: '게이트웨이 사용 불가',
+      gatewayUnavailableMessage: 'MCP를 다시 로드하기 전에 게이트웨이를 재연결하세요.',
       reloadedTitle: 'MCP 도구 다시 로드됨',
       reloadedMessage: '새 도구 스키마가 새 턴에 적용됩니다.',
       reloadFailed: 'MCP 다시 로드 실패',
@@ -1799,6 +1808,7 @@ export const ko = defineLocale({
       }
     },
     uninstallSection: {
+      ...settingsRiskCopyKo.uninstallSection,
       dangerZone: '주의가 필요한 작업',
       confirmUninstall: '제거 확인',
       uninstallHermes: 'Hermes 제거'
@@ -1810,6 +1820,7 @@ export const ko = defineLocale({
       backendIdleTimeoutTitle: '백엔드 유휴 제한 시간'
     },
     customEndpoints: {
+      ...settingsRiskCopyKo.customEndpoints,
       title: '사용자 지정 엔드포인트',
       deleteEndpoint: '엔드포인트 삭제',
       emptyDescription: '아래에서 OpenAI 호환 엔드포인트를 추가하세요.',
@@ -1900,9 +1911,19 @@ export const ko = defineLocale({
       bundled: '내장',
       hub: '허브'
     },
-    emptyNoneFound: noun => `${noun}: 찾을 수 없습니다`,
+    emptyNoneFound: noun =>
+      noun === 'skills'
+        ? '스킬을 찾을 수 없습니다'
+        : noun === 'tools'
+          ? '도구를 찾을 수 없습니다'
+          : `${noun}: 찾을 수 없습니다`,
     emptyNothingMatches: query => `“${query}”와 일치하는 항목이 없습니다.`,
-    emptyNoneAvailable: noun => `${noun}: 아직 사용할 수 있는 항목이 없습니다.`,
+    emptyNoneAvailable: noun =>
+      noun === 'skills'
+        ? '아직 사용할 수 있는 스킬이 없습니다'
+        : noun === 'tools'
+          ? '아직 사용할 수 있는 도구가 없습니다'
+          : `${noun}: 아직 사용할 수 있는 항목이 없습니다`,
     changesApplyNewSessions: '변경 사항은 새 세션에 적용됩니다.',
     skillUpdated: '스킬 업데이트됨',
     edit: '편집',
@@ -1921,7 +1942,7 @@ export const ko = defineLocale({
       catalogBrowse: '찾아보기',
       catalogHide: '카탈로그 탐색기 숨기기',
       catalogHint:
-        '플러그인의 “+ 이 에이전트에 추가”를 누르세요. 검토된 항목은 선택한 프로필에 고정 커밋으로 설치됩니다. 에이전트와 데스크톱을 묶은 플러그인은 두 구성 요소를 모두 제공합니다.',
+        '플러그인의 “+ Add to this Agent”(이 에이전트에 추가)를 누르세요. 검토된 항목은 선택한 프로필에 고정 커밋으로 설치됩니다. 에이전트와 데스크톱을 묶은 플러그인은 두 구성 요소를 모두 제공합니다.',
       alreadyInstalled: name => `${name}은(는) 이 프로필에 이미 설치되어 있습니다.`,
       catalogProvenance: sha => `Hermes 카탈로그${sha ? `의 고정 커밋 ${sha}` : ''}에서 설치했습니다.`,
       tierOfficial: '공식',
@@ -2003,7 +2024,7 @@ export const ko = defineLocale({
       pickerTitle: '스킬 허브',
       pickerBrowse: '전체 허브 둘러보기',
       pickerHide: '허브 탐색 숨기기',
-      pickerHint: '스킬의 "+ 이 에이전트에 추가"를 누르면 설치 후 위 목록에 표시됩니다.',
+      pickerHint: '스킬의 “+ Add to this Agent”(이 에이전트에 추가)를 누르면 설치 후 위 목록에 표시됩니다.',
       loadFailed: '스킬 허브를 불러오지 못했습니다',
       previewFailed: '스킬 미리보기 실패',
       scanFailed: '보안 검사 실패',
@@ -2353,7 +2374,7 @@ export const ko = defineLocale({
       },
       system: {
         title: '시스템 패널',
-        detail: 'Gateway 상태, 로그, 재시작/업데이트'
+        detail: '게이트웨이 상태, 로그, 재시작/업데이트'
       },
       usage: {
         title: '사용량 패널',
@@ -2370,8 +2391,8 @@ export const ko = defineLocale({
     exportSession: '세션 내보내기',
     deleteSession: '세션 삭제',
     noSessions: '아직 세션이 없습니다.',
-    gatewayRunning: '메시징 Gateway 실행 중',
-    gatewayStopped: '메시징 Gateway 중지됨',
+    gatewayRunning: '메시징 게이트웨이 실행 중',
+    gatewayStopped: '메시징 게이트웨이 중지됨',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 활성 세션 ${count}개`,
     restartGateway: '게이트웨이 재시작',
     openBrowser: '브라우저 열기',
@@ -2464,18 +2485,18 @@ export const ko = defineLocale({
       connecting: '연결 중',
       disabled: '비활성화됨',
       fatal: '오류',
-      gateway_stopped: '메시징 Gateway 중지됨',
+      gateway_stopped: '메시징 게이트웨이 중지됨',
       not_configured: '설정 필요',
       pending_restart: '재시작 필요',
       retrying: '재시도 중',
       startup_failed: '시작 실패'
     },
     unknown: '알 수 없음',
-    hintPendingRestart: '이 변경을 적용하려면 상태 표시줄에서 Gateway를 재시작하세요.',
-    hintGatewayStopped: '연결하려면 상태 표시줄에서 Gateway를 시작하세요.',
+    hintPendingRestart: '이 변경을 적용하려면 상태 표시줄에서 게이트웨이를 재시작하세요.',
+    hintGatewayStopped: '연결하려면 상태 표시줄에서 게이트웨이를 시작하세요.',
     credentialsSet: '자격 증명 설정됨',
     needsSetup: '설정 필요',
-    gatewayStopped: '메시징 Gateway 중지됨',
+    gatewayStopped: '메시징 게이트웨이 중지됨',
     getCredentials: '자격 증명 받기',
     openSetupGuide: '설정 가이드 열기',
     required: '필수',
@@ -2495,9 +2516,9 @@ export const ko = defineLocale({
     disableAria: name => `${name} 비활성화`,
     platformEnabled: name => `${name} 활성화됨`,
     platformDisabled: name => `${name} 비활성화됨`,
-    restartToApply: '이 변경을 적용하려면 Gateway를 재시작하세요.',
+    restartToApply: '이 변경을 적용하려면 게이트웨이를 재시작하세요.',
     setupSaved: name => `${name} 설정 저장됨`,
-    restartToReconnect: '새 자격 증명으로 재연결하려면 Gateway를 재시작하세요.',
+    restartToReconnect: '새 자격 증명으로 재연결하려면 게이트웨이를 재시작하세요.',
     keyCleared: key => `${key} 지움`,
     setupUpdated: name => `${name} 설정이 업데이트되었습니다.`,
     failedUpdate: name => `${name} 업데이트 실패`,
@@ -2522,9 +2543,9 @@ export const ko = defineLocale({
     waitingSince: minutes => (minutes < 1 ? '방금' : `${minutes}분 전`),
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
-        label: 'Bot 토큰',
+        label: '봇 토큰',
         help: '@BotFather로 봇을 만들고 받은 토큰을 붙여넣으세요.',
-        placeholder: 'Telegram bot 토큰 붙여넣기'
+        placeholder: 'Telegram 봇 토큰 붙여넣기'
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '허용된 Telegram 사용자 ID',
@@ -2535,7 +2556,7 @@ export const ko = defineLocale({
         help: 'Telegram이 차단된 네트워크에서만 필요합니다.'
       },
       DISCORD_BOT_TOKEN: {
-        label: 'Bot 토큰',
+        label: '봇 토큰',
         help: 'Discord Developer Portal에서 애플리케이션을 만들고 봇을 추가한 후 토큰을 붙여넣으세요.'
       },
       DISCORD_ALLOWED_USERS: {
@@ -2878,7 +2899,7 @@ export const ko = defineLocale({
     failedRename: '프로필 이름 변경 실패'
   },
   cron: {
-    close: 'Cron 닫기',
+    close: '예약 작업 닫기',
     title: '예약 작업',
     count: count => `작업 ${count}개`,
     modelImpact: {
@@ -2893,8 +2914,8 @@ export const ko = defineLocale({
       confirmAction: '확인',
       declined: '데이터 학습 등급 경고를 수락하지 않아 모델 변경을 취소했습니다.'
     },
-    search: 'Cron 작업 검색...',
-    loading: 'Cron 작업 불러오는 중...',
+    search: '예약 작업 검색...',
+    loading: '예약 작업 불러오는 중...',
     states: {
       enabled: '활성화됨',
       scheduled: '예약됨',
@@ -2927,7 +2948,7 @@ export const ko = defineLocale({
       monthly: '매월 1일 오전 9:00',
       hourly: '매시 정각',
       'every-15-minutes': '15분마다',
-      custom: 'cron 구문 또는 자연어'
+      custom: 'cron 구문 또는 영어 일정 표현'
     },
     days: {
       '0': '일요일',
@@ -2945,8 +2966,8 @@ export const ko = defineLocale({
     everyDayOfWeekAt: (day, time) => `매주 ${day} ${time}`,
     monthlyOnDayAt: (dayOfMonth, time) => `매월 ${dayOfMonth}일 ${time}`,
     topOfHour: '매시 정각',
-    everyHourAt: minute => `매시 :${minute}`,
-    newCron: '새 Cron',
+    everyHourAt: minute => `매시 ${Number(minute)}분`,
+    newCron: '새 예약 작업',
     emptyDescNew:
       'cron 표현식에 따라 실행할 프롬프트를 예약합니다. Hermes가 실행하고 선택한 대상으로 결과를 전송합니다.',
     emptyDescSearch: '더 넓은 검색어를 시도해 보세요.',
@@ -2959,30 +2980,30 @@ export const ko = defineLocale({
     showRuns: '실행 기록 표시',
     hideRuns: '실행 기록 숨기기',
     runHistory: '실행 기록',
-    actionsTitle: 'Cron 작업',
-    resume: 'Cron 재개',
-    pause: 'Cron 일시 중지',
+    actionsTitle: '예약 작업',
+    resume: '예약 작업 재개',
+    pause: '예약 작업 일시 중지',
     resumeTitle: '재개',
     pauseTitle: '일시 중지',
     triggerNow: '지금 실행',
-    edit: 'Cron 편집',
-    deleteTitle: 'Cron 작업을 삭제하시겠습니까?',
+    edit: '예약 작업 편집',
+    deleteTitle: '예약 작업을 삭제하시겠습니까?',
     deleteDescPrefix: '이 작업은 ',
-    deleteDescSuffix: '을(를) 영구적으로 제거합니다. 즉시 실행이 중단됩니다.',
+    deleteDescSuffix: '을(를) 영구적으로 제거합니다. 삭제 후에는 새로 예약 실행되지 않습니다.',
     deleting: '삭제 중...',
-    resumed: 'Cron 재개됨',
-    paused: 'Cron 일시 중지됨',
-    triggered: 'Cron 실행됨',
-    deleted: 'Cron 삭제됨',
-    created: 'Cron 생성됨',
-    updated: 'Cron 업데이트됨',
-    failedLoad: 'Cron 작업 불러오기 실패',
-    failedUpdate: 'Cron 작업 업데이트 실패',
-    failedTrigger: 'Cron 작업 실행 실패',
-    failedDelete: 'Cron 작업 삭제 실패',
-    failedSave: 'Cron 작업 저장 실패',
-    editTitle: 'Cron 작업 편집',
-    createTitle: '새 Cron 작업',
+    resumed: '예약 작업 재개됨',
+    paused: '예약 작업 일시 중지됨',
+    triggered: '예약 작업 실행됨',
+    deleted: '예약 작업 삭제됨',
+    created: '예약 작업 생성됨',
+    updated: '예약 작업 업데이트됨',
+    failedLoad: '예약 작업 불러오기 실패',
+    failedUpdate: '예약 작업 업데이트 실패',
+    failedTrigger: '예약 작업 실행 실패',
+    failedDelete: '예약 작업 삭제 실패',
+    failedSave: '예약 작업 저장 실패',
+    editTitle: '예약 작업 편집',
+    createTitle: '새 예약 작업',
     editDesc: '일정, 프롬프트 또는 전송 대상을 업데이트합니다. 변경사항은 다음 실행 시 적용됩니다.',
     createDesc:
       '자동으로 실행할 프롬프트를 예약합니다. cron 구문이나 "every 15 minutes"(15분마다) 같은 영어 표현을 사용하세요.',
@@ -3004,7 +3025,7 @@ export const ko = defineLocale({
     scheduleRequired: '일정이 필요합니다.',
     scriptOnlyEditHint: '스크립트 전용 작업입니다 (AI 프롬프트 없음). 작업 ID:',
     saveChanges: '변경 저장',
-    createAction: 'Cron 생성',
+    createAction: '예약 작업 생성',
     tabs: {
       jobs: '작업',
       blueprints: '템플릿'
@@ -3033,7 +3054,7 @@ export const ko = defineLocale({
     tabImages: '이미지',
     tabFiles: '파일',
     tabLinks: '링크',
-    noArtifactsTitle: '결과물를 찾을 수 없습니다',
+    noArtifactsTitle: '결과물을 찾을 수 없습니다',
     noArtifactsDesc: '세션에서 생성된 이미지와 파일 출력이 여기에 표시됩니다.',
     failedLoad: '결과물 불러오기 실패',
     openFailed: '열기 실패',
@@ -3106,7 +3127,7 @@ export const ko = defineLocale({
     results: '결과',
     pinned: '고정됨',
     sessions: '세션',
-    cronJobs: 'Cron 작업',
+    cronJobs: '예약 작업',
     groupAriaGrouped: '세션을 단일 목록으로 보기',
     groupAriaUngrouped: '작업 공간별로 세션 그룹화',
     showProjects: '프로젝트 표시',
@@ -3885,7 +3906,7 @@ export const ko = defineLocale({
       fastFailed: '빠른 모드 업데이트 실패'
     },
     gatewayMenu: {
-      gateway: 'Gateway',
+      gateway: '게이트웨이',
       connected: '연결됨',
       connecting: '연결 중',
       offline: '오프라인',
@@ -3915,7 +3936,7 @@ export const ko = defineLocale({
       restart: '재시작',
       update: '업데이트',
       updateInProgress: '업데이트 진행 중',
-      commitsBehind: (count, branch) => `${branch}보다 커밋 ${count}개 뒤짐`,
+      commitsBehind: (count, branch) => `${branch}보다 커밋 ${count}개 뒤처짐`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `백엔드 v${version}`,
       clientLabel: version => `클라이언트 v${version}`,
@@ -3932,7 +3953,7 @@ export const ko = defineLocale({
       openCommandCenter: '명령 센터 열기',
       showTerminal: '터미널 표시',
       hideTerminal: '터미널 숨기기',
-      gateway: 'Gateway',
+      gateway: '게이트웨이',
       gatewayReady: '준비됨',
       gatewayNeedsSetup: '설정 필요',
       gatewayUnavailable: '추론 불가',
@@ -3940,7 +3961,7 @@ export const ko = defineLocale({
       gatewayConnecting: '연결 중',
       gatewayOffline: '오프라인',
       gatewayRestarting: '재시작 중…',
-      gatewayTitle: 'Hermes 추론 Gateway 상태',
+      gatewayTitle: 'Hermes 추론 게이트웨이 상태',
       customizeTitle: '상태 표시줄에 표시',
       hideStatusbar: '상태 표시줄 숨기기',
       resetStatusbar: '기본값으로 초기화',
@@ -3965,7 +3986,7 @@ export const ko = defineLocale({
       failed: count => `${count}개 실패`,
       running: count => `${count}개 실행 중`,
       cron: '예약 작업',
-      openCron: 'Cron 작업 열기',
+      openCron: '예약 작업 열기',
       webhooks: '웹훅',
       openWebhooks: '웹훅 열기',
       starmap: '메모리 그래프',
@@ -4295,7 +4316,7 @@ export const ko = defineLocale({
         `${provider} 로그인이 만료되었거나 취소되었습니다. 대화를 계속하려면 다시 로그인하세요.`
     },
     approval: {
-      gatewayDisconnected: 'Hermes Gateway가 연결되지 않았습니다',
+      gatewayDisconnected: 'Hermes 게이트웨이가 연결되지 않았습니다',
       sendFailed: '승인 응답을 보낼 수 없습니다',
       run: '실행',
       command: '명령',
@@ -4311,7 +4332,7 @@ export const ko = defineLocale({
     },
     clarify: {
       notReady: '명확화 요청이 아직 준비되지 않았습니다',
-      gatewayDisconnected: 'Hermes Gateway가 연결되지 않았습니다',
+      gatewayDisconnected: 'Hermes 게이트웨이가 연결되지 않았습니다',
       sendFailed: '명확화 응답을 보낼 수 없습니다',
       loadingQuestion: '질문 불러오는 중…',
       other: '기타 (답변 입력)',
@@ -4362,10 +4383,10 @@ export const ko = defineLocale({
       outputAlt: '도구 출력',
       rawResponse: '원시 응답',
       copyActivity: '활동 복사',
-      recoveredOne: '1단계 실패 후 복구됨',
-      recoveredMany: count => `${count}단계 실패 후 복구됨`,
-      failedOne: '1단계 실패',
-      failedMany: count => `${count}단계 실패`,
+      recoveredOne: '단계 1개 실패 후 복구됨',
+      recoveredMany: count => `단계 ${count}개 실패 후 복구됨`,
+      failedOne: '단계 1개 실패',
+      failedMany: count => `단계 ${count}개 실패`,
       statusRunning: '실행 중',
       statusError: '오류',
       statusRecovered: '복구됨',
@@ -4433,8 +4454,8 @@ export const ko = defineLocale({
           pendingAction: '질문 중'
         },
         cronjob: {
-          done: 'Cron 작업',
-          pending: 'Cron 작업 예약 중',
+          done: '예약 작업',
+          pending: '작업 예약 중',
           pendingAction: '예약 중'
         },
         edit_file: {
@@ -4516,15 +4537,15 @@ export const ko = defineLocale({
     }
   },
   prompts: {
-    gatewayDisconnected: 'Hermes Gateway가 연결되지 않았습니다',
+    gatewayDisconnected: 'Hermes 게이트웨이가 연결되지 않았습니다',
     sudoSendFailed: 'sudo 비밀번호를 보낼 수 없습니다',
-    secretSendFailed: '비밀을 보낼 수 없습니다',
+    secretSendFailed: '인증 정보를 보낼 수 없습니다',
     sudoTitle: '관리자 비밀번호',
     sudoDesc: 'Hermes가 권한 명령을 실행하기 위해 sudo 비밀번호가 필요합니다. 로컬 에이전트에만 전송됩니다.',
     sudoPlaceholder: 'sudo 비밀번호',
-    secretTitle: '비밀 필요',
+    secretTitle: '인증 정보 필요',
     secretDesc: 'Hermes가 계속하기 위해 자격 증명이 필요합니다.',
-    secretPlaceholder: '비밀 값',
+    secretPlaceholder: '비밀번호 또는 토큰 등 인증 정보',
     vaultUnlockSendFailed: '마스터 비밀번호를 보낼 수 없습니다',
     vaultUnlockTitle: name => `${name} 잠금 해제`,
     vaultUnlockDesc: name =>

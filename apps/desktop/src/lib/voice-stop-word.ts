@@ -12,26 +12,9 @@
 // the word "stop" — e.g. "stop the docker container" or "how do I stop a
 // running process" — is never swallowed.
 
-// Canonical stop commands. Kept short and unambiguous; each must be the entire
-// spoken utterance to match.
-const STOP_PHRASES: readonly string[] = [
-  'stop',
-  'stop listening',
-  'stop it',
-  'stop please',
-  'please stop',
-  'stop stop',
-  'that is all',
-  "that's all",
-  'never mind',
-  'nevermind',
-  'end conversation',
-  'end the conversation',
-  'goodbye',
-  'good bye',
-  'bye',
-  'cancel'
-]
+// Match the backend's voice.stop_phrases default. Explicit lists replace it;
+// an empty list disables interception rather than restoring a hidden default.
+export const DEFAULT_VOICE_STOP_PHRASES: readonly string[] = ['stop']
 
 // Optional address prefixes so "hermes stop" / "ok stop" / "hey hermes, stop"
 // still count. Stripped before matching the core phrase.
@@ -42,8 +25,10 @@ const ADDRESS_PREFIXES: readonly string[] = ['hey hermes', 'hey hermes,', 'herme
 // STT output and must not defeat the match.
 function normalize(text: string): string {
   return text
+    .normalize('NFC')
     .toLowerCase()
     .replace(/[.,!?;:…]+/g, ' ')
+    .replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -68,7 +53,10 @@ function stripAddress(text: string): string {
  * to Hermes). Returns false for anything that merely contains "stop" as part of
  * a longer, substantive request.
  */
-export function isVoiceStopCommand(transcript: string): boolean {
+export function isVoiceStopCommand(
+  transcript: string,
+  stopPhrases: readonly string[] = DEFAULT_VOICE_STOP_PHRASES
+): boolean {
   if (!transcript) {
     return false
   }
@@ -84,8 +72,8 @@ export function isVoiceStopCommand(transcript: string): boolean {
   // prefix — matches directly).
   const candidates = new Set([normalized, stripAddress(normalized)])
 
-  for (const candidate of candidates) {
-    if (STOP_PHRASES.includes(candidate)) {
+  for (const phrase of stopPhrases) {
+    if (candidates.has(normalize(phrase))) {
       return true
     }
   }
@@ -100,6 +88,11 @@ export function isVoiceStopCommand(transcript: string): boolean {
  * never intercepted. Outside a voice conversation typed text always passes
  * through unchanged.
  */
-export function interceptsTypedVoiceStop(conversationActive: boolean, text: string, attachmentCount = 0): boolean {
-  return conversationActive && attachmentCount === 0 && isVoiceStopCommand(text)
+export function interceptsTypedVoiceStop(
+  conversationActive: boolean,
+  text: string,
+  attachmentCount = 0,
+  stopPhrases: readonly string[] = DEFAULT_VOICE_STOP_PHRASES
+): boolean {
+  return conversationActive && attachmentCount === 0 && isVoiceStopCommand(text, stopPhrases)
 }

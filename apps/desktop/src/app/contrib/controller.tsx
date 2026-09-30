@@ -38,7 +38,9 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { DIALOGS_AREA } from '@/contrib/dialogs'
 import { discoverBundledPlugins } from '@/contrib/plugins'
+import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { translateNow, useI18n } from '@/i18n'
@@ -804,6 +806,7 @@ export function ContribController() {
     >
       <ContribWiring>
         <AppContextMenu />
+        <Slot area={DIALOGS_AREA} />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
           // Window-glass hook: this div and the sidebar-wrapper above it are

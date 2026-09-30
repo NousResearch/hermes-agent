@@ -9,7 +9,7 @@ describe('isVoiceStopCommand', () => {
     }
   })
 
-  it('matches multi-word stop phrases', () => {
+  it('matches explicitly configured multi-word stop phrases', () => {
     for (const phrase of [
       'stop listening',
       'stop it',
@@ -25,7 +25,7 @@ describe('isVoiceStopCommand', () => {
       'bye',
       'cancel'
     ]) {
-      expect(isVoiceStopCommand(phrase)).toBe(true)
+      expect(isVoiceStopCommand(phrase, [phrase])).toBe(true)
     }
   })
 
@@ -59,11 +59,27 @@ describe('isVoiceStopCommand', () => {
       expect(isVoiceStopCommand(phrase)).toBe(false)
     }
   })
+
+  it('uses only configured phrases and compares whole Unicode-equivalent utterances', () => {
+    const phrases = ['그만', '대화 종료', 'arrêt']
+
+    for (const transcript of ['그만'.normalize('NFD'), '“대화 종료”!', 'ARRÊT'.normalize('NFD')]) {
+      expect(isVoiceStopCommand(transcript, phrases)).toBe(true)
+    }
+
+    for (const transcript of ['그만하고 다음 작업', 'stop', 'never mind', 'cancel']) {
+      expect(isVoiceStopCommand(transcript, phrases)).toBe(false)
+    }
+
+    expect(isVoiceStopCommand('stop', [])).toBe(false)
+    expect(isVoiceStopCommand('never mind')).toBe(false)
+    expect(isVoiceStopCommand('stop the docker container')).toBe(false)
+  })
 })
 
 describe('interceptsTypedVoiceStop', () => {
   it('intercepts a typed bare stop command while the conversation is active', () => {
-    for (const text of ['stop', 'Stop.', 'never mind', 'hey hermes, stop']) {
+    for (const text of ['stop', 'Stop.', 'hey hermes, stop']) {
       expect(interceptsTypedVoiceStop(true, text)).toBe(true)
     }
   })
@@ -82,5 +98,15 @@ describe('interceptsTypedVoiceStop', () => {
 
   it('passes through when attachments ride along (real payload)', () => {
     expect(interceptsTypedVoiceStop(true, 'stop', 1)).toBe(false)
+  })
+
+  it('uses the same configured list for typed and spoken stops while preserving attachment payloads', () => {
+    for (const phrases of [[], ['그만']] as const) {
+      for (const text of ['stop', '그만'.normalize('NFD'), '그만하고 다음 작업']) {
+        expect(interceptsTypedVoiceStop(true, text, 0, phrases)).toBe(isVoiceStopCommand(text, phrases))
+        expect(interceptsTypedVoiceStop(false, text, 0, phrases)).toBe(false)
+        expect(interceptsTypedVoiceStop(true, text, 1, phrases)).toBe(false)
+      }
+    }
   })
 })

@@ -1,11 +1,14 @@
+import type { TipId } from '@/lib/tips/catalog'
+
+import type { BillingRiskCopy } from './billing-risk-copy'
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
 // surface. Fully translated locale files may satisfy this interface directly;
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
-
-import type { TipId } from '@/lib/tips/catalog'
+import type { PermissionModelCopy } from './permission-model-copy'
+import type { CustomEndpointsRiskCopy, UninstallRiskCopy } from './settings-risk-copy'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ko' | 'ar' | 'ru'
 
@@ -51,6 +54,8 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  billingRisk: BillingRiskCopy
+  permissionModel: PermissionModelCopy
   connectors: {
     title: string
     connect: string
@@ -426,6 +431,9 @@ export interface Translations {
       vault: string
     }
     plugins: {
+      sourceTooLarge: string
+      sourcePreviewTruncated: string
+      loadFailed: (name: string) => string
       title: string
       blurb: string
       count: (n: number) => string
@@ -718,7 +726,7 @@ export interface Translations {
       dangerZone: string
       confirmUninstall: string
       uninstallHermes: string
-    }
+    } & UninstallRiskCopy
     poolLimits: {
       warmBotBackendsAria: string
       warmBotBackendsTitle: string
@@ -732,7 +740,7 @@ export interface Translations {
       emptyTitle: string
       namePlaceholder: string
       contextPlaceholder: string
-    }
+    } & CustomEndpointsRiskCopy
     computerUse: {
       accessibility: string
       screenRecording: string
@@ -888,6 +896,7 @@ export interface Translations {
       empty: string
     }
     managedUpdates: {
+      receiptOutcomes: { success: string; failed: string; partial: string; running: string; refused: string }
       title: string
       intro: string
       sshConnection: string

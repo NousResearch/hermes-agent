@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { type AriaAttributes, useCallback, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -44,8 +44,9 @@ export function SearchableSelect({
   options,
   placeholder = 'Search…',
   emptyMessage = 'No results found.',
-  clearLabel
-}: {
+  clearLabel,
+  ...accessibility
+}: Pick<AriaAttributes, 'aria-labelledby' | 'aria-describedby'> & {
   value: string
   onChange: (value: string) => void
   options: string[]
@@ -72,6 +73,7 @@ export function SearchableSelect({
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
+          {...accessibility}
           aria-expanded={open}
           aria-haspopup="listbox"
           className={cn(
@@ -94,7 +96,7 @@ export function SearchableSelect({
           trigger wider than that. */}
       <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width) p-0">
         <Command filter={rankSearchOption}>
-          <CommandInput autoFocus placeholder={placeholder} />
+          <CommandInput {...accessibility} autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>

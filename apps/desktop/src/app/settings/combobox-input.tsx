@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { type AriaAttributes, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
@@ -27,8 +27,9 @@ export function ComboboxInput({
   options,
   optionLabels,
   placeholder,
-  className
-}: {
+  className,
+  ...accessibility
+}: Pick<AriaAttributes, 'aria-labelledby' | 'aria-describedby'> & {
   value: string
   onChange: (value: string) => void
   options: string[]
@@ -50,6 +51,7 @@ export function ComboboxInput({
       <PopoverAnchor asChild>
         <div className={cn('relative', className)}>
           <Input
+            {...accessibility}
             className="w-full pr-7"
             onChange={e => {
               onChange(e.target.value)

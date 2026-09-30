@@ -3,6 +3,7 @@ import { act, cleanup, render, renderHook, waitFor } from '@testing-library/reac
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
+import { en as permissionModelCopy } from '@/i18n/permission-model-copy'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -48,7 +49,8 @@ vi.mock('@/i18n', () => ({
       },
       desktop: {
         modelSwitchFailed: 'Model switch failed'
-      }
+      },
+      permissionModel: permissionModelCopy
     }
   })
 }))
@@ -361,7 +363,7 @@ describe('useModelControls', () => {
       expect.objectContaining({
         action: expect.objectContaining({ label: 'Confirm' }),
         kind: 'warning',
-        message: 'This contributor model trains on your data.'
+        message: `${permissionModelCopy.modelSwitch.summary}\n\nThis contributor model trains on your data.`
       })
     )
 

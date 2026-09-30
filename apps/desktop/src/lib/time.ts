@@ -32,27 +32,35 @@ export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', 
 
 // ── Relative time ──────────────────────────────────────────────────────────
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+const relativeFormatters = new Map<string | undefined, Intl.RelativeTimeFormat>([[undefined, rtf]])
 
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
-export function relativeTime(targetMs: number, nowMs = Date.now()): string {
+export function relativeTime(targetMs: number, nowMs = Date.now(), locale?: string): string {
+  let formatter = relativeFormatters.get(locale)
+
+  if (!formatter) {
+    formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
+    relativeFormatters.set(locale, formatter)
+  }
+
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1
 
   if (abs < MINUTE) {
-    return rtf.format(sign * Math.round(abs / SECOND), 'second')
+    return formatter.format(sign * Math.round(abs / SECOND), 'second')
   }
 
   if (abs < HOUR) {
-    return rtf.format(sign * Math.round(abs / MINUTE), 'minute')
+    return formatter.format(sign * Math.round(abs / MINUTE), 'minute')
   }
 
   if (abs < DAY) {
-    return rtf.format(sign * Math.round(abs / HOUR), 'hour')
+    return formatter.format(sign * Math.round(abs / HOUR), 'hour')
   }
 
-  return rtf.format(sign * Math.round(abs / DAY), 'day')
+  return formatter.format(sign * Math.round(abs / DAY), 'day')
 }
 
 // A dated divider bucket below the sidebar's unlabelled "recent" head cluster

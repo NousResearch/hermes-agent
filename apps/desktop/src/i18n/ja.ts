@@ -1,8 +1,13 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { billingRiskJa as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
+import { ja as permissionModelCopy } from './permission-model-copy'
+import { settingsRiskCopyJa } from './settings-risk-copy'
 
 export const ja = defineLocale({
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy,
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
@@ -302,11 +307,27 @@ export const ja = defineLocale({
   },
 
   settings: {
+    customEndpoints: settingsRiskCopyJa.customEndpoints,
+    uninstallSection: settingsRiskCopyJa.uninstallSection,
     plugins: {
+      sourceTooLarge:
+        'プラグインファイルがこのアプリの読み込み上限を超えています。サイズを小さくしてから再読み込みしてください。',
+      sourcePreviewTruncated:
+        'この旧バージョンのアプリでは plugin.js の先頭 512 KiB しか読み込めません。このプラグインを読み込むには Hermes Desktop を更新してください。',
+      loadFailed: name => `プラグイン「${name}」を読み込めませんでした`,
       installModal: {
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',
         repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
+    managedUpdates: {
+      receiptOutcomes: {
+        success: '成功',
+        failed: '失敗',
+        partial: '一部完了',
+        running: '実行中',
+        refused: '拒否されました'
       }
     },
     closeSettings: '設定を閉じる',

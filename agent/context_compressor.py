@@ -1845,6 +1845,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
         self._fallback_compression_streak = 0
+        # Monotonic time of the next summary-model probe while the fallback streak benches it; 0.0 = unarmed.
+        self._fallback_probe_at = 0.0
         # Armed at a completed boundary; consumed by the next real prompt count in update_from_response().
         self._verify_compaction_cleared_threshold = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
@@ -2023,7 +2025,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if feasibility_skip:
             # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
             # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
-            # neither extend a fallback streak (it is diagnostic, not an ineffectiveness verdict)
+            # neither extend a fallback streak (the streak decides whether the summary model is called)
             # nor reset one (a skip proves nothing about the summary model's health).
             if not self.quiet_mode:
                 logger.info(
@@ -2473,8 +2475,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _tripped(self) -> bool:
         """Only provider-confirmed ineffective compactions trip the breaker.
 
-        A static fallback can still reclaim most of the request. Its durable streak
-        records degraded summaries, but is not evidence of compaction thrashing.
+        A static fallback still reclaims the window, so blocking on it lets the prompt run into the
+        provider's hard limit. The fallback streak instead benches the failing summary model
+        (``_fallback_streak_skip``), which is what stops a paid fallback loop (#63008).
         """
         return self._ineffective_compression_count >= 2
 
@@ -4361,6 +4364,34 @@ Write only the summary body. Do not include any preamble or prefix."""
             compress_start + 1, compress_end, n_turns, compress_start, tail_msgs,
         )
 
+    def _fallback_streak_skip(self, telemetry: Dict[str, Any]) -> bool:
+        """Pre-LLM skip while two summaries in a row fell back: compact deterministically instead of
+        paying for a summary model that keeps failing (#63008). One probe per recovery window; a
+        healthy summary resets the streak, another fallback benches it again."""
+        if self._fallback_compression_streak < 2:
+            self._fallback_probe_at = 0.0
+            return False
+        now = time.monotonic()
+        if self._fallback_probe_at and now >= self._fallback_probe_at:
+            self._fallback_probe_at = 0.0
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression: probing the summary model again after %d fallback summaries in a row",
+                    self._fallback_compression_streak,
+                )
+            return False
+        if not self._fallback_probe_at:
+            self._fallback_probe_at = now + self._ANTI_THRASH_RECOVERY_SECONDS
+        self._last_feasibility_skip = True
+        telemetry["failure_class"] = "summary_model_benched"
+        if not self.quiet_mode:
+            logger.warning(
+                "Compression: %d fallback summaries in a row — skipping LLM summarization, proceeding with "
+                "deterministic message dropping. Next summary-model probe in %.0fs.",
+                self._fallback_compression_streak, max(0.0, self._fallback_probe_at - now),
+            )
+        return True
+
     def _feasibility_skip(
         self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
         compress_start: int, compress_end: int,
@@ -4655,7 +4686,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         # Phase 3: Generate structured summary (or skip the LLM when the middle is too small to matter)
-        feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        feasibility_skip = not force and (
+            self._fallback_streak_skip(telemetry)
+            or self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        )
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:
             summary = self._summarize_window(

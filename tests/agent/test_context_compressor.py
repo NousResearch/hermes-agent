@@ -3496,6 +3496,22 @@ class TestPreLlmFeasibilityCheck:
         mock_gen.assert_called_once()
         assert compressor._prellm_skip_count == 0
 
+    def test_fallback_streak_benches_summary_model_but_keeps_compacting(self, compressor):
+        """Two fallbacks in a row stop the summary calls (#63008), not the compaction itself:
+        the window is still dropped, and one probe per recovery window can heal the streak."""
+        compressor._fallback_compression_streak = 2
+        msgs = self._make_messages()
+
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            benched = compressor.compress(msgs, force=False)
+            mock_gen.assert_not_called()
+            assert len(benched) < len(msgs)
+            assert compressor._last_feasibility_skip is True  # recorded streak-neutral
+
+            compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+            compressor.compress(self._make_messages(), force=False)
+            mock_gen.assert_called_once()
+
     def test_skip_count_resets_on_session_reset(self, compressor):
         """_prellm_skip_count must reset alongside _ineffective_compression_count."""
         compressor._prellm_skip_count = 5

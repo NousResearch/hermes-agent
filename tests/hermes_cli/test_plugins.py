@@ -1464,7 +1464,7 @@ class TestForceReloadSymmetry:
         that has recovered decides again (#105223)."""
         import time
 
-        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        from hermes_cli.plugins import _pre_tool_call_timeout_message
 
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
@@ -1482,7 +1482,7 @@ class TestForceReloadSymmetry:
         mgr._hook_timeout_suppression_seconds = 0.2
         mgr._hooks["pre_tool_call"] = [guard]
 
-        blocked = [{"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
+        blocked = [{"action": "block", "message": _pre_tool_call_timeout_message("guard")}]
         assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-a") == blocked
         assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-b") == blocked  # in window
         time.sleep(0.3)  # suppression window passes; the first worker is still hung
@@ -1531,10 +1531,7 @@ class TestForceReloadSymmetry:
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time
 
-        from hermes_cli.plugins import (
-            _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
-            resolve_pre_tool_block,
-        )
+        from hermes_cli.plugins import _pre_tool_call_timeout_message, resolve_pre_tool_block
 
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
@@ -1557,19 +1554,19 @@ class TestForceReloadSymmetry:
         msg = resolve_pre_tool_block("web_search", {"query": "x"})
         elapsed = time.monotonic() - t0
 
-        assert msg == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        assert msg == _pre_tool_call_timeout_message("hung_policy")
         assert elapsed < 5.0
 
         # Still-running / suppression window must also fail closed.
         msg2 = resolve_pre_tool_block("web_search", {"query": "y"})
-        assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        assert msg2 == _pre_tool_call_timeout_message("hung_policy")
         hold.set()
 
     def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
         self, monkeypatch
     ):
         """A transient worker-start failure must not poison later hook calls."""
-        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        from hermes_cli.plugins import _pre_tool_call_timeout_message
 
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
@@ -1597,7 +1594,7 @@ class TestForceReloadSymmetry:
         mgr._hooks["pre_tool_call"] = [policy]
 
         assert mgr.invoke_hook("pre_tool_call") == [
-            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+            {"action": "block", "message": _pre_tool_call_timeout_message("policy")}
         ]
         assert mgr.invoke_hook("pre_tool_call") == []
         assert calls == [1]

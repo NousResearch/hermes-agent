@@ -4280,6 +4280,7 @@ class GatewayRunner(
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            ui_session_id=str(getattr(context.source, "ui_session_id", "") or ""),
             async_delivery=_async_delivery,
             cron_session="")
 

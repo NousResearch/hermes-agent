@@ -2747,8 +2747,23 @@ def run_one_job(
                 # (#123401). Without this the outage is silent — no cron_incidents
                 # row, no ping — while executions.db keeps piling up failed rows.
                 if not post_handoff:
-                    delivery_error, delivery_outcome = _deliver_crash_failure(
-                        job, error, adapters=adapters, loop=loop)
+                    # The notice resolves home channels and bot credentials through
+                    # get_secret, which fails closed under multiplex with no scope. The
+                    # in-process path installs the owning profile's scope before delivery
+                    # (_run_one_job_body); this branch returns before reaching it.
+                    from agent.secret_scope import (
+                        build_profile_secret_scope, reset_secret_scope, set_secret_scope)
+                    from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+                    profile_home = _get_hermes_home().resolve()
+                    hydrate_profile_secret_sources(profile_home)
+                    scope_token = set_secret_scope(
+                        build_profile_secret_scope(profile_home), profile_home=str(profile_home))
+                    try:
+                        delivery_error, delivery_outcome = _deliver_crash_failure(
+                            job, error, adapters=adapters, loop=loop)
+                    finally:
+                        reset_secret_scope(scope_token)
                 mark_job_run(
                     job["id"],
                     False,

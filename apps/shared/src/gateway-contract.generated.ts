@@ -2100,11 +2100,6 @@ export interface OnboardingEnsureSetupProfileResult {
   path: string
   created: boolean
 }
-export interface OnboardingEnsureSetupSessionResult {
-  profile: string
-  session_id: string
-  empty: boolean
-}
 export interface OnboardingStateResult {
   eligible: boolean
   intro: OnboardingIntro
@@ -5095,7 +5090,6 @@ export interface RpcMethods {
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
   /** Create-or-read the backend-owned setup profile; the backend picks the name. */
   'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
-  'onboarding.ensure_setup_session': { params: Params; result: OnboardingEnsureSetupSessionResult }
   'onboarding.mark_seen': { params: Params; result: OnboardingStateResult }
   'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
@@ -5495,7 +5489,6 @@ export const RPC_METHODS = [
   'model.options',
   'model.save_key',
   'onboarding.ensure_setup_profile',
-  'onboarding.ensure_setup_session',
   'onboarding.mark_seen',
   'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',

@@ -1969,24 +1969,6 @@
       }
     },
     {
-      "name": "onboarding.ensure_setup_session",
-      "summary": "",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/Params"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/OnboardingEnsureSetupSessionResult"
-        }
-      }
-    },
-    {
       "name": "onboarding.mark_seen",
       "summary": "",
       "params": [
@@ -19718,30 +19700,6 @@
           "created"
         ],
         "title": "OnboardingEnsureSetupProfileResult",
-        "type": "object"
-      },
-      "OnboardingEnsureSetupSessionResult": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "title": "Profile",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "empty": {
-            "title": "Empty",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "profile",
-          "session_id",
-          "empty"
-        ],
-        "title": "OnboardingEnsureSetupSessionResult",
         "type": "object"
       },
       "OnboardingIntro": {

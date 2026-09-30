@@ -23,6 +23,8 @@ type GuideKickoff =
 
 export const $onboardingGate = atom<OnboardingGateState>({ phase: 'idle', guideQueued: false, guideKickoff: 'idle' })
 
+const $onboardingStateRead = atom(false)
+
 let guideKickoff: GuideKickoff = { status: 'idle' }
 export const $guideOpening = computed(
   $onboardingGate,
@@ -50,6 +52,23 @@ export function guidedOnboardingActive(): boolean {
   const { phase } = $onboardingGate.get()
 
   return isOnboardingEnabled() && (phase === 'pending' || phase === 'guided' || phase === 'handoff')
+}
+
+export function markOnboardingStateRead(): void {
+  $onboardingStateRead.set(true)
+}
+
+export function afterOnboardingStateRead(run: () => void): void {
+  if (!isOnboardingEnabled() || $onboardingStateRead.get()) {
+    run()
+
+    return
+  }
+
+  const stop = $onboardingStateRead.listen(() => {
+    stop()
+    run()
+  })
 }
 
 export function beginOnboardingFlow(state: OnboardingStateResult, firstRunSkipped: boolean): void {

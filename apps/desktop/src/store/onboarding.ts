@@ -20,7 +20,7 @@ import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFree
 import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
-import { guidedOnboardingActive } from '@/store/onboarding-gate'
+import { afterOnboardingStateRead, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
@@ -561,11 +561,13 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   // refresh, a setup-profile session before its runtime settles) would drop
   // the provider picker over the guide the user is in the middle of. Sign-in
   // is offered where the guide chooses to, on its own ready screen.
-  if (guidedOnboardingActive()) {
-    return
-  }
+  afterOnboardingStateRead(() => {
+    if (guidedOnboardingActive()) {
+      return
+    }
 
-  patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+    patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+  })
 }
 
 /** Credential warning delivered passively (session create/activate/resume
@@ -845,13 +847,15 @@ async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadin
   // window) covered the guide mid-conversation, and dismissing it remounted
   // the card the user had just answered. The guide acks the notice itself
   // when it hands off.
-  if (guidedOnboardingActive()) {
-    return
-  }
+  afterOnboardingStateRead(() => {
+    if (guidedOnboardingActive()) {
+      return
+    }
 
-  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
-    patch({ freeTierReady: true })
-  }
+    if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
+      patch({ freeTierReady: true })
+    }
+  })
 }
 
 /** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the

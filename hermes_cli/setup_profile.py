@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 SETUP_PROFILE_NAME = "hermes-setup"
 SETUP_PROFILE_DESCRIPTION = "Where Hermes met you — walks your first run, then checks in as you find your feet."
-SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
 _SETUP_TOOLSETS = ["setup", "start_chat", "no_mcp"]
+_SETUP_DISABLED_TOOLSETS = ["catalog"]
 _SETUP_DEFERRED_TOOLS = [
     "computer_use", "session_search", "image_generate", "todo_list", "process_manage", "cronjob_manage",
     "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "show_tip", "desktop_project",
@@ -147,12 +147,16 @@ def _write_state(path: Path, state: dict) -> None:
 
 
 def _write_setup_config(path: Path) -> None:
+    from agent.skill_utils import parse_config_string_list
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     config_path = path / "config.yaml"
     config = read_user_config_raw(config_path)
-    tools = config.get("tools") or {}
+    agent = config.get("agent") or {}
+    disabled = parse_config_string_list(agent.get("disabled_toolsets"))
+    config["agent"] = {**agent, "coding_context": "off",
+                       "disabled_toolsets": list(dict.fromkeys([*disabled, *_SETUP_DISABLED_TOOLSETS]))}
     config["platform_toolsets"] = {**(config.get("platform_toolsets") or {}), "cli": list(_SETUP_TOOLSETS)}
-    config["tools"] = {**tools, "tool_search": {**(tools.get("tool_search") or {}), "defer": list(_SETUP_DEFERRED_TOOLS)}}
+    config["tools"] = {**(config.get("tools") or {}), "tool_search": {"defer": list(_SETUP_DEFERRED_TOOLS)}}
     config["display"] = {**(config.get("display") or {}), "show_reasoning": False}
     atomic_config_write(config_path, config)
 

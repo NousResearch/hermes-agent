@@ -12,6 +12,7 @@ import {
   abandonGuide,
   beginOnboardingFlow,
   type GuideKickoffResult,
+  markOnboardingStateRead,
   runGuideKickoff
 } from '@/store/onboarding-gate'
 
@@ -32,16 +33,18 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       return
     }
 
-    void requestGateway<OnboardingStateResult>('onboarding.state').then(
-      state => {
-        beginOnboardingFlow(state, $desktopOnboarding.get().firstRunSkipped)
+    void requestGateway<OnboardingStateResult>('onboarding.state')
+      .then(
+        state => {
+          beginOnboardingFlow(state, $desktopOnboarding.get().firstRunSkipped)
 
-        if ($onboardingGate.get().guideQueued) {
-          takeGuideShape()
-        }
-      },
-      error => console.warn('[onboarding] state could not be read', error)
-    )
+          if ($onboardingGate.get().guideQueued) {
+            takeGuideShape()
+          }
+        },
+        error => console.warn('[onboarding] state could not be read', error)
+      )
+      .finally(markOnboardingStateRead)
   }, [enabled, requestGateway])
 
   useEffect(() => {

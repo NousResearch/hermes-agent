@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: "Drive the desktop background-first; escalate on signal."
-version: 2.1.0
+version: 2.2.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
 platforms: [macos, windows, linux]
@@ -41,6 +41,29 @@ vocabulary — go back to the actions below.
 ```
 computer_use(action="capture", mode="som", app="<the app you're driving>")
 ```
+
+If there is no window for the requested app, inspect `list_apps` and launch
+it with an exact identifier. Dock/taskbar icons are not required. On macOS
+prefer `bundle_id`; on Windows prefer `launch_path`, `aumid` or `path`; on
+Linux use the returned `launch_path`. Only send fields the live driver accepts.
+
+```
+computer_use(action="list_apps")
+computer_use(action="launch_app", name="<exact app name>", capture_after=True)
+```
+
+Launch requires approval. Hermes waits up to `wait_timeout` seconds (default
+10, maximum 30) and selects the launched app's exact PID/window ID without
+requesting foreground focus. `capture_after=True` captures that window, even
+when it is hidden or on another Space. Capture before using element indices.
+
+`ok=True, meta.window_ready=False` means the launch was accepted but no
+window could be bound. **Do not relaunch automatically**: some apps open
+slowly or have no GUI window. The previous target is cleared and no trailing
+capture runs. Inspect `list_windows(on_screen_only=False, pid=<returned pid>)`
+(omit `pid` if unknown), then capture with the app's explicit
+`pid` and `window_id` once available. A refused launch preserves the old
+target, but is not permission to continue the new task against that target.
 
 Returns a screenshot plus an indexed element list like:
 
@@ -112,8 +135,10 @@ key               keys="<save shortcut>" | "return" | "escape" | "<modifier>+t"
 set_value         element=N  value="…"     (selects/sliders without opening the menu)
 wait              seconds=0.5
 list_apps
-list_windows
+list_windows      on_screen_only=true (false includes hidden windows)   pid=…
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
+launch_app        name=… OR bundle_id=… OR launch_path=… OR path=… OR aumid=…
+                  additional_arguments=[…]   wait_timeout=10 (0–30 seconds)
 ```
 
 All actions accept optional `capture_after=True` to get a follow-up

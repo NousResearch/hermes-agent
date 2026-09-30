@@ -63,8 +63,8 @@ _PROPERTIES: Dict[str, Any] = {
     "pid": {
         "type": "integer",
         "description": (
-            "Optional exact process target for action='capture'. Pair with window_id when "
-            "discovery cannot resolve an X11 app."
+            "Optional exact process target for action='capture' (pair with window_id), "
+            "or a PID filter for action='list_windows'."
         ),
     },
     "window_id": {
@@ -72,6 +72,13 @@ _PROPERTIES: Dict[str, Any] = {
         "description": (
             "Optional exact native window target for action='capture'. Pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
+        ),
+    },
+    "on_screen_only": {
+        "type": "boolean",
+        "description": (
+            "For action='list_windows': default true. Set false to include hidden/minimized "
+            "windows and windows on other Spaces, including after a launch reports window_ready=false."
         ),
     },
     "element": {
@@ -184,6 +191,13 @@ _PROPERTIES: Dict[str, Any] = {
         "type": "boolean",
         "description": "For action='launch_app' on Windows: launch minimized without activating the window.",
     },
+    "wait_timeout": {
+        "type": "number", "minimum": 0, "maximum": 30,
+        "description": (
+            "For action='launch_app': seconds to wait for the app's window (default 10, max 30). "
+            "An accepted launch with meta.window_ready=false must not be repeated automatically."
+        ),
+    },
     "raise_window": {
         "type": "boolean",
         "description": (
@@ -231,7 +245,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
-        "use action='launch_app' when the requested app is not running; then call action='capture' "
+        "use list_apps for exact identifiers, then action='launch_app' when the app has no window. "
+        "Launch waits briefly and binds a ready window; capture_after=true captures that exact window. "
+        "If meta.window_ready=false, inspect list_windows(on_screen_only=false) instead of relaunching. Otherwise call action='capture' "
+        "using the returned meta.pid and meta.window_id "
         "(mode='som' gives numbered element overlays) and click by `element` "
         "index; re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "

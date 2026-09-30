@@ -26,6 +26,7 @@ from tools.computer_use.cua_backend_driver import (  # noqa: F401 — resolve_cu
     _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
+from tools.computer_use.cua_backend_launch import _LaunchMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
@@ -245,7 +246,7 @@ def _empty_discovery_reason() -> str:
                 "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
     return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
 
-class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
+class CuaDriverBackend(_LaunchMixin, _CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self, permission_mode: str = "standard") -> None:
@@ -263,7 +264,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
-        # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
+        # Sticky target (set by capture()/focus_app()/launch_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
         # cua-driver reports "stale" instead of silently re-resolving).
@@ -364,24 +365,6 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
-
-    def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
-                   path: Optional[str] = None, aumid: Optional[str] = None,
-                   launch_path: Optional[str] = None, urls: Optional[List[str]] = None,
-                   additional_arguments: Optional[List[str]] = None,
-                   creates_new_application_instance: bool = False,
-                   start_minimized: bool = False) -> ActionResult:
-        """Launch an app and preserve cua-driver's structured success or error result."""
-        if not any((bundle_id, name, path, aumid, launch_path, urls)):
-            return ActionResult(ok=False, action="launch_app", message=(
-                "launch_app requires one of bundle_id, name, path, aumid, launch_path, or urls"))
-        args: Dict[str, Any] = {k: v for k, v in (
-            ("bundle_id", bundle_id), ("name", name), ("path", path), ("aumid", aumid),
-            ("launch_path", launch_path), ("urls", list(urls) if urls else None),
-            ("additional_arguments", list(additional_arguments) if additional_arguments else None),
-            ("creates_new_application_instance", creates_new_application_instance or None),
-            ("start_minimized", start_minimized or None)) if v is not None}
-        return self._action("launch_app", args)
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""

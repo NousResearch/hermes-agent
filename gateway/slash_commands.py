@@ -974,12 +974,13 @@ class GatewaySlashCommandsMixin(
     async def _handle_busy_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /busy — control what happens when messaging while Hermes is working."""
         arg = event.get_command_args().strip().lower()
+        prefix = self._typed_command_prefix_for(event.source.platform)
         if not arg or arg == "status":
             mode = self._effective_busy_input_mode(event.source)
             behavior = t(_BUSY_MODE_BEHAVIOR.get(mode, _BUSY_MODE_BEHAVIOR["interrupt"])[0])
-            return EphemeralReply(t("gateway.busy.status", mode=mode, behavior=behavior))
+            return EphemeralReply(t("gateway.busy.status", mode=mode, behavior=behavior, prefix=prefix))
         if arg not in _BUSY_MODE_BEHAVIOR:
-            return EphemeralReply(t("gateway.busy.unknown_mode", arg=arg))
+            return EphemeralReply(t("gateway.busy.unknown_mode", arg=arg, prefix=prefix))
 
         # Persist before mutate
         from cli import save_config_value

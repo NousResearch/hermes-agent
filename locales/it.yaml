@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "I messaggi verranno indirizzati nell'esecuzione corrente (dopo la prossima chiamata a uno strumento)."
     behavior_interrupt_short: "interrompe l'esecuzione corrente"
     behavior_interrupt_long: "Mentre Hermes è occupato, i messaggi interromperanno l'esecuzione corrente."
-    status: "**Modalità input quando occupato: `{mode}`\nMessaggi mentre è occupato: _{behavior}_\nCambia con `/busy queue`, `/busy steer` o `/busy interrupt`."
-    unknown_mode: "Modalità sconosciuta `{arg}`. Usa `/busy queue`, `/busy steer` o `/busy interrupt`."
+    status: "**Modalità input quando occupato: `{mode}`\nMessaggi mentre è occupato: _{behavior}_\nCambia con `{prefix}busy queue`, `{prefix}busy steer` o `{prefix}busy interrupt`."
+    unknown_mode: "Modalità sconosciuta `{arg}`. Usa `{prefix}busy queue`, `{prefix}busy steer` o `{prefix}busy interrupt`."
     save_failed: "Impossibile salvare la modalità input quando occupato nella configurazione. Modalità invariata."
     set: "Modalità input quando occupato impostata su **`{mode}`** (salvata).\n_{behavior}_"
   pause:

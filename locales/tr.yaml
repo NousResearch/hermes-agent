@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "Mesajlar mevcut çalışmaya yönlendirilir (sonraki araç çağrısından sonra)."
     behavior_interrupt_short: "mevcut çalışmayı keser"
     behavior_interrupt_long: "Hermes meşgulken mesajlar mevcut çalışmayı keser."
-    status: "**Meşgul giriş modu: `{mode}`\nMeşgulken gelen mesajlar: _{behavior}_\n`/busy queue`, `/busy steer` veya `/busy interrupt` ile değiştirin."
-    unknown_mode: "Bilinmeyen mod `{arg}`. `/busy queue`, `/busy steer` veya `/busy interrupt` kullanın."
+    status: "**Meşgul giriş modu: `{mode}`\nMeşgulken gelen mesajlar: _{behavior}_\n`{prefix}busy queue`, `{prefix}busy steer` veya `{prefix}busy interrupt` ile değiştirin."
+    unknown_mode: "Bilinmeyen mod `{arg}`. `{prefix}busy queue`, `{prefix}busy steer` veya `{prefix}busy interrupt` kullanın."
     save_failed: "Meşgul giriş modu yapılandırmaya kaydedilemedi. Mod değişmedi."
     set: "Meşgul giriş modu **`{mode}`** olarak ayarlandı (kaydedildi).\n_{behavior}_"
   pause:

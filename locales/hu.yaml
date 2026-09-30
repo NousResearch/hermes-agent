@@ -743,8 +743,8 @@ gateway:
     behavior_steer_long: "Az üzenetek a futó feladatba kerülnek beirányításra (a következő eszközhívás után)."
     behavior_interrupt_short: "megszakítja a futó feladatot"
     behavior_interrupt_long: "Amíg a Hermes foglalt, az üzenetek megszakítják a futó feladatot."
-    status: "**Foglalt beviteli mód: `{mode}`\nÜzenetek foglalt állapotban: _{behavior}_\nMódosítás: `/busy queue`, `/busy steer` vagy `/busy interrupt`."
-    unknown_mode: "Ismeretlen mód: `{arg}`. Használd a `/busy queue`, `/busy steer` vagy `/busy interrupt` parancsot."
+    status: "**Foglalt beviteli mód: `{mode}`\nÜzenetek foglalt állapotban: _{behavior}_\nMódosítás: `{prefix}busy queue`, `{prefix}busy steer` vagy `{prefix}busy interrupt`."
+    unknown_mode: "Ismeretlen mód: `{arg}`. Használd a `{prefix}busy queue`, `{prefix}busy steer` vagy `{prefix}busy interrupt` parancsot."
     save_failed: "A foglalt beviteli módot nem sikerült a konfigurációba menteni. A mód nem változott."
     set: "Foglalt beviteli mód beállítva: **`{mode}`** (mentve).\n_{behavior}_"
   pause:

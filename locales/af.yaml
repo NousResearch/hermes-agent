@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "Boodskappe sal in die huidige lopie ingestuur word (na die volgende gereedskapsoproep)."
     behavior_interrupt_short: "onderbreek die huidige lopie"
     behavior_interrupt_long: "Boodskappe sal die huidige lopie onderbreek terwyl Hermes besig is."
-    status: "**Besig-invoermodus: `{mode}`\nBoodskappe terwyl besig: _{behavior}_\nVerander met `/busy queue`, `/busy steer`, of `/busy interrupt`."
-    unknown_mode: "Onbekende modus `{arg}`. Gebruik `/busy queue`, `/busy steer`, of `/busy interrupt`."
+    status: "**Besig-invoermodus: `{mode}`\nBoodskappe terwyl besig: _{behavior}_\nVerander met `{prefix}busy queue`, `{prefix}busy steer`, of `{prefix}busy interrupt`."
+    unknown_mode: "Onbekende modus `{arg}`. Gebruik `{prefix}busy queue`, `{prefix}busy steer`, of `{prefix}busy interrupt`."
     save_failed: "Besig-invoermodus kon nie in die konfigurasie gestoor word nie. Modus onveranderd."
     set: "Besig-invoermodus gestel op **`{mode}`** (gestoor).\n_{behavior}_"
   pause:

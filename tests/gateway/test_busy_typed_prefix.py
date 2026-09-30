@@ -35,6 +35,7 @@ def _make_runner() -> GatewayRunner:
     runner.session_store = None
     runner.config = None
     runner._running_agents = {}
+    runner._busy_input_mode = "interrupt"
     return runner
 
 
@@ -63,6 +64,10 @@ async def _queued_behind_subagent_ack(runner: GatewayRunner, event: MessageEvent
     )
 
 
+async def _busy_command(runner: GatewayRunner, event: MessageEvent) -> str:
+    return (await runner._handle_busy_command(event)).text
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("text", "reply_for"),
@@ -75,6 +80,8 @@ async def _queued_behind_subagent_ack(runner: GatewayRunner, event: MessageEvent
         ("/reasoning high", _dispatch_busy_command),
         ("/refine", _refine_while_running),
         ("follow-up while a subagent works", _queued_behind_subagent_ack),
+        ("/busy status", _busy_command),
+        ("/busy sideways", _busy_command),
     ],
 )
 async def test_busy_notice_uses_platform_typed_prefix(monkeypatch, text, reply_for):

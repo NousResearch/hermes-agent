@@ -733,8 +733,8 @@ gateway:
     behavior_steer_long: "消息将被引导至当前运行（在下一次工具调用后送达）。"
     behavior_interrupt_short: "中断当前运行"
     behavior_interrupt_long: "Hermes 忙碌时，消息将中断当前运行。"
-    status: "**忙碌输入模式：`{mode}`\n忙碌时的消息：_{behavior}_\n可用 `/busy queue`、`/busy steer` 或 `/busy interrupt` 更改。"
-    unknown_mode: "未知模式 `{arg}`。请使用 `/busy queue`、`/busy steer` 或 `/busy interrupt`。"
+    status: "**忙碌输入模式：`{mode}`\n忙碌时的消息：_{behavior}_\n可用 `{prefix}busy queue`、`{prefix}busy steer` 或 `{prefix}busy interrupt` 更改。"
+    unknown_mode: "未知模式 `{arg}`。请使用 `{prefix}busy queue`、`{prefix}busy steer` 或 `{prefix}busy interrupt`。"
     save_failed: "忙碌输入模式无法保存到配置。模式未更改。"
     set: "忙碌输入模式已设为 **`{mode}`**（已保存）。\n_{behavior}_"
   pause:

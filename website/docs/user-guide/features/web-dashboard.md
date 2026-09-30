@@ -1246,7 +1246,6 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 The web server restricts CORS to localhost origins only:
 
 - `http://localhost:9119` / `http://127.0.0.1:9119` (production)
-- `http://localhost:3000` / `http://127.0.0.1:3000`
 - `http://localhost:5173` / `http://127.0.0.1:5173` (Vite dev server)
 - `http://localhost:5174` / `http://localhost:4174` (desktop renderer dev / preview servers)
 

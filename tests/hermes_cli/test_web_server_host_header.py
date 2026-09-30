@@ -244,6 +244,7 @@ class TestWebSocketHostOriginGuard:
 
 @pytest.mark.parametrize("origin, trusted", [
     ("http://localhost:3999", False),     # a page previewed from any other local port
+    ("http://localhost:3000", False),     # the usual dev-server / local web app port
     ("http://127.0.0.1:5500", False),     # e.g. VS Code Live Server
     ("http://127.0.0.1:5176", False),     # another hgui slot's renderer, not this backend's
     ("http://localhost:9119", True),      # the bound port

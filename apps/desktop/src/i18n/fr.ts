@@ -4,6 +4,39 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: 'Vos sources réunies. Enregistrées sur cet appareil pour cet espace.',
+    pinSelection: 'Épingler le bloc sélectionné',
+    pinPage: 'Épingler la page',
+    working: 'En cours…',
+    emptyTitle: 'Votre recherche commence ici',
+    emptyBody:
+      'Sélectionnez du texte sur une page, puis épinglez le bloc qui le contient. Rassemblez vos sources et demandez à Hermes de les comparer.',
+    truncated: 'Capture limitée à 6 000 caractères',
+    changed: 'Modifié · voir la capture précédente',
+    checked: 'Dernière vérification',
+    note: 'Votre note',
+    openSource: 'Ouvrir la source',
+    refresh: 'Actualiser',
+    remove: 'Retirer',
+    question: 'Que doit examiner Hermes ?',
+    ask: 'Demander à Hermes',
+    added: 'Ajouté au brouillon du chat',
+    selectHint: 'Sélectionnez 1 à 8 fiches ; vérifiez le brouillon avant envoi.',
+    comparePrompt:
+      'Compare ces sources dans un tableau concis. Souligne les différences et les informations manquantes.',
+    errors: {
+      selectText: 'Sélectionnez du texte dans un seul bloc de la page.',
+      emptyPage: 'Cette page ne contient aucun texte lisible.',
+      unavailable: 'Lecture impossible. Rechargez la page et réessayez.',
+      sourceChanged: 'La source a changé de structure ou d’adresse. Ouvrez-la et épinglez le bloc à nouveau.',
+      openFirst: 'Ouvrez cette source dans un onglet avant de l’actualiser.',
+      saveFailed: 'Enregistrement impossible. Vérifiez le stockage du navigateur.',
+      boardFull: 'Le tableau est plein. Retirez une fiche avant d’en ajouter une.',
+      noComposer: 'Ouvrez un chat à côté du navigateur pour ajouter le brouillon.'
+    }
+  },
   sharedMetrics: {
     consentTitle: 'Aider à améliorer Hermes ?',
     consentBody:

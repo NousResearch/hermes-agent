@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import { dropLensScope, migrateLensScope, setLensScope } from '@/features/lens/store'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
@@ -246,6 +247,7 @@ adoptingStoredTabs = false
  *  changes; the previous agent's tabs must not leak into the next one. */
 export function setPreviewScope(scope: string) {
   const next = normalizeProfileKey(scope) || 'default'
+  setLensScope(next)
 
   if (next === viewKey) {
     return
@@ -260,6 +262,8 @@ export function setPreviewScope(scope: string) {
  *  would skip exactly that case (a fresh pop-out renderer starts on 'default'
  *  while the popped tab belongs to another profile). */
 function applyPreviewScope(next: string) {
+  setLensScope(next)
+
   if (pendingLegacyTabs) {
     tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
     pendingLegacyTabs = null
@@ -275,6 +279,7 @@ function applyPreviewScope(next: string) {
 export function dropPreviewTabsForProfile(profile: string) {
   const key = normalizeProfileKey(profile)
 
+  dropLensScope(key)
   delete tabsByProfile[key]
   persistTabs()
 
@@ -294,6 +299,7 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
     return
   }
 
+  migrateLensScope(from, to)
   const moved = tabsByProfile[from]
 
   if (moved) {

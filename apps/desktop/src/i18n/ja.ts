@@ -4,6 +4,38 @@ import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: 'ウェブの情報をひとまとめに。このワークスペース用に端末に保存します。',
+    pinSelection: '選択ブロックを保存',
+    pinPage: 'ページを保存',
+    working: '処理中…',
+    emptyTitle: 'ここから調査を始めましょう',
+    emptyBody:
+      'ページのテキストを選択し、それを含むブロックを保存します。情報源を集め、カードを選択して Hermes に比較を依頼できます。',
+    truncated: '先頭6,000文字を保存',
+    changed: '変更あり · 前回の内容を表示',
+    checked: '最終確認',
+    note: 'メモ',
+    openSource: '情報源を開く',
+    refresh: '更新',
+    remove: '削除',
+    question: 'Hermes に何を調べてほしいですか？',
+    ask: 'Hermes に聞く',
+    added: 'チャットの下書きに追加しました',
+    selectHint: '1～8枚を選択し、送信前に下書きを確認してください。',
+    comparePrompt: 'これらの情報源を簡潔な表で比較し、相違点と不足している情報を示してください。',
+    errors: {
+      selectText: 'まずページ内の1つのブロック内でテキストを選択してください。',
+      emptyPage: 'このページには読み取れるテキストがありません。',
+      unavailable: 'ページを読み取れませんでした。再読み込みしてお試しください。',
+      sourceChanged: '情報源の場所または構造が変わりました。開いて再度保存してください。',
+      openFirst: 'まず情報源をブラウザーのタブで開いてから更新してください。',
+      saveFailed: '保存できませんでした。ブラウザーのストレージを確認してください。',
+      boardFull: 'ボードがいっぱいです。カードを削除してから追加してください。',
+      noComposer: 'ブラウザーの横にチャットを開いて下書きを追加してください。'
+    }
+  },
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',

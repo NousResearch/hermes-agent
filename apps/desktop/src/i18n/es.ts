@@ -4,6 +4,38 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  lens: {
+    title: 'Hermes Lens',
+    subtitle: 'Tus fuentes web juntas. Guardadas en este dispositivo para este espacio.',
+    pinSelection: 'Fijar bloque seleccionado',
+    pinPage: 'Fijar página',
+    working: 'Procesando…',
+    emptyTitle: 'Tu investigación empieza aquí',
+    emptyBody:
+      'Selecciona texto de una página y fija el bloque que lo contiene. Reúne fuentes y pide a Hermes que compare las tarjetas.',
+    truncated: 'Se capturaron los primeros 6000 caracteres',
+    changed: 'Cambió · ver captura anterior',
+    checked: 'Última comprobación',
+    note: 'Tu nota',
+    openSource: 'Abrir fuente',
+    refresh: 'Actualizar',
+    remove: 'Quitar',
+    question: '¿Qué debe investigar Hermes?',
+    ask: 'Preguntar a Hermes',
+    added: 'Añadido al borrador del chat',
+    selectHint: 'Selecciona de 1 a 8 tarjetas; revisa el borrador antes de enviarlo.',
+    comparePrompt: 'Compara estas fuentes en una tabla concisa. Destaca diferencias e información que falta.',
+    errors: {
+      selectText: 'Selecciona texto dentro de un solo bloque de la página.',
+      emptyPage: 'Esta página no tiene texto legible.',
+      unavailable: 'No se pudo leer la página. Recárgala e inténtalo de nuevo.',
+      sourceChanged: 'La fuente cambió de dirección o estructura. Ábrela y vuelve a fijar el bloque.',
+      openFirst: 'Abre primero la fuente en una pestaña y luego actualiza.',
+      saveFailed: 'No se pudieron guardar los datos. Revisa el almacenamiento del navegador.',
+      boardFull: 'El tablero está lleno. Quita una tarjeta antes de añadir otra.',
+      noComposer: 'Abre un chat junto al navegador para añadir el borrador.'
+    }
+  },
   sharedMetrics: {
     consentTitle: '¿Nos ayudas a mejorar Hermes?',
     consentBody:

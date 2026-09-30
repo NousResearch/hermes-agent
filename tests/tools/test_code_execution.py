@@ -961,3 +961,19 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("value", ["invalid", -1])
+@pytest.mark.parametrize("environment", ["local", "docker"])
+def test_invalid_tool_budget_returns_tool_error_without_execution(monkeypatch, value, environment):
+    import tools.code_execution_tool as module
+    monkeypatch.setattr(module, "_load_config", lambda: {"max_tool_calls": value})
+    monkeypatch.setattr("tools.terminal_tool._get_env_config", lambda: {"env_type": environment})
+    monkeypatch.setattr("tools.terminal_tool._docker_has_host_access", lambda config: False)
+    monkeypatch.setattr("tools.approval.check_execute_code_guard", lambda *args, **kwargs: {"approved": True})
+    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
+    monkeypatch.setattr(module, "_get_or_create_env", lambda *args, **kwargs: pytest.fail("remote execution started"))
+    monkeypatch.setattr("tools.code_kernel.execute_in_session_kernel", lambda *args, **kwargs: pytest.fail("local execution started"))
+    result = json.loads(module.execute_code("print('synthetic')", task_id="invalid-budget"))
+    assert result["error"]
+    assert "max_tool_calls" in result["error"]

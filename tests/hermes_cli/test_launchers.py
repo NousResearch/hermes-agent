@@ -41,6 +41,22 @@ def _write_facts(runtime_dir: Path, *, entry: str | None) -> Path:
     return facts
 
 
+def _patch_runtime(monkeypatch, runtime: Path):
+    """Redirect ``resolve_store_python``'s ``store_root()`` lookup to ``runtime``.
+
+    ``resolve_store_python`` reads the store location via
+    ``pm.environments.store_root``, which does NOT honor ``HERMES_RUNTIME_DIR``
+    and always returns a hardcoded path under the user's home. To exercise
+    each scenario against a clean per-test directory we monkeypatch the
+    name where ``resolve_store_python`` binds it — at the top of
+    ``_launchers`` — to a lambda that returns our fixture path. Patching
+    there (not in ``pm.environments``) keeps the change local to the module
+    we are testing and avoids side effects on other tests that rely on the
+    real ``store_root``.
+    """
+    monkeypatch.setattr(_launchers, "store_root", lambda _repo_root: runtime)
+
+
 @pytest.mark.platforms("posix")
 def test_resolve_store_python_falls_back_on_broken_entry(tmp_path, monkeypatch):
     """``facts.json`` with an entry whose target dir has no ``bin/python3``.
@@ -54,7 +70,7 @@ def test_resolve_store_python_falls_back_on_broken_entry(tmp_path, monkeypatch):
     runtime.mkdir()
     _write_facts(runtime, entry="python-3.14.7+202****0901-linux-x64")
 
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    _patch_runtime(monkeypatch, runtime)
 
     assert _launchers.resolve_store_python(tmp_path / "checkout") is None
 
@@ -80,7 +96,7 @@ def test_resolve_store_python_returns_none_when_interpreter_not_executable(
     interp.chmod(interp.stat().st_mode & ~stat.S_IXUSR & ~stat.S_IXGRP & ~stat.S_IXOTH)
     _write_facts(runtime, entry=entry)
 
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    _patch_runtime(monkeypatch, runtime)
 
     assert _launchers.resolve_store_python(tmp_path / "checkout") is None
 
@@ -104,7 +120,7 @@ def test_resolve_store_python_returns_interpreter_when_executable(
     interp.chmod(0o755)
     _write_facts(runtime, entry=entry)
 
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    _patch_runtime(monkeypatch, runtime)
 
     assert _launchers.resolve_store_python(tmp_path / "checkout") == interp
 
@@ -116,6 +132,7 @@ def test_resolve_store_python_returns_none_when_no_facts_file(
     """No ``facts.json`` at all — same outcome as a broken entry."""
     runtime = tmp_path / "tools"
     runtime.mkdir()
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+
+    _patch_runtime(monkeypatch, runtime)
 
     assert _launchers.resolve_store_python(tmp_path / "checkout") is None

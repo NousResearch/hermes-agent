@@ -90,10 +90,10 @@ def test_an_interrupt_during_submit_setup_ends_that_submit(
         written.append(text)
         return {"role": "user", "content": text}
 
-    def run_prompt_submit(_rid, _sid, sess, text, **_kw):
+    def run_prompt_submit(_rid, _sid, sess, text, *, turn_claim, **_kw):
         ran.append(text)
         workers[text] = server._start_session_work(
-            lambda: finish_turns.wait(10), name=f"prompt-turn-{text}", session=sess)
+            lambda: finish_turns.wait(10), name=f"prompt-turn-{text}", session=sess, turn_claim=turn_claim)
         second_published.set()
 
     monkeypatch.setattr(server, "_ensure_session_db_row", ensure_row)

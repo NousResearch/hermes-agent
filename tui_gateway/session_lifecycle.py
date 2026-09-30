@@ -22,52 +22,93 @@ def _session_turn_admission(session: dict):
         yield admitted
 
 
-def _start_session_work(target, *, name: str, session: dict | None = None):
-    """Reserve before spawning; release only after the worker (including cleanup) has unwound."""
+def _claim_session_turn(session: dict) -> int:
+    """Mark the session's turn as claimed and return the claim's token. The caller holds ``history_lock`` and has
+    seen ``running`` False."""
+    session["running"] = True
+    claim = session["_turn_claim"] = int(session.get("_turn_claim", 0)) + 1
+    return claim
+
+
+def _owns_turn_claim(session: dict, claim: int | None) -> bool:
+    """Whether no later claim has replaced ``claim``. The caller holds ``history_lock``."""
+    return session.get("_turn_claim") == claim
+
+
+def _holds_turn_claim(session: dict, claim: int | None) -> bool:
+    """Whether ``claim`` is still live: no Stop has released it and no later claim has replaced it. The caller
+    holds ``history_lock``."""
+    return bool(session.get("running")) and _owns_turn_claim(session, claim)
+
+
+def _release_session_turn(session: dict, claim: int | None) -> None:
+    """Clear ``running`` for ``claim``, unless a later claim has replaced it."""
+    with session["history_lock"]:
+        if _owns_turn_claim(session, claim):
+            session["running"] = False
+
+
+def _decide_turn_thread(session: dict, thread, claim: int | None, decision: list[bool]) -> bool:
+    """Decide once whether the started worker can run its claim.
+
+    The worker and its starter share the result. If the worker has finished before the starter checks, its
+    released claim must not make the starter report that the worker never ran."""
+    with session["history_lock"]:
+        if not decision:
+            decision.append(_holds_turn_claim(session, claim))
+            if decision[0]:
+                session["_run_thread"] = thread
+                session["_run_thread_claim"] = claim
+        return decision[0]
+
+
+def _start_session_work(target, *, name: str, session: dict | None = None, turn_claim: int | None = None):
+    """Reserve process admission until the worker has unwound.
+
+    With a session, publish only a started worker for the current claim. The worker and its starter share
+    one admission decision because either thread can check first."""
     from agent.memory_provider import spawn_context_thread
     from hermes_cli.backend_retirement import retirement
 
     if not retirement.acquire():
         return None
+    decision: list[bool] = []
 
     def run():
         try:
-            target()
+            if session is None or _decide_turn_thread(session, thread, turn_claim, decision):
+                target()
         finally:
             retirement.release()
 
     try:
         thread = spawn_context_thread(run, name=name)
-        if session is None:
-            thread.start()
-        else:
-            _start_turn_thread(session, thread)
-        return thread
+        thread.start()
     except BaseException:
         retirement.release()
         raise
+    if session is not None and not _decide_turn_thread(session, thread, turn_claim, decision):
+        return None
+    return thread
 
 
 _turn_thread_publish_lock = threading.Lock()
 
 
-def _start_turn_thread(
-    session: dict, thread: threading.Thread, *, turn_generation: int | None = None
-) -> bool:
-    """Start ``thread``, then publish it as ``session["_run_thread"]``. Other threads call ``is_alive()`` and
-    ``join()`` on that handle, so it must never refer to a thread that has not started.
+def _start_turn_thread(session: dict, thread: threading.Thread, turn_claim: int) -> bool:
+    """Start the submit dispatch thread, then publish it if its claim has not been replaced.
 
-    The new thread can publish its own worker before or after this store, so the store replaces only the handle
-    seen before ``start()`` or the calling thread itself. A worker published by the new thread is kept, and a
-    worker always replaces the thread that started it."""
+    Keep a worker which the dispatcher has already published. Other threads call ``join()`` on the handle,
+    so publication must follow ``start()``. The caller must not already have acquired ``history_lock``."""
     previous = session.get("_run_thread")
     thread.start()
     with session["history_lock"], _turn_thread_publish_lock:
-        if turn_generation is not None and not _holds_submit_claim(session, turn_generation):
+        if not _owns_turn_claim(session, turn_claim):
             return False
         current = session.get("_run_thread")
         if current is previous or current is threading.current_thread():
             session["_run_thread"] = thread
+            session["_run_thread_claim"] = turn_claim
     return True
 
 
@@ -723,15 +764,13 @@ def _interrupt_session_turn(
     # abort it nor clear `running` under it, or the next submit is admitted idle and loses its reply (#133504).
     compressing = bool(session.get("_manual_compress_active"))
     should_interrupt = bool(session.get("running")) and not compressing
-    run_thread_alive = False
     if use_compute_host:
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
         # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
         if should_interrupt or session.get("_compute_host_active"):
             _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
-    else:
-        run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
+        interrupted_claim = session.get("_turn_claim")
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
@@ -764,14 +803,21 @@ def _interrupt_session_turn(
             interrupt_for_session(
                 origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
                 parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
-        if not run_thread_alive and not compressing:
-            with session["history_lock"]:
-                if session.get("running"):
-                    session["running"] = False
-                    _clear_inflight_turn(session)
+        with session["history_lock"]:
+            # A claim whose own thread is not running yet (an automatic turn still starting, or a thread that has
+            # been published but not started) ends here: its owner checks the claim before it starts the turn. A
+            # claim taken after this Stop is left alone.
+            run_thread = session.get("_run_thread")
+            claim_thread_alive = (
+                session.get("_run_thread_claim") == interrupted_claim and run_thread is not None
+                and run_thread.is_alive())
+            if (session.get("running") and not compressing and _owns_turn_claim(session, interrupted_claim)
+                    and not claim_thread_alive):
+                session["running"] = False
+                _clear_inflight_turn(session)
     # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
     # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
-    # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated
+    # turn. The review fork is invisible to `should_interrupt`/`claim_thread_alive` above (both gated
     # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
     # post-turn review is still running (the common case: the main turn already finished) would see
     # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
@@ -781,6 +827,7 @@ def _interrupt_session_turn(
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
                 agent_for_review, message="session interrupted", tool_reason="session interrupted")
+
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         # Deny-resolve every pending approval so no agent thread blocks on the queue. The

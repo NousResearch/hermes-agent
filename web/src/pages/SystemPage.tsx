@@ -1146,7 +1146,7 @@ export default function SystemPage() {
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning ? "running" : "stopped"}
+                {gatewayRunning ? t.status.running : t.status.stopped}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {gatewayStateDescription(status?.gateway_state, gatewayRunning)}

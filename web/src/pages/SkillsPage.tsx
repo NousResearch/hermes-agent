@@ -1087,9 +1087,9 @@ function HubBrowser({
               <Download className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono text-xs">{action}</span>
               {actionRunning ? (
-                <Badge tone="warning">running</Badge>
+                <Badge tone="warning">{t.system.actionRunning}</Badge>
               ) : (
-                <Badge tone="success">done</Badge>
+                <Badge tone="success">{t.system.actionDone}</Badge>
               )}
               {!actionRunning && (
                 <Button

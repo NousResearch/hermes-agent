@@ -108,11 +108,15 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
                     "will route to this profile)", default_assignee)
 
     # Per-provider concurrency budget (#123654): raw mapping carried through;
-    # the tick parses it. One boot line so operators can see it is on.
+    # the tick parses it. One boot line so operators can see it is on. Keys
+    # print in their log-safe form (normalized URLs, no userinfo/query) — a
+    # secret embedded in a configured base URL never reaches the log (D7/D9).
     provider_concurrency = kanban_cfg.get("provider_concurrency")
     if isinstance(provider_concurrency, dict) and provider_concurrency:
+        from hermes_cli.kanban_provider_budget import log_safe_key
+
         logger.info("kanban dispatcher: provider_concurrency=%s",
-                    ",".join(f"{k}:{v}" for k, v in provider_concurrency.items()))
+                    ",".join(f"{log_safe_key(str(k))}:{v}" for k, v in provider_concurrency.items()))
     else:
         # Empty mapping / non-dict means "off" — normalize to None so the
         # tick's `if provider_concurrency` fast path skips parsing entirely.

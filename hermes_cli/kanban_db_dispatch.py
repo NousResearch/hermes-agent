@@ -1925,32 +1925,14 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     Caps bound the HOST, but each board's tick only sees its own DB; without
     this a derived cap of N gets multiplied by the number of active boards.
     Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
+    board to one file) yields 0. Fails open per board. Shares
+    ``_iter_other_board_conns`` with the provider-budget fold (#123654 D4)
+    so the two board sweeps can never drift.
     """
-    try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
-    except Exception:
-        current_path = None
-    try:
-        boards = _kb.list_boards(include_archived=False)
-    except Exception:
-        return 0
     total = 0
-    for meta in boards:
-        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+    for _slug, other in _iter_other_board_conns(board, warn=False):
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
-            resolved = str(path.resolve())
-            if current_path is not None and resolved == current_path:
-                continue
-            if not path.exists():
-                continue
-            other = _kbc.connect(board=slug)
-            try:
-                total += count_running_tasks(other)
-            finally:
-                with contextlib.suppress(Exception):
-                    other.close()
+            total += count_running_tasks(other)
         except Exception:
             continue
     return total
@@ -2106,11 +2088,13 @@ def _dispatch_lane_task(
     # checks (per-profile cap, respawn guard) so guarded rows are neither
     # resolved nor reported as provider-held, and BEFORE the claim. Defer,
     # never kill: the row stays ready/review and is re-evaluated next tick.
+    # A key of None (resolution failed, O3/T15c) records NULL on the claim
+    # and SKIPS the provider gate — a resolution error never blocks a spawn.
     provider_key: Optional[str] = None
     if provider_resolver is not None:
         provider_key = provider_resolver.resolve(
             assignee, row["model_override"], row["provider_override"])
-        if provider_budgets is not None:
+        if provider_key is not None and provider_budgets is not None:
             cap = provider_budgets.cap_for(provider_key)
             if cap is not None:
                 current = (provider_running or {}).get(provider_key, 0)
@@ -2347,10 +2331,11 @@ def _any_spawnable_review(
             if provider_budgets is not None and provider_running is not None and provider_resolver is not None:
                 key = provider_resolver.resolve(
                     assignee, row["model_override"], row["provider_override"])
-                cap = provider_budgets.cap_for(key)
-                current = provider_running.get(key, 0)
-                if cap is not None and current >= cap:
-                    continue
+                if key is not None:
+                    cap = provider_budgets.cap_for(key)
+                    current = provider_running.get(key, 0)
+                    if cap is not None and current >= cap:
+                        continue
             return True
     return False
 
@@ -2418,23 +2403,28 @@ def _dispatch_once_locked(
     # enabling the budget later; the counting query only runs when the budget
     # is on (MoA I8) — a disabled budget costs one key resolution per spawn.
     from hermes_cli.kanban_provider_budget import (
-        RouteKeyResolver, count_running_by_provider, parse_provider_concurrency,
+        RouteKeyResolver, host_wide_running_counts, parse_provider_concurrency_cached,
     )
 
-    provider_budgets = parse_provider_concurrency(provider_concurrency) if provider_concurrency else None
+    provider_budgets = (
+        parse_provider_concurrency_cached(provider_concurrency) if provider_concurrency else None)
     profile_exists_fn = _profile_exists_fn()
     resolver = RouteKeyResolver(
         profile_exists=profile_exists_fn,
         profile_inputs=_provider_route_inputs,
+        scope=_assignee_route_scope,
     )
     provider_running: Optional[dict] = None
     if provider_budgets is not None:
-        provider_running = count_running_by_provider(
-            conn, resolver, profile_exists=profile_exists_fn)
-        # Host-wide: provider quotas are account-wide, so sibling boards count
-        # against the same budget (same fail-open-per-board posture as the host
-        # cap). One WARNING per board per process when a sibling count fails.
-        _add_other_board_provider_counts(board, provider_running)
+        # Host-wide (D4): provider quotas are account-wide, so sibling boards
+        # count against the same budget — through the ONE counting path the
+        # diagnostics snapshot also uses (D9), over the shared board iterator
+        # of the host cap, with the tick's resolver and profile filter (a
+        # control-plane lane on a sibling board is excluded exactly like one
+        # on this board).
+        provider_running, _ = host_wide_running_counts(
+            conn, board=board, resolver=resolver, profile_exists=profile_exists_fn,
+            iter_other_boards=_iter_other_board_conns)
 
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
@@ -2771,24 +2761,37 @@ def _provider_route_inputs(assignee: str) -> Optional[dict]:
         return _default_profile_inputs(assignee)
 
 
-_warned_provider_count_boards: set[str] = set()
+def _assignee_route_scope(assignee: str):
+    """``_worker_profile_scope`` context manager for ``assignee``'s home.
 
-
-def _add_other_board_provider_counts(board: Optional[str], provider_running: Optional[dict]) -> None:
-    """Fold sibling boards' per-key running counts into ``provider_running``.
-
-    Provider quotas are account-wide, so per-board counting would multiply the
-    budget by the number of boards. Shares the board iterator (and the
-    fail-open-per-board posture) of ``count_running_tasks_other_boards``; a
-    sibling whose count raises logs one WARNING per board per process (MoA I7)
-    and is skipped — one corrupt board cannot halt every provider.
+    The resolver's whole key resolution (stage-1 route + key step, including
+    transitive reads: ``model_switch`` aliases, ``OPENAI_BASE_URL`` via
+    ``expand_direct_api_alias``) runs inside this scope, so a launch profile's
+    config can never leak into an assignee's budget key (#123654 R1 Q-F1).
+    An unresolvable assignee falls back to a no-op scope — the inputs read
+    then fails and the row buckets as ``unknown``, exactly as before.
     """
-    if provider_running is None:
-        return
-    from collections import Counter
+    try:
+        from hermes_cli.profiles import resolve_profile_env
 
-    from hermes_cli.kanban_provider_budget import count_running_by_provider
+        home = resolve_profile_env(assignee)
+    except Exception:
+        return contextlib.nullcontext()
+    return _worker_profile_scope(str(home)) if home else contextlib.nullcontext()
 
+
+def _iter_other_board_conns(board: Optional[str], *, warn: bool = True):
+    """Yield ``(slug, conn)`` for every OTHER active board (D4 host scope).
+
+    The single board iterator shared by the host-cap count and the
+    provider-budget fold, so the two can never drift (#123654 R1 A3).
+    Boards are matched by resolved DB path (``HERMES_KANBAN_DB`` pins every
+    board to one file and yields nothing). Fails open per board: a board
+    that cannot be opened is skipped — with one WARNING per board per
+    process when ``warn`` (the provider fold's default, MoA I7; the host-cap
+    count passes ``warn=False`` and stays silent as it always was). The
+    connection is closed when the consumer moves on or raises.
+    """
     try:
         current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
     except Exception:
@@ -2806,45 +2809,17 @@ def _add_other_board_provider_counts(board: Optional[str], provider_running: Opt
             if not path.exists():
                 continue
             other = _kbc.connect(board=slug)
-            try:
-                other_counts = count_running_by_provider(other, _counting_resolver_for_board())
-                for key, n in other_counts.items():
-                    provider_running[key] = provider_running.get(key, 0) + n
-            finally:
-                with contextlib.suppress(Exception):
-                    other.close()
         except Exception:
-            if slug not in _warned_provider_count_boards:
-                _warned_provider_count_boards.add(slug)
-                _kb._log.warning(
-                    "kanban provider budget: could not count running workers on "
-                    "sibling board %s; its workers are not counted against any "
-                    "provider budget this tick", slug,
-                )
+            if warn:
+                from hermes_cli.kanban_provider_budget import warn_sibling_count_failure_once
+
+                warn_sibling_count_failure_once(str(slug))
             continue
-
-
-def _counting_resolver_for_board():
-    """A resolver for sibling-board counting (NULL keys re-derived from each
-    row's assignee). Cached per process — the resolver itself memoizes per
-    (assignee, model, provider) triple."""
-    global _SIBLING_COUNT_RESOLVER
-    try:
-        if _SIBLING_COUNT_RESOLVER is None:
-            from hermes_cli.kanban_provider_budget import RouteKeyResolver
-
-            _SIBLING_COUNT_RESOLVER = RouteKeyResolver(
-                profile_exists=_profile_exists_fn(),
-                profile_inputs=_provider_route_inputs,
-            )
-        return _SIBLING_COUNT_RESOLVER
-    except Exception:
-        from hermes_cli.kanban_provider_budget import RouteKeyResolver
-
-        return RouteKeyResolver(profile_exists=_profile_exists_fn(), profile_inputs=_provider_route_inputs)
-
-
-_SIBLING_COUNT_RESOLVER = None
+        try:
+            yield slug, other
+        finally:
+            with contextlib.suppress(Exception):
+                other.close()
 
 
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:

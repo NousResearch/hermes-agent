@@ -860,7 +860,6 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
 # ── the resolution ladder ──────────────────────────────────────────────────────────────────
 
 _VERTEX_NAMES = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
-_LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 
 
 def _raise_if_provider_disabled(requested_provider: str) -> None:
@@ -946,11 +945,15 @@ def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_b
     """provider "auto"/unset with a config base_url at a custom/local endpoint routes through the
     OpenAI-compatible resolver, so resolve_provider() cannot pick up an env ANTHROPIC/OPENAI key
     and send the request to a cloud API. Only non-cloud roots take the bypass; match on HOST, not
-    substring, so a look-alike (api.anthropic.com.attacker.test) cannot leak a cloud credential."""
+    substring, so a look-alike (api.anthropic.com.attacker.test) cannot leak a cloud credential.
+    The condition itself lives in one place — ``kanban_provider_budget.local_endpoint_bypass_applies``
+    (also the Kanban provider-budget key step, #123654 D2) — so the runtime and the budget cannot drift."""
     model_cfg = _get_model_config()
     cfg_base_url = str(model_cfg.get("base_url") or "").strip()
-    if (not cfg_base_url or _cfg_provider(model_cfg) not in ("auto", "")
-            or any(base_url_host_matches(cfg_base_url, host) for host in _LOCAL_BYPASS_CLOUD_HOSTS)):
+    # One shared condition + host list, owned by the budget module (#123654 D2):
+    # the runtime bypass and the Kanban key step cannot drift.
+    from hermes_cli.kanban_provider_budget import local_endpoint_bypass_applies
+    if not local_endpoint_bypass_applies(cfg_base_url, _cfg_provider(model_cfg)):
         return None
     return _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
 

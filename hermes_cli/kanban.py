@@ -701,11 +701,16 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
             _resolver = RouteKeyResolver(
                 profile_exists=kbd._profile_exists_fn(),
                 profile_inputs=kbd._provider_route_inputs,
+                scope=kbd._assignee_route_scope,
             )
             with kbc.connect_closing() as conn:
+                # Host-wide (D9): the SAME counting path the dispatcher's gate
+                # uses — this board plus sibling boards via the shared board
+                # iterator — so diagnostics can never disagree with enforcement.
                 _snap = provider_budget_snapshot(
                     conn, getattr(args, "board", None), _budgets,
                     resolver=_resolver, profile_exists=kbd._profile_exists_fn(),
+                    iter_other_boards=kbd._iter_other_board_conns,
                 )
             provider_line = describe_budget_line(_snap, _budgets.default)
             provider_field = {

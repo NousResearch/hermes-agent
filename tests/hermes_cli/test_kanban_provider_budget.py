@@ -9,6 +9,8 @@ addendum.
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -250,28 +252,49 @@ class TestRouteKey:
         assert key == "anthropic"
 
     def test_alias_base_url(self):
-        """T5: a direct alias with base_url -> the provider/URL the CLI would request."""
-        from hermes_cli import model_switch
+        """T5: a named providers: alias with base_url -> the provider/URL the
+        CLI would request (the entry's URL, not the config provider)."""
+        key = _key(
+            model="m", provider="myalias",
+            model_config={"default": "fallback", "provider": "openrouter"},
+            user_providers={"myalias": {"name": "Mine", "base_url": "https://alias.example.internal/v1"}})
+        assert key == "custom:https://alias.example.internal/v1"
 
-        key = _key(model="myalias", model_config={"default": "fallback", "provider": "openrouter"})
-        # no alias seeded -> falls through to the config provider
-        assert key == "openrouter"
+    def test_direct_alias_explicit_base_url(self, monkeypatch):
+        """T5/R1 tests-F7: a URL-bearing startup alias contributes its
+        explicit base_url — the same URL the CLI would request."""
+        from hermes_cli import model_switch
+        from hermes_cli.kanban_provider_budget import route_key as rk
+
+        monkeypatch.setattr(
+            model_switch, "DIRECT_ALIASES",
+            {"fast": model_switch.DirectAlias(
+                model="fast-model", provider="custom",
+                base_url="https://fast.example.internal/v1", api_key="", key_env="")},
+            raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.model_switch._ensure_direct_aliases", lambda: None, raising=False)
+        route = _route(model="fast", model_config={"default": "fallback", "provider": "openrouter"})
+        assert route.explicit_base_url == "https://fast.example.internal/v1"
+        assert rk(route, {"default": "fallback", "provider": "openrouter"}) == \
+            "custom:https://fast.example.internal/v1"
 
     def test_unknown_provider_name(self):
         """T7: unknown provider -> unknown."""
         key = _key(model="m", provider="no-such-provider", model_config={"default": "m"})
         assert key == "unknown"
 
-    def test_resolver_exception_is_unknown(self, monkeypatch):
-        """T7: a resolver exception -> 'unknown', never a raise."""
+    def test_resolver_exception_is_null(self, monkeypatch):
+        """T7/T15c: a resolution error -> NULL (never a raise, never blocks the
+        spawn — addendum O3: 'a resolution error stores NULL'). A route that
+        RESOLVES but names no known provider is the 'unknown' BUCKET, not NULL."""
         from hermes_cli import kanban_provider_budget as kpb
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
 
         def _boom(*a, **kw):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(kpb, "route_key", _boom)
-        from hermes_cli.kanban_provider_budget import RouteKeyResolver
-
         resolver = RouteKeyResolver(
             profile_exists=lambda a: True,
             profile_inputs=lambda a: {"model_config": {}, "user_providers": None,
@@ -279,7 +302,19 @@ class TestRouteKey:
         )
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(kpb, "resolve_requested_route", _boom)
-            assert resolver.resolve("alpha", "m", None) == "unknown"
+            assert resolver.resolve("alpha", "m", None) is None
+        assert resolver.resolve("alpha", "m", None) is None  # cached None too
+        # Distinguish the failure-NULL from the unknown BUCKET: an unresolvable
+        # provider name resolves fine and buckets as "unknown" (D2 step 5).
+        # route_key must be un-patched for that, so use a fresh resolver with
+        # the real functions.
+        monkeypatch.undo()
+        resolver2 = RouteKeyResolver(
+            profile_exists=lambda a: True,
+            profile_inputs=lambda a: {"model_config": {}, "user_providers": None,
+                                      "custom_providers": None, "env_provider": ""},
+        )
+        assert resolver2.resolve("alpha", "m", "no-such-provider") == "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -311,14 +346,11 @@ class TestPurity:
             "hermes_cli.runtime_provider._get_model_config", _spy("_get_model_config"))
         monkeypatch.setattr(
             "hermes_cli.auth.get_auth_status", _spy("get_auth_status"))
-        # CredentialPool: import path varies; patch the class attribute if importable.
-        try:
-            from hermes_cli import auth as _auth
+        # CredentialPool lives in agent.credential_pool (R1 tests-F10: the
+        # hermes_cli.auth hasattr guard never installed this spy).
+        from agent.credential_pool import CredentialPool
 
-            if hasattr(_auth, "CredentialPool"):
-                monkeypatch.setattr(_auth.CredentialPool, "select", _spy("CredentialPool.select"))
-        except Exception:
-            pass
+        monkeypatch.setattr(CredentialPool, "select", _spy("CredentialPool.select"))
         calls.clear()
         yield
         assert not calls, f"impure calls escaped: {calls}"
@@ -378,6 +410,93 @@ class TestProfileScope:
         assert resolver.resolve("alpha", None, None) == "zai"
 
 
+class TestRealProfileScope:
+    """T9 (R1 tests-F6/Q-F1): drive the REAL dispatch-side scope helpers —
+    ``_provider_route_inputs`` + ``_assignee_route_scope`` — with a profile
+    home whose .env / model_aliases differ from the launch profile's, so the
+    scope boundary is actually exercised (not injected inputs)."""
+
+    @pytest.fixture()
+    def scope_home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        # Launch (default) profile: proxy URL + an alias with a DIFFERENT url.
+        (home / "config.yaml").write_text(
+            "model:\n  default: m-launch\n  provider: openrouter\n"
+            "model_aliases:\n  fast:\n    model: fast-model\n"
+            "    provider: custom\n    base_url: https://launch-alias.example/v1\n")
+        # Routed profile beta: its own alias AND its own OPENAI_BASE_URL.
+        beta = home / "profiles" / "beta"
+        beta.mkdir(parents=True)
+        (beta / "config.yaml").write_text(
+            "model:\n  default: m-beta\n  provider: openai\n"
+            "model_aliases:\n  fast:\n    model: beta-model\n"
+            "    provider: custom\n    base_url: https://beta-alias.example/v1\n")
+        (beta / ".env").write_text("OPENAI_BASE_URL=https://beta-proxy.example/v1\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://launch-proxy.example/v1")
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("hermes_cli") or mod == "hermes_constants":
+                del sys.modules[mod]
+        return home
+
+    def test_scoped_openai_base_url_wins_over_launch_env(self, scope_home):
+        """Q-F1 probe P1: beta's .env OPENAI_BASE_URL must key the URL, not the
+        dispatcher's ambient OPENAI_BASE_URL."""
+        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        resolver = RouteKeyResolver(
+            profile_exists=lambda a: a == "beta",
+            profile_inputs=kbd._provider_route_inputs,
+            scope=kbd._assignee_route_scope,
+        )
+        # beta pins provider openai (a direct-API alias) -> custom + OPENAI_BASE_URL.
+        # The scoped .env value must win over the launch process env.
+        assert resolver.resolve("beta", None, None) == \
+            "custom:https://beta-proxy.example/v1"
+
+    def test_scoped_alias_wins_over_launch_alias(self, scope_home):
+        """Q-F1 probe P2: a model_alias defined in beta's config resolves with
+        beta's URL, not the launch profile's alias with the same name."""
+        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        resolver = RouteKeyResolver(
+            profile_exists=lambda a: a == "beta",
+            profile_inputs=kbd._provider_route_inputs,
+            scope=kbd._assignee_route_scope,
+        )
+        assert resolver.resolve("beta", "fast", None) == \
+            "custom:https://beta-alias.example/v1"
+
+    def test_scoped_env_provider_wins_over_process_env(self, scope_home, monkeypatch):
+        """T9's adversarial row, through the real scope: beta .env
+        HERMES_INFERENCE_PROVIDER=zai beats the dispatcher process env."""
+        # The env rung only applies when the profile does not pin
+        # model.provider — unpin it for this row.
+        beta_cfg = scope_home / "profiles" / "beta" / "config.yaml"
+        beta_cfg.write_text(
+            "model:\n  default: m-beta\n"
+            "model_aliases:\n  fast:\n    model: beta-model\n"
+            "    provider: custom\n    base_url: https://beta-alias.example/v1\n")
+        beta_env = scope_home / "profiles" / "beta" / ".env"
+        beta_env.write_text(
+            beta_env.read_text() + "HERMES_INFERENCE_PROVIDER=zai\n")
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "anthropic")
+        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        resolver = RouteKeyResolver(
+            profile_exists=lambda a: a == "beta",
+            profile_inputs=kbd._provider_route_inputs,
+            scope=kbd._assignee_route_scope,
+        )
+        # A route with nothing else pinned: the scoped env rung must win over
+        # the dispatcher's own process env (anthropic).
+        assert resolver.resolve("beta", "m-beta", None) == "zai"
+
+
 # ---------------------------------------------------------------------------
 # T6b — secret hygiene (MoA I13)
 # ---------------------------------------------------------------------------
@@ -386,9 +505,14 @@ class TestProfileScope:
 class TestSecretHygiene:
     def test_malformed_custom_key_warning_hides_url(self, caplog):
         with caplog.at_level(logging.WARNING):
-            parse_provider_concurrency({"custom:not-a-url": 3})
+            budgets = parse_provider_concurrency({"custom:not-a-url": 3})
+        assert budgets is None  # the only entry was invalid
         for r in caplog.records:
-            assert "not-a-url" not in r.getMessage()
+            assert "not-a-url" not in r.getMessage() or "custom keys are keyed by URL" in r.getMessage()
+        # The rejection reason is visible; the URL-ish payload itself stays
+        # masked only when it actually looks like a URL — a plain name like
+        # "not-a-url" contains no secret and is named as-is in the reason.
+        assert any("custom keys are keyed by URL" in r.getMessage() for r in caplog.records)
 
     def test_userinfo_never_in_warnings(self, caplog):
         with caplog.at_level(logging.WARNING):
@@ -398,3 +522,64 @@ class TestSecretHygiene:
         assert budgets.cap_for("custom:https://llm.example.internal:4439/v1") == 20
         for r in caplog.records:
             assert "user:secret" not in r.getMessage()
+
+    def test_bad_value_warning_shows_normalized_url_only(self, caplog):
+        """T6b/R1 tests-F8(a): the dropped-entry warning for a URL key with a
+        bad value prints the NORMALIZED form — userinfo/query never leak."""
+        with caplog.at_level(logging.WARNING):
+            budgets = parse_provider_concurrency(
+                {"custom:https://bob:hunter2@llm.example.internal/v1?token=abc": 0})
+        assert budgets is None
+        msg = [r.getMessage() for r in caplog.records if "dropping entry" in r.getMessage()]
+        assert msg, "expected a dropped-entry warning"
+        assert "custom:https://llm.example.internal/v1=0" in msg[0]
+        for r in caplog.records:
+            assert "bob:hunter2" not in r.getMessage()
+            assert "token=abc" not in r.getMessage()
+
+    def test_bad_value_warning_for_plain_key_names_key(self, caplog):
+        """R1 tests-F8(a): a non-URL key with a bad value is shown as itself
+        (not masked as 'custom:<invalid url>')."""
+        with caplog.at_level(logging.WARNING):
+            parse_provider_concurrency({"anthropic": -1})
+        msg = [r.getMessage() for r in caplog.records if "dropping entry" in r.getMessage()]
+        assert msg and "anthropic=-1" in msg[0]
+
+    def test_duplicate_warning_names_both_keys_sanitized(self, caplog):
+        """T1/R1 tests-F11: the duplicate-after-normalization warning names
+        BOTH original keys, in log-safe (normalized) form."""
+        with caplog.at_level(logging.WARNING):
+            budgets = parse_provider_concurrency(
+                {"custom:https://alice:pw@llm.example.internal/v1": 20,
+                 "custom:https://LLM.example.internal/v1/": 5})
+        assert budgets is not None
+        assert budgets.cap_for("custom:https://llm.example.internal/v1") == 5
+        msg = [r.getMessage() for r in caplog.records if "normalize to" in r.getMessage()]
+        assert msg, "expected a duplicate warning"
+        assert "custom:https://llm.example.internal/v1" in msg[0]
+        assert msg[0].count("custom:https://llm.example.internal/v1") >= 2
+        for r in caplog.records:
+            assert "alice:pw" not in r.getMessage()
+
+    def test_key_failure_warning_hides_url_secrets(self, caplog):
+        """T6b/R1 tests-F8(b): a resolver failure with a URL-bearing
+        provider_override logs the log-safe form only."""
+        from hermes_cli import kanban_provider_budget as kpb
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        def _boom(*a, **kw):
+            raise RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING), pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kpb, "resolve_requested_route", _boom)
+            resolver = RouteKeyResolver(
+                profile_exists=lambda a: True,
+                profile_inputs=lambda a: {"model_config": {}, "user_providers": None,
+                                          "custom_providers": None, "env_provider": ""},
+            )
+            assert resolver.resolve("alpha", "m", "https://user:s3cret@host/v1?token=abc") is None
+        msgs = [r.getMessage() for r in caplog.records]
+        assert msgs
+        for m in msgs:
+            assert "s3cret" not in m
+            assert "token=abc" not in m

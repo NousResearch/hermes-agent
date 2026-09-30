@@ -118,14 +118,50 @@ class TestDisabledAndRecordAlways:
                 "ON r.id = t.current_run_id WHERE t.id = ?",
                 (res.spawned[0][0],),
             ).fetchone()
-        # resolve_requested_route succeeded, route_key raised -> unknown recorded
-        # best-effort (never NULL-blocks; here the resolver's own catch means
-        # the key IS "unknown", and a full resolve failure would store NULL).
-        assert row["provider_key"] in (None, "unknown")
+        # resolve_requested_route succeeded, route_key raised -> the resolver
+        # returns None (O3: a resolution error stores NULL, never blocks the
+        # spawn). NULL on the run row — NOT the "unknown" bucket.
+        assert row["provider_key"] is None
 
 
 class TestUnderAndOverProtection:
     """T11 — the issue's first case: many profiles on ONE provider."""
+
+    def test_dispatch_resolver_is_profile_scoped(self, budget_home, monkeypatch):
+        """Q-F1 at the real tick: the resolver the TICK builds resolves inside
+        the assignee's profile scope. A launch-profile alias with the same name
+        and a launch OPENAI_BASE_URL must not leak into the claim's key."""
+        from hermes_cli import config as _cfgmod
+
+        # Launch (default) profile: alias 'fast' -> launch URL, plus a proxy env.
+        (budget_home / "config.yaml").write_text(
+            "model:\n  default: m-default\n"
+            "model_aliases:\n  fast:\n    model: launch-model\n"
+            "    provider: custom\n"
+            "    base_url: https://launch-alias.example/v1\n")
+        monkeypatch.setattr(_cfgmod, "_CONFIG_CACHE", {}, raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://launch-proxy.example/v1")
+        # beta pins provider openai with its own .env proxy URL.
+        beta = budget_home / "profiles" / "beta"
+        beta.mkdir(parents=True, exist_ok=True)
+        (beta / "config.yaml").write_text("model:\n  default: m-beta\n  provider: openai\n")
+        (beta / ".env").write_text("OPENAI_BASE_URL=https://beta-proxy.example/v1\n")
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        with kbc.connect_closing() as conn:
+            _make_rows(kb, conn, [("b1", "beta", None, None)])
+        with kbc.connect_closing() as conn:
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn)
+        assert len(res.spawned) == 1
+        with kbc.connect_closing() as conn:
+            key = conn.execute(
+                "SELECT r.provider_key FROM tasks t JOIN task_runs r "
+                "ON r.id = t.current_run_id WHERE t.id = ?",
+                (res.spawned[0][0],)).fetchone()["provider_key"]
+        # beta's scoped .env proxy keyed the claim — not the launch env.
+        assert key == "custom:https://beta-proxy.example/v1", key
 
     def test_shared_provider_budget_defers(self, budget_home):
         from hermes_cli import kanban_db as kb
@@ -356,6 +392,44 @@ class TestPersistenceAndRestart:
         assert counts.get("unknown", 0) == 0
         assert sum(counts.values()) == 1
 
+    def test_rederivation_failure_not_counted_as_unknown(self, budget_home, monkeypatch):
+        """B15b/T17: a legacy NULL row whose re-derivation FAILS (resolver
+        returns None) is not counted anywhere — never bucketed 'unknown'."""
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli import kanban_provider_budget as kpb
+
+        with kbc.connect_closing() as conn:
+            kb.create_task(conn, title="unresolvable", assignee="alpha")
+            now = int(__import__("time").time())
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'running', claim_lock = ?, "
+                    "claim_expires = ? WHERE id = (SELECT MAX(id) FROM tasks)",
+                    ("z", now + 600))
+        # Make every re-derivation fail loudly.
+        def _boom(*a, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(kpb, "route_key", _boom)
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        with kbc.connect_closing() as conn:
+            resolver = RouteKeyResolver(
+                profile_exists=lambda a: True,
+                profile_inputs=kbd._provider_route_inputs,
+                scope=kbd._assignee_route_scope,
+            )
+            inferred: dict = {}
+            counts = kpb.count_running_by_provider(
+                conn, resolver, profile_exists=lambda a: True, inferred=inferred)
+        # The failed re-derivation produced no bucket at all — the row is
+        # unknowable, not 'unknown'.
+        assert counts.get("unknown", 0) == 0
+        assert sum(counts.values()) == 0
+        assert inferred == {}
+
 
 class TestComposition:
     """T19 / T20 / T30 — gate order and composition with other caps."""
@@ -513,6 +587,32 @@ class TestSummarySurfaces:
         assert rc == 0
         assert "Deferred (provider budget anthropic 2/2)" in out
 
+        # --json carries the same deferrals as skipped_provider_budget rows.
+        args_json = argparse.Namespace(dry_run=True, json=True, max=None,
+                                       failure_limit=None)
+        rc = kanban_ops._cmd_dispatch(args_json)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert len(payload["skipped_provider_budget"]) == 1
+        entry = payload["skipped_provider_budget"][0]
+        assert set(entry) == {"task_id", "provider", "current", "cap"}
+        assert entry["provider"] == "anthropic"
+        assert entry["current"] == 2 and entry["cap"] == 2
+
+    def test_describe_suppression_takes_max_across_results(self, budget_home):
+        """D9/R1 tests-F9: a board host-wide count is the MAX across the given
+        tick results, not the min or the last."""
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        r1 = kbd.DispatchResult()
+        r1.skipped_provider_budget = [("t1", "anthropic", 2, 2)]
+        r2 = kbd.DispatchResult()
+        r2.skipped_provider_budget = [("t2", "anthropic", 5, 5), ("t3", "zai", 1, 1)]
+        line = kbd.describe_suppression([r1, r2])
+        assert "provider_budget[anthropic]=5/5" in line
+        assert "provider_budget[zai]=1/1" in line
+        assert "provider_budget[anthropic]=2/2" not in line
+
     def test_review_lane_gated_and_recorded_by_override_key(self, budget_home):
         """T28: a review row whose overrides name another provider is gated
         and recorded under the override's key."""
@@ -583,11 +683,86 @@ class TestDiagnosticsSurface:
             with kb.write_txn(conn):
                 conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
             kb.claim_task(conn, tid)  # running, NULL key (direct claim)
+        # A second ready row on the same key -> at cap, "waiting".
+        with kbc.connect_closing() as conn:
+            wid = kb.create_task(conn, title="waiter", assignee="alpha")
         rc = kanban_cli._cmd_diagnostics(args)
         out = capsys.readouterr().out
         assert rc == 0
         assert "kanban.provider_concurrency:" in out
         assert "anthropic 1/1" in out
+        assert "1 waiting" in out
+
+        # --json: the trailing home-scope row carries the structured field
+        # with running/inferred/cap/waiting per key (T24, R1 tests-F5a).
+        args_json = argparse.Namespace(task=None, severity=None, json=True)
+        rc = kanban_cli._cmd_diagnostics(args_json)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert payload[-1]["task_id"] is None
+        pc = payload[-1]["provider_concurrency"]
+        assert pc["enabled"] is True
+        assert pc["default"] is None
+        assert set(pc["budgets"]) == {"anthropic"}
+        anth = pc["budgets"]["anthropic"]
+        assert anth["running"] == 1 and anth["cap"] == 1
+        assert anth["waiting"] == 1
+        assert anth["inferred"] == 1  # the NULL-key running row was re-derived
+
+        # Addendum O1: when any counted key is 'auto', diagnostics says
+        # unpinned profiles budget as 'auto' (R1 tests-F5b).
+        (budget_home / "config.yaml").write_text(
+            "kanban:\n  provider_concurrency:\n    anthropic: 1\n    auto: 2\n")
+        monkeypatch.setattr(_cfgmod, "_CONFIG_CACHE", {}, raising=False)
+        rc = kanban_cli._cmd_diagnostics(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "budget as 'auto'" in out
+
+    def test_diagnostics_counts_sibling_boards(self, budget_home, monkeypatch, capsys):
+        """T24 cross-board variant (R1 F4/Q-F4/A2): a running anthropic row on
+        a sibling board counts in THIS board's diagnostics — the same
+        host-wide path the dispatcher's gate uses, so the two agree."""
+        import argparse
+        import time as _time
+
+        from hermes_cli import kanban as kanban_cli
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+
+        (budget_home / "config.yaml").write_text(
+            "kanban:\n  provider_concurrency:\n    anthropic: 2\n")
+        from hermes_cli import config as _cfgmod
+
+        monkeypatch.setattr(_cfgmod, "_CONFIG_CACHE", {}, raising=False)
+        kb.create_board(slug="boardb", name="B")
+        with kbc.connect_closing(board="boardb") as conn:
+            bid = kb.create_task(conn, title="b-busy", assignee="alpha")
+            now = int(_time.time())
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'running', claim_lock = ?, "
+                    "claim_expires = ? WHERE id = ?", ("y", now + 600, bid))
+        with kbc.connect_closing() as conn:
+            tid = kb.create_task(conn, title="a1", assignee="alpha")
+            with kb.write_txn(conn):
+                conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+        # Board A's gate holds the row (board B at 1 of cap 2? no: cap 2 -> not
+        # held; use cap 1 to force the hold) — set cap 1 so the sibling row is
+        # AT cap and diagnostics must show it.
+        (budget_home / "config.yaml").write_text(
+            "kanban:\n  provider_concurrency:\n    anthropic: 1\n")
+        monkeypatch.setattr(_cfgmod, "_CONFIG_CACHE", {}, raising=False)
+        args = argparse.Namespace(task=None, severity=None, json=True)
+        rc = kanban_cli._cmd_diagnostics(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        anth = payload[-1]["provider_concurrency"]["budgets"]["anthropic"]
+        # Host-wide: the sibling's running row counts, and board A's ready row
+        # is waiting at cap — the exact state the gate would hold.
+        assert anth["running"] == 1
+        assert anth["waiting"] == 1
+        assert anth["cap"] == 1
 
 
 class TestStuckWarningAndCrossBoard:
@@ -625,6 +800,43 @@ class TestStuckWarningAndCrossBoard:
         assert len(res.spawned) == 0
         assert [(tid, key, cur, cap) for tid, key, cur, cap in res.skipped_provider_budget][0][1:] \
             == ("anthropic", 1, 1)
+
+    def test_t18c_sibling_control_plane_lane_excluded(self, budget_home):
+        """Q-F3/A3 probe P5: a running row on a sibling board whose assignee is
+        NOT a Hermes profile (control-plane lane) is excluded from the sibling
+        fold exactly as it would be on this board — never bucketed 'unknown'.
+        The unknown-keyed READY row proves it: if the lane were counted, the
+        ``unknown: 1`` cap would hold it."""
+        import time as _time
+
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        kb.create_board(slug="boardb", name="B")
+        with kbc.connect_closing(board="boardb") as conn:
+            bid = kb.create_task(conn, title="lane-busy", assignee="orion-cc")
+            now = int(_time.time())
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'running', claim_lock = ?, "
+                    "claim_expires = ? WHERE id = ?", ("y", now + 600, bid))
+        with kbc.connect_closing() as conn:
+            _make_rows(kb, conn, [
+                ("a1", "alpha", None, None),
+                ("u1", "alpha", "m", "no-such-provider"),
+            ])
+        with kbc.connect_closing() as conn:
+            res = kbd.dispatch_once(
+                conn, spawn_fn=_fake_spawn,
+                provider_concurrency={"anthropic": 5, "unknown": 1},
+                board=None, max_spawn=5, max_in_progress=10,
+            )
+        # The sibling control-plane lane did not consume the 'unknown' bucket:
+        # the unknown-keyed ready row still spawns (exclusion, not 'unknown').
+        spawned_titles = {t for t, _who, _ws in res.spawned}
+        assert len(res.spawned) == 2, res.skipped_provider_budget
+        assert res.skipped_provider_budget == []
 
     def test_t18b_sibling_corrupt_board_fail_open(self, budget_home, caplog):
         """A sibling board whose DB is unreadable logs one WARNING per board
@@ -729,11 +941,44 @@ class TestMigration:
     """T26 — a legacy DB gains task_runs.provider_key on connect()."""
 
     def test_legacy_db_gains_column(self, budget_home):
+        """T26 (R1 tests-F3): a DB created BEFORE the provider_key column
+        exists gains it on connect(), and its pre-upgrade rows read NULL."""
+        import sqlite3
+
         from hermes_cli import kanban_db as kb
         from hermes_cli import kanban_db_connect as kbc
 
         db_path = kb.kanban_db_path(board=None)
         assert db_path.exists()
+        # Rewind: drop the column to simulate a pre-upgrade schema, with a
+        # legacy row that must keep reading NULL after the migration.
+        with kbc.connect() as conn:
+            with kb.write_txn(conn):
+                legacy_task = kb.create_task(conn, title="legacy-row", assignee="alpha")
+                conn.execute(
+                    "INSERT INTO task_runs (task_id, profile, status, claim_lock, "
+                    "claim_expires, started_at) VALUES (?, 'alpha', 'ended', NULL, NULL, 1)",
+                    (legacy_task,))
+            legacy_run = conn.execute("SELECT MAX(id) FROM task_runs").fetchone()[0]
+            with kb.write_txn(conn):
+                conn.execute("ALTER TABLE task_runs DROP COLUMN provider_key")
+        # Re-connect: the migration re-adds the column; the legacy row is NULL.
+        # The per-process _INITIALIZED_PATHS cache says this path is already
+        # initialized, so simulate a FRESH process (a pre-upgrade DB being
+        # opened by upgraded code for the first time) by clearing it.
+        kbc._INITIALIZED_PATHS.clear()
         with kbc.connect() as conn:
             cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
             assert "provider_key" in cols
+            row = conn.execute(
+                "SELECT provider_key FROM task_runs WHERE id = ?", (legacy_run,)).fetchone()
+        assert row["provider_key"] is None
+        # And the counting query reads the migrated column without error.
+        from hermes_cli import kanban_provider_budget as kpb
+        from hermes_cli.kanban_provider_budget import RouteKeyResolver
+
+        resolver = RouteKeyResolver(profile_exists=lambda a: False)
+        with kbc.connect_closing() as conn:
+            counts = kpb.count_running_by_provider(conn, resolver)
+        assert isinstance(counts, dict)
+        assert sqlite3.sqlite_version_info >= (3, 35, 0)  # DROP COLUMN support

@@ -128,22 +128,6 @@ class CLIInitMixin:
         # resume must not clobber an explicit -m with the session's stored model.
         self._explicit_model_override = bool(model)
         self.model = _route.model
-        _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
-        # ``moa:<preset>`` selects the MoA virtual provider in one shot (parity with
-        # interactive ``/moa`` and the model picker; the prefix wins over --provider).
-        # See #56828. resolve_requested_route already folded the prefix into the route.
-        _moa_provider_override = (
-            "moa" if _route.requested_provider == "moa" else None
-        )
-        # The alias route's provider label applies only when the ladder got it from the
-        # startup route (not from the flag / nested default / config / env rungs, which
-        # map to their own locals below). A URL-bearing alias rides the explicit fields.
-        _startup_provider_override = ""
-        if _route.requested_provider not in (
-            provider or "", _route.nested_provider, _cfg_provider or "",
-            os.getenv("HERMES_INFERENCE_PROVIDER") or "", "auto", "moa",
-        ):
-            _startup_provider_override = _route.requested_provider
         _startup_base_url_override = _route.explicit_base_url or ""
         _startup_api_key_override = _route.explicit_api_key or ""
 
@@ -162,11 +146,11 @@ class CLIInitMixin:
         self._explicit_base_url = base_url or _startup_base_url_override or None
 
         # Resolved lazily at use-time via _ensure_runtime_credentials(). Same ladder the
-        # route computed (moa > flag > startup alias > nested default > config > env > auto).
-        self.requested_provider = (
-            _moa_provider_override or provider or _startup_provider_override
-            or _route.nested_provider or _cfg_provider or "auto"
-        )
+        # route computed (moa > flag > startup alias > nested default > config > env > auto);
+        # ``_route.requested_provider`` IS that ladder's result, so use it directly
+        # (re-deriving rung-by-rung here once dropped the startup rung on collisions,
+        # #123654 R1 F1/A1).
+        self.requested_provider = _route.requested_provider or "auto"
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.
         # Explicit `-m` still wins. See #86978.

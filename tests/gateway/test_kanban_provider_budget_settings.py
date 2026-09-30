@@ -46,6 +46,23 @@ class TestResolveSettings:
             _settings({"provider_concurrency": {"anthropic": 2}})
         assert any("provider_concurrency=anthropic:2" in r.getMessage() for r in caplog.records)
 
+    def test_boot_log_line_sanitizes_url_keys(self, caplog):
+        """R1 scope F2/Q-F2c: the boot INFO line prints keys in their
+        log-safe form — userinfo/query in a custom:<url> key never reach the
+        log."""
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            _settings({"provider_concurrency": {
+                "custom:https://bob:hunter2@llm.example.internal/v1?token=abc": 2}})
+        msgs = [r.getMessage() for r in caplog.records
+                if "provider_concurrency=" in r.getMessage()]
+        assert msgs
+        assert "custom:https://llm.example.internal/v1:2" in msgs[0]
+        for r in caplog.records:
+            assert "bob:hunter2" not in r.getMessage()
+            assert "token=abc" not in r.getMessage()
+
 
 class TestTickForwards:
     def test_tick_once_for_board_forwards_mapping(self, tmp_path, monkeypatch):

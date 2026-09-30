@@ -22,6 +22,22 @@ from typing import Any, Dict, NamedTuple, Optional
 from hermes_cli.config import split_model_config_default
 
 
+def normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``moa:<preset>`` -> ``("moa", preset)`` (same routing as ``/moa``); anything
+    else -> ``(None, model)``.
+
+    The ONE parser for the MoA virtual-provider prefix (#56828): stage-1
+    route resolution folds it here, and ``cli._normalize_moa_model`` delegates
+    to this function so the prefix rules can never diverge between interactive
+    and non-interactive paths.
+    """
+    if isinstance(model, str) and model.strip().lower().startswith("moa:"):
+        preset = model.strip().split(":", 1)[1].strip()
+        if preset:
+            return "moa", preset
+    return None, model
+
+
 class RequestedRoute(NamedTuple):
     """Stage-1 resolution result: what the worker will request at startup.
 
@@ -91,12 +107,9 @@ def resolve_requested_route(
             startup_api_key_override = startup_route.api_key
     # ``moa:<preset>`` selects the MoA virtual provider in one shot (parity with the
     # interactive /moa command and the model picker, #56828): the prefix wins over --provider.
-    moa_provider_override: Optional[str] = None
-    if isinstance(resolved_model, str) and resolved_model.strip().lower().startswith("moa:"):
-        preset = resolved_model.strip().split(":", 1)[1].strip()
-        if preset:
-            moa_provider_override = "moa"
-            resolved_model = preset
+    # One parser, owned here and delegated to by ``cli._normalize_moa_model`` (#123654 R1 A5).
+    moa_provider_override, _moa_model = normalize_moa_model(resolved_model)
+    resolved_model = _moa_model or ""
     requested_provider = (
         moa_provider_override or provider or startup_provider_override or nested_provider
         or cfg_provider or "auto"

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from contextlib import suppress
-from typing import Optional
+from typing import Callable, Optional
 
 
 def _constants_path(getter_name: str) -> Path:
@@ -75,16 +75,6 @@ def _ignores_case(existing: Path) -> bool:
     return fid is not None and flipped != str(existing) and _file_id(flipped) == fid
 
 
-def _spelled_under(resolved: str | Path, base: str | Path) -> bool:
-    """``Path`` inputs use ``relative_to`` (platform semantics), ``str`` a realpath prefix test."""
-    if isinstance(resolved, Path):
-        try:
-            return resolved.relative_to(base) is not None
-        except ValueError:
-            return False
-    return resolved == base or resolved.startswith(str(base) + os.sep)
-
-
 def _is_under(resolved: str | Path, base: str | Path) -> bool:
     """True when ``resolved`` is ``base`` or lies below it (both already resolved).
 
@@ -97,21 +87,31 @@ def _is_under(resolved: str | Path, base: str | Path) -> bool:
 
 
 def _is_under_any(resolved: str | Path, bases) -> bool:
-    """``_is_under`` against every base in ``bases``, stat'ing ``resolved``'s ancestry once:
-    the dashboard asks this for each entry of a directory listing."""
-    bases = list(bases)
-    if any(_spelled_under(resolved, base) for base in bases):
-        return True
-    path = Path(resolved)
-    ids = {base: _file_id(base) for base in bases}
+    """``_is_under`` against every base in ``bases``."""
+    return _under_any_matcher(bases)(resolved)
+
+
+def _under_any_matcher(bases) -> Callable[[str | Path], bool]:
+    """``_is_under_any`` with the bases stat'ed once, and each candidate's ancestry once, so a
+    directory listing does not re-stat every store for every entry."""
+    ids = {str(base): _file_id(base) for base in bases}
+    spelled = [(base, base.rstrip(os.sep) + os.sep) for base in ids]
     existing = {fid for fid in ids.values() if fid is not None}
-    if existing and existing.intersection(_file_id(p) for p in (path, *path.parents)):
-        return True
-    folded = str(resolved).casefold()
-    missing = [str(base).casefold() for base, fid in ids.items() if fid is None]
-    if not any(folded == b or folded.startswith(b + os.sep) for b in missing):
-        return False
-    return next((_ignores_case(p) for p in (path, *path.parents) if _file_id(p) is not None), False)
+    missing = [base.casefold() for base, fid in ids.items() if fid is None]
+
+    def matches(resolved: str | Path) -> bool:
+        text = str(resolved)
+        if any(text == base or text.startswith(prefix) for base, prefix in spelled):
+            return True
+        path = Path(resolved)
+        if existing and existing.intersection(_file_id(p) for p in (path, *path.parents)):
+            return True
+        folded = text.casefold()
+        if not any(folded == b or folded.startswith(b + os.sep) for b in missing):
+            return False
+        return next((_ignores_case(p) for p in (path, *path.parents) if _file_id(p) is not None), False)
+
+    return matches
 
 
 def _resolve_target(path: str) -> Optional[Path]:
@@ -242,7 +242,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     hermes_files = [f for f in SECRET_STORE_FILES if f not in _WRITABLE_CONTROL_FILES]
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in _hermes_dirs()),
+        *(str(base / f) for base in _hermes_dirs() for f in hermes_files),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
@@ -325,11 +325,9 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
         return None
 
     # A denied prefix covers what lies strictly below it: the parent is at or under it.
-    if any(
-        _is_under_any(resolved, build_write_denied_paths(home))
-        or _is_under_any(os.path.dirname(resolved), (p.rstrip(os.sep) for p in build_write_denied_prefixes(home)))
-        for home in homes
-    ):
+    if (_is_under_any(resolved, {p for home in homes for p in build_write_denied_paths(home)})
+            or _is_under_any(os.path.dirname(resolved),
+                             {p.rstrip(os.sep) for home in homes for p in build_write_denied_prefixes(home)})):
         return "credential"
 
     protected = (os.path.realpath(os.path.join(str(base), sub))
@@ -479,12 +477,14 @@ def get_read_block_error(path: str) -> Optional[str]:
     resolved = Path(path).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None
-    if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    # An existing store is matched by file identity, so its path needs no resolving; one not
+    # created yet cannot be read.
+    if _is_under_any(resolved, [hd / "skills" / ".hub" for hd in hermes_dirs]):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif _is_under_any(resolved, [*_resolve_each(hd / name for hd in hermes_dirs for name in SECRET_STORE_FILES),
+    elif _is_under_any(resolved, [*(hd / name for hd in hermes_dirs for name in SECRET_STORE_FILES),
                                   *configured_secret_store_paths()]):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
@@ -492,11 +492,11 @@ def get_read_block_error(path: str) -> Optional[str]:
         )
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
-            for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if _is_under(resolved, blocked_dir):
-                    reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
-                    break
-            if reason:
+            blocked_dirs = [hd / subdir for hd in hermes_dirs]
+            if _is_under_any(resolved, blocked_dirs):
+                fid = _file_id(resolved)
+                is_dir = resolved in blocked_dirs or (fid is not None and fid in {_file_id(d) for d in blocked_dirs})
+                reason = (dir_msg if is_dir else file_msg) + _DID_SUFFIX
                 break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
             reason = (
@@ -510,11 +510,19 @@ def is_secret_store_path(path: str | Path) -> bool:
     """True when ``path`` is, or lies inside, one of the Hermes credential stores the read guard
     refuses, located where the store actually is: a store reached through a symlinked or renamed
     directory, a case variant or a hardlink counts, whatever its path components are called."""
-    resolved = _resolve_target(str(path))
-    if resolved is None:
-        return False
-    stores = _resolve_each(hd / name for hd in _hermes_dirs() for name in (*SECRET_STORE_FILES, *SECRET_STORE_DIRS))
-    return _is_under_any(resolved, [*stores, *configured_secret_store_paths()])
+    return secret_store_matcher()(path)
+
+
+def secret_store_matcher() -> Callable[[str | Path], bool]:
+    """``is_secret_store_path`` with the stores located once, for checking many paths."""
+    stores = [hd / name for hd in _hermes_dirs() for name in (*SECRET_STORE_FILES, *SECRET_STORE_DIRS)]
+    under = _under_any_matcher([*stores, *configured_secret_store_paths()])
+
+    def matches(path: str | Path) -> bool:
+        resolved = _resolve_target(str(path))
+        return resolved is not None and under(resolved)
+
+    return matches
 
 
 def raise_if_read_blocked(path: str) -> None:

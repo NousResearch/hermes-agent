@@ -1,7 +1,7 @@
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
-import { appendLiveSessionProjection } from '@/app/session/hooks/use-session-actions/utils'
+import { appendLiveSessionProjection, preserveEquivalentTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { chatMessageText } from '@/lib/chat-messages'
 
 import { renderMessageStream } from './test-harness'
@@ -12,10 +12,14 @@ it('binds resumed queued occurrences across merging and replay without collapsin
   for (const complete of [true, false]) {
     const h = renderMessageStream('s')
     const occurrence = { id: 'queue-input', ref: 'peer-ref' }
-    const messages = appendLiveSessionProjection([], {
+    const unresolved = appendLiveSessionProjection([], {
+      session_id: 's',
+      queued: { user: 'Peer queued', inputs: [], inputs_complete: false }
+    })
+    const messages = preserveEquivalentTranscript(unresolved, appendLiveSessionProjection([], {
       session_id: 's',
       queued: { user: 'Peer queued', inputs: [occurrence], inputs_complete: complete }
-    })
+    }))
 
     h.states.set('s', { ...h.state(), messages })
     const start = {

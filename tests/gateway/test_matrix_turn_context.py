@@ -1149,3 +1149,51 @@ async def test_reply_line_survives_a_parent_that_cannot_be_read(
 
     assert message is not None
     assert message.endswith(f"{reply_line}\n\nwhat about this?")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "attachment",
+    [
+        {"file": {"url": "mxc://example.org/encrypted", "key": {}, "iv": "", "hashes": {}}},
+        {},
+    ],
+    ids=["encrypted-download-fails", "no-url"],
+)
+async def test_media_without_a_cached_file_reaches_a_live_session_as_its_caption(
+    tmp_path, monkeypatch, attachment
+):
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock()))
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="group", user_id=SENDER)
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_message_context",
+        AsyncMock(return_value=("what is this?", False, "group", None, "Alice", False, source)),
+    )
+    monkeypatch.setattr(
+        adapter, "_download_and_cache_media", AsyncMock(side_effect=RuntimeError("decrypt failed"))
+    )
+    adapter.handle_message = AsyncMock()
+    content = {
+        "msgtype": "m.image",
+        "body": "what is this?",
+        "filename": "photo.png",
+        "info": {"mimetype": "image/png"},
+        **attachment,
+    }
+    await adapter._handle_media_message(ROOM, SENDER, "$photo", 1000.0, content, {}, "m.image")
+    event = adapter.handle_message.await_args.args[0]
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    runner.adapters = {Platform.MATRIX: adapter}
+    state = runner._session_state("session")
+
+    message = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[], session_key="session"
+    )
+
+    assert (event.media_urls, event.media_types, message, state.persistent.native_image_paths) == (
+        [], [], "what is this?", [],
+    )

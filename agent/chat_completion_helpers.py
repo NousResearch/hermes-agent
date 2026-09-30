@@ -3193,6 +3193,10 @@ class _StreamingCall(StreamingWaitMonitor):
             self.clients.set_stream_handle(stream)
 
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
+            # Some OpenAI-compatible relays emit ``data: null`` SSE keepalives.
+            # The SDK exposes those frames as None rather than a chunk object.
+            if chunk is None:
+                continue
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
                 # A half-read SSE response stays checked out of the httpx pool and the finally

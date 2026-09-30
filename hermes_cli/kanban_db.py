@@ -3651,12 +3651,32 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first.
+
+    A task parked by ``initial_status=blocked`` is not released by an agent-only
+    unblock: the park must first receive a human-surface comment.  This keeps the
+    create-path park's human gate durable while preserving scheduled unblocks for
+    ordinary, typed blocks.
+    """
     now = int(time.time())
     with write_txn(conn):
+        current_status = _task_status(conn, task_id)
+        if current_status == "blocked":
+            park = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+                "AND json_extract(payload, '$.reason') = 'initial_status' "
+                "ORDER BY id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            if park is not None:
+                human_surface = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'commented' "
+                    "AND id > ? LIMIT 1", (task_id, int(park["id"])),
+                ).fetchone()
+                if human_surface is None:
+                    return False
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if current_status == "blocked"
             else "ready"
         )
         _reclaim_dangling_run(

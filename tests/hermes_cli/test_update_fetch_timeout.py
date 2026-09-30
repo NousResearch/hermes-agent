@@ -19,14 +19,20 @@ def _timeout(cmd, **kwargs):
 
 def test_network_fetch_stall_becomes_a_failed_run_with_a_named_cause(monkeypatch):
     monkeypatch.setattr(update_cmd, "_m", lambda: MagicMock(PROJECT_ROOT="/repo"))
-    with patch.object(update_cmd.subprocess, "run", side_effect=_timeout) as run:
+    process = MagicMock(args=["git", "fetch", "origin", "main"], pid=1234, returncode=0)
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired(process.args, update_cmd.NETWORK_GIT_TIMEOUT_SECONDS),
+        ("partial output", "transport stalled"),
+    ]
+    with patch.object(update_cmd.subprocess, "Popen", return_value=process) as popen:
         result = update_cmd._git_run(["git"], ["fetch", "origin", "main"], network=True)
 
-    assert result.returncode != 0
+    assert result.returncode == 124
     assert "timed out" in result.stderr and "fetch" in result.stderr
-    assert run.call_args.kwargs["timeout"] == update_cmd.NETWORK_GIT_TIMEOUT_SECONDS
-    # The no-prompt guard still rides along with the bound.
-    assert run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert popen.call_args.kwargs["cwd"] == "/repo"
+    assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
+    assert popen.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    process.kill.assert_called_once()
 
 
 def test_local_git_stays_unbounded_and_check_true_raises(monkeypatch):
@@ -35,9 +41,15 @@ def test_local_git_stays_unbounded_and_check_true_raises(monkeypatch):
         assert update_cmd._git_run(["git"], ["rev-parse", "HEAD"]).returncode == 0
         assert "timeout" not in run.call_args.kwargs
 
-        try:
-            update_cmd._git_run(["git"], ["fetch", "origin", "main"], network=True, check=True)
-        except subprocess.CalledProcessError as exc:
-            assert exc.returncode == 124
-        else:
-            raise AssertionError("check=True must raise on a timed-out fetch")
+        process = MagicMock(args=["git", "fetch", "origin", "main"], pid=1234, returncode=0)
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(process.args, update_cmd.NETWORK_GIT_TIMEOUT_SECONDS),
+            ("", ""),
+        ]
+        with patch.object(update_cmd.subprocess, "Popen", return_value=process):
+            try:
+                update_cmd._git_run(["git"], ["fetch", "origin", "main"], network=True, check=True)
+            except subprocess.CalledProcessError as exc:
+                assert exc.returncode == 124
+            else:
+                raise AssertionError("check=True must raise on a timed-out fetch")

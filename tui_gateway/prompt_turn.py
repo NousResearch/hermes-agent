@@ -620,8 +620,7 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
 
     The messaging gateway appends the directive to
     the very first message ever (``_hmwa_first_contact_notes``); the
-    TUI/Desktop surface never did, so a fresh install's first Desktop chat
-    skipped the opt-in profile flow entirely. Stage the same note through
+    TUI/Desktop surface never did. Stage the same note through
     ``agent._gateway_turn_context_notes`` — consumed by
     ``agent.turn_context`` on the user message — never the ephemeral system
     prompt, which must stay byte-stable for the conversation (prompt-cache

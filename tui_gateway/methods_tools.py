@@ -759,7 +759,7 @@ def _cmd_initiate_setup(rid, params, session, name, arg):
         primary = _tools_mod("tools.connectors.catalog").default_target_profile()
         message = _tools_mod("agent.initiate_setup_prompt").build_initiate_setup_prompt(
             surface, [tool["function"]["name"] for tool in tools], primary)
-    return _ok(rid, {"type": "send", "message": message})
+    return _ok(rid, {"type": "send", "message": message, "display": "/initiate-setup"})
 
 
 def _cmd_moa(rid, params, session, name, arg):

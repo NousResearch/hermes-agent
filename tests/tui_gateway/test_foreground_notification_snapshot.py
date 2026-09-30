@@ -103,6 +103,7 @@ def test_cli_real_chat_binds_refreshes_and_restores_snapshot(tmp_path, monkeypat
         def _init_agent(self, **kwargs): return True
         def _chat_route_images(self, message, images): return message
         def _chat_expand_context_references(self, message): return message, None
+        def _chat_stage_first_contact_note(self, agent, message): pass
         def _chat_stage_user_message(self, agent, message): agent._pending_cli_user_message = {}
         def _reset_stream_state(self): pass
         def _chat_setup_turn_audio(self, *args): pass

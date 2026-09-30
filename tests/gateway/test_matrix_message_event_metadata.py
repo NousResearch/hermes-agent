@@ -224,7 +224,7 @@ _REPLY_WITHOUT_QUOTE = {
                     "m.in_reply_to": {"event_id": "$target1"},
                 },
             },
-            {**_REPLY_WITHOUT_QUOTE, "text": "> the logs say timeout\n\nwhy?"},
+            {**_REPLY_WITHOUT_QUOTE, "text": "> the logs say timeout\n\nwhy?", "reply_to_message_id": None},
             id="thread-message-own-quote",
         ),
         pytest.param(

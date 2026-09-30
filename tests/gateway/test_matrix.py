@@ -1265,6 +1265,7 @@ def _make_room_adapter():
     ("> quoted from elsewhere\n\nwhat does this mean?", "> quoted from elsewhere\n\nwhat does this mean?"),
     ("> <@alice:example.org> root\n\n> my own quote\n\nquestion", "> my own quote\n\nquestion"),
     ("> * <@alice:example.org> waves\n\nhello", "hello"),
+    ("> <@bob:example.org> said it failed\nI disagree", "> <@bob:example.org> said it failed\nI disagree"),
 ])
 async def test_thread_message_strips_only_the_reply_fallback(body, expected_text):
     adapter = _make_room_adapter()
@@ -1357,7 +1358,7 @@ async def test_inline_reply_fallback_does_not_verify_claimed_author(claimed_auth
     adapter._is_sender_authorized = MagicMock(return_value=True)
 
     reply = await adapter._extract_reply_context(
-        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue",
+        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue", {},
         {"m.in_reply_to": {"event_id": "$parent"}},
         sender="@alice:example.org", chat_type="group",
     )

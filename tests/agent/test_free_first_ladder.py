@@ -136,6 +136,13 @@ def test_pinned_provider_never_promoted(gemini_first):
     assert agent.provider == "openai"
 
 
+def test_unreadable_config_never_promotes_possible_pin(gemini_first, monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: (_ for _ in ()).throw(RuntimeError("unreadable")))
+    agent = _FakeAgent()
+    assert _promote(agent) is None
+    assert (agent.provider, agent.model) == ("qwen", "qwen/qwen3.7-flash")
+
+
 def test_auto_provider_is_not_a_pin(gemini_first):
     agent = _FakeAgent()
     agent.provider = "auto"

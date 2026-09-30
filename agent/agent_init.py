@@ -854,7 +854,7 @@ def _promote_free_first_entry(agent, fallback_model, _provider_timeout) -> Optio
         return None
     _cfg_model, _cfg_provider = "", ""
     _route_pinned = False
-    with suppress(Exception):
+    try:
         from hermes_cli.config import load_config_readonly, split_model_config_default
         _cfg_model_section = (load_config_readonly() or {}).get("model") or {}
         _cfg_model, _cfg_provider = split_model_config_default(_cfg_model_section.get("default"))
@@ -867,6 +867,10 @@ def _promote_free_first_entry(agent, fallback_model, _provider_timeout) -> Optio
             (_agent_provider and _effective_cfg_provider and _agent_provider != _effective_cfg_provider)
             or (agent.model and _cfg_model and agent.model != _cfg_model)
         )
+    except Exception:
+        # An unreadable config cannot prove that the route is the default; never
+        # replace a possibly pinned route with a free model in that case.
+        _route_pinned = True
     if _route_pinned:
         logger.debug(
             "Free-first promotion skipped: agent route pinned away from config default "

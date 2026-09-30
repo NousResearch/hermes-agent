@@ -306,9 +306,17 @@ class PeerRunsHTTPClient:
         try:
             payload = json.loads(raw)
         except ValueError as exc:
-            raise PeerRunsHTTPError("peer returned non-JSON data") from exc
+            raise PeerRunsHTTPError(
+                "peer returned non-JSON data",
+                retryable=ambiguous,
+                ambiguous=ambiguous,
+            ) from exc
         if not isinstance(payload, dict):
-            raise PeerRunsHTTPError("peer returned a non-object response")
+            raise PeerRunsHTTPError(
+                "peer returned a non-object response",
+                retryable=ambiguous,
+                ambiguous=ambiguous,
+            )
         return payload
 
     @staticmethod
@@ -402,22 +410,38 @@ class PeerRunsHTTPClient:
         session_id = self._session_id(checked, grant=grant)
 
         def admit() -> dict[str, Any]:
-            return self._request(
+            result = self._request(
                 "/v1/runs", method="POST",
                 body={"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()},
                 headers={
                     "Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
                 room_grant=grant)
 
+            if not str(result.get("run_id") or ""):
+                raise PeerRunsHTTPError(
+                    "peer did not return a run id",
+                    retryable=True,
+                    ambiguous=True,
+                )
+            return result
+
         try:
             result = admit()
-        except PeerRunsHTTPError as exc:
-            if not exc.ambiguous:
+        except PeerRunsHTTPError as first_error:
+            if not first_error.ambiguous:
                 raise
-            result = admit()
+            try:
+                result = admit()
+            except PeerRunsHTTPError as replay_error:
+                raise PeerRunsHTTPError(
+                    str(replay_error),
+                    retryable=(first_error.retryable or replay_error.retryable),
+                    ambiguous=True,
+                    not_admitted=False,
+                    status_code=replay_error.status_code,
+                    error_code=replay_error.error_code,
+                ) from replay_error
         run_id = str(result.get("run_id") or "")
-        if not run_id:
-            raise PeerRunsHTTPError("peer did not return a run id")
         receipt = {
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},

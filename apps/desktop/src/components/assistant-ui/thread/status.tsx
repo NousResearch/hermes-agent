@@ -262,7 +262,7 @@ export const ResponseLoadingIndicator: FC = () => {
       ) : localLoad ? (
         <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
       ) : null}
-      <ActivityTimerText seconds={elapsed} />
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }
@@ -323,12 +323,14 @@ export const TurnActivityIndicator: FC = () => {
   // (`todo`, reactions) render nothing, so they narrate nothing.
   const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content))
 
-  // Streaming counts as working too, and it leads busy by a flush on the first
-  // turn of a fresh chat — so the row can't wait for the store to catch up.
+  // Streaming can lead busy by one view flush on the first turn of a fresh
+  // chat. Honor that lead only while this session still has an armed turn
+  // clock: a pending bubble can outlive the backend's busy=false settle and
+  // must not keep its tail timer running after the turn ends.
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const working = busy || (messageRunning && turnStartedAt !== undefined)
 
   // Renderer-synthesized load bar (see ResponseLoadingIndicator).
-  const working = busy || messageRunning
   const localLoad = useLocalModelLoad(working && !hint && !toolNarrating)
 
   useEffect(() => {
@@ -358,23 +360,44 @@ export const TurnActivityIndicator: FC = () => {
     compacting ? turnStartedAt : (quietSince ?? drafting?.since ?? turnStartedAt)
   )
 
-  if (!active) {
+  // Once the row has been shown, keep its live region mounted across
+  // quiet/working flips: remounting a role="status" node makes screen readers
+  // re-announce it on every gap (#46225). While idle it is visually hidden
+  // (sr-only, not display:none, so it stays in the accessibility tree) and
+  // empty and unlabelled — the pulse and timer only mount while active, so an idle window
+  // holds no pulse beat.
+  const [everActive, setEverActive] = useState(false)
+
+  if (active && !everActive) {
+    setEverActive(true)
+  }
+
+  if (!active && !everActive) {
     return null
   }
 
   return (
-    <StatusRow data-slot="aui_turn-activity" label={hint || 'Hermes is working'}>
-      <StatusPulse
-        aria-hidden="true"
-        className="dither inline-block size-3 rounded-[2px] text-midground/80"
-        kind="opacity"
-      />
-      {hint ? (
-        <WaitHint hint={hint} />
-      ) : localLoad ? (
-        <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
-      ) : null}
-      <ActivityTimerText seconds={elapsed} />
+    <StatusRow
+      className={cn(!active && 'sr-only')}
+      data-slot="aui_turn-activity"
+      data-state={active ? 'active' : 'idle'}
+      label={active ? hint || 'Hermes is working' : ''}
+    >
+      {active && (
+        <>
+          <StatusPulse
+            aria-hidden="true"
+            className="dither inline-block size-3 rounded-[2px] text-midground/80"
+            kind="opacity"
+          />
+          {hint ? (
+            <WaitHint hint={hint} />
+          ) : localLoad ? (
+            <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
+          ) : null}
+          <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+        </>
+      )}
     </StatusRow>
   )
 }

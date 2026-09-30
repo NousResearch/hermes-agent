@@ -34,7 +34,6 @@ from tests.e2e.core.providers._openai_helpers import (
     bug_assertions,
     db_messages,
     db_tool_calls,
-    known_marks,
     oneshot,
     responses_input_items,
     responses_provider_config,
@@ -54,15 +53,13 @@ from tests.fakes.providers.openai_responses import (
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
 
-# Scenario -> "#issue one-line symptom" for scenarios red on origin/main (strict xfail that
-# only a KnownBugError from bug_assertions() satisfies; see known_marks).
-KNOWN: dict[str, str] = {
-    "soft_failure_recovers_on_primary": "#120399 HTTP-200 invalid_encrypted_content skips replay-strip recovery",
+# Scenario -> (pattern, "#issue one-line symptom") for scenarios red on origin/main: a
+# KnownBugError from bug_assertions() matching the pattern XFAILs the cell (known_gate).
+KNOWN: dict[str, tuple[str, str]] = {
+    "soft_failure_recovers_on_primary": (
+        r"(?s)fallback engaged instead of replay recovery: .*stdout='FROM-FALLBACK",
+        "#120399 HTTP-200 invalid_encrypted_content skips replay-strip recovery"),
 }
-
-
-def known(name: str) -> list:
-    return known_marks(KNOWN, name)
 
 
 def _encs(body: dict) -> list:
@@ -145,8 +142,7 @@ def _stale_blob_session(h: Home, srv: FakeResponsesServer, fallback: FakeLLMServ
 @pytest.mark.parametrize("rejection", [
     pytest.param(HttpError(400, "Encrypted content could not be decrypted or parsed.", code="invalid_encrypted_content",
                            type="invalid_request_error"), id="http_400"),
-    pytest.param(SoftFail(), id="http_200_soft_failure",
-                 marks=known("soft_failure_recovers_on_primary")),
+    pytest.param(SoftFail(), id="http_200_soft_failure"),
 ])
 def test_rejected_encrypted_replay_is_stripped_and_primary_retried(tmp_path, rejection) -> None:
     h = Home(tmp_path)
@@ -158,7 +154,8 @@ def test_rejected_encrypted_replay_is_stripped_and_primary_retried(tmp_path, rej
         fallback_mains = fallback.main_requests()
 
     assert _encs(mains[1]) == ["ENC-STALE"], "precondition: the resumed turn replays the stale blob"
-    with bug_assertions():
+    scenario = "soft_failure_recovers_on_primary" if isinstance(rejection, SoftFail) else "http_400"
+    with bug_assertions(KNOWN, scenario):
         assert fallback_mains == [], f"fallback engaged instead of replay recovery: {run.describe()}"
         assert len(mains) == 3, [m.get("input") for m in mains]
         assert _encs(mains[2]) == [], "the retry must drop the rejected blob"

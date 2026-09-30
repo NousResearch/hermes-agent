@@ -15,7 +15,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import pytest
 
@@ -253,20 +253,23 @@ class World:
     runs: dict[str, str]
 
 
-def cells(known: dict[str, str], *, platform: bool) -> list[Any]:
+def cell_id(scenario: str, sink: str) -> str:
+    """Test id and KNOWN key of one (scenario, sink) cell."""
+    return f"{scenario}-{SINK_IDS[sink]}"
+
+
+def cells(known: Mapping[str, Any], *, platform: bool) -> list[Any]:
     """One ``pytest.param(scenario, sink)`` per sink a scenario is held to (``platform``: the surface has a
-    platform wire). A KNOWN key is a cell id ``<scenario>-<sink id>`` and strict-xfails ONLY that sink, so a
-    new leak of the same scenario into any other sink is a plain red, never absorbed by the known gap."""
+    platform wire). A KNOWN key is a cell id (:func:`cell_id`) and gates ONLY that sink (``known_gate``), so
+    a new leak of the same scenario into any other sink is a plain red, never absorbed by the known gap."""
     out, ids = [], set()
     for name, scenario in SCENARIOS.items():
         for sink in scenario.sinks:
             if sink == PLATFORM and not platform:
                 continue
-            cid = f"{name}-{SINK_IDS[sink]}"
+            cid = cell_id(name, sink)
             ids.add(cid)
-            marks = ([pytest.mark.xfail(strict=True, raises=BoundaryBreach, reason=known[cid])]
-                     if cid in known else [])
-            out.append(pytest.param(name, sink, id=cid, marks=marks))
+            out.append(pytest.param(name, sink, id=cid))
     stale = sorted(set(known) - ids)
     assert not stale, f"KNOWN names cells that do not exist: {stale}"
     return out

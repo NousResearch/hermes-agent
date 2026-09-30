@@ -21,6 +21,7 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
+from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
 from tests.e2e.core.providers._native_helpers import ChatResult, KnownSymptom, make_home, run_chat  # noqa: E402
 from tests.fakes.providers.vertex import (  # noqa: E402
     PROJECT,
@@ -33,11 +34,12 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     hermes_setup,
 )
 
-KNOWN: dict[str, str] = {
-    "guidance:permission_denied": "#121295 Vertex 401/403 are reported as 'rejected your API key' (Vertex has no API "
-                                  "key; the fix is the service account / IAM role)",
-    "guidance:unauthenticated": "#121295 Vertex 401/403 are reported as 'rejected your API key' (Vertex has no API "
-                                "key; the fix is the service account / IAM role)",
+_API_KEY_BLAME = (r"Vertex auth failure blamed on an API key",
+                  "#121295 Vertex 401/403 are reported as 'rejected your API key' (Vertex has no API "
+                  "key; the fix is the service account / IAM role)")
+KNOWN: dict[str, tuple[str, str]] = {
+    "guidance:permission_denied": _API_KEY_BLAME,
+    "guidance:unauthenticated": _API_KEY_BLAME,
 }
 
 QUOTA_MSG = ("Resource exhausted. Please try again later. Please refer to "
@@ -136,11 +138,7 @@ def test_oauth_invalid_grant_sends_nothing_and_names_the_credential(results: dic
     assert "VERTEX_CREDENTIALS_PATH" in out or "GOOGLE_APPLICATION_CREDENTIALS" in out, turn.describe()
 
 
-def _guidance_param(name: str) -> Any:
-    return pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN[f"guidance:{name}"]))
-
-
-@pytest.mark.parametrize("name", [_guidance_param("permission_denied"), _guidance_param("unauthenticated")])
+@pytest.mark.parametrize("name", ["permission_denied", "unauthenticated"])
 def test_auth_failure_guidance_is_vertex_specific(results: dict[str, Any], name: str) -> None:
     """Vertex authenticates with an OAuth service account, so the guidance must not send the user to
     rotate an 'API key' that does not exist."""
@@ -149,5 +147,6 @@ def test_auth_failure_guidance_is_vertex_specific(results: dict[str, Any], name:
     if not (res["fake"].requests and turn.returncode != 0):
         raise RuntimeError(f"{name}: the auth failure never happened:\n{turn.describe()}")
     guidance = _output(turn).split("Provider said:")[0].lower()
-    if "api key" in guidance:
-        raise KnownSymptom(f"Vertex auth failure blamed on an API key:\n{turn.stdout}")
+    with known_gate(KNOWN, f"guidance:{name}", raises=KnownSymptom):
+        if "api key" in guidance:
+            raise KnownSymptom(f"Vertex auth failure blamed on an API key:\n{turn.stdout}")

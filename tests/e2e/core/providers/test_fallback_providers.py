@@ -36,29 +36,26 @@ from tests.e2e.core.providers._openai_helpers import (
     chat_messages,
     custom_chat_config,
     db_messages,
-    known_marks,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 from tests.fakes.providers.chat_variants import CError, CText, FakeChatVariantServer
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
 
-# Scenario -> "#issue one-line symptom" for scenarios red on origin/main (strict xfail that
-# only a KnownBugError from bug_assertions() satisfies; see known_marks).
-KNOWN: dict[str, str] = {
-    "unreachable_portal_falls_back": "#120608 transport error during credential resolution skips fallback_providers",
+# Scenario -> (pattern, "#issue one-line symptom") for scenarios red on origin/main: a
+# KnownBugError from bug_assertions() matching the pattern XFAILs the cell (known_gate).
+KNOWN: dict[str, tuple[str, str]] = {
+    "unreachable_portal_falls_back": (
+        r"(?s)fallback_providers never consulted: .*agent failed: \[Errno 111\] Connection refused",
+        "#120608 transport error during credential resolution skips fallback_providers"),
 }
 
 FALLBACK_MODEL = "fallback-model"
 PROMPT = "CANARY-PROMPT say hello"
 FIRST_PROMPT = "CANARY-FIRST what is two plus two"
 # A primary that is never abandoned for the fallback keeps backing off for minutes, so a
-# turn overrunning this is a HarnessError (a real failure even under a KNOWN xfail).
+# turn overrunning this is a HarnessError (a real failure even under a KNOWN entry).
 TURN_BUDGET = 45.0
-
-
-def known(name: str) -> list:
-    return known_marks(KNOWN, name)
 
 
 def _fallback_entry(fallback: FakeLLMServer) -> list[dict]:
@@ -179,7 +176,7 @@ def _portal(kind: str) -> Iterator[tuple[str, list[str]]]:
 
 @pytest.mark.parametrize("portal_kind", [
     pytest.param("5xx", id="portal_5xx"),
-    pytest.param("refused", id="portal_refused", marks=known("unreachable_portal_falls_back")),
+    pytest.param("refused", id="portal_refused"),
 ])
 def test_primary_credential_resolution_failure_falls_back(tmp_path, portal_kind: str) -> None:
     dead = f"http://127.0.0.1:{_closed_port()}"
@@ -198,7 +195,8 @@ def test_primary_credential_resolution_failure_falls_back(tmp_path, portal_kind:
 
     if portal_kind == "5xx":
         assert "/api/oauth/token" in portal_hits, f"precondition: the expired token was never refreshed: {run.describe()}"
-    with bug_assertions():
+    scenario = "unreachable_portal_falls_back" if portal_kind == "refused" else f"portal_{portal_kind}"
+    with bug_assertions(KNOWN, scenario):
         assert fallback_mains, f"fallback_providers never consulted: {run.describe()}"
         assert any(PROMPT in t for t in _user_texts(fallback_mains[0])), fallback_mains[0].get("messages")
         assert run.proc.returncode == 0 and run.stdout.strip() == "FROM-FALLBACK", run.describe()

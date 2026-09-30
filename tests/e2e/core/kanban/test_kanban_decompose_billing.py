@@ -30,6 +30,7 @@ from typing import Callable, Iterator
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.kanban._helpers import PY, Board, wait_until
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Response, Text
 
@@ -39,10 +40,15 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups for the gateway child"),
 ]
 
-KNOWN = {
-    "malformed": "#118872 a triage card whose decompose reply is unusable is re-billed every tick forever",
-    "http_500": "#118603 a triage card whose decompose call 5xxs is retried every dispatcher tick forever",
-    "test_huge_decompose_reply_is_bounded": "#118607 a 500-child decompose reply creates 500 child rows",
+_REBILLED = r"doomed card billed \d+ aux decompose calls over >= \d+ dispatcher ticks \(bound \d+\)"
+KNOWN: dict[str, tuple[str, str]] = {
+    "malformed": (_REBILLED,
+                  "#118872 a triage card whose decompose reply is unusable is re-billed every tick forever"),
+    "http_500": (_REBILLED,
+                 "#118603 a triage card whose decompose call 5xxs is retried every dispatcher tick forever"),
+    "test_huge_decompose_reply_is_bounded": (
+        r"500-child reply created \d+ child rows \(bound \d+\)",
+        "#118607 a 500-child decompose reply creates 500 child rows"),
 }
 
 # Dispatcher knobs through documented config: tick every second, never spawn workers (we only
@@ -63,15 +69,11 @@ TASK_ID_RE = re.compile(r"Task id: (t_[0-9a-f]+)")
 
 
 class RebilledEveryTick(AssertionError):
-    """The doomed card was billed on (nearly) every tick; the only failure the known xfail covers."""
+    """The doomed card was billed on (nearly) every tick; the only type ``known_gate`` accepts here."""
 
 
 class UnboundedFanout(AssertionError):
-    """A decompose reply fanned out past the child bound; the only failure the known xfail covers."""
-
-
-def _known(name: str, exc: type[BaseException]) -> list:
-    return [pytest.mark.xfail(strict=True, raises=exc, reason=KNOWN[name])] if name in KNOWN else []
+    """A decompose reply fanned out past the child bound; the only type ``known_gate`` accepts here."""
 
 
 # fake aux model ----------------------------------------------------------------------------------
@@ -170,8 +172,7 @@ def prove_ticks(b: Board, proc: subprocess.Popen, k: int) -> None:
 
 
 # tests -------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("failure", [pytest.param(name, marks=_known(name, RebilledEveryTick))
-                                     for name in FAILURES])
+@pytest.mark.parametrize("failure", list(FAILURES))
 def test_failing_triage_card_is_not_rebilled_every_tick(tmp_path: Path, failure: str) -> None:
     model = AuxModel()
     with FakeLLMServer(aux=model) as srv:
@@ -187,10 +188,11 @@ def test_failing_triage_card_is_not_rebilled_every_tick(tmp_path: Path, failure:
         # Harness invariants (stay red regardless of the known bug): the failure produced no graph.
         assert children_of(b, doomed) == [], b.diag(doomed)
         assert b.events(doomed, "decomposed") == [], b.diag(doomed)
-        if bills > MAX_FAILED_ATTEMPTS:
-            raise RebilledEveryTick(
-                f"doomed card billed {bills} aux decompose calls over >= {PROBE_TICKS + 1} dispatcher "
-                f"ticks (bound {MAX_FAILED_ATTEMPTS}); status={b.task(doomed)['status']}")
+        with known_gate(KNOWN, failure, raises=RebilledEveryTick):
+            if bills > MAX_FAILED_ATTEMPTS:
+                raise RebilledEveryTick(
+                    f"doomed card billed {bills} aux decompose calls over >= {PROBE_TICKS + 1} dispatcher "
+                    f"ticks (bound {MAX_FAILED_ATTEMPTS}); status={b.task(doomed)['status']}")
 
 
 def test_valid_three_child_graph_bills_once_and_links_children(tmp_path: Path) -> None:
@@ -220,8 +222,6 @@ def test_valid_three_child_graph_bills_once_and_links_children(tmp_path: Path) -
             [rows[f"child {i}"] for i in range(3)]]
 
 
-@pytest.mark.xfail(strict=True, raises=UnboundedFanout,
-                   reason=KNOWN["test_huge_decompose_reply_is_bounded"])
 def test_huge_decompose_reply_is_bounded(tmp_path: Path) -> None:
     """One decompose call answering 500 children must be rejected or capped, not fanned out.
     Driven through the real ``hermes kanban decompose`` CLI (same decompose_task path)."""
@@ -236,5 +236,6 @@ def test_huge_decompose_reply_is_bounded(tmp_path: Path) -> None:
         # A rejection leaves the root in triage with zero children; a cap leaves <= the bound.
         assert kids or b.task(root)["status"] == "triage", b.diag(root)
         assert task_count(b) == 1 + len(kids), "child rows exist that are not linked under the root"
-        if len(kids) > MAX_CHILDREN:
-            raise UnboundedFanout(f"500-child reply created {len(kids)} child rows (bound {MAX_CHILDREN})")
+        with known_gate(KNOWN, "test_huge_decompose_reply_is_bounded", raises=UnboundedFanout):
+            if len(kids) > MAX_CHILDREN:
+                raise UnboundedFanout(f"500-child reply created {len(kids)} child rows (bound {MAX_CHILDREN})")

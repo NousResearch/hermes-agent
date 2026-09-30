@@ -27,7 +27,7 @@ import pytest
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
     HttpMcpServer,
-    apply_known,
+    KnownSymptom,
     build_home,
     call_tool,
     calls_received,
@@ -42,6 +42,7 @@ from tests.e2e.core.mcp_plugins._helpers import (
     tool_results,
 )
 from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged, tui_host
+from tests.e2e.core._pending_fixes import known_gate
 from tests.fakes.fake_llm_provider import Text
 
 pytestmark = [
@@ -51,17 +52,17 @@ pytestmark = [
 
 SERVER = "web"
 
-KNOWN: dict[str, str] = {
-    "test_no_information_free_meta_is_sent_over_http":
-        "#120923 empty params._meta sent on every request; some hosted MCP servers answer HTTP 400",
-    "test_401_on_tools_call_is_reported_as_an_auth_failure":
-        "#121285 mcp 2.x folds a tools/call 401 into a generic MCPError; auth recovery never runs",
+# Open bugs on origin/main: test id -> (the symptom's own message pattern, "#issue reason"). Run-time
+# gated around the symptom() check only (known_gate); drop an entry when its fix lands.
+KNOWN: dict[str, tuple[str, str]] = {
+    "test_no_information_free_meta_is_sent_over_http": (
+        r"^requests carried an empty/null params\._meta: \[.*'tools/call'",
+        "#120923 empty params._meta sent on every request; some hosted MCP servers answer HTTP 400"),
+    "test_401_on_tools_call_is_reported_as_an_auth_failure": (
+        r"^a 401 on tools/call reached the model without any sign it is an auth failure: "
+        r"\{'error': 'MCP call failed: MCPError",
+        "#121285 mcp 2.x folds a tools/call 401 into a generic MCPError; auth recovery never runs"),
 }
-
-
-@pytest.fixture(autouse=True)
-def _known(request: pytest.FixtureRequest) -> None:
-    apply_known(request, KNOWN)
 
 
 def _one_turn(root: Path, calls: list[tuple[str, dict]], *, unauthorized_calls: int = 0) -> dict[str, Any]:
@@ -96,11 +97,12 @@ def test_no_required_param_call_over_http_sends_an_arguments_object(shape: dict[
     assert all(shape["canary"] in r for r in shape["results"]), shape["results"]
 
 
-def test_no_information_free_meta_is_sent_over_http(shape: dict[str, Any]) -> None:
+def test_no_information_free_meta_is_sent_over_http(shape: dict[str, Any], request: pytest.FixtureRequest) -> None:
     requests = [m for m in inbound(shape["log"]) if isinstance(m, dict) and "id" in m and "method" in m]
     assert requests, "the server logged no requests"
     empty = [m["method"] for m in requests if "_meta" in (m.get("params") or {}) and not m["params"]["_meta"]]
-    symptom(not empty, f"requests carried an empty/null params._meta: {empty}")
+    with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
+        symptom(not empty, f"requests carried an empty/null params._meta: {empty}")
 
 
 # 401 on tools/call ---------------------------------------------------------------------------------
@@ -112,13 +114,15 @@ def unauthorized(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
                      unauthorized_calls=1)
 
 
-def test_401_on_tools_call_is_reported_as_an_auth_failure(unauthorized: dict[str, Any]) -> None:
+def test_401_on_tools_call_is_reported_as_an_auth_failure(unauthorized: dict[str, Any],
+                                                          request: pytest.FixtureRequest) -> None:
     assert any("injected_401_for" in m for m in inbound(unauthorized["log"]) if isinstance(m, dict)), (
         "fixture never answered 401 (vacuous)")
     first = payload(unauthorized["results"][0])
     assert "error" in first, first
-    symptom(re.search(r"auth|401|sign.?in|credential", json.dumps(first), re.I),
-            f"a 401 on tools/call reached the model without any sign it is an auth failure: {first}")
+    with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
+        symptom(re.search(r"auth|401|sign.?in|credential", json.dumps(first), re.I),
+                f"a 401 on tools/call reached the model without any sign it is an auth failure: {first}")
 
 
 def test_the_call_after_a_401_reaches_the_server(unauthorized: dict[str, Any]) -> None:
@@ -141,6 +145,8 @@ RECONNECT_PLANS: dict[str, tuple[list[str], int, str]] = {
     "read-only": (["ro_probe"], 0, "RO:CANARY-crash:"),
 }
 KNOWN["test_server_crash_mid_call_fails_that_call_and_the_next_turn_reconnects[read-only]"] = (
+    r"^read-only: next turn did not reach the restarted server: .*expired while this write-capable call "
+    r"was in flight.*NOT automatically retried.*The connection has been re-established",
     "#121042 readOnlyHint unseen under mcp 2.x, so a read-only call is not replayed after session expiry")
 
 
@@ -159,7 +165,8 @@ def _planner(turn2: list[str]):
 
 
 @pytest.mark.parametrize("kind", list(RECONNECT_PLANS))
-def test_server_crash_mid_call_fails_that_call_and_the_next_turn_reconnects(tmp_path: Path, kind: str) -> None:
+def test_server_crash_mid_call_fails_that_call_and_the_next_turn_reconnects(tmp_path: Path, kind: str,
+                                                                            request: pytest.FixtureRequest) -> None:
     turn2, must_succeed, canary = RECONNECT_PLANS[kind]
     with provider(_planner(turn2)) as srv:
         eh = build_home(tmp_path, srv.base_url)
@@ -181,7 +188,9 @@ def test_server_crash_mid_call_fails_that_call_and_the_next_turn_reconnects(tmp_
                 assert FINAL in host.turn(sid, "Use the web tool again.")
                 after = tool_results(srv)[1:]
                 assert len(after) == len(turn2), after
-                symptom(canary in after[must_succeed], f"{kind}: next turn did not reach the restarted server: {after}")
+                with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
+                    symptom(canary in after[must_succeed],
+                            f"{kind}: next turn did not reach the restarted server: {after}")
                 served_by = {m["pid"] for m in _raw(http.log) if m["msg"].get("method") == "tools/call"
                              and (m["msg"].get("params") or {}).get("name") == turn2[0]}
                 assert served_by and old_pid not in served_by, served_by

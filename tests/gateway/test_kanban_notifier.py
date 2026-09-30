@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from agent.i18n import t
 from gateway.kanban_notifications import ACTIONABLE_TEXT_LIMIT
 
 
@@ -86,9 +87,11 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+@pytest.mark.parametrize("lang", ["en", "zh"])
 @pytest.mark.parametrize("kind", ["blocked", "block_loop_detected"])
 @pytest.mark.parametrize("length", [0, 160, 161, 999, 1000, 1001, 10000])
-def test_actionable_reason_preserved_and_bounded(tmp_path, monkeypatch, kind, length):
+def test_actionable_reason_preserved_and_bounded(tmp_path, monkeypatch, kind, length, lang):
+    monkeypatch.setenv("HERMES_LANGUAGE", lang)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "reasons.db"))
     kb.init_db()
     reason = ("OPEN " + "x" * (length - 10) + "REPLY") if length else ""
@@ -111,9 +114,10 @@ def test_actionable_reason_preserved_and_bounded(tmp_path, monkeypatch, kind, le
     assert len(adapter.sent) == 1
     text = adapter.sent[0]["text"]
     if not reason:
-        assert not text.endswith(": ")
+        assert not text.endswith(t("gateway.kanban.ping.reason_suffix", value=""))
     else:
-        rendered = text.rsplit(": ", 1)[1]
+        rendered = text[text.index("OPEN "):]
+        assert text.endswith(t("gateway.kanban.ping.reason_suffix", value=rendered))
         if len(reason) <= ACTIONABLE_TEXT_LIMIT:
             assert rendered == reason
         else:

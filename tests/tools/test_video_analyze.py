@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
@@ -14,11 +15,9 @@ from tools.vision_tools import (
     video_analyze_tool,
 )
 
-
 # ---------------------------------------------------------------------------
 # _detect_video_mime_type
 # ---------------------------------------------------------------------------
-
 
 class TestDetectVideoMimeType:
     """Extension-based MIME detection for video files."""
@@ -33,17 +32,14 @@ class TestDetectVideoMimeType:
         p.write_bytes(b"\x00" * 10)
         assert _detect_video_mime_type(p) == "video/webm"
 
-
     def test_case_insensitive(self, tmp_path):
         p = tmp_path / "clip.MP4"
         p.write_bytes(b"\x00" * 10)
         assert _detect_video_mime_type(p) == "video/mp4"
 
-
 # ---------------------------------------------------------------------------
 # _video_to_base64_data_url
 # ---------------------------------------------------------------------------
-
 
 class TestVideoToBase64DataUrl:
     """Base64 encoding of video files."""
@@ -54,7 +50,6 @@ class TestVideoToBase64DataUrl:
         result = _video_to_base64_data_url(p)
         assert result.startswith("data:video/mp4;base64,")
 
-
     def test_default_mime_for_unknown_ext(self, tmp_path):
         p = tmp_path / "test.xyz"
         p.write_bytes(b"\x00\x01\x02\x03")
@@ -62,23 +57,16 @@ class TestVideoToBase64DataUrl:
         # Falls back to video/mp4
         assert result.startswith("data:video/mp4;base64,")
 
-
 # ---------------------------------------------------------------------------
 # Schema validation
 # ---------------------------------------------------------------------------
-
-
-
 
 # ---------------------------------------------------------------------------
 # _handle_video_analyze handler
 # ---------------------------------------------------------------------------
 
-
 class TestHandleVideoAnalyze:
     """Tests for the registry handler wrapper."""
-
-
 
     def test_falls_back_to_vision_model_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "")
@@ -92,11 +80,9 @@ class TestHandleVideoAnalyze:
             args = mock_tool.call_args[0]
             assert args[2] == "google/gemini-flash"
 
-
 # ---------------------------------------------------------------------------
 # video_analyze_tool — integration-style tests with mocked LLM
 # ---------------------------------------------------------------------------
-
 
 class TestVideoAnalyzeTool:
     """Core video analysis function tests."""
@@ -121,6 +107,7 @@ class TestVideoAnalyzeTool:
         assert data["success"] is True
         assert "demo" in data["analysis"].lower()
 
+    @pytest.mark.require_symlinks
     def test_local_file_read_guard_blocks_env_via_video_extension(self, tmp_path):
         """A .env file symlinked with a video extension must still be blocked.
 
@@ -144,7 +131,6 @@ class TestVideoAnalyzeTool:
         assert "secret-bearing environment file" in data["error"]
         mock_llm.assert_not_awaited()
 
-
     def test_unsupported_format(self, tmp_path):
         """Unsupported extension raises error."""
         video = tmp_path / "clip.flv"
@@ -154,7 +140,6 @@ class TestVideoAnalyzeTool:
         data = json.loads(result)
         assert data["success"] is False
         assert "unsupported video format" in data["analysis"].lower()
-
 
     def test_api_message_format(self, tmp_path):
         """Verify the message sent to LLM uses video_url content type."""
@@ -240,11 +225,9 @@ class TestVideoAnalyzeTool:
         assert uploaded_bytes == remote_bytes
         assert uploaded_bytes != host_video.read_bytes()
 
-
 # ---------------------------------------------------------------------------
 # Toolset registration
 # ---------------------------------------------------------------------------
-
 
 class TestVideoToolsetRegistration:
     """Verify the tool is registered correctly."""
@@ -255,5 +238,3 @@ class TestVideoToolsetRegistration:
         assert entry is not None
         assert entry.toolset == "video"
         assert entry.is_async is True
-
-

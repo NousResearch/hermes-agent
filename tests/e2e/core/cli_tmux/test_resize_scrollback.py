@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,41 +44,75 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     (tmp_path / "work").mkdir()
 
     def tmux(*args: str) -> str:
-        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, timeout=30).stdout
+        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
 
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
 
+    script = [Text(_reply(t), chunk_chars=10, delay_per_chunk=0.03) for t in WORDS]
+    llm = FakeLLMServer(script, aux=lambda _r: Text("Scripted session title"))
+
+    def diagnostics() -> str:
+        # What a red needs to be actionable: did the turn reach the provider, what did the CLI log,
+        # and where is every thread of the CLI parked (faulthandler dump on SIGABRT, into the pane).
+        kinds = Counter(r["kind"] for r in llm.requests)
+        out = [f"fake provider requests: main={kinds['main']} aux={kinds['aux']}"]
+        for name in ("agent.log", "errors.log"):
+            log = home / ".hermes" / "logs" / name
+            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:] if log.exists() else ["<missing>"]
+            out += [f"--- {name} (tail) ---", *tail]
+        pid = tmux("display-message", "-p", "-t", "p", "#{pane_pid}").strip()
+        if pid.isdigit():
+            os.kill(int(pid), signal.SIGABRT)
+            time.sleep(2.0)
+            out += ["--- CLI thread dump ---", transcript()[-6000:]]
+        return "\n".join(out)
+
     def wait_for(needle: str, timeout: float = 60.0) -> None:
         end = time.monotonic() + timeout
         while needle not in transcript():
-            assert time.monotonic() < end, f"{needle!r} never appeared:\n{transcript()[-3000:]}"
+            if time.monotonic() >= end:
+                screen = transcript()[-3000:]
+                pytest.fail(f"{needle!r} never appeared:\n{screen}\n{diagnostics()}")
             time.sleep(0.1)
 
     def resize(cols: int) -> None:
         tmux("resize-window", "-t", "p", "-x", str(cols), "-y", "24")
 
     def ask(turn: int) -> None:
-        tmux("send-keys", "-t", "p", "-l", f"question zq{turn}q please")
-        time.sleep(0.5)  # typed text + Enter in one write is a paste, not a submit
+        question = f"question zq{turn}q please"
+        tmux("send-keys", "-t", "p", "-l", question)
+        # The CLI reads an Enter processed within 50 ms of the last buffer change as a pasted
+        # newline. A fixed sleep after send-keys is not enough on a starved runner: a CLI still
+        # busy with the typed batch reads the Enter right after it. The question on the composer
+        # row proves the app processed every typed key (a bare match could be the tty's own echo
+        # of keys typed before prompt_toolkit took raw mode); the gap after it is then real time
+        # the Enter cannot fall inside.
+        wait_for(f"\u276f {question}")
+        time.sleep(0.5)
         tmux("send-keys", "-t", "p", "Enter")
 
     def reply_done(turn: int) -> None:
         wait_for(f"t{turn}w{WORDS[turn] - 1:03d}")
         time.sleep(2.0)
 
-    script = [Text(_reply(t), chunk_chars=10, delay_per_chunk=0.03) for t in WORDS]
-    with FakeLLMServer(script, aux=lambda _r: Text("Scripted session title")) as llm:
+    with llm:
         write_hermes_home(home / ".hermes", llm.base_url)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "TMUX"))}
         env.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"), PYTHONPATH=str(REPO_ROOT),
-                   TERM="xterm-256color")
+                   TERM="xterm-256color", PYTHONFAULTHANDLER="1")
         argv = [sys.executable, "-m", "hermes_cli.main", "chat", "--cli", "--yolo"]
         subprocess.run(["tmux", "-L", sock, "-f", os.devnull, "new-session", "-d", "-s", "p", "-x", "120",
                         "-y", "24", "-c", str(tmp_path / "work"), *argv], env=env, check=True, timeout=30)
         try:
             tmux("set", "-g", "window-size", "manual")
+            tmux("set", "-g", "remain-on-exit", "on")  # keeps a crash or the diagnostics' dump readable
             wait_for("Welcome to Hermes", timeout=120)
+            # The welcome line is printed before the input loop exists. Keys typed then land in the
+            # still-cooked tty: the kernel echoes them (a plain transcript row) and hands the app
+            # text + Enter in one read, which it takes for a pasted newline — the question sits
+            # unsent in a two-line draft. The status bar is painted by the running app, in raw mode.
+            wait_for("\u2624 fake-model \u2502", timeout=120)
             time.sleep(2.0)
 
             ask(1)

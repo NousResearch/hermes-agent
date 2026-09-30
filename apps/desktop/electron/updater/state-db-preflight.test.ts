@@ -45,7 +45,7 @@ c.close()
 
   try {
     await once(child.stdout!, 'data')
-    preflightStateDb({
+    await preflightStateDb({
       python,
       script,
       home,
@@ -87,7 +87,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   }
 })
 
-test('a managed installation runs the snapshot through the installation launcher', (): void => {
+test('a managed installation runs the snapshot through the installation launcher', async (): Promise<void> => {
   const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-preflight-'))
   const shims: string = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-shim-'))
   const python: string = process.env.HERMES_PYTHON || 'python3'
@@ -125,7 +125,7 @@ test('a managed installation runs the snapshot through the installation launcher
 
     assert.equal(created.status, 0, created.stderr)
 
-    preflightStateDb({
+    await preflightStateDb({
       python: null,
       launcher: shim,
       script,
@@ -143,13 +143,13 @@ test('a managed installation runs the snapshot through the installation launcher
   }
 })
 
-test('an older selected checkout without the snapshot helper refuses before backend stop', (): void => {
+test('an older selected checkout without the snapshot helper refuses before backend stop', async (): Promise<void> => {
   const oldRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'old-preflight-'))
   let stopped = false
 
   try {
-    assert.throws((): void => {
-      preflightStateDb({
+    await assert.rejects(async (): Promise<void> => {
+      await preflightStateDb({
         python: process.env.HERMES_PYTHON || 'python3',
         script: path.join(oldRoot, 'hermes_cli', 'backup_sqlite.py'),
         home: oldRoot,
@@ -163,17 +163,47 @@ test('an older selected checkout without the snapshot helper refuses before back
   }
 })
 
-test('scales the preflight timeout for large state databases while keeping the default floor', (): void => {
-  const smallHome: string = fs.mkdtempSync(path.join(os.tmpdir(), 'small-timeout-'))
-  const largeHome: string = fs.mkdtempSync(path.join(os.tmpdir(), 'large-timeout-'))
+test('the deadline grows with the main database and WAL, but stays bounded', (): void => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-budget-'))
 
   try {
-    assert.equal(stateDbPreflightTimeoutMs(smallHome), 30_000)
-    fs.writeFileSync(path.join(largeHome, 'state.db'), '')
-    fs.truncateSync(path.join(largeHome, 'state.db'), 1_048_576_000)
-    assert.equal(stateDbPreflightTimeoutMs(largeHome), 35_000)
+    const floor = stateDbPreflightTimeoutMs(home)
+
+    for (const name of ['state.db', 'state.db-wal']) {
+      fs.writeFileSync(path.join(home, name), '')
+      fs.truncateSync(path.join(home, name), 2 * 1024 ** 3)
+    }
+
+    const withWal = stateDbPreflightTimeoutMs(home)
+    fs.unlinkSync(path.join(home, 'state.db-wal'))
+    const withoutWal = stateDbPreflightTimeoutMs(home)
+    assert.ok(floor >= 5 * 60_000)
+    assert.ok(withWal > withoutWal && withoutWal > floor)
+    fs.truncateSync(path.join(home, 'state.db'), 100 * 1024 ** 3)
+    assert.ok(stateDbPreflightTimeoutMs(home) <= 30 * 60_000)
   } finally {
-    fs.rmSync(smallHome, { recursive: true, force: true })
-    fs.rmSync(largeHome, { recursive: true, force: true })
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the event loop stays available while a real snapshot process is running', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-responsive-'))
+  const script = path.join(home, 'snapshot.py')
+  fs.writeFileSync(script, `import pathlib, sys, time
+home = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + 3
+while not (home / 'release').exists():
+    if time.monotonic() > deadline:
+        raise RuntimeError('parent event loop was blocked')
+    time.sleep(0.01)
+print('snapshot finished')
+`)
+  const timer = setTimeout(() => fs.writeFileSync(path.join(home, 'release'), ''), 100)
+
+  try {
+    await preflightStateDb({ python: process.env.HERMES_PYTHON || 'python3', script, home, log: (): void => {} })
+  } finally {
+    clearTimeout(timer)
+    fs.rmSync(home, { recursive: true, force: true })
   }
 })

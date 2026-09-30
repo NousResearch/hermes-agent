@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import atexit
 import concurrent.futures
-import contextvars
 from typing import Any
+
+from tools.daemon_pool import DaemonThreadPoolExecutor
 
 # Quota endpoints are remote and cosmetic. Timed-out calls must not occupy the
 # RPC reader or the general long-handler pool indefinitely.
-_account_usage_pool = concurrent.futures.ThreadPoolExecutor(
+_account_usage_pool = DaemonThreadPoolExecutor(
     max_workers=2, thread_name_prefix="hermes-account-usage"
 )
 atexit.register(lambda: _account_usage_pool.shutdown(wait=False, cancel_futures=True))
@@ -42,41 +43,34 @@ def _usage_provider_identity(session: dict) -> tuple[str, str, Any]:
     return provider, base_url, api_key
 
 
+def _scoped_account_lines(session: dict) -> list[str]:
+    """Resolve the owning profile, including cold external secrets, in the worker."""
+    from tui_gateway.server import _session_profile_runtime_scope
+    from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+    # Hydration can run a secret helper subprocess. Keep it, config resolution,
+    # and the quota request inside the same timeout and reset scope on exit.
+    with _session_profile_runtime_scope(session):
+        provider, base_url, api_key = _usage_provider_identity(session)
+        if not provider:
+            return []
+        snapshot = fetch_account_usage(provider, base_url=base_url or None, api_key=api_key)
+        return list(render_account_usage_lines(snapshot) or [])
+
+
 def _usage_provider_lines(session: dict) -> tuple[list[str], list[str]]:
     """Return bounded, fail-open provider account and rate-limit lines."""
-    from tui_gateway.server import _session_profile_runtime_scope
-
-    # The RPC's registered handler is the _session_method wrapper, not a
-    # _profile_scoped wrapper. Bind before resolving config and copy that exact
-    # scope into the quota worker (including profile credentials).
-    with _session_profile_runtime_scope(session, hydrate_secrets=False):
-        return _scoped_usage_provider_lines(session)
-
-
-def _scoped_usage_provider_lines(session: dict) -> tuple[list[str], list[str]]:
     account_lines: list[str] = []
     rate_limit_lines: list[str] = []
-    provider, base_url, api_key = _usage_provider_identity(session)
-    if provider:
+    try:
+        future = _account_usage_pool.submit(_scoped_account_lines, session)
         try:
-            from agent.account_usage import fetch_account_usage, render_account_usage_lines
-
-            context = contextvars.copy_context()
-            future = _account_usage_pool.submit(
-                context.run,
-                fetch_account_usage,
-                provider,
-                base_url=base_url or None,
-                api_key=api_key,
-            )
-            try:
-                snapshot = future.result(timeout=_ACCOUNT_USAGE_TIMEOUT_SECONDS)
-            except concurrent.futures.TimeoutError:
-                future.cancel()
-                raise
-            account_lines = list(render_account_usage_lines(snapshot) or [])
-        except Exception:
-            account_lines = []
+            account_lines = future.result(timeout=_ACCOUNT_USAGE_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
+    except Exception:
+        account_lines = []
     agent = session.get("agent")
     if agent is not None:
         try:

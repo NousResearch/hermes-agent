@@ -12,12 +12,13 @@ import {
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
-  setCurrentModel,
+  setCurrentModelTransient,
   setCurrentPersonality,
-  setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
+  setSessionStartedAt,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -27,6 +28,7 @@ import {
   $sessionTiles,
   isSessionInForeground,
   publishSessionState,
+  rekeySessionTile,
   releaseSessionTranscript
 } from '@/store/session-states'
 
@@ -59,8 +61,13 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // Transient: this runs on every session-state sync, including the periodic
+  // session.info heartbeat, whose reported model/provider is the runtime's
+  // resolved identity (e.g. the generic `custom` billing class), not a user
+  // pick. The persisting setters would silently overwrite the composer's
+  // sticky localStorage selection with that runtime value (#102793).
+  setCurrentModelTransient(state.model ?? '')
+  setCurrentProviderTransient(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentReasoningEffortWire(state.reasoningEffortWire ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
@@ -186,6 +193,15 @@ export function useSessionStateCache({
           if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
             runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
 
+            // Re-home any open tile keyed on the pre-rotation id (#98622).
+            // Ungated on the active runtime: a background tile's conversation
+            // rotates here too, and its pane would otherwise keep the stale id
+            // (duplicate/differently-titled tabs). Mirrors handleTransition's
+            // rekey, which this path can skip when the state updater is a no-op.
+            if (storedSessionId) {
+              rekeySessionTile(existing.storedSessionId, storedSessionId, sessionId)
+            }
+
             // A rotation event needs a real next id — a null/cleared stored id
             // is a detach, not a rotation the route-follow effect should chase.
             if (
@@ -298,6 +314,9 @@ export function useSessionStateCache({
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Keep the foreground duration anchored to the runtime's first renderer
+    // attachment. Background state remains cached without stealing this view.
+    setSessionStartedAt(pending.state.runtimeStartedAt)
     // Mirror the focused session's per-session turn clock into the global
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).

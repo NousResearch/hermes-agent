@@ -155,6 +155,59 @@ def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     assert "openai-codex" not in store["providers"] and "nous" in store["providers"]
 
 
+def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
+    """Nous refresh tokens rotate on use: a cloned pool row or providers block is a fork (#121649).
+
+    agent_key-only nous rows carry no single-use grant and must survive both strip and heal.
+    """
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
+    grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    root_store["providers"]["nous"] = dict(grant)
+    (fleet["root"] / "auth.json").write_text(json.dumps(root_store))
+    pdir = _profile(fleet, "nousstrip")
+    ak_row = {"id": "ak", "source": "device_code", "auth_type": "oauth", "agent_key": "PAK"}
+    (pdir / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"nous": dict(grant)},
+        "credential_pool": {"nous": [dict(grant, id="n", source="device_code", auth_type="oauth"), ak_row]},
+    }))
+    summary = strip_cloned_single_use_oauth_grants(pdir)
+    store = json.loads((pdir / "auth.json").read_text())
+    assert (summary["pool"], summary["providers"]) == (["nous"], ["nous"])
+    assert store["credential_pool"]["nous"] == [ak_row] and "nous" not in store["providers"]
+    # Mixed shape: the surviving ak row keeps the profile "owning" nous, so the next load must
+    # not re-seed root's single-use RT from the global-root providers fallback (fork again).
+    fleet["use"](pdir)
+    load_pool("nous")
+    rows = json.loads((pdir / "auth.json").read_text())["credential_pool"]["nous"]
+    assert all(row.get("refresh_token") != "RT1" for row in rows), rows
+
+    # Heal: a fork living only in the providers block (flat nous tokens, shared RT) is dropped.
+    (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))
+    kid = _profile(fleet, "nousfork")
+    (kid / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("nous")["providers_block"] is True
+    assert "nous" not in json.loads((kid / "auth.json").read_text())["providers"]
+
+    # Heal: an agent_key-only profile row that copied root's id (and looks "fresher") is not a
+    # fork; heal_pool_rows must keep it rather than match it to root's refresh-bearing row.
+    rrow = dict(grant, id="r1", source="device_code", auth_type="oauth",
+                last_refresh="2026-01-01T00:00:00+00:00")
+    (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"nous": [rrow]}}))
+    akid = _profile(fleet, "nousakid")
+    ak_copied = {"id": "r1", "source": "device_code", "auth_type": "oauth", "access_token": "",
+                 "agent_key": "PAK", "last_refresh": "2026-06-01T00:00:00+00:00"}
+    (akid / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"nous": [ak_copied]}}))
+    fleet["use"](akid)
+    heal_forked_single_use_oauth_grants("nous")
+    assert json.loads((akid / "auth.json").read_text())["credential_pool"]["nous"] == [ak_copied]
+    root_rows = json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"]["nous"]
+    assert [(r["id"], r.get("refresh_token"), r.get("agent_key")) for r in root_rows] == [("r1", "RT1", "AK")]
+
+
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants
     assert strip_cloned_single_use_oauth_grants(tmp_path) == {"pool": [], "providers": [], "files": []}
@@ -605,7 +658,21 @@ def _seed_codex_grant(root):
     (root / "auth.json").write_text(json.dumps(store))
 
 
-def _shared_profile(fleet, name, *, link):
+def _link_same_file(target, alias):
+    """Make ``alias`` the SAME store as ``target``: a symlink where the host
+    permits one, a hardlink where it does not (Windows without SeCreateSymbolicLink
+    privilege raises WinError 1314). Both flavors are one file — the heal contract
+    (``_is_same_auth_store``) is ``samefile``/resolved-path equality, not the link
+    flavor, so the test exercises the same contract on either host."""
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        os.link(target, alias)
+
+
+def _shared_profile(fleet, name, *, link=_link_same_file):
     """Profile whose auth.json IS the root store (``link`` makes the alias)."""
     pdir = _profile(fleet, name)
     pdir.mkdir(parents=True, exist_ok=True)

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import yaml
+    from ruamel import yaml
 except Exception:  # pragma: no cover - handled at runtime
     yaml = None
 
@@ -371,7 +371,7 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
       :class:`ConfigReadError` so the caller refuses and leaves the file
       byte-identical.
 
-    ``yaml is None`` (PyYAML not installed) still yields ``{}``: nothing can be
+    ``yaml is None`` (ruamel.yaml not installed) still yields ``{}``: nothing can be
     written in that state either, since :func:`dump_yaml_file` raises.
     """
     if yaml is None or not path.exists():
@@ -386,7 +386,9 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
     try:
-        data = yaml.safe_load(raw)
+        reader = yaml.YAML(typ="safe")
+        reader.version = (1, 1)  # Match Hermes' existing config scalar semantics.
+        data = reader.load(raw)
     except yaml.YAMLError as exc:
         raise ConfigReadError(
             f"Refusing to overwrite {path}: the existing file is not valid YAML "
@@ -421,7 +423,7 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     ``~/.hermes/config.yaml`` into a dotfiles repo or profile package.
     """
     if yaml is None:
-        raise RuntimeError("PyYAML is required to update Hermes config.yaml")
+        raise RuntimeError("ruamel.yaml is required to update Hermes config.yaml")
     ensure_parent(path)
     target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
     fd, tmp_path = tempfile.mkstemp(
@@ -429,7 +431,13 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(yaml.safe_dump(data, sort_keys=False, allow_unicode=False))
+            # The C emitter leaves YAML 1.1 boolean-like strings unquoted.
+            writer = yaml.YAML(typ="safe", pure=True)
+            writer.version = (1, 1)
+            writer.default_flow_style = False
+            writer.sort_base_mapping_type_on_output = False
+            writer.allow_unicode = False
+            writer.dump(data, handle)
             handle.flush()
             os.fsync(handle.fileno())
         try:
@@ -1341,7 +1349,7 @@ class Migrator:
             self.record("command-allowlist", None, destination, "skipped", "No OpenClaw exec approvals file found")
             return
         if yaml is None:
-            self.record("command-allowlist", source, destination, "error", "PyYAML is not available")
+            self.record("command-allowlist", source, destination, "error", "ruamel.yaml is not available")
             return
 
         try:
@@ -1839,7 +1847,7 @@ class Migrator:
                     break
 
         if yaml is None:
-            self.record("model-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("model-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         hermes_config = load_yaml_file(destination)
@@ -1874,7 +1882,7 @@ class Migrator:
             return
 
         if yaml is None:
-            self.record("tts-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("tts-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         tts_data: Dict[str, Any] = {}

@@ -19,6 +19,7 @@ Every breach asserts on disk (victim bytes, skill dir, MEMORY.md) and on the com
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any, Iterator
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.security import _helpers as H
 from tests.e2e.core.security._traversal import digest, result_json, tool_text
 from tests.e2e.core.tenancy._helpers import TuiBackend
@@ -51,7 +53,24 @@ DELETES: dict[str, tuple[str, str]] = {  # scenario -> (name given to skill_mana
     "pinned_by_category": ("research/my-skill", "research/my-skill"),
     "essential_by_category": ("autonomous-ai-agents/hermes-agent", "autonomous-ai-agents/hermes-agent"),
 }
-KNOWN: dict[str, str] = {**dict.fromkeys(TRAVERSALS, _ISSUE_STORE), **dict.fromkeys(DELETES, _ISSUE_DELETE)}
+
+
+def _store_signature(command: str, where: str) -> str:
+    """The traversal reaching its victim: deleted/rewritten (reject, approve) or its content shown (diff)."""
+    if where == "home":
+        spelled, victim = re.escape("../../auth"), "auth.json"
+    else:
+        spelled, victim = r"/[^']+/outside/victim", "victim.json"
+    return (rf"^/{command} '{spelled}': "
+            rf"(?:{re.escape(victim)} was deleted or rewritten|the command output carries the victim's content)")
+
+
+# scenario -> (pattern, "#issue symptom"), gated with ``known_gate(..., raises=H.BoundaryBreach)``
+KNOWN: dict[str, tuple[str, str]] = {
+    **{n: (_store_signature(*TRAVERSALS[n]), _ISSUE_STORE) for n in TRAVERSALS},
+    **{n: (rf"^skill_manage delete {re.escape(repr(name))} removed skills/{re.escape(rel)}: \{{'success': True",
+           _ISSUE_DELETE) for n, (name, rel) in DELETES.items()},
+}
 
 _STORE_CONFIG = "memory:\n  memory_enabled: true\n  write_approval: true\nskills:\n  write_approval: true\n"
 _SKILL = "---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\n{body}\n"
@@ -137,7 +156,7 @@ def _plant_victim(s: Store, where: str) -> tuple[Path, str, str]:
     return victim, spelled, mark
 
 
-@pytest.mark.parametrize("scenario", [H.known_param(n, KNOWN) for n in TRAVERSALS])
+@pytest.mark.parametrize("scenario", list(TRAVERSALS))
 def test_pending_id_never_leaves_the_store(store: Store, scenario: str) -> None:
     command, where = TRAVERSALS[scenario]
     victim, spelled, mark = _plant_victim(store, where)
@@ -153,8 +172,9 @@ def test_pending_id_never_leaves_the_store(store: Store, scenario: str) -> None:
         (mark in store.memory_blob(), "the victim's payload was applied to the memory store"),
         (pending_after != pending_before, f"real staged records changed: {pending_before} -> {pending_after}"),
     )
-    if breaches := [msg for failed, msg in checks if failed]:
-        raise H.BoundaryBreach(f"/{command} {spelled!r}: " + "; ".join(breaches) + f"\noutput: {out[:400]}")
+    with known_gate(KNOWN, scenario, raises=H.BoundaryBreach):
+        if breaches := [msg for failed, msg in checks if failed]:
+            raise H.BoundaryBreach(f"/{command} {spelled!r}: " + "; ".join(breaches) + f"\noutput: {out[:400]}")
 
 
 def test_control_valid_reject_drops_only_that_record(store: Store) -> None:
@@ -226,11 +246,12 @@ def deletes(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DeleteRun]:
     yield run
 
 
-@pytest.mark.parametrize("scenario", [H.known_param(n, KNOWN) for n in DELETES])
+@pytest.mark.parametrize("scenario", list(DELETES))
 def test_delete_refuses_pinned_and_essential_by_category(deletes: DeleteRun, scenario: str) -> None:
     name, rel = DELETES[scenario]
-    if not deletes.survived[scenario]:
-        raise H.BoundaryBreach(f"skill_manage delete {name!r} removed skills/{rel}: {deletes.results[scenario]}")
+    with known_gate(KNOWN, scenario, raises=H.BoundaryBreach):
+        if not deletes.survived[scenario]:
+            raise H.BoundaryBreach(f"skill_manage delete {name!r} removed skills/{rel}: {deletes.results[scenario]}")
     assert deletes.results[scenario].get("success") is False, deletes.results[scenario]
 
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._oauth_helpers import kill_tagged, make_home, run_hermes
 from tests.fakes.providers.oauth_token_server import OAuthTokenServer, unsigned_jwt
 
@@ -40,15 +41,20 @@ CASES: dict[str, Case] = {
 class PolledFasterThanAllowed(AssertionError):
     """Raised ONLY at the poll-cadence assertion, the signature of #121163 / #121254.
 
-    The strict xfails accept nothing else: a failed login, a wrong poll count or a timeout is a
+    It is the type ``known_gate`` accepts: a failed login, a wrong poll count or a timeout is a
     real failure even in a KNOWN cell."""
 
 
-# Red on main for a tracked, open bug. Strict: XPASS fails, forcing the entry out with the fix.
-KNOWN: dict[str, str] = {
-    "honors_server_interval": "#121163 (dup #87432) device-code poll interval is capped to 1s "
-                              "(DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS used as a ceiling)",
-    "slow_down_adds_five_seconds": "#121254 slow_down grows the poll interval by 1s, RFC 8628 3.5 requires +5s",
+# Red on main for a tracked, open bug: case -> (the bug's own failure-message pattern, reason).
+KNOWN: dict[str, tuple[str, str]] = {
+    "honors_server_interval": (
+        r"client polled faster than the server allows \(server interval 3s, .*required at least \[3\.0, 3\.0\]",
+        "#121163 (dup #87432) device-code poll interval is capped to 1s "
+        "(DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS used as a ceiling)"),
+    "slow_down_adds_five_seconds": (
+        r"client polled faster than the server allows \(server interval 1s, .*'slow_down'.*"
+        r"required at least \[1\.0, 6\.0, 6\.0\]",
+        "#121254 slow_down grows the poll interval by 1s, RFC 8628 3.5 requires +5s"),
 }
 
 
@@ -62,14 +68,7 @@ def expected_min_gaps(case: Case) -> list[float]:
     return gaps
 
 
-def _params():
-    for name in CASES:
-        marks = [pytest.mark.xfail(strict=True, raises=PolledFasterThanAllowed, reason=KNOWN[name])
-                 ] if name in KNOWN else []
-        yield pytest.param(name, marks=marks, id=name)
-
-
-@pytest.mark.parametrize("name", list(_params()))
+@pytest.mark.parametrize("name", list(CASES))
 def test_device_code_login_poll_cadence(name: str, tmp_path) -> None:
     case = CASES[name]
     fh = make_home(tmp_path)
@@ -98,7 +97,8 @@ def test_device_code_login_poll_cadence(name: str, tmp_path) -> None:
     gaps = [round(b - a, 3) for a, b in zip(flow.polls, flow.polls[1:])]
     want = expected_min_gaps(case)
     short = [(i, got, need) for i, (got, need) in enumerate(zip(gaps, want)) if got + SLACK_S < need]
-    if short:
-        raise PolledFasterThanAllowed(
-            f"client polled faster than the server allows (server interval {case.interval}s, script {case.script}): "
-            f"observed gaps {gaps}, required at least {want}; short polls (index, got, need): {short}")
+    with known_gate(KNOWN, name, raises=PolledFasterThanAllowed):
+        if short:
+            raise PolledFasterThanAllowed(
+                f"client polled faster than the server allows (server interval {case.interval}s, script {case.script}): "
+                f"observed gaps {gaps}, required at least {want}; short polls (index, got, need): {short}")

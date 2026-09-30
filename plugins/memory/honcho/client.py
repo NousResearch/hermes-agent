@@ -624,14 +624,14 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                          "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
                          "For local instances, set HONCHO_BASE_URL instead.")
 
+    # Build inside the singleton factory so racing callers share one client.
     return slot.get(lambda: _build_client(config))
-
 
 def _build_client(config: HonchoClientConfig) -> "Honcho":
     """Construct the SDK client (runs inside the slot factory so racing callers share one)."""
     with contextlib.suppress(Exception):  # lazy-dep failures fall through to the canonical import error below
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.honcho", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("honcho")
     try:
         from honcho import Honcho
     except ImportError:
@@ -680,25 +680,3 @@ def reset_honcho_client() -> None:
     with _client_slots_lock:
         _client_slots.clear()
     _honcho_json_timeout_memo.clear()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'SingletonSlot': ('plugins.plugin_utils', 'SingletonSlot'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

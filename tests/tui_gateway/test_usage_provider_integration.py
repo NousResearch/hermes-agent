@@ -1,7 +1,9 @@
 """Exercise usage RPCs through real config/auth resolution and loopback HTTP."""
 
 import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,7 +60,9 @@ def usage_runtime(tmp_path, monkeypatch):
     thread = threading.Thread(target=http.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{http.server_port}"
-    monkeypatch.setenv("HERMES_CODEX_BASE_URL", base_url)
+    # Quota routing reads the selected profile's secret scope, not the launch
+    # process environment. Keep the synthetic token on the loopback endpoint.
+    (profile / ".env").write_text(f"HERMES_CODEX_BASE_URL={base_url}\n")
     stdout = sys.stdout
     from tui_gateway import server
     sys.stdout = stdout
@@ -105,15 +109,29 @@ def test_quota_worker_binds_and_resets_selected_profile_secrets(tmp_path, monkey
         assert pool.submit(secret_scope.current_secret_scope).result(timeout=5) is None
 
 
-@pytest.mark.parametrize("identity", ["live", "mirror", "config"])
+@pytest.mark.parametrize("identity", [
+    "live", "mirror", "config",
+    pytest.param("external", marks=pytest.mark.platforms("posix")),
+])
 def test_usage_windows_resolve_real_profile_credentials(usage_runtime, identity):
     runtime = usage_runtime
+    environment = dict(os.environ)
     if identity == "live":
         runtime.session["agent"] = SimpleNamespace(
             provider="openai-codex", base_url=runtime.base_url, api_key="live-test-token")
     elif identity == "mirror":
         # No usage snapshot yet: provider limits must still be visible.
         runtime.session["_metadata_mirror"] = {"provider": "openai-codex"}
+    elif identity == "external":
+        from pathlib import Path
+
+        profile = Path(runtime.session["profile_home"])
+        (profile / ".env").unlink()
+        (profile / "config.yaml").write_text(
+            "model:\n  provider: openai-codex\nsecrets:\n  command:\n"
+            "    enabled: true\n"
+            f"    command: \"printf 'HERMES_CODEX_BASE_URL={runtime.base_url}\\n'\"\n"
+        )
     params = {"session_id": "usage-integration"}
     desktop = runtime.server.handle_request({
         "id": 1, "method": "slash.exec", "params": {**params, "command": "usage"}})
@@ -130,6 +148,7 @@ def test_usage_windows_resolve_real_profile_credentials(usage_runtime, identity)
     assert "api_key" not in runtime.session
     from hermes_constants import get_hermes_home_override
     assert get_hermes_home_override() is None
+    assert dict(os.environ) == environment
 
 
 @pytest.mark.parametrize("method", ["session.usage", "slash.exec"])
@@ -159,3 +178,26 @@ def test_slow_usage_endpoint_does_not_block_rpc_reader(usage_runtime, monkeypatc
         assert not runtime.release.is_set(), "usage should time out before HTTP is released"
     finally:
         runtime.release.set()
+
+
+def test_timed_out_quota_worker_does_not_hold_process_open():
+    code = """
+import threading
+from concurrent.futures import TimeoutError
+from tui_gateway.usage_provider import _account_usage_pool
+
+started = threading.Event()
+def stuck_quota_request():
+    started.set()
+    threading.Event().wait()
+
+future = _account_usage_pool.submit(stuck_quota_request)
+assert started.wait(5)
+try:
+    future.result(timeout=0.01)
+except TimeoutError:
+    pass
+else:
+    raise AssertionError('quota call unexpectedly returned')
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10)

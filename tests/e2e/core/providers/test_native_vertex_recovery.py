@@ -42,8 +42,6 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     hermes_setup,
 )
 
-KNOWN: dict[str, str] = {}
-
 SUMMARY_MARK = "VERTEX-SUMMARY-OK"
 TURN1_FINAL = "Compaction turn one done."
 TURN2_FINAL = "Compaction turn two done."

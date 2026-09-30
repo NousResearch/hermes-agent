@@ -16,6 +16,7 @@ const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  activeGateway: () => null,
   activeGatewayConnectionId: () => null,
   // Activation now verifies the socket's route before publishing the profile.
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
@@ -44,9 +45,14 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  newSessionInProfile,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  selectProfile
 } = await import('./profile')
+
+const { $projectScope, ALL_PROJECTS } = await import('./project-scope')
+const { $projectTree, resolveNewSessionCwd } = await import('./projects')
 
 const { $poolLimits } = await import('@/store/pool-limits')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
@@ -373,5 +379,40 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     await oldFetch
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
+  })
+})
+
+describe("profile switch leaves the previous profile's project (#54990)", () => {
+  const enterDefaultProfileProject = () => {
+    $projectTree.set([{ id: 'p_app1', label: 'app1', path: '/work/app1', repos: [] } as never])
+    $projectScope.set('p_app1')
+  }
+
+  afterEach(() => {
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+  })
+
+  it.each([
+    ['selectProfile', selectProfile],
+    ['newSessionInProfile', newSessionInProfile]
+  ])('%s to another profile does not root the fresh draft in the old project', (_name, open) => {
+    enterDefaultProfileProject()
+    expect(resolveNewSessionCwd()).toBe('/work/app1')
+
+    // The gateway swap is async: the old profile's project tree is still loaded
+    // when the fresh draft resolves its cwd.
+    open('sinan')
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect(resolveNewSessionCwd()).not.toBe('/work/app1')
+  })
+
+  it('keeps the entered project when the draft stays on the active profile', () => {
+    enterDefaultProfileProject()
+
+    newSessionInProfile('default')
+
+    expect(resolveNewSessionCwd()).toBe('/work/app1')
   })
 })

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
 from tests.fakes.providers.gemini_native import (
     HERMES_ENV,
@@ -33,9 +34,10 @@ from tests.fakes.providers.gemini_native import (
     hermes_model,
 )
 
-KNOWN = {
-    "prompt_blocked": "#121317 promptFeedback.blockReason is retried 9x as an empty stream and reported as "
-                      "'temporarily unavailable'",
+KNOWN: dict[str, tuple[str, str]] = {
+    "prompt_blocked": (r"terminal Google response was re-sent \d+x",
+                       "#121317 promptFeedback.blockReason is retried 9x as an empty stream and reported as "
+                       "'temporarily unavailable'"),
 }
 
 NEVER = "GEMINI-MUST-NOT-BE-SHOWN"
@@ -126,19 +128,14 @@ TERMINAL = {  # case -> a word the surfaced error must carry (None: any visible 
 }
 
 
-def _terminal_param(name: str):
-    marks = [pytest.mark.xfail(strict=True, raises=nh.KnownSymptom, reason=KNOWN[name])] if name in KNOWN else []
-    return pytest.param(name, marks=marks, id=name)
-
-
-@pytest.mark.parametrize("name", [_terminal_param(n) for n in TERMINAL])
+@pytest.mark.parametrize("name", list(TERMINAL))
 def test_non_retryable_surfaced_once(outcomes: dict[str, Outcome], name: str) -> None:
     o = outcomes[name]
     assert o.calls, f"no request reached the fake\n{o.describe()}"
-    if len(o.calls) != 1:
-        # The tracked bug's symptom for KNOWN cases; a plain failure for every other terminal case.
-        failure = nh.KnownSymptom if name in KNOWN else AssertionError
-        raise failure(f"terminal Google response was re-sent {len(o.calls)}x\n{o.describe()}")
+    # The tracked bug's symptom for KNOWN cases; a plain failure for every other terminal case.
+    with known_gate(KNOWN, name, raises=nh.KnownSymptom):
+        if len(o.calls) != 1:
+            raise nh.KnownSymptom(f"terminal Google response was re-sent {len(o.calls)}x\n{o.describe()}")
     assert o.result.returncode != 0, o.describe()
     word = TERMINAL[name]
     lines = [ln.strip() for ln in o.result.stdout.splitlines() if ln.strip()]

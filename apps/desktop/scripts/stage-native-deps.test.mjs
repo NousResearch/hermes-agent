@@ -5,6 +5,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
+import { buildHudModifierMonitor } from '../scripts/build-hud-modifier-monitor.mjs'
 import {
   findHalfInstalledGetWindowsDir,
   installGetWindowsNativeBinding,
@@ -60,6 +61,24 @@ function makeFakeUnixTerminal(srcRoot) {
     ].join('\n')
   )
 }
+
+// ─── optional native helper tests ───────────────────────────────────
+
+test('a missing Linux HUD toolchain leaves no empty package directories', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-hud-'))
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = message => warnings.push(String(message))
+  try {
+    const distDir = join(tmp, 'dist')
+    assert.equal(buildHudModifierMonitor({ source: join(tmp, 'missing-source'), distDir, platform: 'linux', arch: 'x64' }), null)
+    assert.equal(existsSync(join(distDir, 'native')), false)
+    assert.match(warnings.join('\n'), /desktop packaging continues/)
+  } finally {
+    console.warn = originalWarn
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 // ─── classifyNativeBinary tests ─────────────────────────────────────
 
@@ -622,7 +641,7 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
     stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
 
-    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    if (process.platform !== 'win32') assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
     const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
     assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
     assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')

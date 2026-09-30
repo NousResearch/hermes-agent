@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.security import _helpers as H
 from tests.e2e.core.security._traversal import digest, result_json, run_tool_calls
 
@@ -42,8 +43,17 @@ PROTECTED_SCENARIOS = (
     "ssh_config_symlink_parent_gated", "read_auth_symlink", "read_webhooks_dotdot", "read_google_oauth_symlink_dir",
     "read_project_env_symlink", "search_through_symlink_dir")
 
-KNOWN: dict[str, str] = dict.fromkeys(
-    QUARANTINE_SCENARIOS, "#121278 read denylist misses auth.json.corrupt, the quarantined copy of a corrupt auth store")
+_ISSUE_QUARANTINE = "#121278 read denylist misses auth.json.corrupt, the quarantined copy of a corrupt auth store"
+# scenario -> (pattern, "#issue symptom"), gated with ``known_gate(..., raises=H.BoundaryBreach)`` in every
+# boundary test below, so a future entry for any spelling is merge-order safe.
+KNOWN: dict[str, tuple[str, str]] = {
+    "read_quarantined_auth_copy": (
+        r"^read_quarantined_auth_copy: read_file \{'path': '[^']*auth\.json\.corrupt'\}: "
+        r"the tool result carries the protected file's content", _ISSUE_QUARANTINE),
+    "search_quarantined_auth_copy": (
+        r"^search_quarantined_auth_copy: search_files \{[^}]*\}: the tool result carries the protected file's "
+        r'content\nresult: .*"path": "[^"]*auth\.json\.corrupt"', _ISSUE_QUARANTINE),
+}
 
 
 @dataclass
@@ -260,19 +270,22 @@ def _check(run: Run, scenario: str) -> None:
         f"{scenario}: the boundary held on disk but the tool did not report a refusal: {text[:400]}"
 
 
-@pytest.mark.parametrize("scenario", [H.known_param(n, KNOWN) for n in CONFINED_SCENARIOS])
+@pytest.mark.parametrize("scenario", CONFINED_SCENARIOS)
 def test_write_sandbox_holds_under_every_spelling(confined: Run, scenario: str) -> None:
-    _check(confined, scenario)
+    with known_gate(KNOWN, scenario, raises=H.BoundaryBreach):
+        _check(confined, scenario)
 
 
-@pytest.mark.parametrize("scenario", [H.known_param(n, KNOWN) for n in PROTECTED_SCENARIOS])
+@pytest.mark.parametrize("scenario", PROTECTED_SCENARIOS)
 def test_protected_paths_hold_under_every_spelling(protected: Run, scenario: str) -> None:
-    _check(protected, scenario)
+    with known_gate(KNOWN, scenario, raises=H.BoundaryBreach):
+        _check(protected, scenario)
 
 
-@pytest.mark.parametrize("scenario", [H.known_param(n, KNOWN) for n in QUARANTINE_SCENARIOS])
+@pytest.mark.parametrize("scenario", QUARANTINE_SCENARIOS)
 def test_quarantined_auth_store_stays_read_denied(confined: Run, scenario: str) -> None:
-    _check(confined, scenario)
+    with known_gate(KNOWN, scenario, raises=H.BoundaryBreach):
+        _check(confined, scenario)
 
 
 def test_control_sandbox_allows_writes_that_resolve_inside(confined: Run) -> None:

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._anthropic_helpers import Rig, blocks, start_rig
 from tests.fakes.providers.anthropic_messages import AnthropicMessagesServer, Reply, Text, ToolUse
 
@@ -26,27 +27,25 @@ pytestmark = [pytest.mark.skipif(not sys.platform.startswith("linux"), reason="p
               pytest.mark.live_system_guard_bypass]
 
 class DiscoveryIgnoredEndpoint(AssertionError):
-    """#120844's signature: raised ONLY when the configured endpoint's catalog is not what the picker serves."""
+    """#120844's signature: raised ONLY when the configured endpoint's catalog is not what the picker
+    serves; the type ``known_gate`` accepts for the discovery cells."""
 
 
 class AliasNotReverseMapped(AssertionError):
-    """#120858's signature: raised ONLY when tool_describe fails to resolve the advertised wire alias."""
+    """#120858's signature: raised ONLY when tool_describe fails to resolve the advertised wire alias;
+    the type ``known_gate`` accepts for the alias cell."""
 
 
-# Red on main for a tracked, open bug. Strict: XPASS fails, forcing the entry out with the fix; each
-# xfail accepts only its dedicated exception, so harness failures in a KNOWN cell stay failures.
-KNOWN: dict[str, tuple[str, type[AssertionError]]] = {
-    "discovery_env": ("#120844 Anthropic model discovery ignores ANTHROPIC_BASE_URL", DiscoveryIgnoredEndpoint),
-    "alias_describe": ("#120858 wire alias chat_history_lookup not reverse-mapped in tool_describe args",
-                       AliasNotReverseMapped),
+# Red on main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason). Each
+# gate accepts only its dedicated exception, so harness failures in a KNOWN cell stay failures.
+KNOWN: dict[str, tuple[str, str]] = {
+    "discovery_env": (r"configured endpoint probed=False \(native host saw \d+ GETs\); relay catalog served=False",
+                      "#120844 Anthropic model discovery ignores ANTHROPIC_BASE_URL"),
+    "alias_describe": (r"tool_describe did not resolve the advertised alias: .*not_found.*chat_history_lookup",
+                       "#120858 wire alias chat_history_lookup not reverse-mapped in tool_describe args"),
 }
 RELAY_ONLY_MODEL = "claude-e2e-relay-only-7"
 OAUTH_TOKEN = "sk-ant-oat01-e2e-fake-oauth-token"
-
-
-def known(key: str):
-    reason, signature = KNOWN[key]
-    return pytest.mark.xfail(strict=True, raises=signature, reason=reason)
 
 
 @pytest.fixture
@@ -96,20 +95,18 @@ def test_model_discovery_serves_the_live_native_catalog(rig) -> None:
     assert RELAY_ONLY_MODEL in ids, f"live catalog not served: {ids[:15]}"
 
 
-@pytest.mark.parametrize("via", [
-    pytest.param("env", marks=known("discovery_env")),
-    "config",
-])
+@pytest.mark.parametrize("via", ["env", "config"])
 def test_model_discovery_probes_the_configured_anthropic_endpoint(rig, via: str) -> None:
     relay = AnthropicMessagesServer([], models=[RELAY_ONLY_MODEL, "claude-e2e-relay-other"]).start()
     try:
         r = rig([])
         ids = _discover(r, relay, via=via)
         probed = [g["path"] for g in relay.gets if "/v1/models" in g["path"]]
-        if not probed or RELAY_ONLY_MODEL not in ids:
-            raise DiscoveryIgnoredEndpoint(
-                f"configured endpoint probed={bool(probed)} (native host saw {len(r.srv.gets)} GETs); "
-                f"relay catalog served={RELAY_ONLY_MODEL in ids}: {ids[:15]}")
+        with known_gate(KNOWN, f"discovery_{via}", raises=DiscoveryIgnoredEndpoint):
+            if not probed or RELAY_ONLY_MODEL not in ids:
+                raise DiscoveryIgnoredEndpoint(
+                    f"configured endpoint probed={bool(probed)} (native host saw {len(r.srv.gets)} GETs); "
+                    f"relay catalog served={RELAY_ONLY_MODEL in ids}: {ids[:15]}")
     finally:
         relay.stop()
 
@@ -155,7 +152,6 @@ def test_oauth_wire_names_map_back_to_real_tools(rig) -> None:
     assert not r.srv.schema_errors(), r.srv.schema_errors()
 
 
-@known("alias_describe")
 def test_oauth_deferred_alias_resolves_through_tool_describe(rig) -> None:
     """The deferred catalog advertises ``chat_history_lookup`` (the OAuth alias of
     ``session_search``); asking ``tool_describe`` for that exact name must return its schema."""
@@ -169,5 +165,6 @@ def test_oauth_deferred_alias_resolves_through_tool_describe(rig) -> None:
     (result,) = _tool_results(mains[1]["body"])
     not_found = "not_found" in result and "chat_history_lookup" in result.split("not_found", 1)[1][:80]
     described = "chat_history_lookup" in result and ("parameters" in result or "input_schema" in result)
-    if not_found or not described:
-        raise AliasNotReverseMapped(f"tool_describe did not resolve the advertised alias: {result[:600]}")
+    with known_gate(KNOWN, "alias_describe", raises=AliasNotReverseMapped):
+        if not_found or not described:
+            raise AliasNotReverseMapped(f"tool_describe did not resolve the advertised alias: {result[:600]}")

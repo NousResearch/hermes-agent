@@ -264,12 +264,14 @@ def snapshot_authored_extra(platforms_data: dict) -> dict:
     }
 
 
-def _drop_managed_block_pins(authored: dict, managed: dict) -> None:
+def _apply_managed_extra(authored: dict, managed: dict, platforms_data: dict) -> None:
     """Remove from *authored* (in place) every key the administrator pinned in a managed ``<plat>:``
     block: the user's ``platforms.<plat>.extra`` must not outrank it. A key the managed layer itself
     sets under ``platforms.<plat>.extra`` stays authored."""
     if not managed:
         return
+    from hermes_cli.config import _deep_merge
+
     managed_platforms = merge_platform_sections(managed, managed.get("gateway"), {})
     for name, extra in authored.items():
         root = _coerce_dict(managed.get(name))
@@ -279,7 +281,13 @@ def _drop_managed_block_pins(authored: dict, managed: dict) -> None:
             del extra[key]
         # Cross-shape merges can replace managed gateway.platforms.extra with the
         # user platforms.extra. Restore values, not just their key membership.
-        extra.update(_coerce_dict(nested.get("extra")))
+        managed_extra = _coerce_dict(nested.get("extra"))
+        extra.update(_deep_merge(extra, managed_extra))
+        # Restore at the destination too: an unrelated root block need not mention
+        # any pinned key, so the authored-conflict overlay alone cannot carry it.
+        if managed_extra:
+            destination = _dict_slot(_dict_slot(platforms_data, name), "extra")
+            destination.update(_deep_merge(destination, managed_extra))
 
 
 def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, warned: Optional[set] = None) -> dict:
@@ -517,7 +525,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
     authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
     from hermes_cli import managed_scope
-    _drop_managed_block_pins(authored, managed_scope.apply_managed_overlay({}))
+    _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)

@@ -1688,7 +1688,8 @@ class TestTopLevelBlockVsAuthoredExtra:
             assert adapter._telegram_require_mention() is (operator_env is None)
             assert os.environ["TELEGRAM_REQUIRE_MENTION"] == (operator_env or "true")
 
-    @pytest.mark.parametrize("source", ["legacy", "root", "root-extra", "nested", "managed-extra", "mixed"])
+    @pytest.mark.parametrize("source", ["legacy", "root", "root-extra", "nested", "managed-extra", "mixed",
+                                        "dict-disjoint", "dict-overlap", "root-sibling"])
     def test_configuration_layer_owner(self, source, tmp_path, monkeypatch, caplog):
         import json
 
@@ -1712,6 +1713,14 @@ class TestTopLevelBlockVsAuthoredExtra:
             user = {"slack": {"require_mention": False, "strict_mention": False}}
         elif source == "managed-extra":
             user = {"slack": {"require_mention": False, "allow_from": ["U_USER"]}}
+        if source.startswith("dict-"):
+            user["platforms"]["slack"]["extra"] = {"channel_prompts": {"C_USER": "user prompt"}}
+            if source == "dict-overlap":
+                user["platforms"]["slack"]["extra"]["channel_prompts"]["C_ADMIN"] = "user override"
+            managed_cfg = {"platforms": {"slack": {"extra": {"channel_prompts": {"C_ADMIN": "admin prompt"}}}}}
+        if source == "root-sibling":
+            user["slack"] = {"allow_bots": True}
+            managed_cfg = {"gateway": {"platforms": {"slack": {"extra": pin}}}}
         (home / "config.yaml").write_text(json.dumps(user), encoding="utf-8")
         (managed / "config.yaml").write_text(json.dumps(managed_cfg), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(home))
@@ -1722,6 +1731,11 @@ class TestTopLevelBlockVsAuthoredExtra:
         with caplog.at_level(logging.WARNING, logger="gateway.config"):
             config = load_gateway_config()
         extra = config.platforms[Platform.SLACK].extra
+        if source.startswith("dict-"):
+            assert extra["channel_prompts"] == {"C_USER": "user prompt", "C_ADMIN": "admin prompt"}
+            return
+        if source == "root-sibling":
+            assert extra["allow_bots"] is True
         if source == "legacy":
             assert extra["require_mention"] is False
             assert extra["strict_mention"] is False

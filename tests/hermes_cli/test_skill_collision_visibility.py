@@ -62,41 +62,51 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
     assert f"⚠ {NOTE}" in gateway_commands.splitlines() and "`/tidy-notes`" in gateway_commands
 
 
-@pytest.mark.parametrize("profile", [None, "work"])
-def test_cli_note_advises_a_launch_command_that_loads_the_skill(profile, tmp_path, monkeypatch):
-    """The CLI surfaces' advice, run from a fresh shell, preloads the colliding skill from the
-    profile that showed the note. The skill exists only in that profile's home."""
+@pytest.mark.parametrize(("profile", "sticky", "advised_profile"), [
+    (None, None, None),
+    ("work", None, "work"),
+    (None, "work", "default"),
+])
+def test_cli_note_advises_a_launch_command_that_loads_the_skill(
+        profile, sticky, advised_profile, tmp_path, monkeypatch):
+    """The CLI surfaces' advice, run from a fresh shell through ``hermes``'s own profile selection
+    (``-p`` or the sticky ``active_profile``), preloads the colliding skill from the profile that
+    showed the note. The skill exists only in that profile's home."""
     import shlex
+    import sys
 
     import cli
+    import hermes_cli.main as hermes_main
     import tools.skills_tool as skills_tool
     from agent.skill_commands import build_preloaded_skills_prompt, cli_skill_command_collision_note
     from hermes_cli._parser import build_top_level_parser
-    from hermes_cli.main import _scan_profile_flag
-    from hermes_cli.profiles import create_profile, resolve_profile_env
+    from hermes_cli.profiles import create_profile, set_active_profile
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / ".hermes"
     root.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(root))
+    profile_home = create_profile("work", no_alias=True, no_skills=True)
+    if sticky:
+        set_active_profile(sticky)
     if profile:
-        monkeypatch.setenv("HERMES_HOME", str(create_profile(profile, no_alias=True, no_skills=True)))
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
     _write_skill("handoff")
     note = cli_skill_command_collision_note("handoff")
     assert note is not None
 
     monkeypatch.setenv("HERMES_HOME", str(root))
     argv = shlex.split(note.partition(" hermes ")[2])
-    profile_name, consumed, index = _scan_profile_flag(argv)
-    if profile_name:
-        monkeypatch.setenv("HERMES_HOME", resolve_profile_env(profile_name))
-        del argv[index:index + consumed]
+    advised = hermes_main._scan_profile_flag(argv)[0]
+    monkeypatch.setattr(sys, "argv", ["hermes", *argv])
+    monkeypatch.setattr(hermes_main, "_explicit_cli_profile", None)
+    hermes_main._apply_profile_override()
     parser, _subparsers, _chat = build_top_level_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(sys.argv[1:])
 
     monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
     _prompt, loaded, missing = build_preloaded_skills_prompt(cli._parse_skills_argument(args.skills))
-    assert (profile_name, loaded, missing) == (profile, ["handoff"], [])
+    assert (advised, loaded, missing) == (advised_profile, ["handoff"], [])
 
 
 def test_skills_table_offers_no_launch_for_a_disabled_colliding_skill(monkeypatch):

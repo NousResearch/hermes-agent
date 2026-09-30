@@ -26,6 +26,8 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.session import SessionSource
+from gateway.session_identity import replace_source
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -884,21 +886,15 @@ class TurnRunner:
             ):
                 with suppress(Exception):
                     row = agent._session_db.get_session(session_id)
-                    origin = json.loads((row or {}).get("origin_json") or "{}")
-                    initial_name = origin.get("auto_thread_initial_name")
+                    origin = SessionSource.from_dict(json.loads((row or {}).get("origin_json") or "{}"))
                     if (
-                        origin.get("platform") == Platform.DISCORD.value
-                        and origin.get("chat_type") == "thread"
-                        and str(origin.get("thread_id") or "") == str(source.thread_id)
-                        and origin.get("auto_thread_created") is True
-                        and isinstance(initial_name, str)
-                        and initial_name.strip()
+                        runner._is_discord_auto_thread_lane(origin)
+                        and str(origin.thread_id) == str(source.thread_id)
                     ):
-                        from gateway.session_identity import replace_source
                         source = replace_source(
                             source,
                             auto_thread_created=True,
-                            auto_thread_initial_name=initial_name,
+                            auto_thread_initial_name=origin.auto_thread_initial_name,
                         )
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.

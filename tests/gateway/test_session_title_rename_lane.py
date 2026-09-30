@@ -59,6 +59,32 @@ def test_the_rename_waits_for_the_model_title(lane):
     assert renames == ["Fix flaky auth test"]
 
 
+def _recovery_runner(scheduled):
+    """Fake runner binding the REAL lane predicate, like NativeRenameRunner below."""
+
+    class RecoveryRunner:
+        _is_telegram_topic_lane = lambda self, source: False  # noqa: E731
+        _is_relay_discord_channel_lane = lambda self, source: False  # noqa: E731
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+
+        def _schedule_discord_semantic_thread_rename(self, source, session_id, title):
+            scheduled.append((source, session_id, title))
+
+    return RecoveryRunner()
+
+
+def _recover_agent(session_db, origin):
+    return types.SimpleNamespace(
+        session_id="sess-1",
+        _session_db=session_db
+        or types.SimpleNamespace(
+            get_session=lambda session_id: {
+                "origin_json": json.dumps(origin.to_dict()) if origin else "{}",
+            }
+        ),
+    )
+
+
 def test_discord_title_retry_recovers_auto_thread_origin():
     """A fresh agent on a later thread turn still wires the semantic rename."""
     scheduled = []
@@ -78,20 +104,98 @@ def test_discord_title_retry_recovers_auto_thread_origin():
         auto_thread_created=True,
         auto_thread_initial_name="Opening words",
     )
-    session_db = types.SimpleNamespace(
-        get_session=lambda session_id: {
-            "origin_json": json.dumps(origin.to_dict()),
-        }
+    runner = _recovery_runner(scheduled)
+    holder = types.SimpleNamespace(
+        _runner=runner,
+        _attach_session_title_callback=TurnRunner._attach_session_title_callback,
     )
+    agent = _recover_agent(None, origin)
+
+    holder._attach_session_title_callback(
+        holder, agent, types.SimpleNamespace(source=current)
+    )
+    agent._on_session_title("Recovered semantic title", "llm")
+
+    assert len(scheduled) == 1
+    recovered, session_id, title = scheduled[0]
+    assert recovered.message_id == "follow-up"
+    assert recovered.auto_thread_created is True
+    assert recovered.auto_thread_initial_name == "Opening words"
+    assert session_id == "sess-1"
+    assert title == "Recovered semantic title"
+
+
+@pytest.mark.parametrize(
+    "origin_source",
+    [
+        pytest.param(None, id="no-origin-markers"),
+        pytest.param(
+            SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="thread-1",
+                chat_type="thread",
+                thread_id="thread-2",
+                message_id="opening-message",
+                auto_thread_created=True,
+                auto_thread_initial_name="Other thread",
+            ),
+            id="other-thread-id",
+        ),
+        pytest.param(
+            SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="thread-1",
+                chat_type="thread",
+                thread_id="thread-1",
+                message_id="opening-message",
+            ),
+            id="user-created-thread",
+        ),
+    ],
+)
+def test_discord_title_retry_recovery_no_ops_for_untrusted_origins(origin_source):
+    """Wrong thread, manual thread, or blank origin: the callback is never wired."""
+    scheduled = []
+    current = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        message_id="follow-up",
+    )
+    runner = _recovery_runner(scheduled)
+    holder = types.SimpleNamespace(
+        _runner=runner,
+        _attach_session_title_callback=TurnRunner._attach_session_title_callback,
+    )
+    agent = _recover_agent(None, origin_source)
+
+    holder._attach_session_title_callback(
+        holder, agent, types.SimpleNamespace(source=current)
+    )
+
+    assert not hasattr(agent, "_on_session_title")
+    assert scheduled == []
+
+
+def test_discord_title_retry_recovery_survives_db_failure():
+    """A broken session DB degrades to main's behaviour, not a wiring crash."""
+    scheduled = []
+    current = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        message_id="follow-up",
+    )
+
+    class BrokenDB:
+        def get_session(self, session_id):
+            raise RuntimeError("state.db unavailable")
+
     runner = types.SimpleNamespace(
         _is_telegram_topic_lane=lambda source: False,
-        _is_discord_auto_thread_lane=lambda source: (
-            source.platform == Platform.DISCORD
-            and source.chat_type == "thread"
-            and source.auto_thread_created is True
-            and bool(source.thread_id)
-            and bool(source.auto_thread_initial_name)
-        ),
+        _is_discord_auto_thread_lane=GatewayRunner._is_discord_auto_thread_lane,
         _is_relay_discord_channel_lane=lambda source: False,
         _schedule_discord_semantic_thread_rename=(
             lambda source, session_id, title: scheduled.append(
@@ -103,19 +207,57 @@ def test_discord_title_retry_recovers_auto_thread_origin():
         _runner=runner,
         _attach_session_title_callback=TurnRunner._attach_session_title_callback,
     )
-    agent = types.SimpleNamespace(session_id="sess-1", _session_db=session_db)
+    agent = types.SimpleNamespace(
+        session_id="sess-1", _session_db=BrokenDB(),
+    )
+
+    holder._attach_session_title_callback(
+        holder, agent, types.SimpleNamespace(source=current)
+    )
+
+    # Recovery failed, the marker-less source stays off every lane: no callback,
+    # exactly like main — and the failure never escaped the attach.
+    assert not hasattr(agent, "_on_session_title")
+    assert scheduled == []
+
+
+def test_discord_title_retry_recovery_preserves_transport_adapter_ref():
+    """The recovered source keeps the live event's transport owner (multiplex)."""
+    scheduled = []
+    adapter = type("Adapter", (), {})()
+    current = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        message_id="follow-up",
+        profile="runtime-profile",
+    )
+    current._transport_adapter_ref = weakref.ref(adapter)
+    origin = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        message_id="opening-message",
+        auto_thread_created=True,
+        auto_thread_initial_name="Opening words",
+    )
+    runner = _recovery_runner(scheduled)
+    holder = types.SimpleNamespace(
+        _runner=runner,
+        _attach_session_title_callback=TurnRunner._attach_session_title_callback,
+    )
+    agent = _recover_agent(None, origin)
 
     holder._attach_session_title_callback(
         holder, agent, types.SimpleNamespace(source=current)
     )
     agent._on_session_title("Recovered semantic title", "llm")
 
-    recovered, session_id, title = scheduled[0]
+    recovered = scheduled[0][0]
     assert recovered.message_id == "follow-up"
-    assert recovered.auto_thread_created is True
-    assert recovered.auto_thread_initial_name == "Opening words"
-    assert session_id == "sess-1"
-    assert title == "Recovered semantic title"
+    assert recovered._transport_adapter_ref() is adapter
 
 
 @pytest.mark.anyio

@@ -196,6 +196,7 @@ describe('VaultSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
     await waitFor(() => expect(screen.getByText('Unlock 1Password')).toBeTruthy())
 
+    fireEvent.click(screen.getByRole('button', { name: 'Use a password instead' }))
     fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'correct horse' } })
     fireEvent.click(
       screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!
@@ -207,6 +208,40 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
+  })
+
+  it('defaults to native 1Password approval without collecting a master password', async () => {
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.list') return { items: [] }
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: false,
+              installed: true
+            }
+          ]
+        }
+      }
+
+      return { unlocked: true }
+    })
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+    const approve = await screen.findByRole('button', { name: 'Unlock with 1Password' })
+    expect(screen.queryByPlaceholderText('Master password')).toBeNull()
+    // Enter and a click use the same native authorization path.
+    expect(approve.getAttribute('type')).toBe('submit')
+    fireEvent.submit(approve.closest('form')!)
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: '' })
+    )
   })
 
   it('refreshes password-manager detection when the page is reopened', async () => {

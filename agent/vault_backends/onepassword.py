@@ -1,7 +1,8 @@
 """1Password Login items as a vault backend (``op`` CLI).
 
-Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
-integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
+Unlock: ``op signin --raw`` mints a session token for manual account auth.
+Desktop-app integration instead authorizes through 1Password without a token;
+a metadata-only command verifies access before Hermes grants its unlock lease.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
 username. Resolve: ``op item get <id> --fields label=password --reveal``.
@@ -25,6 +26,11 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+_APP_UNLOCK_HINT = (
+    "Unlock the 1Password app on the computer running the Hermes backend, enable "
+    "Settings > Developer > Integrate with 1Password CLI, and approve its request "
+    "(Windows Hello on Windows)."
+)
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -32,6 +38,7 @@ class OnePasswordLoginBackend(LoginBackend):
     display_name = "1Password"
     prefix = "op:"
     needs_unlock = True
+    supports_app_unlock = True
 
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
@@ -71,27 +78,47 @@ class OnePasswordLoginBackend(LoginBackend):
         return bool(self._service_token) or _unlock.is_unlocked(self.name)
 
     def unlock(self, master_password: str) -> None:
-        """Mint a session token from the master password (consumed on stdin, never argv)."""
+        """Authorize explicitly, using the app or a password consumed only on stdin."""
         generation = _unlock.begin_unlock(self.name)
         cmd = [str(self._op()), "signin", "--raw"]
         if account := str(self.cfg.get("account") or ""):
             cmd += ["--account", account]
         proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
         token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
-            raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
+        if proc.returncode != 0:
+            error = _scrub(proc.stderr or "")
+            if master_password:
+                error = error.replace(master_password, "[REDACTED]")
+            raise RuntimeError(f"1Password unlock failed: {error[:200] or 'sign-in was not authorized'}. {_APP_UNLOCK_HINT}")
+        if not token:
+            # Desktop integration deliberately exports no OP_SESSION token. Do not
+            # mistake account registration (or `whoami`) for usable authorization.
+            probe = run_cli([str(self._op()), "vault", "list", "--format", "json"],
+                            env=self._env(None), timeout=_TIMEOUT, label="op",
+                            timeout_message=f"1Password authorization timed out. {_APP_UNLOCK_HINT}",
+                            stdin=subprocess.DEVNULL)
+            try:
+                verified = probe.returncode == 0 and isinstance(json.loads(probe.stdout or ""), list)
+            except ValueError:
+                verified = False
+            if not verified:
+                raise RuntimeError(f"1Password desktop authorization could not be verified. {_APP_UNLOCK_HINT}")
+        # Empty string is a verified desktop lease, not a credential. The existing
+        # profile/owner/TTL/generation store remains the sole unlock authority.
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
         token = None if self._service_token else _unlock.get_session_token(self.name)
-        if not self._service_token and not token:
+        if not self._service_token and token is None:
             raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
-            if "session" in err.lower() or "sign in" in err.lower() or "not signed in" in err.lower():
+            if any(message in err.lower() for message in (
+                "session", "sign in", "not signed in", "authorization prompt dismissed",
+            )):
                 _unlock.lock(self.name)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")

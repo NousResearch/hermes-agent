@@ -1092,7 +1092,11 @@ export const en: Translations = {
         unlocked: name => `${name} unlocked for this session.`,
         unlockTitle: name => `Unlock ${name}`,
         unlockDescription:
-          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
+          'Enter your master password. It is handed to the password manager on the computer running the Hermes backend and discarded — it is never stored, logged, or shown to the agent.',
+        unlockOnePasswordDescription:
+          'Approve sign-in in the 1Password app on the computer running the Hermes backend. You do not need to enter your master password here.',
+        unlockWithOnePasswordApp: 'Unlock with 1Password',
+        unlockWithPassword: 'Use a password instead',
         masterPasswordPlaceholder: 'Master password'
       }
     },

@@ -137,6 +137,61 @@ def test_undetected_manager_stays_off(home, monkeypatch):
     assert rows["bitwarden"]["installed"] is False
 
 
+def test_native_app_unlock_accepts_empty_password(home, monkeypatch):
+    class OnePassword:
+        name = "onepassword"
+        needs_unlock = True
+        supports_app_unlock = True
+
+        def __init__(self):
+            self.received = None
+
+        def unlock(self, password):
+            self.received = password
+
+    backend = OnePassword()
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+
+    result = _result(srv._methods["vault.unlock"](83, {"name": "onepassword", "password": ""}))
+
+    assert backend.received == ""
+    assert result == {"name": "onepassword", "unlocked": True}
+
+
+def test_native_unlock_error_with_empty_password_is_not_corrupted_by_redaction(home, monkeypatch):
+    class OnePassword:
+        name = "onepassword"
+        needs_unlock = True
+        supports_app_unlock = True
+
+        def unlock(self, password):
+            assert password == ""
+            raise RuntimeError("desktop authorization was declined")
+
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [OnePassword()])
+
+    error = _error(srv._methods["vault.unlock"](85, {"name": "onepassword", "password": ""}))
+
+    assert error["message"] == "desktop authorization was declined"
+
+
+def test_empty_password_remains_rejected_for_managers_without_native_unlock(home, monkeypatch):
+    class Bitwarden:
+        name = "bitwarden"
+        needs_unlock = True
+        supports_app_unlock = False
+
+        def unlock(self, password):
+            raise AssertionError("empty password must not reach Bitwarden")
+
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [Bitwarden()])
+
+    error = _error(srv._methods["vault.unlock"](84, {"name": "bitwarden", "password": ""}))
+
+    assert error["code"] == 5095
+    assert "required" in error["message"]
+
+
 def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
     """A hand-edited ``vault: true`` in config.yaml must not crash the Desktop
     Credential Vault source toggle: the malformed section is coerced to a dict

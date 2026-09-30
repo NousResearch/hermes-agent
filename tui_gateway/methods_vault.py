@@ -102,7 +102,7 @@ def _(rid, params: dict) -> dict:
 @method("vault.unlock")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
+    """Unlock a manager with a Settings password or an explicitly supported native app flow."""
     from agent.vault_backends import enabled_backends
 
     name = str(params.get("name") or "")
@@ -110,12 +110,13 @@ def _(rid, params: dict) -> dict:
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)
     if backend is None:
         return _err(rid, 5095, f"{name} is not an enabled password manager")
-    if not password:
+    if not password and not getattr(backend, "supports_app_unlock", False):
         return _err(rid, 5095, "master password is required")
     try:
         backend.unlock(password)  # type: ignore[attr-defined]
     except Exception as e:
-        return _err(rid, 5095, str(e).replace(password, "[REDACTED]"))
+        message = str(e).replace(password, "[REDACTED]") if password else str(e)
+        return _err(rid, 5095, message)
     finally:
         del password
     return _ok(rid, {"name": name, "unlocked": True})

@@ -188,8 +188,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const [formError, setFormError] = useState<null | string>(null)
   const [pendingDelete, setPendingDelete] = useState<null | VaultItem>(null)
   const [unlockTarget, setUnlockTarget] = useState<null | VaultSource>(null)
+  const [usePasswordUnlock, setUsePasswordUnlock] = useState(false)
   const [masterPassword, setMasterPassword] = useState('')
   const [unlockError, setUnlockError] = useState<null | string>(null)
+  const appUnlock = unlockTarget?.name === 'onepassword' && !usePasswordUnlock
   // Secrets never become mutation variables (react-query retains those after settle); they live
   // in refs the mutationFn consumes and wipes.
   const pendingMasterPassword = useRef('')
@@ -232,6 +234,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // returns (success or failure) and never touches a store or the transcript.
   const closeUnlock = useCallback(() => {
     setUnlockTarget(null)
+    setUsePasswordUnlock(false)
     setMasterPassword('')
     setUnlockError(null)
   }, [])
@@ -255,6 +258,14 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       setUnlockError(err instanceof Error ? err.message : String(err))
     }
   })
+
+  const submitUnlock = (password: string) => {
+    if (!unlockTarget || unlockSource.isPending) return
+
+    pendingMasterPassword.current = password
+    setMasterPassword('')
+    unlockSource.mutate({ name: unlockTarget.name })
+  }
 
   const { data, error, isPending } = useQuery({
     enabled: gatewayState === 'open',
@@ -550,36 +561,56 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle icon={KeyRound}>{v.sources.unlockTitle(unlockTarget?.display_name ?? '')}</DialogTitle>
-            <DialogDescription>{v.sources.unlockDescription}</DialogDescription>
+            <DialogDescription>
+              {appUnlock ? v.sources.unlockOnePasswordDescription : v.sources.unlockDescription}
+            </DialogDescription>
           </DialogHeader>
           <form
             className="grid gap-3"
             onSubmit={e => {
               e.preventDefault()
 
-              if (unlockTarget && masterPassword) {
-                pendingMasterPassword.current = masterPassword
-                setMasterPassword('')
-                unlockSource.mutate({ name: unlockTarget.name })
+              if (appUnlock || masterPassword) {
+                submitUnlock(appUnlock ? '' : masterPassword)
               }
             }}
           >
-            <Input
-              autoComplete="current-password"
-              autoFocus
-              disabled={unlockSource.isPending}
-              onChange={e => setMasterPassword(e.target.value)}
-              placeholder={v.sources.masterPasswordPlaceholder}
-              type="password"
-              value={masterPassword}
-            />
+            {!appUnlock && (
+              <Input
+                autoComplete="current-password"
+                autoFocus
+                disabled={unlockSource.isPending}
+                onChange={e => setMasterPassword(e.target.value)}
+                placeholder={v.sources.masterPasswordPlaceholder}
+                type="password"
+                value={masterPassword}
+              />
+            )}
             {unlockError && <p className="text-xs text-destructive">{unlockError}</p>}
             <DialogFooter>
+              {unlockTarget?.name === 'onepassword' && (
+                <Button
+                  disabled={unlockSource.isPending}
+                  onClick={() => (appUnlock ? setUsePasswordUnlock(true) : submitUnlock(''))}
+                  type="button"
+                  variant="ghost"
+                >
+                  {appUnlock ? v.sources.unlockWithPassword : v.sources.unlockWithOnePasswordApp}
+                </Button>
+              )}
               <Button onClick={closeUnlock} type="button" variant="ghost">
                 {t.common.cancel}
               </Button>
-              <Button disabled={unlockSource.isPending || !masterPassword} type="submit">
-                {unlockSource.isPending ? v.sources.unlocking : v.sources.unlock}
+              <Button
+                autoFocus={appUnlock}
+                disabled={unlockSource.isPending || (!appUnlock && !masterPassword)}
+                type="submit"
+              >
+                {unlockSource.isPending
+                  ? v.sources.unlocking
+                  : appUnlock
+                    ? v.sources.unlockWithOnePasswordApp
+                    : v.sources.unlock}
               </Button>
             </DialogFooter>
           </form>

@@ -1,0 +1,12 @@
+# Immutable runtime for externally routed delegate_task profiles.
+# The host process owns async delivery; this image may never expose delegate_task.
+FROM nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db
+
+COPY agent/delegation_context.py /opt/hermes/agent/delegation_context.py
+RUN touch /opt/hermes/.external-profile-leaf && chmod 0444 /opt/hermes/.external-profile-leaf && \
+    rm -f /opt/hermes/tools/delegate_tool.py \
+          /opt/hermes/tools/delegate_tool_dispatch.py \
+          /opt/hermes/tools/delegate_tool_child.py \
+          /opt/hermes/tools/delegate_tool_child_run.py \
+          /opt/hermes/tools/async_delegation.py && \
+    find /opt/hermes/tools -type f \( -name 'delegate_tool*.pyc' -o -name 'async_delegation*.pyc' \) -delete

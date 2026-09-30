@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from pathlib import Path
 from typing import Iterator, Mapping, MutableMapping, overload
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
@@ -18,6 +19,10 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
+# This marker is added only while building the dedicated Docker leaf image.
+# The image rootfs is read-only at runtime, so a terminal-capable leaf cannot
+# erase it to recover delegate_task.
+EXTERNAL_PROFILE_LEAF_SENTINEL = Path("/opt/hermes/.external-profile-leaf")
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
@@ -87,6 +92,11 @@ def owned_kanban_task() -> str:
 def is_delegated_child_process_context() -> bool:
     """Return True in this process or a subprocess spawned by a child."""
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
+
+
+def is_external_profile_leaf_runtime() -> bool:
+    """Whether this immutable Docker runtime must never expose delegation."""
+    return EXTERNAL_PROFILE_LEAF_SENTINEL.is_file()
 
 
 def _fenced_kanban_root() -> str:

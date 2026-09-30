@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import os
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
@@ -296,6 +297,37 @@ def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> 
         if source == "tui" and agent_session_id:
             session_key = agent_session_id
     return session_key or agent_session_id, origin_ui_session_id
+
+
+def dispatch_external_profile_task(*, task: Dict[str, Any], parent_agent: Any, context: Optional[str],
+                                   role: str, origin: tuple[str, str, Any, Any, bool]) -> str:
+    """Dispatch one explicit Hermes profile through the durable async ledger."""
+    from tools.async_delegation import dispatch_async_delegation
+    from tools.delegate_tool import _get_max_async_children
+    from tools.delegate_tool_external_profile import (
+        external_profile_is_authorized, make_external_profile_runner, validate_external_profile,
+    )
+
+    profile, profile_home = validate_external_profile(str(task.get("profile") or ""))
+    if not external_profile_is_authorized(profile):
+        raise ValueError(f"Profile '{profile}' is not authorized for external delegation from this profile.")
+    wake_sid, origin_ui, _transport, _record, history_delivery = origin
+    wake_sid = _resolve_async_wake_sid(wake_sid, history_delivery)
+    if wake_sid is None:
+        raise ValueError("This session cannot receive a detached external-profile completion.")
+    session_key, origin_ui = _resolve_async_session_key(parent_agent, origin_ui)
+    runner, interrupt = make_external_profile_runner(
+        profile=profile, profile_home=profile_home, goal=task["goal"],
+        context=task.get("context") or context, cwd=os.getcwd())
+    result = dispatch_async_delegation(
+        goal=task["goal"], context=task.get("context") or context, toolsets=None, role=role,
+        model=None, session_key=session_key, parent_session_id=getattr(parent_agent, "session_id", None),
+        runner=runner, origin_ui_session_id=origin_ui, origin_session_id=wake_sid,
+        interrupt_fn=interrupt, max_async_children=_get_max_async_children())
+    if result.get("status") == "dispatched":
+        result.update(mode="background", count=1, profile=profile,
+                      note="External profile is running through the async-delegation ledger; its result re-enters this origin session as a normal completion event.")
+    return json.dumps(result, ensure_ascii=False)
 
 def _batch_progress_token(child_agents: List[Any]) -> tuple:
     """Progress token for the async registry's stale monitor: every child's (api_call_count, current_tool,

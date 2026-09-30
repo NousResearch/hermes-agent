@@ -25,7 +25,7 @@ def build_hooks_parser(subparsers, *, cmd_hooks: Callable) -> None:
     _hk_test.add_argument(
         "--for-tool", dest="for_tool", default=None,
         help="Only fire hooks whose matcher matches this tool name "
-            "(used for pre_tool_call / post_tool_call)")
+            "(used for pre_tool_call / post_tool_call / transform_tool_result)")
     _hk_test.add_argument(
         "--payload-file", dest="payload_file", default=None,
         help="Path to a JSON file whose contents are merged into the "

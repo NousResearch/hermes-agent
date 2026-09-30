@@ -260,3 +260,51 @@ def test_hooks_test_distinguishes_fail_closed_from_fail_open(tmp_path):
     assert "failed closed" in closed
     assert '"action": "block"' not in open_
     assert "contributed nothing" in open_
+
+
+def test_hooks_test_for_tool_honors_transform_matcher():
+    """`--for-tool` filters transform_tool_result hooks by matcher, like the runtime callback."""
+    cfg = {"hooks": {"transform_tool_result": [
+        {"matcher": "web_search", "command": "/nonexistent/transform.sh"},
+    ]}}
+
+    def _test_for(tool):
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            return _run(SimpleNamespace(
+                hooks_action="test", event="transform_tool_result",
+                for_tool=tool, payload_file=None,
+            ))
+
+    skipped = _test_for("terminal")
+    assert "No shell hooks configured for event: transform_tool_result" in skipped
+    assert "/nonexistent/transform.sh" not in skipped
+    assert "/nonexistent/transform.sh" in _test_for("web_search")
+
+
+def test_print_run_result_shows_empty_transform_replacement():
+    """An empty transform_tool_result replacement blanks the result; it is not "contributed nothing"."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hooks_cli._print_run_result({"returncode": 0, "stdout": '{"result": ""}', "parsed": ""})
+    assert 'parsed (Hermes wire shape): ""' in buf.getvalue()
+
+
+def test_hooks_test_feeds_transform_hooks_the_result(tmp_path):
+    """`hooks test transform_tool_result` feeds a synthetic ``result`` like the runtime does, so a
+    hook that rewrites the result runs instead of failing on a missing key."""
+    script = _hook_script(
+        tmp_path,
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "payload = json.loads(sys.stdin.buffer.read())\n"
+        "print(json.dumps({'result': 'masked:' + payload['extra']['result']}))\n",
+        name="transform.py",
+    )
+    cfg = {"hooks": {"transform_tool_result": [{"command": str(script)}]}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        out = _run(SimpleNamespace(
+            hooks_action="test", event="transform_tool_result",
+            for_tool=None, payload_file=None,
+        ))
+    assert "exit=0" in out
+    assert 'parsed (Hermes wire shape): "masked:' in out

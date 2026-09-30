@@ -110,10 +110,10 @@ jobs:
       - name: Decide whether to build
         id: gate
         env:
-          # The docker lane derives from python_prod (not python: the image
-          # copies installed code, never tests/, so tests-only PRs skip the
-          # build), frontend and docker_meta. classify_changes.py owns the
-          # formula so this gate and the nix lane cannot drift apart.
+          # The docker lane is a slow lane: on a pull request it runs only
+          # for docker meta, the dependency manifests, PM and tests/docker
+          # (or the run-e2e label). Every push to main builds the image.
+          # classify_changes.py owns the formula.
           DOCKER: ${{ steps.classify.outputs.docker }}
         run: |
           set -euo pipefail

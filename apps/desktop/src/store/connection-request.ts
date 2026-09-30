@@ -109,20 +109,18 @@ const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-export const sessionConnectionRequest = (sessionId: string | null) =>
-  computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
-
-/** Settled operations the session's next operation replaced, by the tool call that opened each. One turn
- *  can ask twice (an install card, then a connect card); the first card keeps its settled rows. */
+/** The settled operation of the other card kind that the session's current operation replaced. One turn
+ *  can ask twice (an install card and a connect card, either order) and both cards stay drawn; a later
+ *  operation of the same kind still replaces its card, so consecutive connect calls show one card. */
 const $replacedConnectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-/** The operation a tool row draws: the session's current one when this row opened it, else the settled
- *  one this row opened before the next operation replaced it. */
+/** The operation a tool row draws: the session's current one when this row opened it, else the replaced
+ *  one when this row opened that. */
 export const toolConnectionRequest = (sessionId: string | null, toolCallId: string) =>
   computed([$connectionRequests, $replacedConnectionRequests], (requests, replaced) => {
-    const current = requests[keyFor(sessionId)]
+    const key = keyFor(sessionId)
 
-    return current?.toolCallId === toolCallId ? current : (replaced[toolCallId] ?? null)
+    return [requests[key], replaced[key]].find(request => request?.toolCallId === toolCallId) ?? null
   })
 
 const TARGET_STATES: readonly ConnectionTargetState[] = [
@@ -152,6 +150,10 @@ const settleReason = oneOf(SETTLE_REASONS)
 
 export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
   kind === 'plugin' || kind === 'skill'
+
+/** A `manage_catalog` install operation, as opposed to a `manage_connections` one. */
+export const isCatalogRequest = (request: ConnectionRequest): boolean =>
+  request.targets.some(target => isCatalogKind(target.kind))
 
 function catalogEntry(entry: ConnectionOperationTarget, name: string): CatalogEntry {
   return {
@@ -317,14 +319,18 @@ export function applyConnectionUpdate(request: ConnectionRequest, update: Connec
 }
 
 export function setConnectionRequest(request: ConnectionRequest): void {
+  const key = keyFor(request.sessionId)
   const requests = $connectionRequests.get()
-  const previous = requests[keyFor(request.sessionId)]
+  const previous = requests[key]
 
-  if (previous?.settled && previous.opId !== request.opId) {
-    $replacedConnectionRequests.set({ ...$replacedConnectionRequests.get(), [previous.toolCallId]: previous })
+  if (previous && previous.opId !== request.opId && isCatalogRequest(previous) !== isCatalogRequest(request)) {
+    const replaced = { ...$replacedConnectionRequests.get() }
+    delete replaced[key]
+
+    $replacedConnectionRequests.set(previous.settled ? { ...replaced, [key]: previous } : replaced)
   }
 
-  $connectionRequests.set({ ...requests, [keyFor(request.sessionId)]: request })
+  $connectionRequests.set({ ...requests, [key]: request })
 }
 
 export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload): void {
@@ -341,28 +347,19 @@ export function updateConnectionRequest(sessionId: string | null, update: Connec
   }
 }
 
+/** Drop the session's operation (or, with no session, every one) whose op id matches, from the current
+ *  and the replaced caches alike. */
 export function clearConnectionRequest(opId?: string, sessionId?: string | null): void {
-  const requests = $connectionRequests.get()
+  const cleared = ([key, value]: [string, ConnectionRequest]) =>
+    (sessionId === undefined || key === keyFor(sessionId)) && (!opId || value.opId === opId)
 
-  if (sessionId !== undefined) {
-    const key = keyFor(sessionId)
-    const current = requests[key]
+  for (const store of [$connectionRequests, $replacedConnectionRequests]) {
+    const entries = Object.entries(store.get())
+    const kept = entries.filter(entry => !cleared(entry))
 
-    if (!current || (opId && current.opId !== opId)) {
-      return
+    if (kept.length !== entries.length) {
+      store.set(Object.fromEntries(kept))
     }
-
-    const next = { ...requests }
-    delete next[key]
-    $connectionRequests.set(next)
-
-    return
-  }
-
-  const kept = Object.entries(requests).filter(([, value]) => opId && value.opId !== opId)
-
-  if (kept.length !== Object.keys(requests).length) {
-    $connectionRequests.set(Object.fromEntries(kept))
   }
 }
 

@@ -171,3 +171,17 @@ def test_runtime_health_lines_warns_when_root_multiplexer_not_live(monkeypatch):
     assert "recorded process is gone" in stale[0]
 
 
+
+
+def test_runtime_health_lines_keeps_drain_report_when_root_multiplexer_live(monkeypatch):
+    """Enough1122 review on #122459: suppressing the stale dead-PID line must not
+    suppress the tail — a served profile legitimately mid-drain keeps its drain report."""
+    profile, root = _multiplex_records(root_live=True)
+    profile["gateway_state"] = "draining"
+    profile["active_agents"] = 2
+    _patch_multiplex(monkeypatch, profile, root)
+
+    lines = _runtime_health_lines()
+
+    assert _stale_lines(lines) == [], lines
+    assert any("draining" in ln.lower() for ln in lines), lines

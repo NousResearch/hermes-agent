@@ -82,7 +82,8 @@ class CredentialPoolModelCooldownMixin:
 
         Same TTL policy as a credential-wide 429 (provider ``reset_at`` wins, a
         sole credential keeps its short bench), except a ``model_entitlement``
-        rejection, which stays benched until the explicit reset path clears it.
+        rejection, which expires after the bounded entitlement TTL or can be
+        cleared immediately by the explicit reset path.
         Siblings matter because a ``model_config`` twin seeded from the same key
         would otherwise be re-selected for the very model that just failed.
         Caller holds the lock.

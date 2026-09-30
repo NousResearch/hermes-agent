@@ -419,6 +419,7 @@ def cmd_env(args) -> int:
 
 
 def cmd_doctor(args) -> int:
+    from pm.defaults import declined
     from pm.install import _identity, _installed_location
     from pm.store import tree_digest
 
@@ -429,6 +430,8 @@ def cmd_doctor(args) -> int:
     bad = 0
     for name in lockfile.names():
         package = get_package(name)
+        if package.default and not package.internal and name in declined():
+            continue
         reason = package.missing_reason(target)
         if reason is not None:
             print(f"- {name}: n/a on {target} ({reason})")

@@ -30,6 +30,14 @@ PreviousTurnCheck = Callable[[str, dict], bool]
 NON_CONVERSATIONAL_KEY = "com.nousresearch.hermes.non_conversational"
 
 
+def ends_scan(
+    is_previous_turn: PreviousTurnCheck | None, entry: MatrixEventContext, content: dict,
+) -> bool:
+    # Redaction strips NON_CONVERSATIONAL_KEY, so a redacted bot event may have been a
+    # status notice. Only an event with its content can mark the previous turn.
+    return is_previous_turn is not None and not entry.redacted and is_previous_turn(entry.sender, content)
+
+
 async def history_entry(
     client: Any, raw: dict, cache: MatrixEventContextCache, room_id: str,
     *, before: MatrixEventContext | None,
@@ -103,7 +111,7 @@ async def _thread_root(
     if parsed is None:
         return cache.history_entry(room_id, thread_id) if is_previous_turn is None else None
     root, content = parsed
-    if is_previous_turn is not None and is_previous_turn(root.sender, content):
+    if ends_scan(is_previous_turn, root, content):
         return None
     return root
 
@@ -201,7 +209,7 @@ async def fetch_thread_entries(
         # its thread from the redacted event alone.
         if MatrixRelation.from_content(content.get("m.relates_to")).thread_root != thread_id:
             continue
-        if is_previous_turn is not None and is_previous_turn(entry.sender, content):
+        if ends_scan(is_previous_turn, entry, content):
             reached_previous_turn = True
             break
         newest_first.append((event_id, entry))

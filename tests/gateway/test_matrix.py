@@ -1906,6 +1906,35 @@ async def test_encrypted_mention_ends_the_catch_up_scan():
 
 @pytest.mark.parametrize("scope", ["room", "thread"])
 @pytest.mark.asyncio
+async def test_redacted_bot_message_does_not_end_the_catch_up_scan(scope):
+    """Redaction strips the status mark, so a redacted bot message may have been a status
+    notice rather than a reply. The scan shows the redaction and continues to the reply."""
+    relates_to = _CATCH_UP_THREAD if scope == "thread" else {}
+    adapter = _catch_up_adapter([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", relates_to),
+        {"event_id": "$notice", "sender": "@bot:example.org", "type": "m.room.message",
+         "content": {}, "unsigned": {"redacted_because": {"type": "m.room.redaction"}}},
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", relates_to),
+        _catch_up_message("$older", "@bob:example.org", "Older", relates_to),
+    ], thread=scope == "thread")
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    if scope == "thread":
+        adapter._thread_require_mention = True
+        await adapter._threads.mark_async("$root")
+    event = await _catch_up_trigger(adapter, relates_to)
+
+    context = await adapter.fetch_mention_context(event)
+
+    # A redacted thread message has lost its thread relation, so only room catch-up shows it.
+    assert context == (
+        "[Earlier messages in this thread]\n[bob] Gated one\n[bob] Gated two" if scope == "thread"
+        else "[Recent room messages]\n[bob] Gated one\n[bot] [redacted]\n[bob] Gated two"
+    )
+
+
+@pytest.mark.parametrize("scope", ["room", "thread"])
+@pytest.mark.asyncio
 async def test_mention_catch_up_passes_over_bot_status_notices(scope):
     """A status notice, such as a heartbeat or a restart notice, does not answer a turn."""
     from gateway.run import _non_conversational_metadata

@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from plugins.platforms.dingtalk.adapter import (
     _standalone_send as _dingtalk_standalone_send,
 )
-from plugins.platforms.matrix.adapter import (
-    _standalone_send as _matrix_standalone_send,
+from plugins.platforms.matrix.standalone import (
+    standalone_send as _matrix_standalone_send,
 )
 
 
@@ -24,8 +24,7 @@ async def _send_dingtalk(extra, chat_id, message):
 
 
 async def _send_matrix(token, extra, chat_id, message):
-    """Pre-migration ``(token, extra, chat_id, message)`` shim around the matrix
-    plugin's ``_standalone_send(pconfig, chat_id, message)``."""
+    """Send through the Matrix plugin with the supplied credentials and settings."""
     pconfig = SimpleNamespace(token=token, extra=extra or {})
     return await _matrix_standalone_send(pconfig, chat_id, message)
 
@@ -138,8 +137,22 @@ class TestSendMatrix:
     def test_success(self):
         resp = _make_aiohttp_resp(200, json_data={"event_id": "$abc123"})
         session_ctx, session = _make_aiohttp_session(resp)
+        state = MagicMock()
+        state.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(
+            404, json_data={"errcode": "M_NOT_FOUND"},
+        ))
+        state.__aexit__ = AsyncMock(return_value=False)
+        sent = MagicMock()
+        sent.__aenter__ = AsyncMock(return_value=resp)
+        sent.__aexit__ = AsyncMock(return_value=False)
+        membership = MagicMock()
+        membership.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(
+            200, json_data={"joined": {"@bot:example.com": {}, "@alice:example.com": {}, "@bob:example.com": {}}},
+        ))
+        membership.__aexit__ = AsyncMock(return_value=False)
+        session.request = MagicMock(side_effect=[state, membership, sent, membership])
 
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
+        with patch("aiohttp.ClientSession", return_value=session_ctx) as client_session, \
              patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):
             extra = {"homeserver": "https://matrix.example.com"}
             result = asyncio.run(_send_matrix("syt_tok", extra, "!room:example.com", "hello matrix"))
@@ -149,12 +162,14 @@ class TestSendMatrix:
             "platform": "matrix",
             "chat_id": "!room:example.com",
             "message_id": "$abc123",
+            "thread_id": None,
+            "chat_type": "group",
         }
-        session.put.assert_called_once()
-        call_kwargs = session.put.call_args
-        url = call_kwargs[0][0]
+        assert [call.args[0] for call in session.request.call_args_list] == ["GET", "GET", "PUT", "GET"]
+        call_kwargs = session.request.call_args_list[2]
+        url = call_kwargs[0][1]
         assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/%21room%3Aexample.com/send/m.room.message/")
-        assert call_kwargs[1]["headers"]["Authorization"] == "Bearer syt_tok"
+        assert client_session.call_args.kwargs["headers"] == {"Authorization": "Bearer syt_tok"}
         payload = call_kwargs[1]["json"]
         assert payload["msgtype"] == "m.text"
         assert payload["body"] == "hello matrix"
@@ -164,26 +179,27 @@ class TestSendMatrix:
         """Each call should generate a distinct transaction ID in the URL."""
         txn_ids = []
 
-        def capture(*args, **kwargs):
-            url = args[0]
-            txn_ids.append(url.rsplit("/", 1)[-1])
+        def capture(method, url, **kwargs):
             ctx = MagicMock()
-            ctx.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(200, json_data={"event_id": "$x"}))
+            if method == "GET":
+                response = _make_aiohttp_resp(404, json_data={"errcode": "M_NOT_FOUND"})
+            else:
+                txn_ids.append(url.rsplit("/", 1)[-1])
+                response = _make_aiohttp_resp(200, json_data={"event_id": "$x"})
+            ctx.__aenter__ = AsyncMock(return_value=response)
             ctx.__aexit__ = AsyncMock(return_value=False)
             return ctx
 
         session = MagicMock()
-        session.put = capture
+        session.request = capture
         session_ctx = MagicMock()
         session_ctx.__aenter__ = AsyncMock(return_value=session)
         session_ctx.__aexit__ = AsyncMock(return_value=False)
 
         extra = {"homeserver": "https://matrix.example.com"}
 
-        import time
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             asyncio.run(_send_matrix("tok", extra, "!r:example.com", "first"))
-        time.sleep(0.002)
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             asyncio.run(_send_matrix("tok", extra, "!r:example.com", "second"))
 

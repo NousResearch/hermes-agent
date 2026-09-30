@@ -274,9 +274,12 @@ def _handle_send(args):
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
         if isinstance(result, dict) and result.get("success"):
+            from gateway.delivery import SentDestination
+            sent = SentDestination.from_result(result, chat_id, thread_id)
             if used_home_channel:
-                result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+                result["note"] = f"Sent to {platform_name} home channel (chat_id: {sent.chat_id})"
+            if mirror_text and _mirror_sent_message(
+                    platform_name, sent.chat_id, mirror_text, sent.thread_id, chat_type=sent.chat_type):
                 result["mirrored"] = True
             if media_dropped:
                 # The text went out but an attachment the caller asked for did not: a script reading
@@ -416,7 +419,7 @@ def _slack_dm_chat_id(pconfig, chat_id):
     return _run_async(_resolve_slack_user_target(pconfig.token, dm_target))
 
 
-def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id, *, chat_type=None):
     """Best-effort mirror of the sent message into the target's gateway session."""
     try:
         from gateway.mirror import mirror_to_session
@@ -424,7 +427,8 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
         return bool(mirror_to_session(
             platform_name, chat_id, mirror_text, thread_id=thread_id,
             source_label=get_session_env("HERMES_SESSION_PLATFORM", "cli"),
-            user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None))
+            user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
+            **({"chat_type": chat_type} if chat_type else {})))
     except Exception:
         return False
 
@@ -519,21 +523,64 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
     return {"success": True, "message_id": last_result.message_id, "media_delivered": True}
 
 
-async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
+class _GatewayRun:
+    """Runs ``make_coro()`` as a task on the gateway loop. ``cancel`` must also be called on
+    that loop; it cancels the task, or stops it from starting if it has not run yet."""
+
+    def __init__(self, make_coro):
+        self._make_coro = make_coro
+        self._task = None
+        self._cancelled = False
+
+    async def run(self):
+        if self._cancelled:
+            raise asyncio.CancelledError
+        self._task = asyncio.current_task()
+        return await self._make_coro()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if self._task is not None:
+            self._task.cancel()
+
+
+# How long a cancelled caller waits for the gateway-side send to report its outcome.
+_CANCELLED_SEND_GRACE_SECONDS = 5.0
+
+
+async def _dispatch_on_gateway_loop(runner, make_coro, log_message, *, cancel_on_caller_cancel=False):
     """Await ``make_coro()`` on the gateway's loop: adapter.send() uses queues/tasks bound to it,
-    so awaiting from another loop (the tool worker thread) deadlocks."""
+    so awaiting from another loop (the tool worker thread) deadlocks.
+
+    With ``cancel_on_caller_cancel``, a cancelled caller cancels the coroutine on the gateway
+    loop and then waits up to ``_CANCELLED_SEND_GRACE_SECONDS`` for its outcome, so a coroutine
+    that finishes an accepted send despite the cancellation still returns its receipt. If the
+    outcome does not arrive in time, or the gateway loop is closed, the caller's cancellation
+    is raised."""
     gateway_loop = getattr(runner, "_gateway_loop", None)
     if gateway_loop is None or asyncio.get_running_loop() is gateway_loop:
         return await make_coro()  # same loop / no gateway loop (CLI, tests)
     if not gateway_loop.is_running():
         return {"error": "Gateway loop is not running; cannot dispatch adapter send"}
     from agent.async_utils import safe_schedule_threadsafe
-    fut = safe_schedule_threadsafe(make_coro(), gateway_loop, logger=logger, log_message=log_message)
+    gateway_run = _GatewayRun(make_coro)
+    fut = safe_schedule_threadsafe(gateway_run.run(), gateway_loop, logger=logger, log_message=log_message)
     if fut is None:
         return {"error": "Gateway loop unavailable for send dispatch"}
     # shield: a cancelled caller must not cancel the enqueued send (a retry would duplicate it).
     # No timeout: the adapter and outer _run_async bound the wait.
-    return await asyncio.shield(asyncio.wrap_future(fut))
+    outcome = asyncio.wrap_future(fut)
+    try:
+        return await asyncio.shield(outcome)
+    except asyncio.CancelledError as cancelled:
+        if not cancel_on_caller_cancel:
+            raise
+        caller_cancellation = cancelled
+    try:
+        gateway_loop.call_soon_threadsafe(gateway_run.cancel)
+        return await asyncio.wait_for(asyncio.shield(outcome), _CANCELLED_SEND_GRACE_SECONDS)
+    except (RuntimeError, TimeoutError):
+        raise caller_cancellation from None
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,
@@ -587,7 +634,9 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
 
 
 async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
+    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result.
+    A sender that finishes a started send despite a cancellation, as the Matrix sender does,
+    returns its receipt while the caller stays cancelled. The remaining chunks are not sent."""
     result = None
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
@@ -597,6 +646,9 @@ async def _send_chunks(chunks, send_one):
         result = await send_one(chunk, i == len(chunks) - 1)
         if isinstance(result, dict) and result.get("error"):
             break
+        if i < len(chunks) - 1 and asyncio.current_task().cancelling():
+            return {"error": f"send cancelled after {i + 1} of {len(chunks)} chunks were delivered",
+                    "message_id": result.get("message_id") if isinstance(result, dict) else None}
     return result
 
 

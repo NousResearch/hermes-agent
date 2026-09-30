@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
-from gateway.session_identity import transport_profile_of
+from gateway.session_identity import replace_source, transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
@@ -264,7 +264,7 @@ def _discord_tools_loaded() -> bool:
 _MAX_PROMPT_METADATA_CHARS = 240
 
 
-def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
+def format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
     """Render untrusted gateway metadata as an inert quoted string."""
     text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
     text = "".join(ch if ch >= " " or ch in "\n\t" else " " for ch in text)
@@ -400,15 +400,15 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             user = src.user_name or (_hash_sender_id(src.user_id) if src.user_id else "user")
             chat = src.chat_name or _chat_label(src.chat_id)
             desc = SessionSource._describe(src.chat_type, user, chat)
-        lines.append(f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})")
+        lines.append(f"**Source:** {platform_name} ({format_untrusted_prompt_value(desc)})")
 
     if src.chat_topic:
-        lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")
+        lines.append(f"**Channel Topic:** {format_untrusted_prompt_value(src.chat_topic)}")
 
     if src.platform == Platform.MATRIX:
         lines += [
             "",
-            f"**Matrix Room:** {_format_untrusted_prompt_value(src.chat_name or src.chat_id)}",
+            f"**Matrix Room:** {format_untrusted_prompt_value(src.chat_name or src.chat_id)}",
             f"**Matrix Room ID:** {_chat_label(src.chat_id)}",
         ]
         if src.thread_id:
@@ -428,10 +428,10 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             "Multiple users may participate."
         )
     elif src.user_name:
-        lines.append(f"**User:** {_format_untrusted_prompt_value(src.user_name)}")
+        lines.append(f"**User:** {format_untrusted_prompt_value(src.user_name)}")
     elif src.user_id:
         uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
-        lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+        lines.append(f"**User ID:** {format_untrusted_prompt_value(uid)}")
 
     lines.extend(_PLATFORM_NOTES.get(src.platform, lambda ctx: [])(context))
     platforms_list = ["local (files on this machine)"] + [
@@ -442,8 +442,8 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     if context.home_channels:
         lines += ["", "**Home Channels (default destinations):**"]
         for platform, home in context.home_channels.items():
-            safe_name = _format_untrusted_prompt_value(home.name)
-            safe_id = _format_untrusted_prompt_value(_chat_label(home.chat_id))
+            safe_name = format_untrusted_prompt_value(home.name)
+            safe_id = format_untrusted_prompt_value(_chat_label(home.chat_id))
             lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
 
     lines += ["", "**Delivery options for scheduled tasks:**"]
@@ -451,12 +451,12 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     if src.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
-        _origin_label = _format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
+        _origin_label = format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
     lines.append(f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)")
     for platform, home in context.home_channels.items():
-        home_name = _format_untrusted_prompt_value(home.name)
+        home_name = format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
 
     lines += ["", "*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*"]
@@ -679,6 +679,16 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
     return participant_id
 
 
+def isolates_participant(
+    chat_type: str, thread_id: Optional[str], *, group_sessions_per_user: bool,
+    thread_sessions_per_user: bool,
+) -> bool:
+    """Whether the session key of a non-DM chat includes the participant. Threads are shared
+    unless ``thread_sessions_per_user`` is set."""
+    return (chat_type != "dm" and group_sessions_per_user
+            and (not thread_id or thread_sessions_per_user))
+
+
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,
@@ -705,9 +715,9 @@ def build_session_key(
         # chat_id-less DM shares one agent.
         isolate_user = not chat_id
     else:
-        # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
-        # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = isolates_participant(
+            source.chat_type, thread_id, group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user)
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
@@ -1120,36 +1130,48 @@ class SessionStore(
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
 
-    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
-        """Force reset a session, creating a new session ID."""
+    def reset_session(
+        self, session_key: str, display_name: Optional[str] = None,
+        *, source: Optional[SessionSource] = None,
+    ) -> Optional[SessionEntry]:
+        """Force reset a session, creating a new session ID. With *source*, the new origin keeps the
+        old origin's routing fields and takes the chat name, topic and user name from *source*."""
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
                 return None
+            origin = old_entry.origin
+            if source is not None and origin is not None:
+                origin = with_chat_metadata_from(origin, source)
             now = _now()
             session_id = _new_session_id(now)
             new_entry = self._replace_route_locked(
                 session_key, old_entry, session_id, now,
+                origin=origin,
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 is_fresh_reset=True,
             )
             db_create_kwargs = self._session_create_kwargs(
-                session_id=session_id, session_key=session_key, origin=old_entry.origin,
+                session_id=session_id, session_key=session_key, origin=origin,
                 source_value=old_entry.platform.value if old_entry.platform else "unknown",
                 display_name=old_entry.display_name, parent_session_id=old_entry.session_id,
             )
         self._finish_route_transition(
             session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
-            create_kwargs=db_create_kwargs, origin=old_entry.origin,
+            create_kwargs=db_create_kwargs, origin=origin,
             display_name=new_entry.display_name, during=" during reset",
         )
         return new_entry
 
-    def _replace_route_locked(self, session_key, old_entry, session_id, now, **fields) -> SessionEntry:
+    def _replace_route_locked(
+        self, session_key, old_entry, session_id, now,
+        *, origin: Optional[SessionSource] = None, **fields,
+    ) -> SessionEntry:
         """Publish a fresh entry (inheriting origin/platform/chat_type) and save. Lock held."""
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
-            origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
+            origin=origin if origin is not None else old_entry.origin,
+            platform=old_entry.platform, chat_type=old_entry.chat_type,
             transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry
@@ -1315,6 +1337,13 @@ class SessionStore(
         with self._lock:
             entry = self._entry_locked(session_key)
             return entry.session_id if entry else None
+
+
+def with_chat_metadata_from(target: SessionSource, donor: SessionSource) -> SessionSource:
+    """*target* with the chat name and topic of *donor*, and with *donor*'s user name when the same
+    user sent both. In a shared chat the two sources can come from different users."""
+    user_name = donor.user_name if target.user_id == donor.user_id else target.user_name
+    return replace_source(target, chat_name=donor.chat_name, chat_topic=donor.chat_topic, user_name=user_name)
 
 
 def build_session_context(

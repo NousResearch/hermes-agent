@@ -428,7 +428,7 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -1777,6 +1777,8 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -1792,6 +1794,8 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event
@@ -2533,6 +2537,8 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -2693,6 +2699,14 @@ class BasePlatformAdapter(ABC):
         as str, or None when unsupported/failed (the watcher then uses ``parent_chat_id``
         directly)."""
         return None
+
+    async def resolve_delivery_target(
+        self, source: SessionSource, *, refresh: bool = False) -> SessionSource:
+        """Canonical reply source for an explicit delivery target (cron, ``send_message``).
+        Adapters whose targets need resolving (aliases, thread suffixes, a chat type that
+        depends on membership) override this; the default keeps the target as given.
+        ``refresh`` rereads the state that decides the chat type instead of synced caches."""
+        return source
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
@@ -3476,6 +3490,25 @@ class BasePlatformAdapter(ABC):
     _ACK_EMOJI: Optional[str] = None
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
+
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: Optional[SessionSource],
+        acknowledged_state: Optional[Dict[str, Any]], first_turn: bool,
+    ) -> Optional[TurnContextUpdate]:
+        """Report context for this turn: changes to the chat since the conversation last
+        acknowledged its state, and earlier messages that a new session has not seen.
+
+        The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
+        origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
+        ``channel_state`` saved with the most recent user transcript row that has one.
+        ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
+        and leave the saved state unchanged.
+
+        For an adapter that overrides this hook, the session-context prompt keeps the chat name,
+        topic and user name from the session origin, so a rename does not rewrite the system prompt
+        of a running conversation. An override must therefore report name and topic changes in its
+        note."""
+        return None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""

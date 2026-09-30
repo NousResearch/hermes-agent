@@ -59,27 +59,48 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.backgroundRunning
   },
-  // Emerald — the turn finished while the user was looking elsewhere.
+  // Emerald — the turn finished while the user was looking elsewhere. The
+  // color is theme-derived (`--ui-success`, a success green rotated toward the
+  // accent) so eight finished dots can't sit in the sidebar fighting a palette
+  // they don't belong to. Under a green accent it stays emerald.
   unread: {
     ariaLabel: r => r.finishedUnread,
-    className: `${DOT_BASE} bg-emerald-500`,
+    className: `${DOT_BASE} bg-(--ui-success)`,
     role: 'status',
     title: r => r.finishedUnread
   },
-  // Settled: the project color, or nothing at all. An uncolored session used to
-  // get a grey dot, which put a mark of the same weight as a status next to
-  // every resting row and made "no color" look like a state of its own.
+  // Hollow grey, the faintest ink the app has — nothing has ever run here. It
+  // shares the outline with `background` because both mean "open, not
+  // producing", and sits a shade dimmer because a draft is the one state that
+  // has yet to do anything at all.
+  draft: {
+    ariaLabel: r => r.draftSession,
+    className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
+    title: r => r.draftSession
+  },
+  // Settled: the project color when there is one, else the faintest filled
+  // grey. Every session shows SOME mark — a row with nothing in the lead slot
+  // reads as broken next to its neighbours, so "no color" falls back to the
+  // quietest ink rather than to an invisible dot.
   idle: {
-    className: 'size-1 rounded-full'
+    className: 'size-1 rounded-full bg-(--ui-text-quaternary)'
   }
 }
+
+/** The dot a state paints, for surfaces that describe a status rather than
+ *  render a session — the sidebar's status filter, say. Idle carries no color
+ *  of its own (it inherits the project's), so callers supply one. */
+export const sessionDotClassName = (state: SessionDotState): string => DOT_VARIANTS[state].className
 
 export interface SessionStatusDotProps {
   /** The STORED session id — the key every live-state atom (working /
    *  attention / stalled / unread / background) is keyed by, on BOTH surfaces:
    *  the sidebar row's `session.id` and a pane tile's `storedSessionId` are the
-   *  same stored id (`$workingSessionIds` et al. map `storedSessionId`). */
-  storedSessionId: string
+   *  same stored id (`$workingSessionIds` et al. map `storedSessionId`).
+   *
+   *  Null on a new chat that has yet to reach the backend — no id to key by,
+   *  and no turn behind it, which is the draft state by definition. */
+  storedSessionId: null | string
   /** The session row for color resolution — recents OR the project tree. Both
    *  call sites already hold it; passing it lets the idle dot inherit the
    *  project color even for a session older than the paginated recents page
@@ -112,7 +133,10 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
 
   // Selector, not a plain useStore: the map is rebuilt whenever any session's
   // status changes, but a given dot only repaints when ITS OWN state flips.
-  const dotState = useStoreSelector($sessionDotStateById, states => states[storedSessionId] ?? 'idle')
+  const dotState = useStoreSelector($sessionDotStateById, states =>
+    storedSessionId ? (states[storedSessionId] ?? 'idle') : 'draft'
+  )
+
   const variant = DOT_VARIANTS[dotState]
 
   return (

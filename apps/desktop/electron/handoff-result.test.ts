@@ -17,7 +17,13 @@ function write(home: string, body: any) {
 
 test('consumes and returns a fresh failure result', () => {
   const home = tempHome()
-  write(home, { ok: false, exit_code: 6, message: 'rebuild failed', branch: 'main', finished_at: Math.floor(Date.now() / 1000) })
+  write(home, {
+    ok: false,
+    exit_code: 6,
+    message: 'rebuild failed',
+    branch: 'main',
+    finished_at: Math.floor(Date.now() / 1000)
+  })
 
   const result = readAndConsumeHandoffResult(home)
 
@@ -38,7 +44,13 @@ test('reports each result at most once', () => {
 
 test('discards stale results but still consumes the file', () => {
   const home = tempHome()
-  write(home, { ok: false, exit_code: 5, message: 'old', branch: 'main', finished_at: Math.floor(Date.now() / 1000) - 3600 })
+  write(home, {
+    ok: false,
+    exit_code: 5,
+    message: 'old',
+    branch: 'main',
+    finished_at: Math.floor(Date.now() / 1000) - 3600
+  })
 
   assert.equal(readAndConsumeHandoffResult(home), null)
   assert.equal(fs.existsSync(handoffResultPath(home)), false)
@@ -54,4 +66,54 @@ test('malformed JSON is consumed silently', () => {
 
 test('absent file returns null', () => {
   assert.equal(readAndConsumeHandoffResult(tempHome()), null)
+})
+
+test('manual flag survives the round trip and defaults false', () => {
+  const home = tempHome()
+  write(home, {
+    ok: true,
+    exit_code: 0,
+    manual: true,
+    message: 'Update complete. Reopen Hermes to finish (it could not restart itself).',
+    branch: 'main',
+    finished_at: Math.floor(Date.now() / 1000)
+  })
+
+  const result = readAndConsumeHandoffResult(home)
+
+  assert.ok(result)
+  assert.equal(result.ok, true)
+  assert.equal(result.manual, true)
+
+  write(home, { ok: true, exit_code: 0, message: 'done', branch: 'main', finished_at: Math.floor(Date.now() / 1000) })
+  assert.equal(
+    readAndConsumeHandoffResult(home)?.manual,
+    false,
+    'older writers without the field parse as manual:false'
+  )
+})
+
+test('an old manual result survives the freshness window but an old ordinary one does not', () => {
+  const stale = Math.floor(Date.now() / 1000) - 3600
+
+  const ordinary = tempHome()
+  write(ordinary, { ok: true, exit_code: 0, manual: false, message: 'done', branch: 'main', finished_at: stale })
+  assert.equal(readAndConsumeHandoffResult(ordinary), null, 'a stale ordinary result is discarded')
+  assert.equal(fs.existsSync(handoffResultPath(ordinary)), false, 'and still consumed')
+
+  const home = tempHome()
+  write(home, {
+    ok: true,
+    exit_code: 0,
+    manual: true,
+    message: 'Update complete. Reopen Hermes to finish (it could not restart itself).',
+    branch: 'main',
+    finished_at: stale
+  })
+
+  const result = readAndConsumeHandoffResult(home)
+
+  assert.ok(result, 'a stale manual result is still surfaced — it is the last-resort channel')
+  assert.equal(result.manual, true)
+  assert.equal(readAndConsumeHandoffResult(home), null, 'but only once')
 })

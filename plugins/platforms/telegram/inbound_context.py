@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gateway.platforms.event import attributed_context
+
 import logging
 import os
 import re
@@ -38,8 +40,11 @@ class TelegramInboundContextMixin:
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
             session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
+            content = self._telegram_group_observe_attributed_text(event)
+            if event.channel_context:
+                content = f"{content.rstrip()}\n{event.channel_context}"
             entry = {
-                "role": "user", "content": self._telegram_group_observe_attributed_text(event),
+                "role": "user", "content": content,
                 "timestamp": datetime.now(tz=UTC).isoformat(), "observed": True}
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
@@ -62,11 +67,27 @@ class TelegramInboundContextMixin:
         existing.absorb_media(event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
+        existing.absorb_channel_context(event)
 
 
     async def _cache_inbound_document(self: TelegramAdapter, msg, event: MessageEvent) -> bool:
         """Cache a document attachment (image → photo path, video, else generic media + text injection).
         Returns True when the event was already dispatched/routed so the caller must return."""
+        from plugins.platforms.telegram.adapter import (
+            SUPPORTED_DOCUMENT_TYPES,
+            SUPPORTED_IMAGE_DOCUMENT_TYPES,
+            SUPPORTED_VIDEO_TYPES,
+            _TELEGRAM_IMAGE_EXTENSIONS,
+            _TELEGRAM_IMAGE_EXT_TO_MIME,
+            _TELEGRAM_IMAGE_MIME_TO_EXT,
+            _TEXT_INJECT_EXTENSIONS,
+            _redact_telegram_error_text,
+            cache_image_from_bytes_async,
+            cache_video_from_bytes_async,
+            os,
+            re,
+        )
+
         doc = msg.document
         try:
             original_filename = doc.file_name or ""
@@ -138,7 +159,10 @@ class TelegramInboundContextMixin:
                     text_content = raw_bytes.decode("utf-8")
                     display_name = re.sub(r'[^\w.\- ]', '_', original_filename or f"document{ext or '.txt'}")
                     injection = f"[Content of {display_name}]:\n{text_content}"
-                    event.text = f"{injection}\n\n{event.text}" if event.text else injection
+                    if self._is_forward(msg):
+                        event.add_channel_context(self._forwarded_context(msg, "Forwarded file", injection))
+                    else:
+                        event.text = f"{injection}\n\n{event.text}" if event.text else injection
                     event.media_text_inlined = [True]
                 except UnicodeDecodeError:
                     pass  # binary — agent has the cached path
@@ -150,6 +174,12 @@ class TelegramInboundContextMixin:
 
     async def _handle_media_message(self: TelegramAdapter, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        from plugins.platforms.telegram.adapter import (
+            _redact_telegram_error_text,
+            cache_image_from_bytes_async,
+            expand_link_entities,
+        )
+
         msg = update.message
         if not msg:
             return
@@ -159,13 +189,13 @@ class TelegramInboundContextMixin:
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-                if msg.caption:
+                if msg.caption and not self._is_forward(msg):
                     _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
             return
         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-        if msg.caption:
+        if msg.caption and not self._is_forward(msg):
             from plugins.platforms.telegram.telegram_context import group_trigger_text
             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
         # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
@@ -210,6 +240,10 @@ class TelegramInboundContextMixin:
     def _build_message_event(self: TelegramAdapter, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
         """Build a MessageEvent from a Telegram message. ``update_id`` lets ``/restart`` record the
         triggering offset so the new gateway process advances past it."""
+        from plugins.platforms.telegram.adapter import (
+            expand_link_entities,
+        )
+
         chat = message.chat
         user = message.from_user
         telegram_chat_type = self._chat_type_str(chat)  # str() so PTB enums and plain-string mocks both work
@@ -240,9 +274,31 @@ class TelegramInboundContextMixin:
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        text = expand_link_entities(message)
+        channel_context = None
+        if self._is_forward(message):
+            channel_context = self._forwarded_context(message, "Forwarded message", text) if text else None
+            text = ""
         return MessageEvent(
-            text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
+            text=text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
-            channel_prompt=group_identity_prompt(self, message, channel_prompt),
+            channel_prompt=group_identity_prompt(self, message, channel_prompt), channel_context=channel_context,
             timestamp=message.date)
+
+    @staticmethod
+    def _is_forward(message: Message) -> bool:
+        """Whether *message* forwards someone else's message. A channel post that Telegram forwards
+        into the channel's discussion group automatically is the channel's own message."""
+        return getattr(message, "forward_origin", None) is not None and not getattr(message, "is_automatic_forward", False)
+
+    @staticmethod
+    def _forward_author(message: Message) -> str:
+        """The forwarded message's original author, or "" when Telegram does not say."""
+        origin = getattr(message, "forward_origin", None)
+        chat = getattr(origin, "sender_chat", None) or getattr(origin, "chat", None)
+        return (getattr(getattr(origin, "sender_user", None), "full_name", None)
+                or getattr(origin, "sender_user_name", None) or getattr(chat, "title", None) or "")
+
+    def _forwarded_context(self: TelegramAdapter, message: Message, label: str, text: str) -> str:
+        return attributed_context(label, text, author=self._forward_author(message))

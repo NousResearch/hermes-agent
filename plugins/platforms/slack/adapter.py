@@ -3321,8 +3321,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _is_group_dm(self, channel_id: str, team_id: str = "") -> bool:
         """Whether ``channel_id`` is an MPIM (group DM), for paths whose payload has no
-        ``channel_type`` (slash commands). MPIM ids start with ``G``, as legacy private channels
-        do, so only those need ``conversations.info``; a failed lookup is not a DM."""
+        ``channel_type`` (slash commands, button clicks). MPIM ids start with ``G``, as legacy
+        private channels do, so only those need ``conversations.info``; a failed lookup is not a DM."""
         if not str(channel_id).startswith("G") or not self._app:
             return False
         team_id = str(team_id or self._channel_team.get(channel_id, ""))
@@ -5255,16 +5255,7 @@ class SlackAdapter(BasePlatformAdapter):
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
-        if not self._is_interactive_user_authorized(
-            user_id,
-            channel_id=channel_id,
-            user_name=user_name,
-            team_id=team_id,
-        ):
-            logger.warning(
-                "[Slack] Unauthorized model picker click by %s (%s) - ignoring",
-                user_name, user_id,
-            )
+        if not await self._authorize_click("model picker", user_id, user_name, channel_id, team_id):
             return
 
         # Look up the picker state. The send path may have stored it under a
@@ -5481,12 +5472,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _is_interactive_user_authorized(
         self, user_id: str, *, channel_id: str = "", user_name: Optional[str] = None,
-        team_id: str = "") -> bool:
+        team_id: str = "", chat_type: str = "") -> bool:
         """Return whether a Slack interactive caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             return False
-        chat_type = "dm" if str(channel_id or "").startswith("D") else "group"
+        chat_type = chat_type or ("dm" if str(channel_id or "").startswith("D") else "group")
         # Preferred: the injected profile-bound check (``set_authorization_check``); unlike the
         # ``__self__`` introspection below it works under multiplex (handler is a closure).
         # getattr: object.__new__ test doubles never ran BasePlatformAdapter.__init__.
@@ -5547,14 +5538,35 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = self._event_team_id({}, body)
         action_id, value, message, msg_ts, channel_id, user_name, user_id = (
             self._interaction_fields(body, action))
-        auth_kwargs: Dict[str, Any] = {"channel_id": channel_id, "user_name": user_name}
-        if team_scoped:
-            auth_kwargs["team_id"] = team_id
-        if not self._is_interactive_user_authorized(user_id, **auth_kwargs):
-            logger.warning(
-                "[Slack] Unauthorized %s click by %s (%s) - ignoring", kind, user_name, user_id)
+        if not await self._authorize_click(
+                kind, user_id, user_name, channel_id, team_id, team_scoped=team_scoped):
             return None
         return team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id
+
+    async def _authorize_click(
+            self, kind: str, user_id: str, user_name: str, channel_id: str, team_id: str, *,
+            team_scoped: bool = True) -> bool:
+        """Authorize a click under the same chat type as a message in that conversation: a 1:1 or
+        group DM is a DM (DM allowlists, ``disable_dms``), anything else a channel. The payload has
+        no ``channel_type``, so an MPIM (``G`` id) is looked up as for slash commands."""
+        from gateway.authz_mixin import _coerce_allow_set
+        is_dm = str(channel_id).startswith("D") or await self._is_group_dm(channel_id, team_id)
+        if is_dm and self._slack_disable_dms():
+            logger.info(
+                "[Slack] Ignoring %s click in a DM because Slack DMs are disabled: channel=%s user=%s",
+                kind, channel_id, user_id)
+            return False
+        # A group DM the operator listed by id in ``group_allowed_chats`` keeps that grant for its
+        # members' clicks (it always had it); "*" means group chats, which a group DM is not.
+        granted_by_id = str(channel_id).startswith("G") and str(channel_id) in _coerce_allow_set(
+            self.config.extra.get("group_allowed_chats"))
+        if self._is_interactive_user_authorized(
+                user_id, channel_id=channel_id, user_name=user_name,
+                team_id=team_id if team_scoped else "",
+                chat_type="dm" if is_dm and not granted_by_id else "group"):
+            return True
+        logger.warning("[Slack] Unauthorized %s click by %s (%s) - ignoring", kind, user_name, user_id)
+        return False
 
     @staticmethod
     def _section_text(message: dict, limit: Optional[int] = 3000) -> str:

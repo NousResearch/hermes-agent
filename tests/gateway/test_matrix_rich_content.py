@@ -23,6 +23,7 @@ from gateway.session import SessionStore
 from gateway.turn_context import TurnContext
 from plugins.platforms.matrix.adapter import MatrixAdapter
 from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.reply_context import MatrixEventContext
 from plugins.platforms.matrix.thread_context import history_entry
 
 
@@ -430,10 +431,13 @@ async def test_native_content_has_consistent_effective_reads_history_and_reply_p
             "skipped": 0,
         }
         parsed = await history_entry(
-            adapter._client, raw, adapter._event_context_cache, ROOM
+            adapter._client, raw, adapter._event_context_cache, ROOM,
+            before=adapter._event_context_cache.history_entry(ROOM, "$native"),
         )
         assert parsed is not None
-        assert parsed[0].text == "[encrypted message could not be decrypted]"
+        assert parsed[0] == MatrixEventContext(
+            SENDER, "", state_error="missing decryption keys", event_id="$native",
+        )
         return
     assert read == {
         "events": [
@@ -451,7 +455,8 @@ async def test_native_content_has_consistent_effective_reads_history_and_reply_p
         "skipped": 0,
     }
     parsed = await history_entry(
-        adapter._client, raw, adapter._event_context_cache, ROOM
+        adapter._client, raw, adapter._event_context_cache, ROOM,
+        before=adapter._event_context_cache.history_entry(ROOM, "$native"),
     )
     assert parsed is not None and parsed[0].text == body
     parent = await adapter._event_context_cache.resolve(

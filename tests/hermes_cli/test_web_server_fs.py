@@ -232,6 +232,31 @@ def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
     assert response.status_code == 200
     assert response.content == b"123456"
 
+def test_normalize_whatwg_windows_drive_pathname_strips_leading_slash():
+    assert (
+        web_server._normalize_whatwg_windows_drive_pathname(
+            "/C:/Users/demo/AppData/Local/hermes/images/upload_x.png"
+        )
+        == "C:/Users/demo/AppData/Local/hermes/images/upload_x.png"
+    )
+    assert web_server._normalize_whatwg_windows_drive_pathname("/tmp/a.png") == "/tmp/a.png"
+    assert (
+        web_server._normalize_whatwg_windows_drive_pathname(
+            r"C:\Users\demo\upload_x.png"
+        )
+        == r"C:\Users\demo\upload_x.png"
+    )
+
+
+def test_fs_path_does_not_join_whatwg_windows_drive_to_cwd(tmp_path, monkeypatch):
+    from hermes_cli import web_server_files
+
+    monkeypatch.chdir(tmp_path)
+    resolved = web_server_files._fs_path("/C:/Users/demo/AppData/Local/hermes/images/upload_x.png")
+    assert "C:" in str(resolved)
+    assert tmp_path not in resolved.parents
+    assert resolved.name == "upload_x.png"
+
 
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)

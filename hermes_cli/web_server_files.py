@@ -3,6 +3,7 @@
 
 import mimetypes
 import os
+import re
 import urllib.request
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
@@ -21,6 +22,19 @@ class ManagedFilesPolicy:
     can_change_path: bool
 
 
+# WHATWG file URL pathname for a Windows drive is "/C:/Users/...".
+# Path.is_absolute() is false for that shape on Windows, so _fs_path
+# previously joined it to cwd and 404'd a file that existed.
+_WHATWG_WINDOWS_DRIVE_PATHNAME = re.compile(r"^/([A-Za-z]:)(/.*)?$")
+
+
+def _normalize_whatwg_windows_drive_pathname(raw: str) -> str:
+    match = _WHATWG_WINDOWS_DRIVE_PATHNAME.match(raw)
+    if match:
+        return f"{match.group(1)}{match.group(2) or '/'}"
+    return raw
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -36,7 +50,12 @@ def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
                     raise ValueError
                 uri_path = f"//{parsed.netloc}{uri_path}"
             raw = urllib.request.url2pathname(uri_path)
+        raw = _normalize_whatwg_windows_drive_pathname(raw)
         candidate = Path(raw).expanduser()
+        if re.match(r"^[A-Za-z]:[/\\]", raw):
+            # Drive-letter paths are absolute on Windows. On POSIX, Path
+            # treats them as relative and would otherwise join process cwd.
+            return candidate.resolve(strict=False) if candidate.is_absolute() else Path(raw)
         if not candidate.is_absolute():
             base = Path(cwd).expanduser() if cwd is not None else Path.cwd()
             if not base.is_absolute():

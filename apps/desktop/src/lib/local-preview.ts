@@ -1,7 +1,9 @@
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { filePathFromMediaPath } from '@/lib/media'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
+
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -236,12 +238,8 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   let path = raw
 
-  if (/^file:\/\//i.test(raw)) {
-    try {
-      path = decodeURIComponent(new URL(raw).pathname)
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
+  if (/^file:/i.test(raw)) {
+    path = filePathFromMediaPath(raw)
   } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }

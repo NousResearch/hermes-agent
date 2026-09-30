@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.conversation_compression import compress_context
+from agent.conversation_compression import MANUAL_TRIGGER_REASON, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 from gateway.run import run_codex_hygiene_compaction
 
@@ -68,6 +68,7 @@ class LiveCodexAgent:
             awaiting_real_usage_after_compression=False,
         )
         self.local_compress_calls = 0
+        self.compress_triggers = []
         self.warnings = []
 
     # -- surface used by compress_context --------------------------------
@@ -84,6 +85,7 @@ class LiveCodexAgent:
         return "built prompt"
 
     def _compress_context(self, messages, system_message, **kwargs):
+        self.compress_triggers.append(kwargs.get("trigger"))
         return compress_context(self, messages, system_message, **kwargs)
 
 
@@ -131,6 +133,7 @@ def test_hermes_mode_compacts_live_thread_at_rpc_boundary(tmp_path):
     )
 
     assert outcome == "compacted"
+    assert agent.compress_triggers == ["session_hygiene"]
     # The no-op is gone: the thread genuinely shrank via the app-server's own
     # mechanism — asserted at the RPC-stub boundary.
     assert agent._codex_session.compact_calls == 1
@@ -328,6 +331,7 @@ def test_manual_compress_routes_to_live_thread():
     )
 
     assert agent._codex_session.compact_calls == 1
+    assert agent.compress_triggers == [MANUAL_TRIGGER_REASON]
     assert reply
 
 

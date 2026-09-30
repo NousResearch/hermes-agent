@@ -70,6 +70,61 @@ COMPACTION_HEARTBEAT_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — still sum
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
+# Trigger attribution vocabulary: every compaction names the arm that fired it via the ``trigger`` kwarg.
+# Fine labels render a human clause on the status line and a ``trigger=`` log field; telemetry keeps the
+# coarse ``manual``/``auto``/``overflow`` classes (``_TRIGGER_TELEMETRY_CLASS``) so dashboards stay stable.
+MANUAL_TRIGGER_REASON = "manual_compress_command"
+_TRIGGER_REASON_CLAUSES = {
+    "threshold": "crossed the compaction threshold",
+    "pre_api_pressure": "context pressure before the API call",
+    "overflow_413": "the API rejected an oversize request — 413",
+    "overflow_context": "context length exceeded",
+    "output_cap": "the output cap did not fit the prompt",
+    "tier_reduction": "long-context tier window reduction",
+    "post_tool_threshold": "crossed the compaction threshold after tool output",
+    "idle_resume": "deferred maintenance on idle resume",
+    "engine_preflight_maintenance": "context-engine preflight maintenance",
+    "session_hygiene": "session-hygiene maintenance",
+    MANUAL_TRIGGER_REASON: "manual — you ran /compress",
+    # Coarse telemetry classes, for callers that pass one directly.
+    "manual": "manual — you ran /compress",
+    "auto": "automatic compaction",
+    "overflow": "the provider rejected an oversize request",
+}
+_TRIGGER_TELEMETRY_CLASS = {
+    MANUAL_TRIGGER_REASON: "manual",
+    "overflow_413": "overflow",
+    "overflow_context": "overflow",
+    "output_cap": "overflow",
+    "tier_reduction": "overflow",
+    "threshold": "auto",
+    "pre_api_pressure": "auto",
+    "post_tool_threshold": "auto",
+    "idle_resume": "auto",
+    "engine_preflight_maintenance": "auto",
+    "session_hygiene": "auto",
+}
+
+
+def compaction_reason_clause(trigger: Optional[str]) -> str:
+    """Render the ``" (why this fired)"`` suffix for a compaction status line.
+    ``""`` only when no trigger was passed; an unrecognized label renders raw (``" (trigger: x)"``) so a new
+    arm degrades to something readable, never to silence."""
+    reason = (trigger or "").strip()
+    if not reason:
+        return ""
+    described = _TRIGGER_REASON_CLAUSES.get(reason)
+    return f" ({described})" if described else f" (trigger: {reason})"
+
+
+def compaction_telemetry_trigger(trigger: Optional[str], *, force: bool) -> str:
+    """Map a fine trigger label to its stable telemetry class (manual/auto/overflow).
+    No label falls back to ``force`` (manual vs auto); an unknown label passes through unchanged."""
+    reason = (trigger or "").strip()
+    if not reason:
+        return "manual" if force else "auto"
+    return _TRIGGER_TELEMETRY_CLASS.get(reason, reason)
+
 
 def _strip_marker_for_comparison(msgs: Any) -> Any:
     """Copy ``msgs`` with the ``_db_persisted`` marker removed for no-op comparison.
@@ -4012,7 +4067,7 @@ def _begin_compression_attempt(
     agent._compression_blocked_transient = None
     started_at = time.monotonic()
     attempt_id = uuid.uuid4().hex
-    trigger = trigger or ("manual" if force else "auto")
+    trigger = compaction_telemetry_trigger(trigger, force=force)
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
         from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
@@ -4042,14 +4097,25 @@ def _route_codex_compaction(
 
 
 def _announce_compression_start(
-    agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool
+    agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool,
+    trigger: Optional[str] = None,
 ) -> _CompactionLifecycle:
-    """Log the attempt, emit the (engine-customisable) compacting status, return the lifecycle."""
+    """Log the attempt, emit the (engine-customisable) compacting status, return the lifecycle.
+    ``trigger`` names the arm: it lands in the log line and as a suffix on the status (a suffix, because the
+    gateway noise filter and progress matcher key on the leading COMPACTION_STATUS wording). No trigger is a
+    wiring defect in a new call site, so it logs ``trigger=UNATTRIBUTED`` with a warning."""
+    trigger_label = (trigger or "").strip() or "UNATTRIBUTED"
+    if trigger_label == "UNATTRIBUTED":
+        logger.warning(
+            "context compression has no trigger (session=%s): a caller is not passing one; every compaction "
+            "must name its arm", agent.session_id or "none",
+        )
     logger.info(
-        "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r", agent.session_id or "none",
-        message_count, f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model, focus_topic,
+        "context compression started: session=%s trigger=%s messages=%d tokens=~%s model=%s focus=%r",
+        agent.session_id or "none", trigger_label, message_count,
+        f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model, focus_topic,
     )
-    status = COMPACTION_STATUS
+    status = COMPACTION_STATUS + compaction_reason_clause(trigger)
     if not force:
         status = automatic_compaction_status_message(
             agent.context_compressor, phase="compress", default_message=status, approx_tokens=approx_tokens,
@@ -4088,8 +4154,9 @@ def compress_context(
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
     after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
-    trigger: Why this attempt runs (``"overflow"`` for provider-rejected requests); defaults to manual/auto
-    from ``force``. Feeds attempt telemetry only.
+    trigger: The arm that fired this attempt (``"threshold"``, ``"overflow_413"``, ``"session_hygiene"``,
+    ``MANUAL_TRIGGER_REASON``, ... — see ``_TRIGGER_REASON_CLAUSES``). It names the compaction in the log line and
+    the status suffix; telemetry records its coarse class (manual/auto/overflow). ``None`` logs UNATTRIBUTED.
     """
     attempt = _begin_compression_attempt(
         agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
@@ -4123,7 +4190,8 @@ def compress_context(
     # network-bound (connect timeouts stack up through proxies), and until this status lands
     # the Desktop working row is a bare spinner with no "Summarizing thread" label (#111294).
     lifecycle = _announce_compression_start(
-        agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
+        agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force,
+        trigger=trigger,
     )
     # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
     # _compression_warning so status replay still surfaces the warning. Marked checked
@@ -4571,7 +4639,8 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 
 __all__ = [
-    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
+    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "MANUAL_TRIGGER_REASON", "compaction_reason_clause",
+    "compaction_telemetry_trigger", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
     "check_compression_model_feasibility", "ensure_compression_feasibility_checked",
     "revalidate_compression_feasibility", "replay_compression_warning",
     "compress_context",

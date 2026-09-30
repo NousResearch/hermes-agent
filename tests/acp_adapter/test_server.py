@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
+from agent.conversation_compression import MANUAL_TRIGGER_REASON
+
 import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (
@@ -588,6 +590,7 @@ class TestSlashCommands:
             approx_tokens=40,
             focus_topic=None,
             force=True,
+            trigger=MANUAL_TRIGGER_REASON,
             defer_context_engine_notification=True,
             task_id=state.session_id,
         )

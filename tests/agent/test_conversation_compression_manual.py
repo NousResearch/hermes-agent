@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.conversation_compression import MANUAL_TRIGGER_REASON
 from agent.conversation_compression_manual import compress_now, parse_compress_args
 
 
@@ -47,6 +48,7 @@ def test_compressed_result_rejoins_verbatim_tail_and_never_mutates_input():
     assert result.after_messages[-2:] == frozen[4:]  # last exchange verbatim
     assert history == frozen
     assert agent._compress_context.call_args.kwargs["force"] is True
+    assert agent._compress_context.call_args.kwargs["trigger"] == MANUAL_TRIGGER_REASON
 
 
 @pytest.mark.parametrize("surface", ["cli", "gateway", "tui", "acp"])

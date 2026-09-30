@@ -145,7 +145,9 @@ class _Recovery(OverflowVerdict):
             log=("%sContext compression failed after %d attempts.", self.agent.log_prefix, cap),
         )
 
-    def compress(self, request_tokens: int, *, fail_on_timeout: bool = False) -> Optional[OverflowVerdict]:
+    def compress(
+        self, request_tokens: int, *, trigger: str = "overflow", fail_on_timeout: bool = False,
+    ) -> Optional[OverflowVerdict]:
         """One compression pass with the summary-failure cooldown bypassed (the
         provider proved the request doesn't fit). Returns ``None`` when history was
         compressed, or a soft-defer verdict when another path holds the compression
@@ -153,7 +155,8 @@ class _Recovery(OverflowVerdict):
         ends WITHOUT ``compression_exhausted`` so the gateway does not auto-reset. With
         ``fail_on_timeout`` a host timeout (recovery spent its wait budget with no
         committed summary) ends the turn via the typed contract, since re-sending would
-        hit the same overflow."""
+        hit the same overflow. ``trigger`` names the recovery arm (``overflow_413`` /
+        ``overflow_context`` / ``output_cap``)."""
         from agent.conversation_compression import conversation_history_after_compression
         from agent.conversation_loop import _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _compression_deferred_result
 
@@ -161,7 +164,7 @@ class _Recovery(OverflowVerdict):
         before = self.messages
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
-            task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
+            task_id=self.effective_task_id, bypass_cooldown=True, trigger=trigger,
         )
         if self.messages is before:
             deferred = None
@@ -185,7 +188,7 @@ class _Recovery(OverflowVerdict):
         return None
 
     def compress_scored_by_tokens(
-        self, request_tokens: int, *, fail_on_timeout: bool = False,
+        self, request_tokens: int, *, trigger: str = "overflow", fail_on_timeout: bool = False,
     ) -> Tuple[Optional[OverflowVerdict], bool, int]:
         """``compress`` scored in message count / tokens (context-overflow errors ARE
         token-budget errors). Same-message-count compression (tool-result pruning,
@@ -195,7 +198,7 @@ class _Recovery(OverflowVerdict):
 
         original_len = len(self.messages)
         original_tokens = estimate_messages_tokens_rough(self.messages)
-        deferred = self.compress(request_tokens, fail_on_timeout=fail_on_timeout)
+        deferred = self.compress(request_tokens, trigger=trigger, fail_on_timeout=fail_on_timeout)
         if deferred is not None:
             return deferred, False, original_tokens
         messages = self.messages
@@ -248,7 +251,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     # threshold. Token-scored progress here burned all attempts on "no progress" and wedged the session
     # permanently. (#88960 / #47339)
     original_bytes = serialized_messages_bytes(messages)
-    deferred = st.compress(st.request_tokens())
+    deferred = st.compress(st.request_tokens(), trigger="overflow_413")
     if deferred is not None:
         return deferred
 
@@ -308,7 +311,7 @@ def _clamp_output_cap(st: _Recovery, _retry: TurnRetryState, available_out: int,
     # middle window makes the total fit. Compression must never turn an output-cap error
     # fatal — on error, fall through and retry on max_tokens alone.
     try:
-        deferred, _shrank, _new_tokens = st.compress_scored_by_tokens(request_input_estimate)
+        deferred, _shrank, _new_tokens = st.compress_scored_by_tokens(request_input_estimate, trigger="output_cap")
         if deferred is not None:
             return deferred
     except Exception:
@@ -435,7 +438,9 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
         tokens=st.approx_tokens, attempt=st.compression_attempts, cap=st.max_compression_attempts,
     ))
 
-    deferred, shrank, new_tokens = st.compress_scored_by_tokens(st.request_tokens(), fail_on_timeout=True)
+    deferred, shrank, new_tokens = st.compress_scored_by_tokens(
+        st.request_tokens(), trigger="overflow_context", fail_on_timeout=True,
+    )
     if deferred is not None:
         return deferred
     st.approx_tokens = new_tokens

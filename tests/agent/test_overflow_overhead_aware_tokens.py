@@ -164,15 +164,15 @@ _TOOL_OVERHEAD_FLOOR = 5_000
 
 
 @pytest.mark.parametrize(
-    "make_error",
+    ("make_error", "trigger"),
     [
-        pytest.param(_make_413_error, id="413"),
-        pytest.param(_make_context_overflow_error, id="context_overflow"),
-        pytest.param(_make_prompt_too_long_error, id="prompt_too_long"),
-        pytest.param(_make_long_context_tier_error, id="long_context_tier_429"),
+        pytest.param(_make_413_error, "overflow_413", id="413"),
+        pytest.param(_make_context_overflow_error, "overflow_context", id="context_overflow"),
+        pytest.param(_make_prompt_too_long_error, "overflow_context", id="prompt_too_long"),
+        pytest.param(_make_long_context_tier_error, "tier_reduction", id="long_context_tier_429"),
     ],
 )
-def test_overflow_recovery_compresses_with_tool_overhead_counted(agent, make_error):
+def test_overflow_recovery_compresses_with_tool_overhead_counted(agent, make_error, trigger):
     """Each recovery path must pass approx_tokens that include tool-schema
     overhead: a messages-only estimate under-reports the request, so the
     compressor sizes its target wrong and the retry overflows again."""
@@ -210,6 +210,8 @@ def test_overflow_recovery_compresses_with_tool_overhead_counted(agent, make_err
     assert result["final_response"] == "Recovered"
     passed = [c.kwargs.get("approx_tokens") for c in mock_compress.call_args_list]
     assert passed, "recovery never invoked the compressor"
+    # Each recovery arm names itself: the compaction's log line and status say which arm fired.
+    assert {c.kwargs.get("trigger") for c in mock_compress.call_args_list} == {trigger}
     assert any(t is not None and t >= _TOOL_OVERHEAD_FLOOR for t in passed), (
         f"compressor got messages-only estimates {passed}; tool schemas were not counted"
     )

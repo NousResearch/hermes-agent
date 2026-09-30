@@ -527,6 +527,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            assert _kwargs.get("trigger") == "session_hygiene"
             assert self.compression_in_place is True
             assert self._session_db is fake_db
             assert self.platform == "gateway_hygiene"

@@ -1837,7 +1837,7 @@ def route_classified_error(
                 # from the engine's overflow guard (upstream PR #77169 review).
                 messages, system_message,
                 approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                task_id=effective_task_id, trigger="overflow",
+                task_id=effective_task_id, trigger="tier_reduction",
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:

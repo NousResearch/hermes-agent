@@ -13,6 +13,8 @@ def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
         {"role": "tool", "content": "fresh result", "tool_call_id": "2"},
     ]
 
+    triggers = []
+
     class Compressor:
         last_prompt_tokens = 100
         threshold_tokens = 50
@@ -26,7 +28,7 @@ def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
         compression_enabled=True,
         _clear_context_overflow_warn=lambda: None,
         _safe_print=lambda *_args: None,
-        _compress_context=lambda *_args, **_kwargs: (compressed, "system"),
+        _compress_context=lambda *_args, **kwargs: (triggers.append(kwargs.get("trigger")), (compressed, "system"))[1],
         _persist_user_message_idx=4,
     )
     monkeypatch.setattr(
@@ -54,6 +56,7 @@ def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
     )
 
     assert verdict.messages is compressed
+    assert triggers == ["post_tool_threshold"]
     assert verdict.current_turn_user_idx == 1
     assert agent._persist_user_message_idx == 1
 
@@ -123,7 +126,10 @@ def test_pre_api_compression_mid_turn_keeps_this_turns_tool_pair_on_the_wire():
         # The tool result tips the request over threshold until one compaction ran.
         return 200 if not compactions and any(m.get("role") == "tool" for m in messages or []) else 10
 
-    def _compress(messages, _system_message, **_kwargs):
+    triggers = []
+
+    def _compress(messages, _system_message, **kwargs):
+        triggers.append(kwargs.get("trigger"))
         compactions.append(len(messages))
         return list(messages[2:]), "compressed prompt"  # two historical rows summarized away
 
@@ -146,6 +152,7 @@ def test_pre_api_compression_mid_turn_keeps_this_turns_tool_pair_on_the_wire():
 
     assert result["final_response"] == "done"
     assert len(compactions) == 1
+    assert triggers == ["pre_api_pressure"]
     sent = agent.client.chat.completions.create.call_args_list[-1].kwargs["messages"]
     assert [(m["role"], m.get("tool_call_id")) for m in sent[-3:]] == [
         ("user", None), ("assistant", None), ("tool", "call_1"),

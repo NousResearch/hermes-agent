@@ -487,6 +487,7 @@ class GatewaySessionCommandsMixin:
 
         See #73503.
         """
+        from agent.conversation_compression import MANUAL_TRIGGER_REASON
         from gateway.run import _AGENT_PENDING_SENTINEL
 
         agent = self._cached_agent_for(session_key, lockless_fallback=True)
@@ -496,7 +497,9 @@ class GatewaySessionCommandsMixin:
         count_before = getattr(compressor, "compression_count", 0)
         try:
             await self._run_in_executor_with_context(
-                lambda: agent._compress_context([], "", force=True, task_id=session_id or "default"))
+                lambda: agent._compress_context(
+                    [], "", force=True, task_id=session_id or "default", trigger=MANUAL_TRIGGER_REASON,
+                ))
         except Exception as exc:
             return t("gateway.compress.failed", error=exc)
         if getattr(compressor, "compression_count", 0) > count_before:

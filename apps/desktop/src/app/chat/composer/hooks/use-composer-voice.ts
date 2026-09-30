@@ -153,7 +153,9 @@ export function useComposerVoice({
   const pendingTurnResponse = () => {
     const messages = $messages.get()
 
-    return collectUnspokenTurnSpeech(messages, resolveSpokenReply(sessionId, messages)?.id ?? null)
+    const response = collectUnspokenTurnSpeech(messages, resolveSpokenReply(sessionId, messages)?.id ?? null)
+
+    return response ? { ...response, turnKey: assistantTurnKey(sessionId, messages, response.id) } : null
   }
 
   const consumePendingResponse = () => {

@@ -27,7 +27,7 @@ export type ConversationStatus = 'idle' | 'listening' | 'transcribing' | 'thinki
 
 interface PendingVoiceResponse {
   id: string
-  turnKey: string
+  turnKey?: string
   pending: boolean
   text: string
 }
@@ -356,6 +356,7 @@ export function useVoiceConversation({
         // utterance callback transcribes and submits when they go quiet.
         speechSessionRef.current = null
         responseIdRef.current = null
+        responseTurnKeyRef.current = null
         spokenSourceLengthRef.current = 0
         setStatus('listening')
 
@@ -524,7 +525,7 @@ export function useVoiceConversation({
 
       const response = pendingResponse()
 
-      if (response && response.turnKey === responseTurnKey) {
+      if (response && (response.turnKey ?? response.id) === responseTurnKey) {
         if (response.text.length > spokenSourceLengthRef.current) {
           session.append(response.text.slice(spokenSourceLengthRef.current))
           spokenSourceLengthRef.current = response.text.length
@@ -924,7 +925,7 @@ export function useVoiceConversation({
       }
 
       if (response) {
-        openLiveSpeech(response.id, response.turnKey)
+        openLiveSpeech(response.id, response.turnKey ?? response.id)
 
         return
       }

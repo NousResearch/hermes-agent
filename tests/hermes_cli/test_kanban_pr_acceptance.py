@@ -41,6 +41,21 @@ def github(tmp_path, monkeypatch):
                     self.wfile.write(state["rules_denial"].encode())
                     return
                 value = [[]]
+            elif self.path.endswith("/protection"):
+                # The classic branch-protection REST endpoint requires the same paid
+                # plan as the rules API on a private repo: plan-limited by default
+                # whenever the rules API is (real GitHub behaviour), unless the test
+                # explicitly asks for it to be readable (`classic_protection_readable`).
+                if state.get("classic_protection_readable"):
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(
+                    b"Upgrade to GitHub Pro or make this repository public to enable this feature.")
+                return
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
@@ -255,21 +270,31 @@ def test_plan_limited_private_rules_use_verified_classic_protection(github):
     """Exercise the real gh subprocess, HTTP 403, SQLite receipt, and exact-head checks."""
     github["rules_denial"] = "Upgrade to GitHub Pro or make this repository public to enable this feature."
     with connect() as conn:
-        for scenario, changes, expected in (
-            ("success", {}, "success"),
-            ("failed check", {"conclusion": "failure"}, "failure"),
-            ("missing check", {"missing": True}, "missing"),
-            ("unreadable rulesets", {"rulesets_unknown": True}, "infra"),
-            ("rulesets exist", {"rulesets_count": 1}, "infra"),
-            ("no classic protection", {"protection": None}, "infra"),
-            ("rules change", {"ref_protection": {"requiredStatusChecks": []}}, "stale"),
-            ("head change", {"head_change": True}, "stale"),
-            ("head changes during refresh", {"refresh_head_change": True}, "stale"),
-            ("unknown 403", {"rules_denial": "Resource not accessible by integration"}, "auth"),
+        for scenario, changes, expected, expected_required in (
+            ("success", {}, "success", [{"context": "required", "app_id": 1}]),
+            ("failed check", {"conclusion": "failure"}, "failure", None),
+            ("missing check", {"missing": True}, "missing", None),
+            ("unreadable rulesets", {"rulesets_unknown": True}, "infra", None),
+            ("rulesets exist", {"rulesets_count": 1}, "infra", None),
+            # GraphQL null is ambiguous alone; the classic REST endpoint is ALSO
+            # plan-limited here (matching real GitHub), which independently proves
+            # classic protection cannot exist at all -> verified absence, fallback
+            # to all-reported-checks (no named required check to read at all).
+            ("no classic protection, also plan-limited", {"protection": None}, "success", []),
+            # The classic endpoint being genuinely READABLE but still returning no
+            # rule is the truly ambiguous case GraphQL null cannot resolve on its
+            # own -> stays infra, never silently treated as absence.
+            ("no classic protection, but endpoint readable",
+             {"protection": None, "classic_protection_readable": True}, "infra", None),
+            ("rules change", {"ref_protection": {"requiredStatusChecks": []}}, "stale", None),
+            ("head change", {"head_change": True}, "stale", None),
+            ("head changes during refresh", {"refresh_head_change": True}, "stale", None),
+            ("unknown 403", {"rules_denial": "Resource not accessible by integration"}, "auth", None),
         ):
             github.update({"conclusion": "success", "head": "a" * 40, "rules_denial":
                 "Upgrade to GitHub Pro or make this repository public to enable this feature."})
-            for key in ("missing", "rulesets_unknown", "rulesets_count", "protection", "ref_protection", "head_change", "refresh_head_change", "graphql_reads"):
+            for key in ("missing", "rulesets_unknown", "rulesets_count", "protection", "ref_protection",
+                        "head_change", "refresh_head_change", "graphql_reads", "classic_protection_readable"):
                 github.pop(key, None)
             github.update(changes)
             tid = kb.create_task(conn, title=scenario, completion_contract="acme/repo")
@@ -282,4 +307,5 @@ def test_plan_limited_private_rules_use_verified_classic_protection(github):
             assert (kb.get_task(conn, tid).status == "done") is ok
             if ok:
                 assert receipt["checks"][0]["head_sha"] == "a" * 40
-                assert receipt["required"] == [{"context": "required", "app_id": 1}]
+                if expected_required is not None:
+                    assert receipt["required"] == expected_required

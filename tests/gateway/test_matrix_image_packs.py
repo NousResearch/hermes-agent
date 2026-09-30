@@ -368,7 +368,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
     "change,expected",
     [
         ("changed-image", IMAGE_CHANGED),
-        ("removed-pack", {"error": "image URL is not MXC"}),
+        ("removed-pack", IMAGE_CHANGED),
         ("revoked", ADMISSION_CHANGED),
         ("replaced-client", OWNER_CHANGED),
         ("power", {"error": "Matrix bot cannot send m.sticker in this room"}),
@@ -545,7 +545,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
 @pytest.mark.parametrize(
     "change,expected",
     [
-        ("image", {"error": "image URL is not MXC"}),
+        ("image", IMAGE_CHANGED),
         ("reference", REFERENCE_CHANGED),
         ("conversation", CONVERSATION_CHANGED),
         ("owner", OWNER_CHANGED),

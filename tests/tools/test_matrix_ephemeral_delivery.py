@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -121,14 +122,20 @@ class _MissingEncryption(Exception):
     errcode = "M_NOT_FOUND"
 
 
+@pytest.mark.parametrize("gateway_loop", [False, True])
 @pytest.mark.parametrize("phase", ["resolution", "send", "revalidation"])
-def test_native_send_keeps_an_accepted_receipt_through_cancellation(phase):
+def test_native_send_keeps_an_accepted_receipt_through_cancellation(monkeypatch, phase, gateway_loop):
     """Caller cancellation stops a Matrix send before it starts. Once the send starts, the
-    send and its post-send check finish, so an accepted event is reported as sent."""
+    send and its post-send check finish, so an accepted event is reported as sent. This holds
+    when the caller awaits the send directly and when the send runs on the gateway loop."""
     from gateway.session_identity import replace_source
 
-    started = asyncio.Event()
-    release = asyncio.Event()
+    started = threading.Event()
+    release = threading.Event()
+
+    async def wait_for(event):
+        while not event.is_set():
+            await asyncio.sleep(0.01)
 
     class FakeAdapter:
         gateway_runner = None
@@ -141,35 +148,45 @@ def test_native_send_keeps_an_accepted_receipt_through_cancellation(phase):
             self.resolutions += 1
             if (phase, self.resolutions) in {("resolution", 1), ("revalidation", 2)}:
                 started.set()
-                await release.wait()
+                await wait_for(release)
             return replace_source(source, chat_type="group")
 
         async def send(self, chat_id, content, metadata=None):
             if phase == "send":
                 started.set()
-                await release.wait()
+                await wait_for(release)
             self.sent.append(chat_id)
             return SendResult(success=True, message_id="$accepted")
 
+    adapter = FakeAdapter()
+    loop = asyncio.new_event_loop() if gateway_loop else None
+    if loop is not None:
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+    runner = SimpleNamespace(_gateway_loop=loop)
+    monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (runner, adapter))
+
     async def scenario():
-        adapter = FakeAdapter()
         task = asyncio.ensure_future(
-            senders._matrix_send_core(adapter, "!room:example.org", "hello", [], None)
+            _send_matrix_via_adapter(SimpleNamespace(), "!room:example.org", "hello")
         )
-        await started.wait()
+        await wait_for(started)
         task.cancel()
         release.set()
         try:
-            result = await task
+            return await task
         except asyncio.CancelledError:
-            result = "cancelled"
-        return result, adapter.sent
+            return "cancelled"
 
+    try:
+        result = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    finally:
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
     accepted = {
         "success": True, "platform": "matrix", "chat_id": "!room:example.org",
         "message_id": "$accepted", "chat_type": "group",
     }
-    assert asyncio.run(scenario()) == (
+    assert (result, adapter.sent) == (
         ("cancelled", []) if phase == "resolution" else (accepted, ["!room:example.org"])
     )
 

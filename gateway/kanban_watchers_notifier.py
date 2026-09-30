@@ -562,6 +562,17 @@ def _note_durable_failure(conn: Any, sub: dict, event_id: Optional[int], reason:
                      sub["task_id"], exc_info=True)
 
 
+def _durable_failure_worker(board: Optional[str], sub: dict, event_id: Optional[int], reason: Any) -> None:
+    """Worker-thread operator alert for an unconfirmed durable delivery: opens its OWN board conn,
+    records the alert, closes — so the connection never crosses a thread boundary (the event-loop
+    thread awaits this via ``_to_thread_process_service``)."""
+    conn = _kbc().connect(board=board)
+    try:
+        _note_durable_failure(conn, sub, event_id, reason)
+    finally:
+        conn.close()
+
+
 def _durable_wake_text(ev: Any, sub: dict) -> str:
     """Per-event wake text for a durable delivery (one wake per event, not the batched synth). A
     ``notification`` carries the caller's free-form message; other kinds get a concise line."""
@@ -591,8 +602,9 @@ class _DurableDrainResult:
 
 
 async def deliver_durable_batch(
-    conn: Any, sub: dict, events: list, *, deliver_wake: Any, adapter: Any = None,
-    session_id: str = "", profile: Optional[str] = None, board: Optional[str] = None,
+    sub: dict, events: list, *, deliver_wake: Any, settle: Any, note_failure: Any,
+    adapter: Any = None, session_id: str = "", profile: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> _DurableDrainResult:
     """Deliver one claimed durable batch under the Option B fence (events in id ASC; the fence was
     set to ``events[0].id`` by :func:`claim_unseen_events_for_sub`). Per event, oldest first:
@@ -603,16 +615,18 @@ async def deliver_durable_batch(
     * a waking kind is woken with ``require_persist_ack=True`` and a stable idempotency key; on a
       TRUE persist-ack the fence CASes forward, on failure the fence is RETAINED (no rewind), an
       operator alert fires, and the drain STOPS (no auto-unsubscribe) — recovery replays the range.
+
+    ``settle(settled_event_id, next_pending_id)`` and ``note_failure(event_id, reason)`` are
+    awaitables that each perform ONE self-contained fence write (open+write+close on a worker
+    thread): no SQLite connection is held across the awaited ``deliver_wake`` or handed between
+    threads, which the default ``check_same_thread`` would reject.
     """
-    from hermes_cli import kanban_db_notify as _kbn
     result = _DurableDrainResult()
-    key = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-               thread_id=sub.get("thread_id") or "")
     ids = [ev.id for ev in events]
     for i, ev in enumerate(events):
         next_pending = ids[i + 1] if i + 1 < len(ids) else None
         if ev.kind not in _WAKE_KINDS:
-            _kbn.settle_notify_pending(conn, **key, settled_event_id=ev.id, next_pending_id=next_pending)
+            await settle(ev.id, next_pending)
             continue
         idem = _durable_idempotency_key(sub, ev.id, board)
         result.idempotency_key = idem
@@ -623,12 +637,12 @@ async def deliver_durable_batch(
             )
         except Exception as exc:
             # RETAIN the fence (no rewind): recovery replays [pending_event_id, last_event_id].
-            _note_durable_failure(conn, sub, ev.id, exc)
+            await note_failure(ev.id, exc)
             result.failed = True
             result.operator_alerted = True
             return result
         result.record_wake(ev.kind)
-        _kbn.settle_notify_pending(conn, **key, settled_event_id=ev.id, next_pending_id=next_pending)
+        await settle(ev.id, next_pending)
     result.settled = True
     return result
 
@@ -750,8 +764,6 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
-        # Carry each generic notification's free-form message verbatim into the wake turn
-        # (publish_task_notification); the writer guarantees a non-empty message.
         for _note in (str(_payload(ev, "message") or "").strip()
                       for ev in self.d["events"] if ev.kind == "notification"):
             if _note:
@@ -906,22 +918,28 @@ class _KanbanNotification:
         """GOV-F25 Option B per-event durable delivery. Wakes each claimed event with
         ``require_persist_ack`` + a stable idempotency key, CASing the ``pending_event_id`` fence
         forward only on a persist-ack; a non-waking kind settles without a wake, a failure retains
-        the fence (recovery replays). Opens its own board conn — the collect-phase conn is already
-        closed by the time delivery runs."""
-        self.build_wake_text()  # resolves self.session_key (+ self.wake_kinds) for the non-push wake
+        the fence (recovery replays). Every fence write opens its own board conn on a worker thread
+        (``_kanban_sub_op``); no connection is shared across the awaited wake."""
+        self.build_wake_text()
         session_id = self.session_key or self.sub["chat_id"]
         from gateway.wake import deliver_wake
-        conn = await asyncio.to_thread(partial(_kbc().connect, board=self.board_slug))
-        try:
-            async with self._owner_scope():
-                result = await deliver_durable_batch(
-                    conn, self.sub, list(self.d["events"]),
-                    deliver_wake=deliver_wake, adapter=self.adapter,
-                    session_id=session_id, profile=self.sub_profile or None,
-                    board=self.board_slug,
-                )
-        finally:
-            await asyncio.to_thread(conn.close)
+
+        async def _settle(settled_event_id: int, next_pending_id: Optional[int]) -> None:
+            await _to_thread_process_service(partial(
+                self.runner._kanban_sub_op, self.board_slug, "settle_notify_pending", self.sub,
+                settled_event_id=settled_event_id, next_pending_id=next_pending_id,
+            ))
+
+        async def _note_failure(event_id: int, reason: Any) -> None:
+            await _to_thread_process_service(
+                _durable_failure_worker, self.board_slug, self.sub, event_id, reason)
+
+        async with self._owner_scope():
+            result = await deliver_durable_batch(
+                self.sub, list(self.d["events"]), deliver_wake=deliver_wake, settle=_settle,
+                note_failure=_note_failure, adapter=self.adapter, session_id=session_id,
+                profile=self.sub_profile or None, board=self.board_slug,
+            )
         self._log_woke()
         # Unsubscribe on archive ONLY when the fence fully cleared (every event settled). A retained
         # fence (a failed / un-acked event) must keep the sub so recovery can replay — archiving it

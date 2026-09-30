@@ -4343,12 +4343,16 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived')) "
-            # GOV-F25 (Option B): never GC an event still inside a durable sub's un-acked
-            # pending_event_id fence range — deleting it would empty the promised recovery range
-            # while the fence stays set, stranding a never-deliverable durable event.
+            # GOV-F25 (Option B): never GC an event a durable sub still owes delivery on — that
+            # would break never-drop. Two cases: a fenced (already-claimed but un-acked) event in
+            # [pending_event_id, ...]; AND an event not yet claimed at all (fence NULL) that is
+            # still ahead of the sub's cursor. Deleting either would strand a never-deliverable
+            # durable event (the latter matters when the gateway is offline past retention before
+            # the sub's first claim).
             "AND NOT EXISTS (SELECT 1 FROM kanban_notify_subs s "
-            "WHERE s.task_id = task_events.task_id AND s.pending_event_id IS NOT NULL "
-            "AND task_events.id >= s.pending_event_id)", (cutoff,),
+            "WHERE s.task_id = task_events.task_id AND s.retry_policy = 'durable' "
+            "AND ((s.pending_event_id IS NOT NULL AND task_events.id >= s.pending_event_id) "
+            "OR (s.pending_event_id IS NULL AND task_events.id > s.last_event_id)))", (cutoff,),
         )
     return int(cur.rowcount or 0)
 

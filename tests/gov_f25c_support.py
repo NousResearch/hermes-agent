@@ -235,9 +235,19 @@ def _drain_with_persist(conn: sqlite3.Connection, sub: dict, *, persisted: bool)
         events = kbn.pending_events_for_sub(conn, **key, kinds=knw.TERMINAL_KINDS)
     else:
         events = _claim_durable_batch(conn, sub)
+
+    # Single-thread test conn: the fence-write callbacks run on this same connection (production
+    # routes them to a worker thread via _kanban_sub_op — see test_durable_real_deliver).
+    async def settle(settled_event_id, next_pending_id):
+        kbn.settle_notify_pending(conn, **key, settled_event_id=settled_event_id,
+                                  next_pending_id=next_pending_id)
+
+    async def note_failure(event_id, reason):
+        knw._note_durable_failure(conn, sub, event_id, reason)
+
     return asyncio.run(knw.deliver_durable_batch(
-        conn, sub, events, deliver_wake=_fake_persist_wake(persisted),
-        adapter=None, session_id="s", profile=None))
+        sub, events, deliver_wake=_fake_persist_wake(persisted), settle=settle,
+        note_failure=note_failure, adapter=None, session_id="s", profile=None))
 
 
 def _drain(conn: sqlite3.Connection, sub: dict, *, wake):

@@ -971,3 +971,76 @@ def test_ac_gov_f25_c_11(kanban_conn_factory):
     _deliver_true_receipt(first_conn, durable, event_id=e_first)
     assert _fence(first_conn, durable) is None
     assert [ev.id for ev in _fresh_claim(concurrent_conn, durable)] == [e_later]
+
+
+def test_durable_real_deliver(kanban_conn, monkeypatch):
+    """Persisted durable delivery through the real _KanbanNotification.deliver() drains two events
+    and clears the batch fence; each fence write uses its own worker-thread connection, never the
+    event-loop one."""
+    from gateway.kanban_watchers_notifier import _KanbanNotification
+    from gateway import kanban_watchers_notifier as knw
+    from gateway.run import GatewayRunner
+    from hermes_cli.kanban_db import publish_task_notification
+
+    conn = kanban_conn
+    task_id = _seed_task(conn)
+    durable = _add_durable_sub(conn, task_id)
+    publish_task_notification(conn, task_id, "one")
+    publish_task_notification(conn, task_id, "two")
+    e1, e2 = [ev.id for ev in _task_events(conn, task_id, kind="notification")]
+
+    waked = []
+
+    async def _persist_wake(adapter=None, *, text, session_id="", profile=None,
+                            idempotency_key=None, require_persist_ack=False, **kw):
+        waked.append(require_persist_ack)
+        return True
+
+    monkeypatch.setattr("gateway.wake.deliver_wake", _persist_wake)
+
+    row = next(r for r in kbn.list_notify_subs(conn, task_id=task_id)
+               if r["chat_id"] == durable["chat_id"])
+    old, cursor, events = kbn.claim_unseen_events_for_sub(
+        conn, task_id=task_id, platform=durable["platform"], chat_id=durable["chat_id"],
+        thread_id="", kinds=knw.TERMINAL_KINDS)
+    assert [ev.id for ev in events] == [e1, e2]
+    assert _fence(conn, durable) == e1
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {Platform.API_SERVER: RecordingAdapter()}
+    runner._profile_adapters = {}
+    runner.config = None
+    runner._primary_profile_name = "default"
+    runner._kanban_notifier_profile = "default"
+    runner._kanban_dispatcher_lock_handle = object()
+
+    d = {"sub": row, "old_cursor": old, "cursor": cursor, "events": events,
+         "task": kb.get_task(conn, task_id), "board": None}
+    asyncio.run(_KanbanNotification(runner, d, platform_cls=Platform, sub_fail_counts={}).deliver())
+
+    assert waked == [True, True]
+    assert _fence(conn, durable) is None
+
+
+def test_durable_gc_preserves_unclaimed_event(kanban_conn):
+    """An unclaimed durable notification (fence NULL) survives gc_events past retention and stays
+    claimable."""
+    from hermes_cli.kanban_db import publish_task_notification, gc_events
+
+    conn = kanban_conn
+    task_id = _seed_task(conn)
+    durable = _add_durable_sub(conn, task_id)
+    publish_task_notification(conn, task_id, "offline-while-pending")
+    (eid,) = [ev.id for ev in _task_events(conn, task_id, kind="notification")]
+
+    # Archive the task and age the event past retention WITHOUT ever claiming it (fence stays NULL).
+    conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (task_id,))
+    conn.execute("UPDATE task_events SET created_at = 0 WHERE id = ?", (eid,))
+    conn.commit()
+    assert _fence(conn, durable) is None
+
+    gc_events(conn, older_than_seconds=30 * 24 * 3600)
+
+    surviving = [ev.id for ev in _task_events(conn, task_id, kind="notification")]
+    assert eid in surviving
+    assert [ev.id for ev in _fresh_claim(conn, durable)] == [eid]

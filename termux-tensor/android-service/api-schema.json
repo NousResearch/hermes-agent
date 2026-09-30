@@ -1,0 +1,1 @@
+{"version":"2.0","base_path":"/v1","endpoints":{"health":"GET /health","models":"GET /models","chat":"POST /chat/completions","stop":"POST /stop"},"backends":["AUTO","CPU","GPU","NPU"],"default_backend":"AUTO","security":{"bind":"127.0.0.1","lan_exposure_default":false},"thermal_modes":["BALANCED","PERFORMANCE","COOL","BATTERY_SAVER"]}

@@ -1861,11 +1861,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
-            "Concisely describe this image in 2-4 sentences "
-            "(~200 Chinese characters or ~150 English words). "
+            "Concisely describe this image in 2-4 sentences in ENGLISH "
+            "(~150 English words). "
             "Cover the main subject, key visible text/data/code, and overall context. "
             "If it is a chart, diagram, or scientific figure, include the important "
-            "labels, legend, and key values. Skip decorative details."
+            "labels, legend, and key values. Skip decorative details. "
+            "Always respond in English regardless of any non-English text in the image."
         )
         enriched_parts = []
         for path in image_paths:

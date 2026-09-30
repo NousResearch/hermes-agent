@@ -1755,6 +1755,10 @@ export function appendGroupChatEntry(
   }
 
   updateGroupChat(group, (room: GroupChatRoom) => {
+    // Watermarks follow insertion order, while mirror merges sort by time.
+    // Collisions and clock rollback must not reorder local classic entries.
+    const latestAt = room.log.reduce((latest, candidate) => Math.max(latest, Number(candidate.at || 0)), 0)
+    entry.at = Math.max(entry.at, latestAt + 1)
     room.log.push(entry)
 
     return room

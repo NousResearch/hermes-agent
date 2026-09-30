@@ -108,6 +108,27 @@ describe('log window', () => {
   })
 })
 
+describe('classic reload continuity', () => {
+  it('keeps local insertion order through clock collisions and rollback', async () => {
+    const { chat } = await loadRoom()
+    vi.spyOn(Date, 'now').mockReturnValue(100)
+
+    try {
+      chat.$groupChats.set({ Core: { log: [
+        { at: 300, from: { kind: 'user', name: 'You' }, id: 'older', text: 'earlier', thread: 't' }
+      ], watermarks: {} } })
+      const first = chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'first', 't')
+      const second = chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'second', 't')
+      expect(first.at).toBeGreaterThan(300)
+      expect(second.at).toBeGreaterThan(first.at)
+      const reloaded = chat.mergeRemoteGroupChatSnapshotIntoRooms(chat.groupChatSyncSnapshot(), {})
+      expect(reloaded.Core.log.map(entry => entry.text)).toEqual(['earlier', 'first', 'second'])
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+})
+
 describe('room naming', () => {
   it('same-name dedup reserves suffix length at the 64-char cap', async () => {
     const { chat } = await loadRoom()

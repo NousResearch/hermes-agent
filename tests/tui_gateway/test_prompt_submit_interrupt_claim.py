@@ -1,6 +1,7 @@
-"""An interrupt that lands while ``prompt.submit`` is still persisting its prompt ends that submit's turn.
+"""An interrupt that lands while ``prompt.submit`` is still setting up its turn ends that submit's turn.
 
-``prompt.submit`` claims the turn (``running=True``) before it persists the prompt and publishes the dispatch thread.
+``prompt.submit`` claims the turn (``running=True``) before it persists the prompt, starts the agent build and
+publishes the dispatch thread.
 In that window ``_run_thread`` is the previous turn's finished thread, so ``session.interrupt`` from a second
 transport on the same session clears ``running``. A second ``prompt.submit`` can then claim the session again. The
 first submit must not run its prompt beside the second one, and must leave the second turn's state alone: its
@@ -43,8 +44,8 @@ _SECOND_TURN_KEPT = {
 }
 
 
-@pytest.mark.parametrize(("second_submit", "first_row_stored", "expected"), [
-    pytest.param(False, True, {
+@pytest.mark.parametrize(("block_in", "second_submit", "first_row_stored", "expected"), [
+    pytest.param("persist", False, True, {
         "first": {"status": "streaming"},
         "ran": [],
         "errors": [{"message": "Turn cancelled before the agent was ready"}],
@@ -53,23 +54,37 @@ _SECOND_TURN_KEPT = {
         "staged_user": None,
         "published_worker": None,
         "lease_released": False,
+        "written": ["first"],
     }, id="interrupt-only"),
-    pytest.param(True, True, {"first": 4125, **_SECOND_TURN_KEPT}, id="second-submit"),
-    pytest.param(True, False, {"first": 5072, **_SECOND_TURN_KEPT}, id="second-submit-first-store-unavailable"),
+    pytest.param("persist", True, True, {"first": 4125, **_SECOND_TURN_KEPT, "written": ["second"]},
+                 id="second-submit"),
+    pytest.param("persist", True, False, {"first": 5072, **_SECOND_TURN_KEPT, "written": ["second"]},
+                 id="second-submit-first-store-unavailable"),
+    pytest.param("build", True, True, {"first": 4125, **_SECOND_TURN_KEPT, "written": ["first", "second"]},
+                 id="second-submit-during-first-build"),
 ])
-def test_an_interrupt_during_submit_persist_ends_that_submit(monkeypatch, second_submit, first_row_stored, expected):
+def test_an_interrupt_during_submit_setup_ends_that_submit(
+    monkeypatch, block_in, second_submit, first_row_stored, expected
+):
     sid = "interrupt-claim-sid"
     session = _idle_session()
-    first_persisting, release_first = threading.Event(), threading.Event()
+    first_blocked, release_first = threading.Event(), threading.Event()
     second_published, finish_turns = threading.Event(), threading.Event()
-    ran, errors, workers, released = [], [], {}, []
+    ran, errors, workers, released, written = [], [], {}, [], []
+
+    def block_first(step):
+        if step == block_in and not first_blocked.is_set():
+            first_blocked.set()
+            assert release_first.wait(10)
+            return True
+        return False
 
     def ensure_row(_session):
-        if not first_persisting.is_set():
-            first_persisting.set()
-            assert release_first.wait(10)
-            return first_row_stored
-        return True
+        return first_row_stored if block_first("persist") else True
+
+    def write_row(_session, text, *_a):
+        written.append(text)
+        return {"role": "user", "content": text}
 
     def run_prompt_submit(_rid, _sid, sess, text, **_kw):
         ran.append(text)
@@ -79,11 +94,10 @@ def test_an_interrupt_during_submit_persist_ends_that_submit(monkeypatch, second
 
     monkeypatch.setattr(server, "_ensure_session_db_row", ensure_row)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
-    monkeypatch.setattr(
-        server, "_write_submit_user_row", lambda _session, text, *_a: {"role": "user", "content": text})
+    monkeypatch.setattr(server, "_write_submit_user_row", write_row)
     monkeypatch.setattr(server, "_release_active_session_slot", lambda _session: released.append(True))
     monkeypatch.setattr(server, "_run_prompt_submit", run_prompt_submit)
-    monkeypatch.setattr(server, "_start_agent_build", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_a, **_k: block_first("build"))
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *_a, **_k: False)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(
@@ -98,7 +112,7 @@ def test_an_interrupt_during_submit_persist_ends_that_submit(monkeypatch, second
     first = threading.Thread(target=submit, args=("first",))
     try:
         first.start()
-        assert first_persisting.wait(10)
+        assert first_blocked.wait(10)
         interrupted = server.handle_request(
             {"id": "interrupt", "method": "session.interrupt", "params": {"session_id": sid}})
         assert interrupted["result"] == {"status": "interrupted"}
@@ -121,6 +135,7 @@ def test_an_interrupt_during_submit_persist_ends_that_submit(monkeypatch, second
                 "staged_user": (session.get("_submit_user_row") or {}).get("content"),
                 "published_worker": next((text for text, w in workers.items() if w is published), None),
                 "lease_released": bool(released),
+                "written": written,
             }
     finally:
         release_first.set()

@@ -194,15 +194,14 @@ def ws_client_reason(ws, state) -> Optional[str]:
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
 
-# CORS: the documented loopback origins only (web-dashboard.md § CORS) — :9119, the dashboard Vite
-# dev server :5173, the desktop renderer's dev/preview servers :5174/:4174 (strictPort in
-# apps/desktop/vite.config.ts), the port actually bound, and the desktop dev renderer this backend was
-# spawned for. allow_origins=["*"] on 0.0.0.0 would let any website read/modify config and secrets;
-# ANY local port would let a page previewed from another port (an agent-built site, Live Server, a
-# compromised dev app) read index.html's session token and drive /api/pty. :3000 is deliberately
-# absent: nothing serves the dashboard there, and it is the default port of many local web apps and
-# dev servers. The WebSocket Origin gate applies the same rule (ws_host_origin_reason).
-_TRUSTED_LOCAL_ORIGIN_PORTS = frozenset({9119, 5173, 5174, 4174})
+# CORS: this backend's own loopback origin (the port actually bound) and the desktop dev renderer it
+# was spawned for, nothing else (web-dashboard.md § CORS). allow_origins=["*"] on 0.0.0.0 would let
+# any website read/modify config and secrets; ANY local port would let a page previewed from another
+# port (an agent-built site, Live Server, a compromised dev app) read index.html's session token and
+# drive /api/pty. No fixed dev port is trusted either: 3000, 5173 and 5174 are where most local dev
+# servers land (Vite takes 5174 when 5173 is busy). The dashboard's Vite dev server presents its own
+# page's upgrades with this backend's origin (web/vite.config.ts), so it needs no grant here. The
+# WebSocket Origin gate applies the same rule (ws_host_origin_reason).
 
 
 def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:
@@ -218,14 +217,13 @@ def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:
 
 
 def is_trusted_local_origin(origin: str, state) -> bool:
-    """True for a loopback origin on a documented dashboard port, *state*'s bound port, or the
-    desktop dev renderer this backend serves. Electron hands its ``HERMES_DESKTOP_DEV_SERVER`` down
-    to the backend it spawns, and worktree-ui-dev.md's ``hgui`` slots run that renderer on 5174+N."""
+    """True for a loopback origin on *state*'s bound port, or the desktop dev renderer this backend
+    serves. Electron hands its ``HERMES_DESKTOP_DEV_SERVER`` down to the backend it spawns, and
+    worktree-ui-dev.md's ``hgui`` slots run that renderer on 5174+N."""
     loopback = _loopback_origin(origin)
     if loopback is None:
         return False
-    port = loopback[2]
-    if port in _TRUSTED_LOCAL_ORIGIN_PORTS or port == getattr(state, "bound_port", None):
+    if loopback[2] == getattr(state, "bound_port", None):
         return True
     return _loopback_origin(os.environ.get("HERMES_DESKTOP_DEV_SERVER", "")) == loopback
 

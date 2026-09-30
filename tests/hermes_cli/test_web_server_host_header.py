@@ -171,6 +171,7 @@ class TestWebSocketHostOriginGuard:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
         monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
 
@@ -242,38 +243,90 @@ class TestWebSocketHostOriginGuard:
         assert exc.value.code == 4403
 
 
-@pytest.mark.parametrize("origin, trusted", [
-    ("http://localhost:3999", False),     # a page previewed from any other local port
-    ("http://localhost:3000", False),     # the usual dev-server / local web app port
-    ("http://127.0.0.1:5500", False),     # e.g. VS Code Live Server
-    ("http://127.0.0.1:5176", False),     # another hgui slot's renderer, not this backend's
-    ("http://localhost:9119", True),      # the bound port
-    ("http://localhost:5173", True),      # dashboard Vite dev server (proxies /api + ws)
-    ("http://127.0.0.1:5175", True),      # this backend's desktop renderer (hgui slot 1)
+_DESKTOP_PORT = 52817  # an ephemeral port, as a packaged Desktop backend binds
+
+
+@pytest.mark.parametrize("dev_server, bound_port, origin, trusted", [
+    # Packaged Desktop backend: file:// renderer, ephemeral port, no dev renderer.
+    (None, _DESKTOP_PORT, f"http://127.0.0.1:{_DESKTOP_PORT}", True),  # its own origin
+    (None, _DESKTOP_PORT, "http://localhost:5173", False),   # any Vite project's default port
+    (None, _DESKTOP_PORT, "http://127.0.0.1:5174", False),   # Vite's next port; the desktop dev port
+    (None, _DESKTOP_PORT, "http://127.0.0.1:4174", False),   # the desktop renderer's preview port
+    (None, _DESKTOP_PORT, "http://localhost:9119", False),   # the dashboard default, not bound here
+    (None, _DESKTOP_PORT, "http://localhost:3000", False),   # the usual local web app port
+    (None, _DESKTOP_PORT, "http://localhost:3999", False),   # a page previewed from any other port
+    (None, _DESKTOP_PORT, "http://127.0.0.1:5500", False),   # e.g. VS Code Live Server
+    # `hermes dashboard` on its default port.
+    (None, 9119, "http://localhost:9119", True),
+    (None, 9119, "http://127.0.0.1:5173", False),
+    # Backend spawned by a desktop dev build (hgui slot 1): that renderer, and only that one.
+    ("http://127.0.0.1:5175", _DESKTOP_PORT, "http://127.0.0.1:5175", True),
+    ("http://127.0.0.1:5175", _DESKTOP_PORT, "http://127.0.0.1:5174", False),  # another renderer
+    ("http://127.0.0.1:5175", _DESKTOP_PORT, "http://127.0.0.1:5176", False),
 ])
-def test_other_local_ports_can_neither_read_nor_open_a_socket(monkeypatch, origin, trusted):
+def test_other_local_ports_can_neither_read_nor_open_a_socket(
+        monkeypatch, dev_server, bound_port, origin, trusted):
     """A loopback page on another port is a different origin. It must get no CORS grant (else it
     reads index.html's session token) and no WebSocket upgrade (else it drives /api/pty with that
-    token) — only the documented dashboard origins, the bound port and the desktop renderer this
-    backend was spawned for (Electron passes HERMES_DESKTOP_DEV_SERVER down; worktree-ui-dev.md
-    runs slot N's Vite on 5174+N) are trusted."""
+    token). Only the bound port and the desktop renderer this backend was spawned for (Electron
+    passes HERMES_DESKTOP_DEV_SERVER down; worktree-ui-dev.md runs slot N's Vite on 5174+N) are
+    trusted — no fixed dev port, so a Vite app on 5173/5174 cannot reach a packaged backend."""
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
     import hermes_cli.web_server as ws
 
-    monkeypatch.setenv("HERMES_DESKTOP_DEV_SERVER", "http://127.0.0.1:5175")
+    if dev_server:
+        monkeypatch.setenv("HERMES_DESKTOP_DEV_SERVER", dev_server)
+    else:
+        monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", bound_port, raising=False)
+    monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+    client = TestClient(ws.app)
+
+    host = f"127.0.0.1:{bound_port}"
+    grant = client.get("/api/status", headers={"Host": host, "Origin": origin})
+    assert (grant.headers.get("access-control-allow-origin") == origin) is trusted
+
+    url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+    headers = {"Host": host, "Origin": origin}
+    if trusted:
+        with client.websocket_connect(url, headers=headers):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert exc.value.code == 4403
+
+
+@pytest.mark.parametrize("origin, trusted", [
+    ("http://127.0.0.1:9119", True),    # the dev page's own upgrade, as the proxy presents it
+    ("http://localhost:5173", False),   # the same upgrade without the rewrite
+    ("http://localhost:3000", False),   # another local page using the proxy: passed through as is
+])
+def test_dashboard_vite_dev_proxy_needs_no_trusted_dev_port(monkeypatch, origin, trusted):
+    """``web/`` `npm run dev` serves the SPA from Vite and proxies /api (ws: true) without changing
+    Host. The browser's Origin is Vite's, so web/vite.config.ts rewrites it to the backend's own
+    origin for upgrades from Vite's own page (Origin host == Host) and leaves every other page's
+    Origin alone. The backend then admits the dev page as same-origin with no :5173 grant."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import hermes_cli.web_server as ws
+
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
     monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
     monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     client = TestClient(ws.app)
 
-    grant = client.get("/api/status", headers={"Host": "127.0.0.1:9119", "Origin": origin})
-    assert (grant.headers.get("access-control-allow-origin") == origin) is trusted
-
     url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
-    headers = {"Host": "127.0.0.1:9119", "Origin": origin}
+    headers = {"Host": "localhost:5173", "Origin": origin}
     if trusted:
         with client.websocket_connect(url, headers=headers):
             pass

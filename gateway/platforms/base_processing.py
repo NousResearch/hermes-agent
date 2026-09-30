@@ -156,7 +156,7 @@ class BaseProcessingMixin:
         logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
                        self.name, session_key)
         self._active_sessions.pop(session_key, None)
-        self._pending_messages.pop(session_key, None)
+        self._discard_parked(self._pending_messages.pop(session_key, None))
         self._requeue_counts.pop(session_key, None)
         task = self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
@@ -232,7 +232,7 @@ class BaseProcessingMixin:
                         restore(session_key, reserved.event, self)
                 release_pending_dispatch_record(self, session_key, reserved)
         if discard_pending:
-            self._pending_messages.pop(session_key, None)
+            await self._complete_discarded(self._pending_messages.pop(session_key, None))
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)

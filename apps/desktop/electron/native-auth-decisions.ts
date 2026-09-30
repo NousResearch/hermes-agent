@@ -147,6 +147,10 @@ const OAUTH_NOT_SIGNED_IN_MESSAGE =
   'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
   'Open Settings → Gateway and click "Sign in", or switch back to Local.'
 
+const OAUTH_PASSWORD_BACKEND_MESSAGE =
+  'The remote gateway only offers username/password sign-in, which cannot persist an OAuth-mode connection. ' +
+  'Open Settings → Gateways, edit this connection, and switch its authentication to Session token.'
+
 const OAUTH_SESSION_EXPIRED_MESSAGE =
   'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
 
@@ -204,7 +208,24 @@ export function normalizeAdvertisedAuthProviders(providers: unknown): Advertised
  * an unreadable keychain otherwise look like a live oauth session and the
  * ticket mint 401s — that must send the user to Sign in, not "expired".
  */
-export function oauthTicketFailureAuthMessage(hasDecryptableNativeSession: boolean): string {
+export function oauthTicketFailureAuthMessage(
+  hasDecryptableNativeSession: boolean,
+  advertisedProviders?: unknown
+): string {
+  // OAuth mode against a password-only backend can never persist: sign-in
+  // succeeds against the password gate, but nothing OAuth-redeemable is
+  // stored, so the next boot loops straight back to "not signed in".
+  // Pointing the user at "Sign in" again re-triggers that loop, so when the
+  // gateway's advertised providers are all password-based (the same
+  // oauthGuardMayHardFail seam the pre-flight guard uses), the message must
+  // name the mismatch and the real fix: switching the connection's auth
+  // mode. Mixed/unknown provider lists keep the strict OAuth messages — the
+  // caller's probe is best-effort, and a wrong "switch auth mode" hint on a
+  // genuine OAuth outage would be worse than the loop.
+  if (advertisedProviders !== undefined && !oauthGuardMayHardFail(advertisedProviders)) {
+    return OAUTH_PASSWORD_BACKEND_MESSAGE
+  }
+
   return hasDecryptableNativeSession ? OAUTH_SESSION_EXPIRED_MESSAGE : OAUTH_NOT_SIGNED_IN_MESSAGE
 }
 

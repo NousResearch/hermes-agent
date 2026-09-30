@@ -124,4 +124,47 @@ describe('resolveRemoteOauthTicket', () => {
     }
   })
 
+  it('names the OAuth/basic-auth mismatch when the gateway only advertises password providers', async () => {
+    // The pre-mint auth-provider probe is best-effort copy input: when it
+    // reports a password-only backend, a rejected mint must point at the
+    // auth-mode switch instead of the "Sign in" loop (#105632).
+    const cause = Object.assign(new Error('ticket request failed'), { statusCode: 401 })
+    const mismatch = /only offers username\/password sign-in[\s\S]*Session token/
+
+    const failure = await resolveRemoteOauthTicket(
+      'https://gateway.example.com',
+      {},
+      {
+        hasNativeSession: () => true,
+        mintGatewayWsTicket: async () => {
+          throw cause
+        },
+        advertisedAuthProviders: async () => [{ name: 'basic', supports_password: true }]
+      }
+    ).catch((error: Error) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error & { isReauthRequired?: boolean }).isReauthRequired).toBe(true)
+    expect((failure as Error).message).toMatch(mismatch)
+
+    // A mixed provider list keeps the strict OAuth copy, and a throwing
+    // probe must never change the auth-failure classification.
+    const strict = await resolveRemoteOauthTicket(
+      'https://gateway.example.com',
+      {},
+      {
+        hasNativeSession: () => false,
+        mintGatewayWsTicket: async () => {
+          throw cause
+        },
+        advertisedAuthProviders: async () => {
+          throw new Error('providers probe unreachable')
+        }
+      }
+    ).catch((error: Error) => error)
+
+    expect(strict).toBeInstanceOf(Error)
+    expect((strict as Error).message).toMatch(/not signed in/)
+    expect((strict as Error & { isReauthRequired?: boolean }).isReauthRequired).toBe(true)
+  })
 })

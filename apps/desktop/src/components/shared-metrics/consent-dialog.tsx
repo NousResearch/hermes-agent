@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
+import { $tourActive } from '@/lib/tour/tour-active'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -57,6 +58,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const onboarding = useStore($desktopOnboarding)
   const surfaces = useStore($onboardingSurfaces)
   const guidedSettled = useStore($guidedOnboardingSettled)
+  const tourActive = useStore($tourActive)
   const setupProfile = useStore($setupProfileName)
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
@@ -64,14 +66,15 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // Never over the provider picker, the free-tier welcome or the guided chat:
+  // Never over the provider picker, the free-tier welcome or the guided chat, or a tour on screen:
   // the question belongs to the moment after setup.
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
     !onboarding.freeTierReady &&
     surfaces.size === 0 &&
-    guidedSettled
+    guidedSettled &&
+    !tourActive
 
   // The setup profile only hosts the welcome chat; its answer would count for nobody.
   const inSetupProfile = setupProfile !== null && normalizeProfileKey(setupProfile) === normalizeProfileKey(profile)

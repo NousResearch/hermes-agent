@@ -77,6 +77,8 @@ export interface TourHost {
   navigate?: (to: string) => void
   /** Reveal a desktop pane by name. */
   revealPane?: (pane: string) => void
+  /** The tour ended, however it ended (Esc, the ✕, an overlay click, the last step). */
+  onEnd?: () => void
 }
 
 /** A normalized action. `kind` is the verb; the rest is per-verb payload. */
@@ -328,6 +330,7 @@ export function runTourEngine(
         holder.driver = undefined
         holder.release?.()
         holder.release = undefined
+        host?.onEnd?.()
 
         if (origin !== undefined && host?.navigate && host.currentRoute?.() !== origin) {
           host.navigate(origin)

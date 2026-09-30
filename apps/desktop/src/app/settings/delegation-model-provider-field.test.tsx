@@ -11,13 +11,13 @@ beforeAll(() => {
 
 const getGlobalModelOptions = vi.fn()
 
-vi.mock('@/hermes', () => ({
-  getGlobalModelOptions: () => getGlobalModelOptions()
+vi.mock('@/hermes', async () => ({
+  ...(await vi.importActual('@/api/client')),
+  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args)
 }))
 
-const { DelegationModelProviderField, INHERIT_VALUE, MODEL_ONLY_VALUE } = await import(
-  './delegation-model-provider-field'
-)
+const { DelegationModelProviderField, INHERIT_VALUE, MODEL_ONLY_VALUE } =
+  await import('./delegation-model-provider-field')
 
 beforeEach(() => {
   getGlobalModelOptions.mockResolvedValue({
@@ -120,7 +120,9 @@ describe('DelegationModelProviderField', () => {
     const inheritOption = await screen.findByRole('option', { name: 'Inherit from main agent' })
     fireEvent.click(inheritOption)
 
-    expect(onChange).toHaveBeenCalledWith({ model: '', provider: '' })
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(onChange).toHaveBeenCalledWith({ model: '', provider: '', resetDirectEndpoint: true })
   })
 
   it('switching provider resets model and emits atomically', async () => {
@@ -134,8 +136,9 @@ describe('DelegationModelProviderField', () => {
     const anthropicOption = await screen.findByRole('option', { name: 'Anthropic' })
     fireEvent.click(anthropicOption)
 
-    // Should switch provider to anthropic and clear model because gpt-5.1 is not an anthropic model
-    expect(onChange).toHaveBeenCalledWith({ model: '', provider: 'anthropic' })
+    // An unfinished provider selection is not an intentional provider-only route.
+    expect(onChange).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('switching to Custom model preserves draft model with empty provider', async () => {
@@ -152,6 +155,8 @@ describe('DelegationModelProviderField', () => {
 
     fireEvent.click(customModelOption)
 
-    expect(onChange).toHaveBeenCalledWith({ model: 'special-model', provider: '' })
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(onChange).toHaveBeenCalledWith({ model: 'special-model', provider: '', resetDirectEndpoint: true })
   })
 })

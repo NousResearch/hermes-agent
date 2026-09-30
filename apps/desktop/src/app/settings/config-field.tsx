@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -10,7 +11,7 @@ import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
-import { DelegationModelProviderField } from './delegation-model-provider-field'
+import { DelegationModelProviderField, type DelegationModelProviderValue } from './delegation-model-provider-field'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow, ToggleRow } from './primitives'
@@ -33,6 +34,8 @@ export function ConfigField({
   onChange,
   descriptionExtra,
   delegationProvider,
+  delegationBaseUrl,
+  scope,
   onDelegationChange
 }: {
   schemaKey: string
@@ -43,7 +46,9 @@ export function ConfigField({
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
   delegationProvider?: string
-  onDelegationChange?: (model: string, provider: string) => void
+  delegationBaseUrl?: string
+  scope?: ProfileScope
+  onDelegationChange?: (next: DelegationModelProviderValue) => void
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -115,11 +120,11 @@ export function ConfigField({
   if (schemaKey === 'delegation.model') {
     return wideRow(
       <DelegationModelProviderField
+        baseUrl={delegationBaseUrl}
         model={String(value ?? '')}
-        onChange={({ model: nextModel, provider: nextProvider }) => {
-          onDelegationChange?.(nextModel, nextProvider)
-        }}
+        onChange={next => onDelegationChange?.(next)}
         provider={delegationProvider ?? ''}
+        scope={scope}
       />
     )
   }

@@ -1398,7 +1398,16 @@ export const zh = defineLocale({
       delegationInherit: '继承主智能体配置',
       delegationModelOnly: '自定义模型（沿用主智能体凭证）',
       delegationProviderSelectLabel: '子智能体提供商',
-      delegationModelSelectLabel: '子智能体模型'
+      delegationModelSelectLabel: '子智能体模型',
+      delegationDirect: '直接端点覆盖',
+      delegationCustomProvider: '自定义提供商...',
+      delegationCustomProviderLabel: '自定义子智能体提供商',
+      delegationParentModel: '使用主智能体模型',
+      delegationParentModelWarning: '所选提供商必须支持主智能体模型。模型不兼容时，仅覆盖提供商的路由可能失败。',
+      delegationDirectActive: '直接端点已启用，优先于保存的提供商。选择此模式会保留其端点和凭证。',
+      delegationDirectClear: '应用此路由会清除直接端点及其保存的密钥。其他请求设置保持不变。',
+      delegationCatalogFailed: '模型目录不可用。请手动输入提供商和模型，或重试。',
+      delegationDraftHint: '应用前，更改仅保留在本地。'
     },
     hudModifier: {
       title: '轻按唤出 HUD',

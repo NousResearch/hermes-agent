@@ -1453,7 +1453,19 @@ export const en: Translations = {
       delegationInherit: 'Inherit from main agent',
       delegationModelOnly: 'Custom model (use parent credentials)',
       delegationProviderSelectLabel: 'Subagent Provider',
-      delegationModelSelectLabel: 'Subagent Model'
+      delegationModelSelectLabel: 'Subagent Model',
+      delegationDirect: 'Direct endpoint override',
+      delegationCustomProvider: 'Custom provider...',
+      delegationCustomProviderLabel: 'Custom subagent provider',
+      delegationParentModel: 'Use parent model',
+      delegationParentModelWarning:
+        'The chosen provider must support the parent model. A provider-only route can fail if the model is incompatible.',
+      delegationDirectActive:
+        'A direct endpoint is active and takes precedence over the saved provider. Its endpoint and credentials are kept while this mode is selected.',
+      delegationDirectClear:
+        'Applying this route clears the direct endpoint and its stored key. Other request settings are kept.',
+      delegationCatalogFailed: 'Model catalog unavailable. Enter a provider and model manually, or retry.',
+      delegationDraftHint: 'Changes stay local until applied.'
     },
     hudModifier: {
       title: 'Tap to summon HUD',

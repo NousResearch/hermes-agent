@@ -70,7 +70,7 @@ Session facts (added by the builder):
 
 Host facts (from `scripts/host_facts.py`, filled in when this skill loads):
 
-!`"${HERMES_PYTHON}" scripts/host_facts.py`
+!`${HERMES_PYTHON} scripts/host_facts.py`
 
 | Field | Meaning | How to use it |
 |---|---|---|

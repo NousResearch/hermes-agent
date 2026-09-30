@@ -284,7 +284,7 @@ Skill 加载时，激活消息会将 skill 目录的绝对路径以 `[Skill dire
 |---|---|
 | `${HERMES_SKILL_DIR}` | skill 目录的绝对路径 |
 | `${HERMES_SESSION_ID}` | 当前会话 ID（若无会话则保留原样） |
-| `${HERMES_PYTHON}` | 包管理器为 Hermes 自身依赖环境选定的 Python 解释器的绝对路径（可导入 Hermes 的代码和依赖） |
+| `${HERMES_PYTHON}` | 已做 shell 转义的命令前缀，以 Hermes 运行自身的方式运行 Python 脚本：本安装的解释器、当前代码和依赖，并关闭按需安装。不要加引号：`${HERMES_PYTHON} scripts/tool.py` |
 
 因此，SKILL.md 可以直接告知 agent 运行内置脚本：
 

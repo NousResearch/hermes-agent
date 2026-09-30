@@ -293,6 +293,50 @@ class _ResponsesStream:
             history.append({"role": "assistant", "content": text})
         self.persist_snapshot(self.terminal_envelope("incomplete", items), history=history)
 
+    async def finalize_detached(self, agent_task) -> None:
+        """Background finalizer for a disconnected but retrievable (``store=True``) turn: await the
+        agent to completion, then upsert a COMPLETE snapshot under the same ``response_id`` so
+        ``GET /v1/responses/{id}`` and ``previous_response_id`` chaining return the finished reply
+        instead of the ``incomplete`` disconnect snapshot. Best-effort — on any failure the
+        incomplete snapshot persisted at disconnect still stands. Mirrors the non-streaming
+        completion in ``_handle_responses`` (no SSE writes; the client is gone). Persistence goes
+        through ``persist_snapshot`` so it reuses the request-scoped ``response_store`` captured in
+        __init__ rather than re-resolving it outside the request's profile scope."""
+        try:
+            result, usage = await agent_task
+        except Exception as exc:  # noqa: BLE001 — turn died after disconnect; incomplete stands
+            logger.info("Detached responses turn %s failed after disconnect: %s", self.response_id, exc)
+            return
+        try:
+            api = self._api
+            self.usage = usage or self.usage
+            final_response = api._resolve_media_to_data_urls(
+                result.get("final_response", "")) if isinstance(result, dict) else ""
+            if not final_response:
+                err = result.get("error", "(No response generated)") if isinstance(result, dict) else "(No response generated)"
+                final_response = api._redact_api_error_text(err)
+            full_history = self.adapter._build_response_conversation_history(
+                self.conversation_history, self.user_message, result, final_response,
+                tool_output_max_chars=self.adapter._history_tool_output_max_chars)
+            start_index = self.adapter._response_messages_turn_start_index(
+                self.conversation_history, self.user_message, result)
+            sid = result.get("session_id") if isinstance(result, dict) else None
+            env = {
+                "id": self.response_id, "object": "response", "status": "completed",
+                "created_at": self.created_at, "model": self.model,
+                "output": self.adapter._extract_output_items(result, start_index=start_index),
+                "usage": api._responses_usage_payload(self.usage)}
+            self.persist_snapshot(
+                env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None)
+            self.terminal_snapshot_persisted = True
+            logger.info(
+                "Detached responses turn %s finished; stored snapshot upgraded to completed",
+                self.response_id)
+        except Exception as exc:  # noqa: BLE001 — never let a background finalizer crash the loop
+            logger.error(
+                "Failed to upgrade stored snapshot for detached responses turn %s: %s",
+                self.response_id, exc)
+
     async def emit_created(self) -> None:
         env = self.envelope("in_progress")
         env["output"] = []
@@ -784,7 +828,12 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key,
+                # Only an explicit X-Hermes-Session-Id turn is resumable (history loads from
+                # state.db and session_history_delivery="1"); on disconnect let it finish so the
+                # reply is there when the client reconnects. Fingerprint-derived headerless turns
+                # keep the interrupt-on-disconnect behavior (no client will reload them).
+                detach_on_disconnect=bool(provided_session_id))
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -886,9 +935,11 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None) -> "web.StreamResponse":
+        gateway_session_key: str = None, detach_on_disconnect: bool = False) -> "web.StreamResponse":
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
-        disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
+        disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled —
+        unless ``detach_on_disconnect`` (a resumable X-Hermes-Session-Id turn), where the turn is
+        instead left to finish in the background so its reply persists to session history."""
         from gateway.platforms.api_server import (
             _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
@@ -963,8 +1014,21 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
-            logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+            if detach_on_disconnect and not agent_task.done():
+                # #resumable-turn: a client that sent X-Hermes-Session-Id (mobile app, Telegram)
+                # re-fetches session history on reconnect, so let the turn FINISH in the background
+                # and persist its assistant row to state.db instead of interrupting it — the reply
+                # is waiting when the client swipes back, rather than being lost mid-generation.
+                # _track_background_task holds a strong ref so asyncio can't GC the detached task
+                # mid-flight; its done-callback drops it. Processes are NOT reaped (the turn's tools
+                # must run to completion).
+                self._track_background_task(agent_task)
+                logger.info(
+                    "SSE client disconnected; detached agent task %s to finish "
+                    "(resumable session persists on completion)", completion_id)
+            else:
+                await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
+                logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
         except Exception:
             # Agent crashed mid-stream: an error chunk beats a TransferEncodingError.
             import traceback as _tb
@@ -1009,9 +1073,23 @@ class OpenAICompatRoutesMixin:
             else:
                 await st.emit_completed()
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            st.persist_incomplete_if_needed()
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
-            logger.info("SSE client disconnected; interrupted agent task %s", response_id)
+            if store and not st.terminal_snapshot_persisted:
+                # #resumable-turn parity with chat completions: a store=True response is
+                # retrievable later (GET /v1/responses/{id}, previous_response_id chaining), so
+                # persist an incomplete snapshot as a fallback and let the turn FINISH in the
+                # background — its finalizer awaits the agent and upgrades the stored snapshot to
+                # completed (the agent also persists to the gateway session). Processes are NOT
+                # reaped so the turn's tools run to completion. Non-stored turns keep the
+                # interrupt-on-disconnect behavior (nothing could retrieve them anyway).
+                st.persist_incomplete_if_needed()
+                self._track_background_task(asyncio.ensure_future(st.finalize_detached(agent_task)))
+                logger.info(
+                    "SSE client disconnected; detached responses turn %s to finish "
+                    "(stored snapshot upgrades on completion)", response_id)
+            else:
+                st.persist_incomplete_if_needed()
+                await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
+                logger.info("SSE client disconnected; interrupted agent task %s", response_id)
         except asyncio.CancelledError:
             # Server-side cancellation (shutdown, timeout): persist incomplete, then re-raise.
             st.persist_incomplete_if_needed()

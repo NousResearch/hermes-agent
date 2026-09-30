@@ -21,7 +21,7 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { $showReasoning } from '@/store/reasoning-disclosure'
-import { $currentModel } from '@/store/session'
+import { $currentModel, $currentProvider } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
@@ -57,6 +57,9 @@ const HintText: FC<{ children: ReactNode }> = ({ children }) => (
   <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 flex-1 truncate')}>{children}</span>
 )
 
+// Provider slug of the managed local server (inventory.py's _local_runtime_row).
+const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
 /** Renderer-side load synthesis: poll the local-models status while a turn
  * is busy with NO progress frame from the backend. The backend's wait loop
  * only narrates the MAIN chat request — a model load triggered while the
@@ -66,11 +69,13 @@ const HintText: FC<{ children: ReactNode }> = ({ children }) => (
  * the same SSE snapshot, so this bar carries the identical percent. */
 function useLocalModelLoad(active: boolean): (LocalModelLoadProgress & { model: string }) | null {
   const model = useStore($currentModel)
+  const provider = useStore($currentProvider)
   const [progress, setProgress] = useState<(LocalModelLoadProgress & { model: string }) | null>(null)
 
-  // Behind the --local launch flag: without it, no status polling and no
-  // load bar (the local server can't be the current provider anyway).
-  const enabled = $localModelsEnabled.get()
+  // Behind the --local launch flag, and only while the managed local server
+  // is the current provider: a remote model never waits on a local load, so
+  // busy turns on it must not poll.
+  const enabled = $localModelsEnabled.get() && provider === LOCAL_PROVIDER_SLUG
 
   useEffect(() => {
     if (!enabled || !active || !model) {

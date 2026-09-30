@@ -242,7 +242,7 @@ export function ModelCatalogMenu({
   // (it unmounts on close); errors read as "nothing loading" — remote-only
   // installs have no local-models routes.
   const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
-  const localStatus = useLocalModelsStatus(owner, localModelsEnabled)
+  const localStatus = useLocalModelsStatus(owner, localModelsEnabled, true)
 
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 

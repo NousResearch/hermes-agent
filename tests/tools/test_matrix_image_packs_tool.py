@@ -34,6 +34,7 @@ async def test_registry_dispatch_preserves_owner_loop_and_current_route(action, 
         thread_id="$root",
         message_id="$reply",
         transport_adapter=adapter,
+        transport_loop=loop,
     )
     try:
         result = await asyncio.to_thread(

@@ -6,9 +6,12 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
+from copy import deepcopy
 from collections import OrderedDict
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,7 +27,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -59,9 +62,20 @@ _TAPBACK_CODES = {*range(2000, 2006), *range(3000, 3006)}
 # Keep both and classify receipt-only updates before routing.
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 _WEBHOOK_EVENTS = ("new-message", "updated-message")
-_RECEIPT_FIELDS = ("dateRead", "dateDelivered", "isRead", "isDelivered")
-_INBOUND_COALESCE_SECONDS = 3.5
 _HYDRATE_RETRY_DELAYS = (0.0, 0.05, 0.15)
+_INBOUND_CACHE_SIZE = 2000
+_INBOUND_CACHE_TTL = 300
+
+
+@dataclass
+class _InboundMessage:
+    record: Dict[str, Any] = field(default_factory=dict)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+    touched: float = field(default_factory=time.monotonic)
+    accepted: bool = False
+    delivered: set[str] = field(default_factory=set)
+    downloaded: Dict[str, tuple[str, str]] = field(default_factory=dict)
 
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
@@ -137,9 +151,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
-        self._inbound_dedup = MessageDeduplicator(max_size=2000, ttl_seconds=300)
-        self._pending_inbound_records: Dict[str, Dict[str, Any]] = {}
-        self._inbound_coalesce_seconds = _INBOUND_COALESCE_SECONDS
+        self._inbound_messages: OrderedDict[str, _InboundMessage] = OrderedDict()
+        self._inbound_routing_lock = asyncio.Lock()
+        self._inbound_chat_tails: Dict[str, asyncio.Future] = {}
 
     # --- API helpers ---
 
@@ -389,16 +403,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
         with suppress(Exception):
-            payload = await self._api_post("/api/v1/chat/query", {"limit": 100, "offset": 0})
-            for chat in payload.get("data", []) or []:
-                if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
-                    continue
-                if guid := chat.get("guid") or chat.get("chatGuid"):
-                    self._guid_cache[target] = guid
-                    while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                        self._guid_cache.popitem(last=False)
-                return guid
+            offset = 0
+            seen = set()
+            while True:
+                payload = await self._api_post("/api/v1/chat/query", {"limit": 100, "offset": offset})
+                chats = payload.get("data", []) or []
+                for chat in chats:
+                    guid = chat.get("guid") or chat.get("chatGuid")
+                    if (chat.get("chatIdentifier") or chat.get("identifier")) == target and guid:
+                        self._remember_chat_guid(target, guid)
+                        return guid
+                page_ids = {chat.get("guid") or chat.get("chatGuid") for chat in chats}
+                if len(chats) < 100 or page_ids <= seen:
+                    break
+                seen.update(page_ids)
+                offset += len(chats)
         return None
+
+    def _remember_chat_guid(self, address: str, guid: str) -> None:
+        self._guid_cache[address] = guid
+        self._guid_cache.move_to_end(address)
+        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+            self._guid_cache.popitem(last=False)
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
         """Create a new chat by sending the first message to *address*."""
@@ -571,25 +597,45 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload_str = (form.get("payload") or form.get("data") or form.get("message") or [""])[0]
             return json.loads(payload_str) if payload_str else {}
 
-    async def _collect_attachments(self, record: Dict[str, Any]):
-        """Download inbound attachments; returns (media_urls, media_types, msg_type)."""
+    async def _collect_attachments(self, record: Dict[str, Any], *,
+                                   state: Optional[_InboundMessage] = None):
+        """Download inbound attachments and report the GUIDs included in this delivery."""
         media_urls: List[str] = []
         media_types: List[str] = []
+        collected: set[str] = set()
         msg_type = MessageType.TEXT
         for att in record.get("attachments") or []:
+            if not isinstance(att, dict):
+                continue
             att_guid = att.get("guid", "")
-            cached = await self._download_attachment(att_guid, att) if att_guid else None
+            if not att_guid or (state is not None and att_guid in state.delivered):
+                continue
+            if att.get("transferState") not in (None, 5, "5"):
+                continue
+            mime = (att.get("mimeType") or "").lower()
+            prior = state.downloaded.get(att_guid) if state is not None else None
+            cached = prior[0] if prior and prior[1] == mime else None
+            if not cached:
+                for delay in _HYDRATE_RETRY_DELAYS:
+                    if delay:
+                        await asyncio.sleep(delay)
+                    cached = await self._download_attachment(att_guid, att)
+                    if cached:
+                        break
             if not cached:
                 continue
             mime = (att.get("mimeType") or "").lower()
+            if state is not None:
+                state.downloaded[att_guid] = cached, mime
             media_urls.append(cached)
             media_types.append(mime)
+            collected.add(att_guid)
             is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
             msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice
                         else MessageType.VIDEO if mime.startswith("video/") else MessageType.DOCUMENT)
         if len(media_urls) > 1 and any(m.split("/")[0] == "image" for m in media_types):  # any image → PHOTO
             msg_type = MessageType.PHOTO
-        return media_urls, media_types, msg_type
+        return media_urls, media_types, msg_type, collected
 
     def _webhook_token(self, request) -> Optional[str]:
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
@@ -609,7 +655,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chat_identifier = self._value(
             record.get("chatIdentifier"), record.get("identifier"),
             payload.get("chatIdentifier"), payload.get("identifier"),
-            first_chat.get("chatIdentifier"), first_chat.get("identifier"), first_chat.get("displayName"))
+            first_chat.get("chatIdentifier"), first_chat.get("identifier"))
         handle = record.get("handle")
         sender = (self._value(handle.get("address") if isinstance(handle, dict) else None, record.get("sender"),
                               record.get("from"), record.get("address")) or chat_identifier or chat_guid)
@@ -636,11 +682,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         """Collapse BlueBubbles DM GUID aliases onto the address while preserving group GUIDs."""
         if is_group:
             return chat_guid
-        for candidate in (chat_identifier, sender):
-            if candidate and ";" not in candidate:
-                return candidate
-        if chat_guid and ";-;" in chat_guid:
-            return chat_guid.split(";-;", 1)[-1]
+        address = chat_guid.split(";-;", 1)[-1] if chat_guid and ";-;" in chat_guid else None
+        if chat_identifier and (chat_identifier in (sender, address)
+                                or _PHONE_RE.fullmatch(chat_identifier) or _EMAIL_RE.fullmatch(chat_identifier)):
+            return chat_identifier
+        if sender and ";" not in sender:
+            return sender
+        if address:
+            return address
         return chat_guid
 
     @staticmethod
@@ -649,75 +698,183 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_receipt_only_update(event_type: str, record: Dict[str, Any]) -> bool:
-        return event_type == "updated-message" and any(record.get(field) for field in _RECEIPT_FIELDS)
+        # Receipt snapshots can also carry previously unseen content and completed attachments.
+        return (event_type == "updated-message"
+                and not any(record.get(key) for key in ("text", "message", "body", "attachments")))
 
-    async def _hydrate_chats(self, message_id: Optional[str]) -> list:
-        """Fetch missing ``chats[]`` for a message GUID with bounded in-request retries.
+    async def _hydrate_inbound_record(self, message_id: Optional[str]) -> Dict[str, Any]:
+        """Fetch routing and attachment relationships with bounded in-request retries.
 
         BlueBubbles does not retry failed webhook POSTs, so transient API/relationship lag has to be
         absorbed before this request is acknowledged.
         """
         if not message_id or not self.client:
-            return []
+            return {}
         last_error: Optional[Exception] = None
+        last_record: Dict[str, Any] = {}
         for delay in _HYDRATE_RETRY_DELAYS:
             if delay:
                 await asyncio.sleep(delay)
             try:
-                data = (await self._api_get(f"/api/v1/message/{quote(message_id, safe='')}")).get("data")
+                data = (await self._api_get(
+                    f"/api/v1/message/{quote(message_id, safe='')}?with=chats,attachments")).get("data")
                 last_error = None
             except Exception as exc:
                 last_error = exc
                 continue
             if isinstance(data, dict):
+                last_record = data
                 chats = [chat for chat in (data.get("chats") or []) if isinstance(chat, dict)]
-                if chats:
-                    return chats
+                if chats and all(att.get("transferState") in (None, 5, "5")
+                                 for att in (data.get("attachments") or []) if isinstance(att, dict)):
+                    return data
         if last_error is not None:
             raise last_error
-        return []
+        return last_record
 
     @staticmethod
     def _merge_inbound_record(target: Dict[str, Any], incoming: Dict[str, Any]) -> None:
-        """Merge a richer same-GUID lifecycle event into the pending record in place."""
+        """Refresh metadata by identity without erasing fields omitted by sparse echoes."""
         for key, value in incoming.items():
             if value in (None, "", []):
                 continue
             if key in {"attachments", "chats"} and isinstance(value, list):
                 current = target.setdefault(key, [])
-                seen = {item.get("guid") or item.get("[auth-key]") or repr(item)
+                seen = {item.get("guid") or item.get("[auth-key]") or repr(item): item
                         for item in current if isinstance(item, dict)}
                 for item in value:
                     identity = (item.get("guid") or item.get("[auth-key]") or repr(item)
                                 if isinstance(item, dict) else repr(item))
-                    if identity not in seen:
-                        current.append(item)
-                        seen.add(identity)
+                    if identity in seen and isinstance(item, dict):
+                        BlueBubblesAdapter._merge_inbound_record(seen[identity], item)
+                    else:
+                        copied = deepcopy(item)
+                        current.append(copied)
+                        if isinstance(copied, dict):
+                            seen[identity] = copied
+            elif isinstance(value, dict) and isinstance(target.get(key), dict):
+                BlueBubblesAdapter._merge_inbound_record(target[key], value)
             else:
-                target[key] = value
+                target[key] = deepcopy(value)
 
-    async def _coalesce_inbound_record(self, message_id: Optional[str], event_type: str,
-                                       record: Dict[str, Any]) -> Optional[tuple[str, Dict[str, Any]]]:
-        """Fold immediate new/updated lifecycle pairs into one dispatch candidate."""
-        if not message_id:
-            return event_type, record
-        pending = self._pending_inbound_records.get(message_id)
-        if pending is not None:
-            self._merge_inbound_record(pending["record"], record)
-            if event_type != "updated-message":
-                pending["event_type"] = event_type
+    def _get_inbound_message(self, message_id: Optional[str], record: Dict[str, Any]) -> _InboundMessage:
+        now = time.monotonic()
+        for key, state in list(self._inbound_messages.items()):
+            if not state.users and now - state.touched >= _INBOUND_CACHE_TTL:
+                self._inbound_messages.pop(key)
+        state = self._inbound_messages.get(message_id) if message_id else None
+        if state is None:
+            state = _InboundMessage()
+            if message_id:
+                for key, old in list(self._inbound_messages.items()):
+                    if len(self._inbound_messages) < _INBOUND_CACHE_SIZE:
+                        break
+                    if not old.users:
+                        self._inbound_messages.pop(key)
+                self._inbound_messages[message_id] = state
+        if message_id:
+            self._inbound_messages.move_to_end(message_id)
+        state.touched = now
+        state.users += 1
+        # Merge before waiting: an update can enrich the owner across hydration/download awaits.
+        self._merge_inbound_record(state.record, record)
+        return state
+
+    def _reserve_inbound_turn(self, chat_id: str):
+        previous = self._inbound_chat_tails.get(chat_id)
+        current = asyncio.get_running_loop().create_future()
+        self._inbound_chat_tails[chat_id] = current
+        return previous, current
+
+    def _finish_inbound_turn(self, chat_id: str, previous, current) -> None:
+        def release(_=None):
+            if not current.done():
+                current.set_result(None)
+            if self._inbound_chat_tails.get(chat_id) is current:
+                self._inbound_chat_tails.pop(chat_id, None)
+        # A cancelled waiter must not let its successor overtake a still-running predecessor.
+        if previous is not None and not previous.done():
+            previous.add_done_callback(release)
+        else:
+            release()
+
+    async def _route_inbound_message(self, payload, state, message_id):
+        record = state.record
+        chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
+        if not self._has_real_chat_guid(chat_guid):
+            try:
+                hydrated = await self._hydrate_inbound_record(message_id)
+                self._merge_inbound_record(record, hydrated)
+            except Exception as exc:
+                logger.warning("[bluebubbles] inbound hydration failed: %s", type(exc).__name__)
+            chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
+        if not self._has_real_chat_guid(chat_guid):
+            logger.warning("[bluebubbles] ignoring message with no resolvable chat GUID")
             return None
+        is_group = self._is_group_record(record, chat_guid)
+        chat_id = self._canonical_session_chat_id(chat_guid, chat_identifier, sender, is_group)
+        if not sender or not chat_id:
+            return None
+        if not is_group:
+            self._remember_chat_guid(chat_id, chat_guid)
+        return chat_guid, chat_id, chat_identifier, sender, is_group
 
-        pending = {"event_type": event_type, "record": dict(record)}
-        self._pending_inbound_records[message_id] = pending
+    async def _deliver_inbound_message(self, payload, state, message_id, route):
+        from aiohttp import web
+
+        chat_guid, chat_id, chat_identifier, sender, is_group = route
+        record = state.record
+        if record.get("attachments") and self.client:
+            try:
+                self._merge_inbound_record(record, await self._hydrate_inbound_record(message_id))
+            except Exception as exc:
+                logger.warning("[bluebubbles] attachment hydration failed: %s", type(exc).__name__)
+        text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
+        if is_group and self.require_mention:
+            if not self._message_matches_mention_patterns(text):
+                return _ok()
+            text = self._clean_mention_text(text)
+        media_urls, media_types, msg_type, collected = await self._collect_attachments(record, state=state)
+        attachments = {att.get("guid") for att in record.get("attachments") or []
+                       if isinstance(att, dict) and att.get("guid")} - state.delivered
+        if not attachments <= collected:
+            # Keep successful downloads for a later completion; don't consume the caption alone.
+            return web.json_response({"error": "attachments not ready"}, status=503)
+        if state.accepted:
+            if not media_urls:
+                return _ok()
+            text = "(attachment)"
+        elif not text and media_urls:
+            text = "(attachment)"
+        if not text:
+            return web.json_response({"error": "missing message fields"}, status=400)
+        chats = record.get("chats") or []
+        chat_name = self._value(chats[0].get("displayName") if chats and isinstance(chats[0], dict) else None,
+                                chat_identifier, chat_id)
+        source = self.build_source(chat_id=chat_id, chat_name=chat_name,
+                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
+                                   chat_id_alt=chat_identifier)
+        event = MessageEvent(
+            text=text, message_type=msg_type, source=source,
+            raw_message={**payload, "data": deepcopy(record)}, message_id=message_id,
+            reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
+            media_urls=media_urls, media_types=media_types)
         try:
-            await asyncio.sleep(self._inbound_coalesce_seconds)
-            current = self._pending_inbound_records.pop(message_id, pending)
-            return current["event_type"], current["record"]
-        except BaseException:
-            if self._pending_inbound_records.get(message_id) is pending:
-                self._pending_inbound_records.pop(message_id, None)
-            raise
+            await self.handle_message(event)
+        finally:
+            # Admission, not model/output completion, is the point of no replay.
+            if event._gateway_accepted:
+                state.accepted = True
+                state.delivered.update(attachments)
+                for guid in attachments:
+                    state.downloaded.pop(guid, None)
+        if not event._gateway_accepted:
+            return web.json_response({"error": "gateway did not accept message"}, status=503)
+        if self.send_read_receipts:
+            task = asyncio.create_task(self.mark_read(chat_id))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        return _ok()
 
     async def _handle_webhook(self, request):
         from aiohttp import web
@@ -726,75 +883,42 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())
+            if not isinstance(payload, dict):
+                raise ValueError("webhook body must be an object")
         except Exception as exc:
             logger.error("[bluebubbles] webhook parse error: %s", exc)
             return web.json_response({"error": "invalid payload"}, status=400)
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        if event_type and event_type not in _MESSAGE_EVENTS:  # ack non-message events silently
+        if event_type and event_type not in _MESSAGE_EVENTS:
             return _ok()
         record = self._extract_payload_record(payload) or {}
         if record.get("isFromMe") or record.get("fromMe") or record.get("is_from_me"):
             return _ok()
         assoc_type = record.get("associatedMessageType")
-        if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
+        if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:
             return _ok()
-        message_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
-        coalesced = await self._coalesce_inbound_record(message_id, event_type, record)
-        if coalesced is None:
-            return _ok()
-        event_type, record = coalesced
         if self._is_receipt_only_update(event_type, record):
             return _ok()
-
-        text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
-        chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
-        if not self._has_real_chat_guid(chat_guid):
-            try:
-                chats = await self._hydrate_chats(message_id)
-            except Exception as exc:
-                logger.error("[bluebubbles] dropping unroutable message after chat hydration retries: %s", exc)
-                return _ok()
-            if chats:
-                record = {**record, "chats": chats}
-                chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
-            if not self._has_real_chat_guid(chat_guid):
-                # A sender-only payload is ambiguous: in a group it would route a private reply to the
-                # participant. Acknowledge without claiming the GUID so a later rich event remains eligible.
-                logger.warning("[bluebubbles] ignoring message with no resolvable chat GUID")
-                return _ok()
-
-        is_group = self._is_group_record(record, chat_guid)
-        # Mention gate BEFORE attachment downloads: an unmentioned group message must not pull every
-        # attachment through the REST API only to be dropped.
-        if is_group and self.require_mention:
-            if not self._message_matches_mention_patterns(text):
-                logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
-                return _ok()
-            text = self._clean_mention_text(text)
-
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
-        if not text and media_urls:
-            text = "(attachment)"
-        session_chat_id = self._canonical_session_chat_id(chat_guid, chat_identifier, sender, is_group)
-        if not sender or not session_chat_id or not text:
-            return web.json_response({"error": "missing message fields"}, status=400)
-
-        # Claim only after routing and attachment resolution. This is the atomic dispatch decision:
-        # concurrent webhook requests may both do preliminary work, but exactly one can reach the agent.
-        if message_id and self._inbound_dedup.is_duplicate(message_id):
-            return _ok()
-
-        source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or session_chat_id,
-                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
-                                   chat_id_alt=chat_identifier)
-        event = MessageEvent(
-            text=text, message_type=msg_type, source=source, raw_message=payload,
-            message_id=message_id,
-            reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
-            media_urls=media_urls, media_types=media_types)
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        if self.send_read_receipts:  # fire-and-forget read receipt
-            asyncio.create_task(self.mark_read(session_chat_id))
-        return _ok()
+        message_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        state = self._get_inbound_message(message_id, record)
+        try:
+            async with state.lock:
+                attachments = {att.get("guid") for att in state.record.get("attachments") or []
+                               if isinstance(att, dict) and att.get("guid")}
+                if state.accepted and attachments <= state.delivered:
+                    return _ok()
+                # Reserve conversation order before any attachment awaits; unrelated chats stay free.
+                async with self._inbound_routing_lock:
+                    route = await self._route_inbound_message(payload, state, message_id)
+                    if route is None:
+                        return _ok()
+                    previous, current = self._reserve_inbound_turn(route[1])
+                try:
+                    if previous is not None:
+                        await asyncio.shield(previous)
+                    return await self._deliver_inbound_message(payload, state, message_id, route)
+                finally:
+                    self._finish_inbound_turn(route[1], previous, current)
+        finally:
+            state.users -= 1
+            state.touched = time.monotonic()

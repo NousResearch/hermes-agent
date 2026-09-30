@@ -168,7 +168,7 @@ class BaseBusyMixin:
                 # Photo bursts/albums: queue without interrupting; they run after the current task.
                 if event.message_type == MessageType.PHOTO:
                     logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                    base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event)
+                    self._merge_into_pending_slot(session_key, event)
                     event._gateway_accepted = True
                     return
                 if self._is_queue_text_debounce_candidate(event):
@@ -181,7 +181,7 @@ class BaseBusyMixin:
                 else:
                     logger.debug("[%s] New message while session %s is active — queuing follow-up "
                                  "(no interrupt, will cascade after current turn)", self.name, session_key)
-                    base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event,
+                    self._merge_into_pending_slot(session_key, event,
                                                 merge_text=event.message_type == MessageType.TEXT)
                     event._gateway_accepted = True
         finally:

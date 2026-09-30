@@ -26,6 +26,7 @@ interface UseComposerSubmitArgs {
   compacting: boolean
   clearDraft: () => void
   disabled: boolean
+  draftScopeRef: RefObject<string | null>
   draftRef: RefObject<string>
   drainNextQueued: () => Promise<boolean>
   editorRef: RefObject<HTMLDivElement | null>
@@ -62,6 +63,7 @@ export function useComposerSubmit({
   compacting,
   clearDraft,
   disabled,
+  draftScopeRef,
   draftRef,
   drainNextQueued,
   editorRef,
@@ -85,18 +87,31 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
-  // === false) or throws, re-load + re-stash the draft so the words survive.
+  // === false) or throws, re-stash the draft so the words survive. Repaint it
+  // only while the same session still owns the visible composer; a late reject
+  // must not publish an old session's text into the newly focused one.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
-    const submittedScope = activeQueueSessionKeyRef.current
+    const submittedScope = draftScopeRef.current
+    let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
+    // Only this operation's explicit session.create handoff may re-home a
+    // pre-session submit. A null → stored render can also be user navigation.
+    const assignment =
+      submittedScope === null
+        ? {
+            onComposerScopeAssigned: (scope: string) => {
+              restoreScope = scope
+            }
+          }
+        : {}
+
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      // Use the scope captured at dispatch, not whatever session is focused
-      // now — the gateway can reject well after the user has switched away,
-      // and re-stashing into the currently-focused session would overwrite
-      // its draft with the rejected text from a different session (#54527).
-      stashAt(submittedScope, text, submittedAttachments)
+      stashAt(restoreScope, text, submittedAttachments)
+
+      if (draftScopeRef.current === restoreScope) {
+        loadIntoComposer(text, submittedAttachments)
+      }
     }
 
     // A hidden submit is machine text (a setup note, never something the user
@@ -105,8 +120,13 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(text, {
+            attachments,
+            composerScope: submittedScope,
+            ...assignment,
+            ...(displayKind ? { displayKind } : {})
+          })
+        : onSubmit(text, { composerScope: submittedScope, ...assignment, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
       .catch(rejected)

@@ -29,6 +29,9 @@ export interface DirectSttConfig {
   language: null | string
   /** Seconds the gateway allows one transcription request (`stt.openai.timeout`); absent on older backends. */
   timeout_s?: null | number
+  /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
+   *  absent on older backends — a matching transcript is still returned as-is then. */
+  hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
 }
 
 export interface DirectTtsConfig {
@@ -191,6 +194,39 @@ export function sttTimeoutSeconds(stt: Pick<DirectSttConfig, 'timeout_s'>): numb
 }
 
 /**
+ * The relay path's Whisper-silence filter (`is_whisper_hallucination`,
+ * tools/voice_mode_transcript.py): empty, an exact known hallucination
+ * (lowercased, trailing `.!` stripped), or repetitive filler like
+ * "Thank you. Thank you." A client-direct transcript must agree with a
+ * relayed one instead of submitting "thank you" on silence as a real turn.
+ * No filter on the config (older backend) → the transcript passes through.
+ */
+export function isSttSilenceHallucination(
+  transcript: string,
+  filter: DirectSttConfig['hallucination_filter']
+): boolean {
+  if (!filter) {
+    return false
+  }
+
+  const cleaned = transcript.trim().toLowerCase()
+
+  if (!cleaned) {
+    return true
+  }
+
+  if (filter.phrases.includes(cleaned.replaceAll('!', '').replaceAll('.', ''))) {
+    return true
+  }
+
+  try {
+    return new RegExp(filter.repeat_regex, 'i').test(cleaned)
+  } catch {
+    return false
+  }
+}
+
+/**
  * `fetch` with the STT deadline. A slow or wedged endpoint otherwise keeps the
  * dictation UI in "transcribing" forever — the browser applies no timeout of
  * its own to a POST that never answers.
@@ -253,7 +289,11 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${await providerErrorText(response)}`)
     }
 
-    return transcriptFromOpenAiMultipartBody(await response.text())
+    const transcript = transcriptFromOpenAiMultipartBody(await response.text())
+
+    // Silence hallucination ("thank you" on quiet audio): treat as silence,
+    // exactly like the relay endpoint, instead of submitting a phantom turn.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   if (stt.wire === 'xai-stt') {
@@ -277,8 +317,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
     }
 
     const result = (await response.json()) as { text?: string }
+    const transcript = (result.text || '').trim()
 
-    return (result.text || '').trim()
+    // Silence hallucination: same contract as the relay endpoint.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   if (stt.wire === 'elevenlabs-stt') {
@@ -305,8 +347,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
     }
 
     const result = (await response.json()) as { text?: string }
+    const transcript = (result.text || '').trim()
 
-    return (result.text || '').trim()
+    // Silence hallucination: same contract as the relay endpoint.
+    return isSttSilenceHallucination(transcript, stt.hallucination_filter) ? '' : transcript
   }
 
   return null

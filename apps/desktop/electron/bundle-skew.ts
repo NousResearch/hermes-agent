@@ -56,8 +56,36 @@ export interface BundleSkewResult {
 
 export type RunGit = (
   args: string[],
-  options: { cwd: string }
+  options: { cwd: string; timeoutMs?: number }
 ) => Promise<{ code: number; stderr: string; stdout: string }>
+
+/**
+ * Every git call is bounded. The pathspec walk below is exactly the query that
+ * hangs for hours on a tree-less partial clone while promisor-fetching on
+ * demand (#127830), and the desktop re-runs the check every few minutes — an
+ * unbounded call piles up instances (126 concurrent git processes observed).
+ */
+export const GIT_CALL_TIMEOUT_MS = 30_000
+
+/**
+ * How many tree levels the RUNTIME_PATHS pathspecs need locally. `apps/desktop/src`
+ * is three components deep, so a partial-clone filter must store trees down to
+ * depth 3 for the walk to run without on-demand tree fetches.
+ */
+const PATHSPEC_TREE_DEPTH = 3
+
+/**
+ * True when a `remote.origin.partialclonefilter` value stores fewer tree levels
+ * than the RUNTIME_PATHS pathspecs need. `--filter=tree:0` (what
+ * `scripts/install.sh` stages) stores no trees at all, so a pathspec-limited
+ * `rev-list` matches paths by lazily fetching every tree it touches — an
+ * unbounded promisor-fetch storm per invocation (#127830).
+ */
+export function isTreelessFilter(filter: string): boolean {
+  const match = /^tree:(\d+)$/.exec(filter)
+
+  return match ? Number.parseInt(match[1], 10) < PATHSPEC_TREE_DEPTH : false
+}
 
 /**
  * The paths that actually reach the user: renderer sources, main-process
@@ -82,6 +110,11 @@ export const RUNTIME_PATHS = [
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }
 
+/** One in-flight check per repo root: the desktop re-runs the check every few
+ *  minutes, and a slow/hung instance must not stack a new git walk on top of
+ *  the previous one (#127830). */
+const inflightChecks = new Map<string, Promise<BundleSkewResult>>()
+
 /** Matches write-build-stamp.mjs's all-zero placeholder for non-git builds. */
 export function isFallbackCommit(commit: string): boolean {
   return /^0{7,40}$/.test(commit)
@@ -92,11 +125,46 @@ export async function detectBundleSkew(
   runGit: RunGit,
   repoRoot: string
 ): Promise<BundleSkewResult> {
+  const pending = inflightChecks.get(repoRoot)
+
+  if (pending) {
+    return pending
+  }
+
+  const check = detectBundleSkewOnce(stamp, runGit, repoRoot)
+  inflightChecks.set(repoRoot, check)
+
+  try {
+    return await check
+  } finally {
+    inflightChecks.delete(repoRoot)
+  }
+}
+
+async function detectBundleSkewOnce(
+  stamp: BundleSkewStamp | null,
+  runGit: RunGit,
+  repoRoot: string
+): Promise<BundleSkewResult> {
   if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
     return NOT_STALE
   }
 
   try {
+    // A partial clone whose filter stores too few tree levels cannot answer a
+    // pathspec-limited walk locally: every path match lazily fetches the trees
+    // it needs (#127830 — hours of promisor fetches per invocation). Skip the
+    // walk outright rather than let git go to the network; "unknowable" is the
+    // same quiet answer this function already gives every other limitation.
+    const filter = await runGit(['config', '--get', 'remote.origin.partialclonefilter'], {
+      cwd: repoRoot,
+      timeoutMs: GIT_CALL_TIMEOUT_MS
+    })
+
+    if (filter.code === 0 && isTreelessFilter(filter.stdout.trim())) {
+      return NOT_STALE
+    }
+
     // Exit 0 = ancestor, 1 = unrelated or diverged, anything else = git could
     // not answer (unknown object, shallow clone, not a repo). Only the first
     // makes the commit count below a statement about skew, and the other two
@@ -109,7 +177,8 @@ export async function detectBundleSkew(
     // this a proof that the renderer PREDATES the tree, which is the claim the
     // warning actually makes.
     const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], {
-      cwd: repoRoot
+      cwd: repoRoot,
+      timeoutMs: GIT_CALL_TIMEOUT_MS
     })
 
     if (ancestry.code !== 0) {
@@ -117,7 +186,8 @@ export async function detectBundleSkew(
     }
 
     const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {
-      cwd: repoRoot
+      cwd: repoRoot,
+      timeoutMs: GIT_CALL_TIMEOUT_MS
     })
 
     if (result.code !== 0) {

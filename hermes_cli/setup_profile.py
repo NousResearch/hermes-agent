@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 
 SETUP_PROFILE_NAME = "hermes-setup"
 SETUP_PROFILE_DESCRIPTION = "Where Hermes met you — walks your first run, then checks in as you find your feet."
+SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
-_SETUP_TOOLSETS = ["setup", "start_chat", "no_mcp"]
+_SETUP_TOOLSETS = ["setup", "no_mcp"]
 _SETUP_DISABLED_TOOLSETS = ["catalog"]
 _SETUP_DEFERRED_TOOLS = [
     "computer_use", "session_search", "image_generate", "todo_list", "process_manage", "cronjob_manage",

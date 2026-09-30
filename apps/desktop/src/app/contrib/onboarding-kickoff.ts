@@ -1,8 +1,7 @@
-import type { OnboardingEnsureSetupProfileResult } from '@hermes/shared'
+import type { OnboardingEnsureSetupProfileResult, OnboardingEnsureSetupSessionResult } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
-import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
 import {
   $chatOnboardingThreadIds,
   endChatOnboardingSolo,
@@ -39,12 +38,8 @@ function prefetchGuideCatalogs(storedId: null | string, runtimeId: string): void
   }
 }
 
-export interface OnboardingKickoffOptions extends Pick<
-  ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'resumeSession'
-> {
+export interface OnboardingKickoffOptions extends Pick<ReturnType<typeof useSessionActions>, 'resumeSession'> {
   requestGateway: AmbientGatewayRequest
-  runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
 }
 
 interface SetupStatus {
@@ -55,6 +50,7 @@ interface SetupStatus {
 
 interface GuideSession {
   id: string
+  message_count?: number
   resolved_id?: string
 }
 
@@ -98,12 +94,7 @@ export async function adoptGuideSession(
   }
 }
 
-export function useOnboardingKickoff({
-  createBackendSessionForSend,
-  requestGateway,
-  resumeSession,
-  runCreatePinnedTo
-}: OnboardingKickoffOptions) {
+export function useOnboardingKickoff({ requestGateway, resumeSession }: OnboardingKickoffOptions) {
   return useCallback(async (): Promise<GuideKickoffResult> => {
     if (!isOnboardingEnabled()) {
       return 'off'
@@ -147,7 +138,7 @@ export function useOnboardingKickoff({
 
       const canonical = registryHit?.sessions?.[0]
 
-      if (canonical?.id) {
+      if (canonical?.message_count) {
         await adoptGuideSession(setupProfile, canonical, record.free_tier_route, resumeSession, guideRequest)
 
         return 'started'
@@ -164,35 +155,13 @@ export function useOnboardingKickoff({
         capabilities
       )
 
-      const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
-
-      if (record.free_tier_route) {
-        createOverrides.reasoningEffort = 'minimal'
-      }
-
-      const runtimeId = await runCreatePinnedTo(setupProfile, () =>
-        createBackendSessionForSend(null, seedMessages, createOverrides)
-      )
-
-      if (!runtimeId) {
-        throw new Error('The welcome chat could not be created. Please try again.')
-      }
-
-      const storedId = $selectedStoredSessionId.get()
-      $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
-      prefetchGuideCatalogs(storedId, runtimeId)
-      $setupSession.set({
-        connectionId: guideSourceConnectionId(storedId),
-        profile: setupProfile,
-        runtimeId,
-        storedId
+      const setupChat = await guideRequest<OnboardingEnsureSetupSessionResult>('onboarding.ensure_setup_session', {
+        messages: seedMessages
       })
-
-      await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
 
       await adoptGuideSession(
         setupProfile,
-        { id: storedId ?? runtimeId },
+        { id: setupChat.session_id },
         record.free_tier_route,
         resumeSession,
         guideRequest
@@ -225,5 +194,5 @@ export function useOnboardingKickoff({
 
       return 'failed'
     }
-  }, [createBackendSessionForSend, requestGateway, resumeSession, runCreatePinnedTo])
+  }, [requestGateway, resumeSession])
 }

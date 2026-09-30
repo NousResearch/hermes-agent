@@ -393,6 +393,20 @@ method("onboarding.ensure_setup_profile", params=Params, result=OnboardingEnsure
        doc="Create-or-read the backend-owned setup profile; the backend picks the name.")
 
 
+class OnboardingEnsureSetupSessionParams(Params):
+    messages: list[dict[str, JsonValue]] | None = None
+
+
+class OnboardingEnsureSetupSessionResult(Result):
+    profile: str
+    session_id: str
+    empty: bool
+
+
+method("onboarding.ensure_setup_session", params=OnboardingEnsureSetupSessionParams,
+       result=OnboardingEnsureSetupSessionResult)
+
+
 class OnboardingIntro(WireEnum):
     unseen = "unseen"
     seen = "seen"

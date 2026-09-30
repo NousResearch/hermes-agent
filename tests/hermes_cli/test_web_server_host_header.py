@@ -359,3 +359,30 @@ def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch):
                 headers={"Host": "127.0.0.1:9119", "Origin": "http://localhost:3999"}):
             pass
     assert exc.value.code == 4403
+
+
+@pytest.mark.parametrize("path", [
+    "/",                    # index.html / the headless page: carries the session token
+    "/api/files/download",  # the ?token= route: serves files under $HOME
+    "/api/status",          # hermes_home / config_path / env_path
+    "/openapi.json",        # the full route map
+    "/docs",
+    "/redoc",
+])
+def test_token_page_and_route_map_are_not_cors_readable_from_another_local_port(monkeypatch, path):
+    """Every unauthenticated or query-token surface a page on another local port could use to take
+    the token, read files or fingerprint the backend gets no CORS grant; the dashboard's own origin
+    still does, so the check is not vacuous."""
+    from fastapi.testclient import TestClient
+
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+    monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+    client = TestClient(ws.app)
+    url = f"{path}?token={ws._SESSION_TOKEN}&path=missing.txt" if path == "/api/files/download" else path
+
+    for origin, granted in (("http://localhost:3999", False), ("http://127.0.0.1:9119", True)):
+        r = client.get(url, headers={"Host": "127.0.0.1:9119", "Origin": origin})
+        assert (r.headers.get("access-control-allow-origin") == origin) is granted, (origin, r.status_code)

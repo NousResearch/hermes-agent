@@ -66,6 +66,7 @@ async def test_reaction_novelty_uses_final_delivery_order_after_restart(
         result._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
         result.build_source = lambda **kwargs: SessionSource(platform=Platform.MATRIX, **kwargs)
         result.set_authorization_check(lambda *_args, **_kwargs: True)
+        result._message_handler = AsyncMock()
         result.handle_message = AsyncMock()
         return result
 
@@ -140,6 +141,7 @@ async def test_unproven_delivery_order_does_not_consume_watch(tmp_path, response
     adapter._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
     adapter.build_source = lambda **kwargs: SessionSource(platform=Platform.MATRIX, **kwargs)
     adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+    adapter._message_handler = AsyncMock()
     adapter.handle_message = AsyncMock()
     source = SessionSource(platform=Platform.MATRIX, chat_id="!room:test", user_id="@alice:test")
     store = adapter._followup_store()

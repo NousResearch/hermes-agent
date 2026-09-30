@@ -72,6 +72,7 @@ def delivery(tmp_path):
             return_value=SimpleNamespace(display_name=source.chat_name, room_topic=source.chat_topic)
         )
         result._get_display_name = AsyncMock(return_value=source.user_name)
+        result._message_handler = AsyncMock()
         result.handle_message = AsyncMock()
         return result
 

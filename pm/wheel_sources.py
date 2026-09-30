@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path
 import re
 import tomllib
@@ -83,12 +84,14 @@ def relocate_wheels(root: Path, replay: Path, *, target: str) -> tuple[str, ...]
     if target != "win32-arm64":
         return ()
     lock_path = root / "uv.lock"
-    lock = tomllib.loads(lock_path.read_text(encoding="utf-8-sig"))
+    text = lock_path.read_text(encoding="utf-8-sig")
+    lock = tomllib.loads(text)
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
     pins = project.get("tool", {}).get("hermes", {}).get("win-arm64-wheels", {})
     old_dir, new_dir = replay / "wheels", root / "wheels"
     local = [row for row in lock["package"]
              if "registry" in row["source"] and Path(row["source"]["registry"]) == old_dir]
+    wanted: dict[tuple[str, str], str] = {}
     for row in local:
         name = row["name"]
         if name not in pins:
@@ -99,11 +102,25 @@ def relocate_wheels(root: Path, replay: Path, *, target: str) -> tuple[str, ...]
                 or set(wheels[0]) != {"path"} or Path(wheels[0]["path"]) != old_dir / filename):
             raise InstallError("venv", f"recorded wheel does not match the reviewed pin: {name}")
         _verify_wheel_file(name, new_dir / filename, sha)
-        row["source"]["registry"] = str(new_dir)
-        wheels[0]["path"] = str(new_dir / filename)
+        wanted[("registry", row["source"]["registry"])] = str(new_dir)
+        wanted[("path", wheels[0]["path"])] = str(new_dir / filename)
     if local:
-        import tomli_w
-        lock_path.write_text(tomli_w.dumps(lock), encoding="utf-8")
+        # uv's Windows TOML escapes backslashes; match decoded path values,
+        # then replace only their quoted tokens without rewriting the lock.
+        pattern = re.compile(r"""(?m)\b(?P<key>registry|path)\s*=\s*(?P<token>"(?:\\.|[^"\\])*"|'[^']*')""")
+        spans = []
+        for match in pattern.finditer(text):
+            value = tomllib.loads("value = " + match.group("token"))["value"]
+            replacement = wanted.get((match.group("key"), value))
+            if replacement is not None:
+                spans.append((match.start("token"), match.end("token"),
+                              json.dumps(replacement, ensure_ascii=False)))
+        if len(spans) != 2 * len(local):
+            raise InstallError("venv", "recorded wheel paths do not match the generation")
+        for start, end, rendered in reversed(spans):
+            text = text[:start] + rendered + text[end:]
+        tomllib.loads(text)
+        lock_path.write_text(text, encoding="utf-8")
     return tuple(sorted(set(pins) - {row["name"] for row in local}))
 
 

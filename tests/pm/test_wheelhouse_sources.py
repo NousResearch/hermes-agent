@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+import sys
 import tomllib
 
 import pytest
@@ -65,7 +66,7 @@ def test_corrupt_native_wheel_does_not_try_another_url(tmp_path, dl_server):
     assert not any(path.startswith("/r2/") for path in RangeHandler.requests_seen)
 
 
-def test_repair_rebinds_verified_wheels_without_current_inputs(tmp_path):
+def test_repair_rebinds_verified_wheels_without_current_inputs(tmp_path, monkeypatch):
     from pm.wheel_sources import relocate_wheels
 
     filename = "first-1.0-cp314-abi3-win_arm64.whl"
@@ -94,6 +95,7 @@ def test_repair_rebinds_verified_wheels_without_current_inputs(tmp_path):
 
     repair = tmp_path / "repair"
     shutil.copytree(recorded, repair)
+    monkeypatch.setitem(sys.modules, "tomli_w", None)
     assert relocate_wheels(repair, recorded, target="win32-arm64") == ("second",)
     rows = tomllib.loads((repair / "uv.lock").read_text(encoding="utf-8"))["package"]
     assert rows[0]["source"]["registry"] == str(repair / "wheels")

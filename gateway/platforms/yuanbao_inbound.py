@@ -48,6 +48,9 @@ class InboundContext:
     media_types: list = dc_field(default_factory=list)
     channel_prompt: Optional[str] = None  # GroupAttributionMiddleware
 
+    channel_context: Optional[str] = None  # ForwardedRecordsParseMiddleware: the rendered records
+
+
 
 class InboundMiddleware(ABC):
     """Set class-level ``name`` and implement ``handle(ctx, next_fn)``; ``await next_fn()``
@@ -728,10 +731,18 @@ class ExtractContentMiddleware(InboundMiddleware):
         return None
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
-        ctx.raw_text = self._rewrite_slash_command(self._extract_text(ctx.msg_body))
-        ctx.media_refs = self._extract_inbound_media_refs(ctx.msg_body)
         ctx.forwarded_records = self._extract_forwarded_records(ctx.msg_body, ctx.from_account)
+        own_body = self._without_forward_card(ctx.msg_body) if ctx.forwarded_records else ctx.msg_body
+        ctx.raw_text = self._rewrite_slash_command(self._extract_text(own_body))
+        ctx.media_refs = self._extract_inbound_media_refs(ctx.msg_body)
         await next_fn()
+
+    @staticmethod
+    def _without_forward_card(msg_body: list) -> list:
+        """*msg_body* without its elem_type 1009 card, whose summary is part of the forward."""
+        return [elem for elem in msg_body if not any(
+            isinstance(custom, dict) and custom.get("elem_type") == 1009 for custom, _ in _iter_custom_elems([elem]))]
+
 
 
 class PlaceholderFilterMiddleware(InboundMiddleware):
@@ -1002,7 +1013,7 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
         try:
             if ctx.forwarded_records:
                 await self._send_loading_heartbeat(ctx)
-                ctx.raw_text = self.build_forward_text(ctx.forwarded_records, ctx=ctx, is_dispatch=True)
+                ctx.channel_context = self.build_forward_text(ctx.forwarded_records, ctx=ctx, is_dispatch=True)
         except Exception as exc:
             logger.warning("[%s] forwarded-records deep parse failed: %s", getattr(ctx.adapter, "name", "yuanbao"), exc)
         await next_fn()
@@ -1072,16 +1083,13 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
     @classmethod
     def build_forward_text(cls, forward_data: dict, *, ctx: InboundContext, is_dispatch: bool) -> str:
         """Render ``ForwardMsgData`` as ``发送人：正文`` lines with media markers. When ``is_dispatch``,
-        refs go to ``ctx.media_refs`` and a ``用户附言：`` footer is added (observe-time callers skip both)."""
+        refs go to ``ctx.media_refs`` (observe-time callers skip them)."""
         lines = [f"当前用户的昵称为{ctx.sender_nickname or '用户'}", "以下为用户的聊天记录"]
         for sender, body, refs in cls._walk_forward_msgs(forward_data):
             lines.append(f"{sender}：{body}")
             if is_dispatch:
                 ctx.media_refs.extend(refs)
-        text = "\n".join(lines)
-        if is_dispatch and ctx.raw_text.strip():
-            text += f"\n\n用户附言：{ctx.raw_text.strip()}"
-        return text
+        return "\n".join(lines)
 
 
 class MediaResolveMiddleware(InboundMiddleware):
@@ -1443,6 +1451,8 @@ class PatchAnchorsMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         ctx.raw_text = self._patch(ctx.raw_text, ctx.media_urls, ctx.media_types)
+        if ctx.channel_context:
+            ctx.channel_context = self._patch(ctx.channel_context, ctx.media_urls, ctx.media_types)
         await next_fn()
 
 
@@ -1469,14 +1479,17 @@ class DispatchMiddleware(InboundMiddleware):
                 text=ctx.raw_text, message_type=msg_type, source=ctx.source, message_id=ctx.msg_id or None,
                 raw_message=ctx.push, media_urls=list(ctx.media_urls), media_types=list(ctx.media_types),
                 reply_to_message_id=ctx.reply_to_message_id, reply_to_text=ctx.reply_to_text,
-                channel_prompt=ctx.channel_prompt,
+                channel_prompt=ctx.channel_prompt, channel_context=ctx.channel_context,
             )
+            # Recall redaction and quote-media recovery look for the turn's text as the transcript
+            # records it, which includes the forwarded records.
+            turn_text = event.text_with_channel_context(ctx.raw_text)
             if _sk and ctx.msg_id:
                 adapter._processing_msg_ids[_sk] = ctx.msg_id
-                adapter._processing_msg_texts[_sk] = ctx.raw_text or ""
-            if ctx.msg_id and ctx.raw_text:
+                adapter._processing_msg_texts[_sk] = turn_text
+            if ctx.msg_id and turn_text:
                 cache = adapter._msg_content_cache
-                cache[ctx.msg_id] = ctx.raw_text
+                cache[ctx.msg_id] = turn_text
                 for k in list(cache)[:max(0, len(cache) - 200)]:  # bounded: drop oldest
                     del cache[k]
             await adapter.handle_message(event)

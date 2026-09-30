@@ -1541,6 +1541,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        # A partial clone's on-demand fetches strand one small packfile each and never
+        # consolidate on their own (#129712); fold them before this run's fetch adds more.
+        from hermes_cli.gitlock import consolidate_lazy_fetch_packs
+        folded = consolidate_lazy_fetch_packs(_m().PROJECT_ROOT)
+        if folded:
+            print(f"  (folded {folded} lazy-fetch pack(s) into one)")
         # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
         # (#105951); stale grafts break merge-base and push this run into the divergence path.
         from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts

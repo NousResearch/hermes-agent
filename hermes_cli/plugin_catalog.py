@@ -482,6 +482,13 @@ def live_removed_list() -> List[RemovedEntry]:
 
 
 def get_live_catalog_entry(name: str) -> Optional[PluginCatalogEntry]:
+    """Return an installable live entry only when its name is approved in-tree.
+
+    The live document may advertise new entries for browsing, but it must not expand
+    the set of entries that the checked-in catalog approves for installation.
+    """
+    if not any(entry.name == name for entry in load_catalog()):
+        return None
     return next((e for e in load_catalog_live() if e.name == name), None)
 
 

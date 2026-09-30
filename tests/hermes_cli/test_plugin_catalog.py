@@ -198,3 +198,14 @@ def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path,
     assert (by_name["same"].onboarding, by_name["same"].title) == (True, "T")
     assert by_name["says-no"].onboarding is False and by_name["says-no"].title == "T"
     assert by_name["repinned"].onboarding is False and by_name["repinned"].sha == "b" * 40
+
+
+def test_live_only_entry_is_not_installable(monkeypatch):
+    """Live catalog data may be browsed, but cannot expand the install approval set."""
+    approved = pc.entry_from_mapping(_entry("approved"), "tree")
+    live_only = pc.entry_from_mapping(_entry("live-only"), "live")
+    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: [approved])
+    monkeypatch.setattr(pc, "load_catalog_live", lambda: [approved, live_only])
+
+    assert pc.get_live_catalog_entry("live-only") is None
+    assert pc.get_live_catalog_entry("approved") is approved

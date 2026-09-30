@@ -101,10 +101,18 @@ def describe_sqlite_error(exc_or_str) -> str:
     The persistence log line used to carry ``str(e)`` alone, and SQLITE_FULL's text
     ("database or disk is full") is also produced with the filesystem healthy — by a
     per-connection ``max_page_count`` ceiling, a temp-file spill that cannot be created,
-    and a few engine limits. The prose cannot separate those from ENOSPC, but the result
-    code can: only a real ENOSPC-backed SQLITE_FULL carries ``SQLITE_FULL`` *and* an
-    ENOSPC ``OSError`` around it, while a ceiling/limit refusal carries its own code.
-    Class, code, name, and text are what an operator needs to tell them apart.
+    and a few engine limits. Class, code, name, and text are what an operator needs to
+    tell them apart, and they are what this record adds.
+
+    What it deliberately does NOT claim: the text+code pair still does not separate a
+    healthy-filesystem refusal from ENOSPC. Measured on this host (CPython 3.13,
+    SQLite 3.46.1), a real ENOSPC writing the data file and a ``max_page_count`` ceiling
+    on a filesystem with free space both surface as ``OperationalError`` /
+    ``sqlite_errorcode=13`` / ``sqlite_errorname=SQLITE_FULL`` / ``database or disk is
+    full`` — with ``errno`` None and ``isinstance(exc, OSError)`` False in both cases, so
+    no ``errno`` accompanies the failure to be logged. The record narrows the search (a
+    non-13 code, a named limit, or an ``errno`` rules disk-full *out*); it never rules it
+    in. An operator still has to check free space, which is the copy's second lead.
     """
     if exc_or_str is None:
         return "none"

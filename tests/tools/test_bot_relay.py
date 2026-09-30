@@ -708,32 +708,35 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
 
 
-def test_delivery_env_resolves_the_launch_home_instead_of_failing_closed():
-    """A relayed DM into the LAUNCH profile's Bot Chat must spawn its turn.
+def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, monkeypatch):
+    """A relayed DM into the launch profile spawns with the launch home and its secrets, even after a
+    host mirrors another home into HERMES_HOME; a bound scope still wins over the fallback."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
-    ``_profile_home`` answers None for the launch profile *by design* ("already the launch profile,
-    no override needed"), and a relay RPC is sessionless so it binds no secret scope. That
-    combination left ``served_profile_child_env`` failing closed under multiplex, so every relayed
-    DM into a *default* profile died with "Hermes could not read this profile's API key" while
-    deliveries to named secondary profiles — which do resolve a home — kept working.
-    """
-    from agent.secret_scope import (
-        current_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
+    launch, mirrored = tmp_path / "launch", tmp_path / "mirrored"
+    launch.mkdir()
+    mirrored.mkdir()
+    (launch / ".env").write_text("OPENROUTER_API_KEY=sk-launch\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    set_multiplex_active(True)  # pins the launch home
+    monkeypatch.setenv("HERMES_HOME", str(mirrored))
 
-    assert get_hermes_home_override() is None, "precondition: no host home override in this process"
-    assert current_secret_scope() is None, "precondition: no scope bound on a sessionless relay RPC"
+    env = bot_relay.delivery_env(None, None)
+    assert env["HERMES_HOME"] == str(launch)
+    assert env["OPENROUTER_API_KEY"] == "sk-launch"
 
-    set_multiplex_active(True)
+    token = set_secret_scope({"OPENROUTER_API_KEY": "sk-bound"})
     try:
-        env = bot_relay.delivery_env(None, None)
-        assert Path(env["HERMES_HOME"]).resolve() == Path(get_routing_process_hermes_home()).resolve()
-
-        # A bound scope is still the truth when one exists: it must win over the launch-home fallback.
-        token = set_secret_scope({"OPENROUTER_API_KEY": "sentinel-value"})
-        try:
-            assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "sentinel-value"
-        finally:
-            reset_secret_scope(token)
+        assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "sk-bound"
     finally:
-        set_multiplex_active(False)
+        reset_secret_scope(token)
+
+
+def test_delivery_env_single_profile_host_passes_the_process_env_through(tmp_path, monkeypatch):
+    """Without multiplex nothing is pinned or overlaid: the child sees the process env as before."""
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "from-shell")
+
+    assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "from-shell"

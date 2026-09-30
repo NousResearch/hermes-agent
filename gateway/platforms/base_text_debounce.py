@@ -45,37 +45,10 @@ class BaseTextDebounceMixin:
 
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when sender and full reply context are identical."""
-
-        from gateway.platforms.base import _platform_name
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        def _reply_context(candidate: MessageEvent) -> tuple[Any, ...]:
-            return (
-                candidate.reply_to_message_id,
-                candidate.reply_to_text,
-                candidate.reply_to_author_id,
-                candidate.reply_to_author_name,
-                bool(candidate.reply_to_is_own_message),
-            )
-
-        existing_sender = _identity(existing)
-        incoming_sender = _identity(event)
-        return (
-            existing_sender is not None
-            and existing_sender == incoming_sender
-            and _reply_context(existing) == _reply_context(event)
-        )
+        """Return True when two text debounce events came from the same sender and do not reply
+        to different messages."""
+        return (self._same_text_debounce_sender(existing, event)
+                and not existing.reply_context_conflicts(event))
 
 
     def _text_debounce_delay(self, session_key: str) -> float:
@@ -101,7 +74,13 @@ class BaseTextDebounceMixin:
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
+                    return
+                if not self._same_text_debounce_sender(state.event, event):
+                    return
+                # The pending slot and this buffer are the only places where a queued turn can wait,
+                # and both reply to other messages. Keep the text in the buffer, under its quote.
+                logger.debug("[%s] Busy text for %s replies to a third message; merging it into the "
+                             "debounce buffer, which keeps its own reply context", self.name, session_key)
         now = time.monotonic()
         if state is None:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
@@ -109,6 +88,10 @@ class BaseTextDebounceMixin:
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
+            if event.media_urls:
+                state.event.media_urls.extend(event.media_urls)
+                state.event.media_types.extend(event.media_types)
+            state.event.absorb_reply_context(event)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             if latest_message_id is not None:
@@ -156,3 +139,23 @@ class BaseTextDebounceMixin:
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:
             state.cancel_timer()
+
+    @staticmethod
+    def _same_text_debounce_sender(existing: MessageEvent, event: MessageEvent) -> bool:
+        """Return True when two text debounce events came from the same sender."""
+
+        from gateway.platforms.base import _platform_name
+
+        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
+            source = getattr(candidate, "source", None)
+            if source is None:
+                return None
+            platform = _platform_name(getattr(source, "platform", None))
+            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+            if sender:
+                return (platform, str(sender))
+            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
+                return (platform, "dm", str(source.chat_id))
+            return None
+        existing_sender = _identity(existing)
+        return existing_sender is not None and existing_sender == _identity(event)

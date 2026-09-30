@@ -4429,6 +4429,7 @@ export interface Translations {
       skipped: string
       noAnswer: string
       confirmAndContinueLabel: string
+      oneQuestion: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
     }
@@ -4439,6 +4440,7 @@ export interface Translations {
       findApp: string
       customColor: string
       plugin: string
+      nothingYet: { lead: string; rest: string }
       intent: Record<'later' | 'now' | 'save', string>
     }
     startChat: {

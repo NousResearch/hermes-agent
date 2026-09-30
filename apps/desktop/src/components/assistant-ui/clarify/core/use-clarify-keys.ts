@@ -4,10 +4,12 @@ import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import type { ClarifyQuestion } from '@/store/clarify'
 
 interface ClarifyKeysOptions {
+  columns?: number
   enabled: boolean
   formRef: RefObject<HTMLFormElement | null>
-  isStaged: (question: ClarifyQuestion) => boolean
-  onClear: (question: ClarifyQuestion) => void
+  initialRow?: number
+  isStaged: (question: ClarifyQuestion, row?: number) => boolean
+  onClear?: (question: ClarifyQuestion) => void
   onConfirm: () => void
   onToggle: (question: ClarifyQuestion, choice: string) => void
   other?: boolean
@@ -16,8 +18,10 @@ interface ClarifyKeysOptions {
 }
 
 export function useClarifyKeys({
+  columns,
   enabled,
   formRef,
+  initialRow = 0,
   isStaged,
   onClear,
   onConfirm,
@@ -26,7 +30,7 @@ export function useClarifyKeys({
   questions,
   shortcuts
 }: ClarifyKeysOptions) {
-  const [cursor, setCursor] = useState({ question: 0, row: 0 })
+  const [cursor, setCursor] = useState({ question: 0, row: initialRow })
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
@@ -95,16 +99,16 @@ export function useClarifyKeys({
   )
 
   const move = useCallback(
-    (delta: number) => {
-      if (!active) {
+    (delta: number, wrap = true) => {
+      const itemCount = choices.length + otherRows
+
+      if (!active || (!wrap && (row + delta < 0 || row + delta >= itemCount))) {
         return
       }
 
       if (!active.multiSelect) {
-        onClear(active)
+        onClear?.(active)
       }
-
-      const itemCount = choices.length + otherRows
 
       setCursor({ question: questionIndex, row: (row + delta + itemCount) % itemCount })
     },
@@ -124,7 +128,7 @@ export function useClarifyKeys({
       return
     }
 
-    if (isStaged(active)) {
+    if (isStaged(active, row)) {
       onConfirm()
 
       return
@@ -184,7 +188,16 @@ export function useClarifyKeys({
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         if (choices.length > 0) {
           event.preventDefault()
-          move(event.key === 'ArrowDown' ? 1 : -1)
+          move((event.key === 'ArrowDown' ? 1 : -1) * (columns ?? 1), columns === undefined)
+        }
+
+        return
+      }
+
+      if ((event.key === 'ArrowRight' || event.key === 'ArrowLeft') && columns !== undefined) {
+        if (choices.length > 0) {
+          event.preventDefault()
+          move(event.key === 'ArrowRight' ? 1 : -1)
         }
 
         return
@@ -217,7 +230,20 @@ export function useClarifyKeys({
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activate, active, choices.length, enabled, focusOther, formRef, move, other, pick, questionIndex, shortcutRows])
+  }, [
+    activate,
+    active,
+    choices.length,
+    columns,
+    enabled,
+    focusOther,
+    formRef,
+    move,
+    other,
+    pick,
+    questionIndex,
+    shortcutRows
+  ])
 
   return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, onOtherFocus, pick }
 }

@@ -1,15 +1,25 @@
 'use client'
 
-import type { SetupChooseIntent, SetupChooseKind } from '@hermes/shared'
+import type { SetupChooseKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
-import { type ComponentType, type FormEvent, useCallback, useMemo, useRef, useState } from 'react'
+import { type ComponentType, type FormEvent, useCallback, useMemo, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { LayoutDashboard, MessageQuestion, Moon, Palette, Plug } from '@/lib/icons'
-import { type ClarifyQuestion, type ClarifyRequest, clearClarifyRequest, SETUP_CHOOSE_QID } from '@/store/clarify'
+import {
+  $setupChooseStages,
+  type ClarifyQuestion,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  commitSetupChoose,
+  EMPTY_SETUP_STAGE,
+  SETUP_CHOOSE_QID,
+  setupChooseStage,
+  stageSetupChoose
+} from '@/store/clarify'
 import { notifyError } from '@/store/notifications'
 import { respondToServerRequest } from '@/store/server-requests'
 import { useTheme } from '@/themes'
@@ -18,8 +28,15 @@ import { ClarifyConfirmBar } from './core/confirm-bar'
 import { QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
-import { pickerShortcutCount, SETUP_PICKERS, SetupIntentRows } from './setup-pickers'
-import { LIVE_APPLY, useSetupRows } from './setup-rows'
+import {
+  PICKER_COLUMNS,
+  pickerShortcutCount,
+  pillQuestion,
+  QuestionPills,
+  SETUP_PICKERS,
+  SetupIntentRows
+} from './setup-pickers'
+import { LIVE_LOOK, useSetupRows } from './setup-rows'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
 
@@ -49,7 +66,7 @@ export function SetupChoosePending({
   const copy = t.assistant.clarify
   const setupCopy = t.assistant.setupChoose
   const storedId = useStore(useSessionView().$storedId)
-  const { setMode } = useTheme()
+  const { mode, setMode } = useTheme()
 
   const ready = Boolean(request?.requestId && request.setup)
   const source = request ?? fromArgs
@@ -59,9 +76,9 @@ export function SetupChoosePending({
   const freeText = pickerKind === null
   const rows = useSetupRows(setup, storedId)
 
-  const [picked, setPicked] = useState<string[]>([])
-  const [draft, setDraft] = useState('')
-  const [intents, setIntents] = useState<Record<string, SetupChooseIntent>>({})
+  const requestId = ready ? (request?.requestId ?? null) : null
+  const stages = useStore($setupChooseStages)
+  const { draft, intents, picked } = (requestId && stages[requestId]) || EMPTY_SETUP_STAGE
 
   const question: ClarifyQuestion = useMemo(
     () => ({
@@ -87,21 +104,26 @@ export function SetupChoosePending({
 
   const stage = useCallback(
     (id: string) => {
-      const removing = question.multiSelect && picked.includes(id)
-
-      setPicked(current =>
-        question.multiSelect ? (removing ? current.filter(value => value !== id) : [...current, id]) : [id]
-      )
-
-      if (!question.multiSelect) {
-        setDraft('')
+      if (!requestId) {
+        return
       }
 
-      if (!removing) {
-        LIVE_APPLY[kind]?.(id, setMode)
-      }
+      const current = setupChooseStage(requestId)
+      const removing = question.multiSelect && current.picked.includes(id)
+      const live = removing ? undefined : LIVE_LOOK[kind]
+
+      stageSetupChoose(requestId, {
+        picked: question.multiSelect
+          ? removing
+            ? current.picked.filter(value => value !== id)
+            : [...current.picked, id]
+          : [id],
+        revert: current.revert ?? live?.snapshot(mode, setMode) ?? null,
+        ...(question.multiSelect ? {} : { draft: '' })
+      })
+      live?.apply(id, setMode)
     },
-    [kind, picked, question.multiSelect, setMode]
+    [kind, mode, question.multiSelect, requestId, setMode]
   )
 
   const toggle = useCallback(
@@ -117,13 +139,11 @@ export function SetupChoosePending({
 
   const onDraft = useCallback(
     (value: string) => {
-      setDraft(value)
-
-      if (!question.multiSelect) {
-        setPicked([])
+      if (requestId) {
+        stageSetupChoose(requestId, { draft: value, ...(question.multiSelect ? {} : { picked: [] }) })
       }
     },
-    [question.multiSelect]
+    [question.multiSelect, requestId]
   )
 
   const confirm = useCallback(() => {
@@ -142,6 +162,7 @@ export function SetupChoosePending({
 
     triggerHaptic('submit')
     onAnswered()
+    commitSetupChoose(request.requestId)
     clearClarifyRequest(request.requestId, request.sessionId)
   }, [answer, copy, intents, onAnswered, picked, request, rows, setup?.intent])
 
@@ -169,12 +190,17 @@ export function SetupChoosePending({
   const formRef = useRef<HTMLFormElement | null>(null)
   const questions = useMemo(() => [question], [question])
   const shortcuts = pickerKind === null ? (question.choices?.length ?? 0) : pickerShortcutCount(rows ?? [])
+  const pills = pickerKind === null && pillQuestion(rows ?? [])
 
   const keys = useClarifyKeys({
+    columns: pickerKind === null ? undefined : PICKER_COLUMNS[pickerKind](rows ?? []),
     enabled: ready,
     formRef,
-    isStaged: () => answer !== null,
-    onClear: () => setPicked([]),
+    initialRow: Math.max(0, rows?.findIndex(row => row.id === picked[0]) ?? 0),
+    isStaged: (_question, row) =>
+      answer !== null &&
+      (pickerKind === null || question.multiSelect || row === undefined || picked.includes(rows?.[row]?.id ?? '')),
+    onClear: pickerKind === null && requestId ? () => stageSetupChoose(requestId, { picked: [] }) : undefined,
     onConfirm: confirm,
     onToggle: toggle,
     other: freeText,
@@ -208,12 +234,26 @@ export function SetupChoosePending({
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-            {pickerKind === null ? copy.questionProgress(answer === null ? 0 : 1, 1) : setupCopy.kinds[pickerKind]}
+            {pickerKind === null ? copy.oneQuestion : setupCopy.kinds[pickerKind]}
           </span>
           <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
-        {Picker === null ? (
+        {Picker === null && pills ? (
+          <QuestionPills
+            cursor={cursor}
+            disabled={!ready}
+            onActivate={() => keys.focusQuestion(0)}
+            onDraft={onDraft}
+            onOtherFocus={() => keys.onOtherFocus(0)}
+            onPick={index => keys.pick(0, index)}
+            question={question}
+            staged={{
+              choices: (rows ?? []).filter(row => picked.includes(row.id)).map(row => row.label),
+              draft
+            }}
+          />
+        ) : Picker === null ? (
           <QuestionBlock
             cursor={cursor}
             disabled={!ready}
@@ -256,7 +296,10 @@ export function SetupChoosePending({
             )}
             <SetupIntentRows
               intents={intents}
-              onIntent={(id, intent) => setIntents(current => ({ ...current, [id]: intent }))}
+              onIntent={(id, intent) =>
+                requestId &&
+                stageSetupChoose(requestId, { intents: { ...setupChooseStage(requestId).intents, [id]: intent } })
+              }
               rows={intentRows}
             />
           </fieldset>

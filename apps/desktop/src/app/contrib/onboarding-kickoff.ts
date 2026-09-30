@@ -155,7 +155,7 @@ export function useOnboardingKickoff({ requestGateway, resumeSession }: Onboardi
         capabilities
       )
 
-      const setupChat = await guideRequest<OnboardingEnsureSetupSessionResult>('onboarding.ensure_setup_session', {
+      const setupChat = await requestGateway<OnboardingEnsureSetupSessionResult>('onboarding.ensure_setup_session', {
         messages: seedMessages
       })
 

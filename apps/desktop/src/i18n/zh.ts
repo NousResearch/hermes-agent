@@ -4889,6 +4889,7 @@ export const zh = defineLocale({
       skipped: '已跳过',
       noAnswer: '未回答',
       confirmAndContinueLabel: '确认并继续',
+      oneQuestion: '1 个问题',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
     },
@@ -4905,6 +4906,10 @@ export const zh = defineLocale({
       findApp: '查找应用',
       customColor: '自定义颜色',
       plugin: '插件',
+      nothingYet: {
+        lead: '目前不会连接或安装任何东西。',
+        rest: '当任务需要时，Hermes 会提议关联这些项目或安装插件，并先征求你的同意。'
+      },
       intent: { now: '现在', later: '需要时', save: '仅记下' }
     },
     startChat: {

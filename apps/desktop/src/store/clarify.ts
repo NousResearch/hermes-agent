@@ -1,4 +1,4 @@
-import type { SetupChooseKind, SetupChooseOption } from '@hermes/shared'
+import type { SetupChooseIntent, SetupChooseKind, SetupChooseOption } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
@@ -204,6 +204,41 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
     $clarifyRequests.set(next)
   }
 }
+
+export interface SetupChooseStage {
+  draft: string
+  intents: Record<string, SetupChooseIntent>
+  picked: string[]
+  revert: (() => void) | null
+}
+
+export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', intents: {}, picked: [], revert: null }
+
+export const $setupChooseStages = atom<Record<string, SetupChooseStage>>({})
+
+export const setupChooseStage = (requestId: string): SetupChooseStage =>
+  $setupChooseStages.get()[requestId] ?? EMPTY_SETUP_STAGE
+
+export function stageSetupChoose(requestId: string, patch: Partial<SetupChooseStage>): void {
+  $setupChooseStages.set({ ...$setupChooseStages.get(), [requestId]: { ...setupChooseStage(requestId), ...patch } })
+}
+
+export function commitSetupChoose(requestId: string): void {
+  const next = { ...$setupChooseStages.get() }
+  delete next[requestId]
+  $setupChooseStages.set(next)
+}
+
+$clarifyRequests.listen(requests => {
+  const live = new Set(Object.values(requests).map(request => request.requestId))
+
+  for (const [requestId, stage] of Object.entries($setupChooseStages.get())) {
+    if (!live.has(requestId)) {
+      commitSetupChoose(requestId)
+      stage.revert?.()
+    }
+  }
+})
 
 /** Whether `sessionId` has a clarify parked on it right now (imperative read —
  *  the composer checks this on Enter, not on every render). */

@@ -4,18 +4,19 @@ import { useQuery } from '@tanstack/react-query'
 import { listConnectors } from '@/app/capabilities/connectors/data/rpc'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { MODE_OPTIONS } from '@/app/settings/constants'
-import { $chatLayoutPicked, assembleChatOnboarding } from '@/components/onboarding-chat/assembly'
+import { $chatLayoutPicked, assembleChatOnboarding, snapshotChatLayout } from '@/components/onboarding-chat/assembly'
 import { accentsFor, LAYOUTS, NOUS_ACCENT, orderConnectorPicks } from '@/components/onboarding-chat/options'
 import type { LayoutNode } from '@/components/pane-shell/tree/model'
 import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { connectorTitle } from '@/lib/connector-tools'
 import type { SetupChooseSpec } from '@/store/clarify'
+import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
 import { type OnboardingPlugin, useOnboardingPluginList } from '@/store/onboarding-plugins'
 import { $activeGatewayProfile } from '@/store/profile'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 import { useTheme } from '@/themes'
-import { setAccentOverride } from '@/themes/accent-override'
+import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 import { normalizeHex } from '@/themes/color'
 import type { ThemeMode } from '@/themes/context'
 
@@ -59,28 +60,53 @@ const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources,
   theme: (id, { t }) => modeLabel(id, t)
 }
 
-export const LIVE_APPLY: Partial<Record<SetupChooseKind, (id: string, setMode: (mode: ThemeMode) => void) => void>> = {
-  accent: id => {
-    const hex = normalizeHex(id)
+interface LiveLook {
+  apply: (id: string, setMode: (mode: ThemeMode) => void) => void
+  snapshot: (mode: ThemeMode, setMode: (mode: ThemeMode) => void) => () => void
+}
 
-    if (hex) {
-      setAccentOverride(hex === NOUS_ACCENT ? null : hex)
+export const LIVE_LOOK: Partial<Record<SetupChooseKind, LiveLook>> = {
+  accent: {
+    apply: id => {
+      const hex = normalizeHex(id)
+
+      if (hex) {
+        const accent = hex === NOUS_ACCENT ? null : hex
+
+        setOnboardingAnswers({ accent })
+        setAccentOverride(accent)
+      }
+    },
+    snapshot: () => {
+      const { accent } = $onboardingAnswers.get()
+      const override = $accentOverride.get()
+
+      return () => {
+        setOnboardingAnswers({ accent })
+        setAccentOverride(override)
+      }
     }
   },
-  layout: id => {
-    const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
+  layout: {
+    apply: id => {
+      const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
 
-    if (!preset?.data) {
-      return
-    }
+      if (!preset?.data) {
+        return
+      }
 
-    $chatLayoutPicked.set(true)
-    assembleChatOnboarding(preset.id, preset.data as LayoutNode, LAYOUTS.find(layout => layout.id === id)?.mode)
+      $chatLayoutPicked.set(true)
+      assembleChatOnboarding(preset.id, preset.data as LayoutNode, LAYOUTS.find(layout => layout.id === id)?.mode)
+    },
+    snapshot: snapshotChatLayout
   },
-  theme: (id, setMode) => {
-    if (MODE_OPTIONS.some(option => option.id === id)) {
-      setMode(id as ThemeMode)
-    }
+  theme: {
+    apply: (id, setMode) => {
+      if (MODE_OPTIONS.some(option => option.id === id)) {
+        setMode(id as ThemeMode)
+      }
+    },
+    snapshot: (mode, setMode) => () => setMode(mode)
   }
 }
 

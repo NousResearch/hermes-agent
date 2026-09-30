@@ -5715,6 +5715,7 @@ export const deOverrides = {
       skipped: 'Übersprungen',
       noAnswer: 'Keine Antwort',
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
+      oneQuestion: '1 Frage',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
@@ -5732,6 +5733,10 @@ export const deOverrides = {
       findApp: 'App suchen',
       customColor: 'Eigene Farbe',
       plugin: 'Plugin',
+      nothingYet: {
+        lead: 'Noch wird nichts verbunden oder installiert.',
+        rest: 'Hermes bietet an, diese zu verknüpfen oder ein Plugin zu installieren, wenn eine Aufgabe sie braucht, und fragt vorher.'
+      },
       intent: { now: 'Jetzt', later: 'Bei Bedarf', save: 'Nur merken' }
     },
     startChat: {

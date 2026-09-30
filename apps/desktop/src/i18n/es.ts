@@ -5708,6 +5708,7 @@ export const esOverrides = {
       skipped: 'Omitido',
       noAnswer: 'Sin respuesta',
       confirmAndContinueLabel: 'Confirmar y continuar',
+      oneQuestion: '1 pregunta',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
@@ -5725,6 +5726,10 @@ export const esOverrides = {
       findApp: 'Buscar una app',
       customColor: 'Color personalizado',
       plugin: 'Plugin',
+      nothingYet: {
+        lead: 'Todavía no se conecta ni se instala nada.',
+        rest: 'Hermes ofrecerá vincularlos o instalar un plugin cuando una tarea los necesite, y pregunta antes.'
+      },
       intent: { now: 'Ahora', later: 'Cuando haga falta', save: 'Solo anotarlo' }
     },
     startChat: {

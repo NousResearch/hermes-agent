@@ -176,6 +176,41 @@ export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: Inte
   $chatOnboardingSolo.set(false)
 }
 
+export function snapshotChatLayout(): () => void {
+  const snapshot = {
+    id: $activePresetId.get(),
+    mode: $interfaceMode.get(),
+    panes: $paneStates.get(),
+    picked: $chatLayoutPicked.get(),
+    placed: $userPlacedPanes.get(),
+    previous: previousLayout,
+    solo: $chatOnboardingSolo.get(),
+    tree: $layoutTree.get()
+  }
+
+  return () => {
+    if (snapshot.mode !== $interfaceMode.get()) {
+      setInterfaceMode(snapshot.mode)
+    }
+
+    if (snapshot.tree) {
+      $layoutTree.set(snapshot.tree)
+      $paneStates.set(snapshot.panes)
+      $userPlacedPanes.set(snapshot.placed)
+      markActivePreset(snapshot.id)
+      persistTree()
+    }
+
+    previousLayout = snapshot.previous
+    $chatLayoutPicked.set(snapshot.picked)
+
+    if (snapshot.solo && !$chatOnboardingSolo.get()) {
+      $chatOnboardingSolo.set(true)
+      window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+    }
+  }
+}
+
 export function skipChatOnboarding(): void {
   const preset = registry.getArea('layouts').find(contribution => contribution.id === 'basic')
 

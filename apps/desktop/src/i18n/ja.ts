@@ -3935,6 +3935,7 @@ export const ja = defineLocale({
       skipped: 'スキップ済み',
       noAnswer: '回答なし',
       confirmAndContinueLabel: '確定して続行',
+      oneQuestion: '1問',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
@@ -3952,6 +3953,10 @@ export const ja = defineLocale({
       findApp: 'アプリを検索',
       customColor: 'カスタムカラー',
       plugin: 'プラグイン',
+      nothingYet: {
+        lead: 'まだ何も接続・インストールされません。',
+        rest: 'タスクで必要になったとき、Hermes がこれらの連携やプラグインのインストールを提案し、先に確認します。'
+      },
       intent: { now: '今すぐ', later: '必要なときに', save: 'メモだけ' }
     },
     startChat: {

@@ -4057,6 +4057,7 @@ export const ru = defineLocale({
       skipped: 'Пропущено',
       noAnswer: 'Нет ответа',
       confirmAndContinueLabel: 'Подтвердить и продолжить',
+      oneQuestion: '1 вопрос',
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       notDelivered:
         'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
@@ -4074,6 +4075,10 @@ export const ru = defineLocale({
       findApp: 'Найти приложение',
       customColor: 'Свой цвет',
       plugin: 'Плагин',
+      nothingYet: {
+        lead: 'Пока ничего не подключается и не устанавливается.',
+        rest: 'Hermes предложит подключить их или установить плагин, когда это понадобится для задачи, и сначала спросит.'
+      },
       intent: { now: 'Сейчас', later: 'Когда понадобится', save: 'Просто запомнить' }
     },
     startChat: {

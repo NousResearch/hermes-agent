@@ -4099,6 +4099,7 @@ export const zhHant = defineLocale({
       skipped: '已略過',
       noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
+      oneQuestion: '1 個問題',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
@@ -4115,6 +4116,10 @@ export const zhHant = defineLocale({
       findApp: '尋找應用程式',
       customColor: '自訂顏色',
       plugin: '外掛',
+      nothingYet: {
+        lead: '目前不會連接或安裝任何東西。',
+        rest: '當任務需要時，Hermes 會提議連結這些項目或安裝外掛，並先徵求你的同意。'
+      },
       intent: { now: '現在', later: '需要時', save: '僅記下' }
     },
     startChat: {

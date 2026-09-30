@@ -688,7 +688,29 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const kickoffFirstChat = useOnboardingKickoff({ requestGateway, resumeSession })
+  const adoptSessionRoute = useCallback(
+    async (storedSessionId: string) => {
+      creatingSessionRef.current = true
+
+      try {
+        await resumeSession(storedSessionId, true)
+
+        if ($selectedStoredSessionId.get() === storedSessionId) {
+          navigate(sessionRoute(storedSessionId), { replace: true })
+        }
+      } finally {
+        window.setTimeout(() => {
+          creatingSessionRef.current = false
+        }, 0)
+      }
+    },
+    [navigate, resumeSession]
+  )
+
+  const kickoffFirstChat = useOnboardingKickoff({
+    requestGateway: ambientRequestGateway,
+    resumeSession: adoptSessionRoute
+  })
 
   useOnboardingHandoff({
     activeSessionIdRef,

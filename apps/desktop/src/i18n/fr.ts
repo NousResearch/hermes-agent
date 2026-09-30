@@ -5729,6 +5729,7 @@ export const frOverrides = {
       skipped: 'Ignoré',
       noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
+      oneQuestion: '1 question',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
@@ -5746,6 +5747,10 @@ export const frOverrides = {
       findApp: 'Trouver une app',
       customColor: 'Couleur personnalisée',
       plugin: 'Plugin',
+      nothingYet: {
+        lead: 'Rien n’est connecté ni installé pour l’instant.',
+        rest: 'Hermes proposera de les relier, ou d’installer un plugin, quand une tâche en aura besoin, et demandera d’abord.'
+      },
       intent: { now: 'Maintenant', later: 'Au besoin', save: 'Juste noter' }
     },
     startChat: {

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import inspect
 import re
 from functools import partial
@@ -306,6 +307,26 @@ class _Collector:
                 # unadvanced, event replayable), retain the sub, operator alert. (GOV-F25 AC-9.)
                 _note_durable_failure(conn, sub, None, "wake API lacks require_persist_ack (PR-B absent)")
                 return None
+            # Recovery: if a fence is already set, an earlier durable batch is un-acked (a failed
+            # wake, or a crash mid-batch). The fresh claim below is fenced-empty, so RE-DELIVER the
+            # un-acked range [pending_event_id, last_event_id] instead — this is what drives
+            # never-drop on the RUNNING notifier, not only at a cold restart. deliver_durable_batch
+            # CASes the fence forward per persist-ack and clears it after the final event.
+            _kbn_mod = _kbn()
+            _pending = _kbn_mod.notify_pending_event_id(
+                conn, task_id=sub["task_id"], platform=sub["platform"],
+                chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "")
+            if _pending is not None:
+                _recovery = _kbn_mod.pending_events_for_sub(
+                    conn, task_id=sub["task_id"], platform=sub["platform"],
+                    chat_id=sub["chat_id"], thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS)
+                if not _recovery:
+                    return None
+                task = self.kb.get_task(conn, sub["task_id"])
+                logger.debug("kanban notifier: durable recovery replay of %d event(s) for %s on %s (fence %s)",
+                             len(_recovery), sub["task_id"], slug, _pending)
+                return {"sub": sub, "old_cursor": _pending, "cursor": _pending,
+                        "events": _recovery, "task": task, "board": slug}
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
@@ -500,14 +521,15 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
 # failure — and the pre-claim capability gate that keeps PR-A safe without PR-B.
 
 
-def _durable_idempotency_key(sub: dict, event_id: int) -> str:
-    """Stable per-sub / per-event idempotency key — IDENTICAL across a failed attempt and its
-    replay, so the persist-confirmed api_server (GOV-F25 PR-B) dedups a redelivery of the same
-    event rather than re-running its turn twice."""
-    return (
-        "kanban-notify:"
-        f"{sub['task_id']}:{sub['platform']}:{sub['chat_id']}:{sub.get('thread_id') or ''}:{event_id}"
-    )
+def _durable_idempotency_key(sub: dict, event_id: int, board: Optional[str] = None) -> str:
+    """Stable per-(board, sub, event) idempotency key — IDENTICAL across a failed attempt and its
+    replay, so the persist-confirmed api_server (GOV-F25 PR-B) dedups a redelivery of the same event
+    rather than re-running its turn twice. Hashed over the full identity tuple (board included) so no
+    field value — e.g. a chat_id or thread_id containing ':' — can collide two distinct
+    subscriptions onto one key and cross-serve a cached receipt."""
+    raw = repr((board or "", sub["task_id"], sub["platform"], sub["chat_id"],
+                sub.get("thread_id") or "", int(event_id)))
+    return "kanban-notify:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _wake_supports_persist_ack(deliver_wake: Any) -> bool:
@@ -570,7 +592,7 @@ class _DurableDrainResult:
 
 async def deliver_durable_batch(
     conn: Any, sub: dict, events: list, *, deliver_wake: Any, adapter: Any = None,
-    session_id: str = "", profile: Optional[str] = None,
+    session_id: str = "", profile: Optional[str] = None, board: Optional[str] = None,
 ) -> _DurableDrainResult:
     """Deliver one claimed durable batch under the Option B fence (events in id ASC; the fence was
     set to ``events[0].id`` by :func:`claim_unseen_events_for_sub`). Per event, oldest first:
@@ -592,7 +614,7 @@ async def deliver_durable_batch(
         if ev.kind not in _WAKE_KINDS:
             _kbn.settle_notify_pending(conn, **key, settled_event_id=ev.id, next_pending_id=next_pending)
             continue
-        idem = _durable_idempotency_key(sub, ev.id)
+        idem = _durable_idempotency_key(sub, ev.id, board)
         result.idempotency_key = idem
         try:
             await deliver_wake(
@@ -892,15 +914,19 @@ class _KanbanNotification:
         conn = await asyncio.to_thread(partial(_kbc().connect, board=self.board_slug))
         try:
             async with self._owner_scope():
-                await deliver_durable_batch(
+                result = await deliver_durable_batch(
                     conn, self.sub, list(self.d["events"]),
                     deliver_wake=deliver_wake, adapter=self.adapter,
                     session_id=session_id, profile=self.sub_profile or None,
+                    board=self.board_slug,
                 )
         finally:
             await asyncio.to_thread(conn.close)
         self._log_woke()
-        if self.task and self.task.status == "archived":
+        # Unsubscribe on archive ONLY when the fence fully cleared (every event settled). A retained
+        # fence (a failed / un-acked event) must keep the sub so recovery can replay — archiving it
+        # away would drop the un-acked event, defeating never-drop.
+        if self.task and self.task.status == "archived" and result.settled and not result.failed:
             await self.unsub()
 
     async def deliver(self) -> None:
@@ -915,9 +941,13 @@ class _KanbanNotification:
         adapter = await asyncio.to_thread(
             _adapter_for_subscription, self.runner, self.plat, self.sub, self.sub_profile or None)
         if adapter is None:
-            logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
+            logger.debug("kanban notifier: adapter %s disconnected before delivery for %s",
                          self.platform_str, self.task_id)
-            await self.rewind()
+            # A durable sub recovers via the pending_event_id fence — rewinding would reset
+            # last_event_id while leaving the fence set (pending > cursor), stranding the range.
+            # Leave the fence intact; the next tick's recovery replays it.
+            if self.sub.get("retry_policy") != "durable":
+                await self.rewind()
             return
         self.adapter = adapter
         from gateway.wake import adapter_supports_push

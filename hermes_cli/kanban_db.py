@@ -1810,10 +1810,10 @@ def publish_task_notification(
     if not message or not str(message).strip():
         raise ValueError("notification message is required")
     # Flatten metadata into the event payload alongside the message so a consumer
-    # reads e.g. payload["idempotency_key"] directly (never nested).
-    payload: dict = {"message": str(message)}
-    if metadata:
-        payload.update(metadata)
+    # reads e.g. payload["idempotency_key"] directly (never nested). ``message`` is
+    # written LAST so a stray metadata "message" key can never clobber the validated body.
+    payload: dict = dict(metadata) if metadata else {}
+    payload["message"] = str(message)
     # allow_nested=True: a caller may compose the publish under an outer commit,
     # the same contract add_comment uses.
     with write_txn(conn, allow_nested=True):
@@ -4342,7 +4342,13 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
-            "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
+            "(SELECT id FROM tasks WHERE status IN ('done', 'archived')) "
+            # GOV-F25 (Option B): never GC an event still inside a durable sub's un-acked
+            # pending_event_id fence range — deleting it would empty the promised recovery range
+            # while the fence stays set, stranding a never-deliverable durable event.
+            "AND NOT EXISTS (SELECT 1 FROM kanban_notify_subs s "
+            "WHERE s.task_id = task_events.task_id AND s.pending_event_id IS NOT NULL "
+            "AND task_events.id >= s.pending_event_id)", (cutoff,),
         )
     return int(cur.rowcount or 0)
 

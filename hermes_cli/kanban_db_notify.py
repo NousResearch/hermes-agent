@@ -117,7 +117,8 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT delivery_metadata, delivery_mode, retry_policy FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT delivery_metadata, delivery_mode, retry_policy, pending_event_id "
+            "FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             key,
         ).fetchone()
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
@@ -139,6 +140,14 @@ def add_notify_sub(
                 raise ValueError(
                     f"retry_policy='durable' requires a wake-capable delivery_mode "
                     f"(one of {_WAKE_CAPABLE_DELIVERY_MODES}); got delivery_mode={effective_mode!r}")
+        elif existing is not None and existing["retry_policy"] == "durable" \
+                and existing["pending_event_id"] is not None:
+            # Refuse to downgrade a durable sub OUT of 'durable' while it still holds an un-acked
+            # pending_event_id fence: the next (non-durable) claim would ignore the fence and a crash
+            # could lose the in-flight batch. Drain/settle the fenced batch before downgrading.
+            raise ValueError(
+                "cannot downgrade retry_policy from 'durable' while an un-acked pending_event_id "
+                f"fence is set (task {task_id!r}, chat {chat_id!r}); drain the in-flight batch first")
         merged_metadata = dict(existing_metadata)
         if delivery_metadata:
             merged_metadata.update(delivery_metadata)

@@ -263,11 +263,55 @@ def _deliver_true_receipt(conn: sqlite3.Connection, sub: dict, *, event_id: int)
     return SimpleNamespace(event_id=ev.id, idempotency_key=knw._durable_idempotency_key(sub, ev.id))
 
 
+async def _persist_capable_wake(adapter=None, *, text, session_id="", profile=None,
+                                idempotency_key=None, require_persist_ack=False, **kwargs):
+    """A ``deliver_wake`` stub whose signature carries ``require_persist_ack`` — the PR-B capability
+    the notifier's pre-claim gate probes with ``_wake_supports_persist_ack``. Swapped in so the
+    collector's durable path (incl. recovery) is reachable on the PR-A branch ALONE, i.e. the
+    merged PR-A+PR-B state a running gateway will actually be in."""
+    return True
+
+
+def _collector_claim(conn: sqlite3.Connection, sub: dict):
+    """Drive the REAL ``_Collector._claim_for_sub`` for one durable sub and return its claim dict
+    (or None). A fenced sub returns the un-acked range ``[pending_event_id, last_event_id]`` — this
+    is the RUNNING-collector recovery decision (the P0 fix), not a reimplementation of it. Simulates
+    a connected ``api_server`` adapter and, by swapping ``gateway.wake.deliver_wake`` for a
+    persist-capable stub, the presence of PR-B (without which the pre-claim gate fails closed)."""
+    import gateway.wake as _wake_mod
+    adapter = SimpleNamespace()
+    runner = SimpleNamespace(
+        adapters={"api_server": adapter}, _profile_adapters={},
+        config=SimpleNamespace(multiplex_profiles=False),
+        _owns_kanban_dispatcher_lock=lambda: True,
+        _authorization_adapter=lambda platform, profile: adapter,
+    )
+    collector = knw._Collector(runner, kb, notifier_profile=None, gc_due=False, gc_retention_days=30)
+    # The RUNNING collector iterates the PERSISTED sub rows (list_notify_subs), which carry
+    # retry_policy / delivery_mode / pending_event_id — not the 4-tuple test dict. Feed
+    # _claim_for_sub the real row so its durable-vs-fresh + recovery decision is exercised exactly
+    # as in production (a bare dict lacking retry_policy would silently take the non-durable path).
+    rows = kbn.list_notify_subs(conn, task_id=sub["task_id"])
+    row = next(r for r in rows
+               if r["platform"] == sub["platform"] and r["chat_id"] == sub["chat_id"]
+               and (r.get("thread_id") or "") == (sub.get("thread_id") or ""))
+    _orig = _wake_mod.deliver_wake
+    _wake_mod.deliver_wake = _persist_capable_wake
+    try:
+        return collector._claim_for_sub(conn, "default", row)
+    finally:
+        _wake_mod.deliver_wake = _orig
+
+
 def _recover_durable(conn: sqlite3.Connection, sub: dict) -> list:
-    """Replay a durable sub's un-acked fenced range after a crash — reads ONLY
-    [pending_event_id, last_event_id], redelivers each with a true receipt, settles the fence."""
+    """Replay a durable sub's un-acked fenced range after a crash. Obtains the range by driving the
+    REAL collector (``_Collector._claim_for_sub``), which on a set fence returns ONLY
+    ``[pending_event_id, last_event_id]`` instead of a fresh claim, then redelivers each with a true
+    receipt and settles the fence. Proves the running collector — not just a cold restart — routes a
+    fenced sub into recovery."""
     key = _sub_kwargs(sub)
-    events = kbn.pending_events_for_sub(conn, **key, kinds=knw.TERMINAL_KINDS)
+    claimed = _collector_claim(conn, sub)
+    events = claimed["events"] if claimed else []
     ids = [e.id for e in events]
     wakes = []
     for i, ev in enumerate(events):

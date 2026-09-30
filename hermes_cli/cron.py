@@ -602,9 +602,9 @@ def _print_active_jobs_summary(jobs) -> None:
 
 
 def _scripts_dir_for_cron() -> Path:
-    """Scripts dir for cron jobs — via ``CRON_DIR`` so monkeypatched cron storage is honoured."""
-    from cron.jobs import CRON_DIR
-    return CRON_DIR.parent / "scripts"
+    """Scripts dir for the currently active profile."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home().resolve() / "scripts"
 
 
 def _script_health_issue(script: str) -> Optional[str]:

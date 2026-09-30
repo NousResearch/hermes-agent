@@ -166,6 +166,32 @@ describe('gateway room tabs', () => {
 })
 
 describe('disband', () => {
+  it('cold reload keeps a disbanded room gone and every other room field intact', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Keep', current => ({
+      ...current,
+      log: [{ at: 10, from: { kind: 'user', name: 'You' }, id: 'held', text: 'keep', thread: 't' }],
+      watermarks: { 't::builder': 1 }, sessions: { builder: 'session' },
+      sessionOwners: { builder: { name: 'builder', connectionId: 'owner' } },
+      holds: { builder: { at: 2, noted: true } }, heldMessages: { builder: ['held'] },
+      holdDetection: false, stranded: { builder: { before: 2, thread: 't' } },
+      externalCursors: { builder: 4 }, members: [{ name: 'builder' }],
+      roomId: 'keep-id', image: 'data:image/png;base64,keep', sectionId: 'section',
+      rosterOrder: 3, pinned: true, syncRevision: 7
+    }), { sync: false })
+    room.chat.updateGroupChat('Gone', current => ({ ...current, roomId: 'gone-id', running: true }), { sync: false })
+    const keep = structuredClone(durable(room).Keep)
+    await room.view.disbandGroupChat('Gone', [])
+    const stored = JSON.parse(JSON.stringify(durable(room)))
+    expect(stored).toEqual({ Keep: keep })
+    // Replace all runtime state with the cold-start reader, not the live atom.
+    room.chat.$groupChats.set(room.chat.hydrateGroupChatRooms(stored))
+    expect(room.chat.$groupChats.get().Gone).toBeUndefined()
+    expect(room.chat.durableGroupChatRooms()).toEqual({ Keep: keep })
+    room.chat.updateGroupChat('Keep', current => current, { sync: false })
+    expect(durable(room)).toEqual({ Keep: keep })
+  })
+
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()
     room.chat.$groupChats.set({

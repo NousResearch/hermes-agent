@@ -106,7 +106,7 @@
 -- `{workdir}/tmp` is writable, expiring temporary space and `$TMPDIR` points there. Use it for disposable work and send-only artifacts; keep lasting files elsewhere under `{workdir}`.
 -- Outside the workspace, `/tmp`, system directories, and running processes are tied to the current machine. The machine also sleeps when idle and wakes transparently on your next operation — you won't notice, but a running process might be gone after a long quiet gap.
 -- Checkpoint long work into files. If a job must recur or outlive today, use a Schedule. A long job that may outlive the machine gets checkpoints plus a guard-script Schedule that revives it (`{guides_root}/responsibility-authoring/references/schedules.md` carries the pattern). A process meant to run forever — a bot, a listener, a server — has no durable form on this computer: it dies with the machine and nothing brings it back. Never build one as the answer to a request; say it won't survive and offer the Schedule- or webhook-shaped alternative.
-+The actual environment is described in your runtime context. `{profile_home}` holds employee knowledge and native profile state. `{workdir}` holds documents, repositories and temporary work. `{guides_root}` holds product-owned guides. These paths are organization conventions, not a filesystem sandbox.
++The actual environment is described in your runtime context. `{profile_home}` holds employee knowledge and native profile state. `{workdir}` holds documents, repositories and working files. `{guides_root}` holds product-owned guides. These paths are organization conventions, not a filesystem sandbox.
 @@ -12 +9 @@
 -## Installing tools
 +On Railway, only the configured persistent volume survives replacement. Processes do not survive restart; native cron resumes according to native missed-run policy. Save checkpoints in durable files and author recurring work through responsibilities. There is no transparent hosted sleep/wake contract.
@@ -117,7 +117,7 @@
 -- `npm install -g <pkg>` — persists automatically (the global prefix lives in your home).
 -- Python: `pip install --user <pkg>`, `uv tool install <pkg>`, or a virtualenv under `{workdir}`.
 -- `$HOME/.local/bin` is on your PATH, so installed CLIs are available in later conversations too.
-+Incoming attachments use their native message paths and retention. Keep lasting material under `{workdir}/documents`; repositories under `{workdir}/repos`; disposable work under `{workdir}/tmp`. See `{guides_root}/file-keeping/guide.md`.
++Incoming attachments use their native message paths and retention. Keep lasting material under `{workdir}/documents`; repositories under `{workdir}/repos`; disposable work in the native terminal environment's scratch directory, following its runtime path guidance. See `{guides_root}/file-keeping/guide.md`.
 @@ -20,24 +15 @@
 -Preinstalled: Python 3.12 (`pip`, `uv`), Node.js (`npm`, `npx`), Git, `make`, `rg`, `jq`, `rsync`, `ssh`, `patch`, `file`, archive tools (`tar`, `zip`, `unzip`, `xz`), headless `ffmpeg`/`ffprobe`, and PostgreSQL/MariaDB client commands. Not present: database servers, `sqlite3`, web browsers, compilers (`gcc`), ML frameworks. Outbound internet works normally — no proxy setup needed.
 -
@@ -283,11 +283,12 @@
 +- [ ] A handshake `secret` is a `env:VARIABLE_NAME` native profile secret
 --- reference/file-keeping/guide.md
 +++ guides/file-keeping/guide.md
-@@ -5,2 +5 @@
+@@ -5,2 +5,2 @@
 -`{workdir}/cache` is the read-only arrival area — entries expire after about
 -a day.
++Use the native terminal environment's scratch directory for disposable work and send-only artifacts; follow its runtime path guidance.
 +Incoming attachments use the paths in their message notices. Their retention follows the native channel; copy lasting material into documents.
-@@ -19,2 +18 @@
+@@ -19,2 +19 @@
 -- Copy out of the cache during the conversation it arrived in; the cache copy
 -  is gone within a day.
 +- Copy lasting material during the conversation it arrived in; do not rely on attachment-cache retention.

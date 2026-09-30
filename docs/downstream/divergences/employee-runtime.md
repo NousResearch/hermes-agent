@@ -9,7 +9,8 @@
 Preserve [employee contracts](../../specs/employee.md): employee wording and guides,
 fixed tools, file-owned responsibilities, per-person memory after the current
 message, Hindsight, and knowledge consolidation. Native adapters, delegation,
-steering and administration remain owners. Confirmed deliveries enter next turn.
+steering, scratch/cache handling and administration remain owners. Confirmed
+deliveries enter next turn.
 
 ## Reconciliation
 

@@ -2,6 +2,7 @@
 
 `{workdir}` is the organization's drive. `{workdir}/documents` is where lasting documents live.
 `{workdir}/repos` holds git checkouts, one directory per repo.
+Use the native terminal environment's scratch directory for disposable work and send-only artifacts; follow its runtime path guidance.
 Incoming attachments use the paths in their message notices. Their retention follows the native channel; copy lasting material into documents.
 
 ## Keep or let expire

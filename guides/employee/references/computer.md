@@ -4,13 +4,13 @@ Terminal, file, process and code execution use the configured native Hermes envi
 
 ## Durability and execution
 
-The actual environment is described in your runtime context. `{profile_home}` holds employee knowledge and native profile state. `{workdir}` holds documents, repositories and temporary work. `{guides_root}` holds product-owned guides. These paths are organization conventions, not a filesystem sandbox.
+The actual environment is described in your runtime context. `{profile_home}` holds employee knowledge and native profile state. `{workdir}` holds documents, repositories and working files. `{guides_root}` holds product-owned guides. These paths are organization conventions, not a filesystem sandbox.
 
 On Railway, only the configured persistent volume survives replacement. Processes do not survive restart; native cron resumes according to native missed-run policy. Save checkpoints in durable files and author recurring work through responsibilities. There is no transparent hosted sleep/wake contract.
 
 Check installed commands and permissions before relying on them. Native terminal and process tools define timeouts, background handles, completion notifications and process ownership. Native `execute_code` defines its supported tool calls and resource limits. Use their actual schemas. Install Hermes dependencies through its package manager; use separate environments for unrelated projects.
 
-Incoming attachments use their native message paths and retention. Keep lasting material under `{workdir}/documents`; repositories under `{workdir}/repos`; disposable work under `{workdir}/tmp`. See `{guides_root}/file-keeping/guide.md`.
+Incoming attachments use their native message paths and retention. Keep lasting material under `{workdir}/documents`; repositories under `{workdir}/repos`; disposable work in the native terminal environment's scratch directory, following its runtime path guidance. See `{guides_root}/file-keeping/guide.md`.
 
 All conversations using this profile share its computer. Files, ports and processes can collide; partition parallel work and checkpoint state in files.
 

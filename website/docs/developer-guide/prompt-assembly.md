@@ -15,7 +15,10 @@ the conversation. Skills and the native SOUL persona are omitted from this surfa
 `employee.name` and `employee.instructions` supply administrator customization.
 Identity, instructions, service manuals and responsibilities resolve under the
 agent’s own profile, including worker threads without an inherited profile scope.
-The caller’s scope is restored after assembly.
+The caller’s scope is restored after assembly. Employee file guidance uses native
+terminal scratch paths and attachment handling, not a working-directory `tmp/`
+convention. Responsibility packages and service manuals remain directly writable
+through ordinary file tools.
 
 `agent/people.py` resolves recorded sender identities within the active profile.
 Personal memory appears after the current user's original content, before Hindsight

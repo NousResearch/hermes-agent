@@ -162,8 +162,9 @@ EMPLOYEE_FILES_GUIDANCE = (
     "keep it in {workdir}/documents — cloud links as stub files; files sent "
     "only for the moment are left to expire with the cache. Git checkouts go "
     "in {workdir}/repos. Before saying you don't have a file, search the "
-    "drive. {workdir}/tmp is for temporary work, including artifacts created "
-    "only to send. Filing conventions: {guides_root}/file-keeping/guide.md."
+    "drive. Use the native terminal environment's scratch directory for "
+    "temporary work, including artifacts created only to send. Follow its "
+    "runtime guidance for the path. Filing conventions: {guides_root}/file-keeping/guide.md."
 )
 
 

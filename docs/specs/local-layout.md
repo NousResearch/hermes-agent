@@ -32,7 +32,6 @@ The working directory holds actual work. Product guides ship with the code.
 <working-directory>/
   documents/
   repos/
-  tmp/
 
 <installed-repository>/
   guides/
@@ -56,14 +55,19 @@ agreed responsibility validation, limits and feedback. There is no generated
 Authored shared memory and per-person profiles belong to the same employee
 boundary. Their exact local storage representation is a separate implementation
 detail; this layout does not collapse personal profiles into one shared USER.md.
+Memory remains managed through its tools and context injection, not a new model-facing work
+folder. Native configuration, credentials and runtime state retain their existing
+locations and protections; this layout does not hide them behind a new sandbox.
 Hindsight integration must retain the agreed employee scope as well.
 
 ## Working files
 
-Use `documents/` for retained documents and cloud-document stubs, `repos/` for
-checkouts, and `tmp/` for disposable work. The actual working directory must be
-resolved from native configuration/session execution context and communicated
-to the model; it is not a fixed `/workspace` path.
+Use `documents/` for retained documents and cloud-document stubs, and `repos/`
+for checkouts. Disposable work uses the native terminal environment's scratch
+directory and runtime path guidance. Attachments retain native message paths
+and retention. Do not introduce working-directory `tmp/`, `cache/` or `home/`
+conventions. The actual working directory resolves from native
+configuration/session execution context; it is not a fixed `/workspace` path.
 
 These conventions do not authorize moving existing user files, replacing
 occupied paths, automatic deletion, or a new retention policy. A shared working

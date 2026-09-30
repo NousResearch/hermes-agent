@@ -670,7 +670,15 @@ The **next** `hermes desktop` launch repairs it, in this order:
 2. the unprivileged user-namespace sandbox works (probed with `unshare --user --map-root-user true`) — Hermes prints `✓ Using Chromium's user-namespace sandbox (setuid helper not needed)` and the setuid helper is never consulted;
 3. otherwise **sudo is required**, and Hermes asks for it: `chown root:root` then `chmod 4755` on `chrome-sandbox`.
 
-So the sudo prompt on the first launch after a rebuild is expected, not a failure — it is the third rung of that ladder, and the only one that needs root. Distributions that restrict unprivileged user namespaces (Ubuntu 24.04's AppArmor profile is the common case) send every install down that rung, so on those systems the prompt is the normal route rather than a fallback. If no `sudo` is on `PATH`, Hermes reports that instead of launching an unconfigured helper, and a host that also blocks user namespaces exits rather than dropping the sandbox — `hermes desktop` then fails with the same message and there is nothing left to configure.
+So the sudo prompt on the first launch after a rebuild is expected, not a failure — it is the third rung of that ladder, and the only one that needs root. Distributions that restrict unprivileged user namespaces send every install down that rung, so on those systems the prompt is the normal route rather than a fallback. Ubuntu 24.04's AppArmor profile is the common case for that knob, and it is not specific to 24.04 — a 26.04 host sets the same `apparmor_restrict_unprivileged_userns`.
+
+If the fixup cannot finish — no `sudo` on `PATH`, or a `chown`/`chmod` that did not take — what happens next depends on the host. With `ELECTRON_DISABLE_SANDBOX=1` set, or where `apparmor_restrict_unprivileged_userns` is `1` and `chrome-sandbox` is still a regular file, the launch continues **without** the sandbox rather than stopping:
+
+```
+⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.
+```
+
+That is a real drop in protection, so treat the warning as the thing to fix rather than as noise — the next launch that succeeds in setting `root:root 4755` restores the sandbox. Anywhere else the launcher exits instead: a host that leaves user namespaces available, a missing or non-regular helper, or a run as root, where Electron must not silently continue unsandboxed and there is nothing left to configure.
 
 ### The local backend stopped in the background
 

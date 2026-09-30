@@ -50,7 +50,6 @@ _HANDLE_CHARS = re.compile(r"[\d_@/\\]")
 _SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.I)
 
 _FORK_QUESTION = "Know what you'd like it to make?"
-_FALLBACK_QUESTION = "What sounds better?"
 
 SCAN_DIR = Path(__file__).resolve().parent / "userscan"
 # The scanner package's import name. It is private so that loading it never adds SCAN_DIR (and its
@@ -283,27 +282,53 @@ def _description(*, looks_new: bool, age: int | None, spark: bool, gpu: str, cpu
     return ", ".join(part for part in parts if part)
 
 
-def _fork(kind: str, leads: bool, plugin_tasks: list[dict]) -> dict:
-    """Fork options in the order the flow pins. Ids are stable; labels may be translated."""
-    mind = {"id": "mind", "label": "I have something in mind"}
-    automate = {"id": "automate", "label": "Automate something I already do"}
-    machine = {"id": "machine", "label": f"Help me set up this {kind}"}
-    figure = {"id": "figure", "label": "Let's figure it out together"}
-    skip = {"id": "skip", "label": "Skip this for now"}
-    tasks = [{"id": task["id"], "label": task["label"]} for task in plugin_tasks]
-    if leads:
-        return {
-            "question": _FORK_QUESTION,
-            "options": [machine, {"id": "something_else", "label": "Something else"}],
-            "fallback_question": _FALLBACK_QUESTION,
-            "fallback_options": [mind, automate, *tasks, figure, skip],
-        }
-    return {
-        "question": _FORK_QUESTION,
-        "options": [mind, automate, machine, *tasks, figure, skip],
-        "fallback_question": None,
-        "fallback_options": [],
-    }
+def _fork(kind: str) -> dict:
+    """The fork card's fixed rows; ``fork_card`` puts first tasks from the setup picks in front. Ids are stable;
+    labels may be translated."""
+    return {"question": _FORK_QUESTION, "options": [
+        {"id": "mind", "label": "I have something in mind"},
+        {"id": "machine", "label": f"Help me set up this {kind}"},
+        {"id": "figure", "label": "Let's figure it out together"},
+    ]}
+
+
+# Connector picks a daily brief has nothing to read from.
+_NOT_BRIEF = frozenset({"discord", "spotify", "steam", "telegram", "whatsapp", "youtube", "twitch", "reddit"})
+
+
+def _from_picks(cards: dict) -> list[dict]:
+    picks, ids = cards.get("picks") or {}, cards.get("pick_ids") or {}
+    apps = [str(label) for label in picks.get("connectors") or () if str(label).lower() not in _NOT_BRIEF]
+    plugins = set(ids.get("plugins") or ())
+    rows = [{"id": "brief", "label": f"A daily brief from {' and '.join(apps[:2])}"}] if apps else []
+    rows += [{"id": task_id, "label": task["label"]} for task_id, task in (cards.get("plugin_tasks") or {}).items()
+             if plugins & set(task["plugins"])]
+    return rows + ([{"id": "week", "label": "A summary of my week"}] if apps else [])
+
+
+def _from_machine(suggest: dict) -> list[dict]:
+    kind = suggest.get("kind") or "computer"
+    if suggest.get("spark"):
+        return [{"id": "apps", "label": f"Install a few apps for this {kind}"},
+                {"id": "local_model", "label": "Set up a local model"}]
+    return [{"id": "apps", "label": f"Install a few apps for this {kind}"}] if suggest.get("fresh") else []
+
+
+def _from_nothing(suggest: dict) -> list[dict]:
+    app = next(iter(suggest.get("apps_used") or ()), None)
+    page = f"A cheat sheet page for {app}" if app else f"A one-page guide to this {suggest.get('kind') or 'computer'}"
+    return [{"id": "page", "label": page}, {"id": "script", "label": "A quick script that tidies my Downloads"}]
+
+
+def fork_card(cards: dict) -> dict:
+    """The fork card when it is shown: two first tasks, each finishable in minutes, from the apps and plugins
+    picked earlier in this setup and the scan, in front of the fixed rows. One from the picks and one from the
+    machine when both have one."""
+    suggest = cards.get("suggest") or {}
+    picks, machine = _from_picks(cards), _from_machine(suggest)
+    ordered = picks[:1] + machine[:1] + picks[1:] + machine[1:] + _from_nothing(suggest)
+    fork = cards.get("fork") or _fork(suggest.get("kind") or "computer")
+    return {**fork, "options": ordered[:2] + fork["options"]}
 
 
 def _hermes_home() -> Path | None:
@@ -771,31 +796,20 @@ def collect(scanned: Callable[[float], tuple[dict | None, str]] | None = None) -
             ),
         },
         "plugin_tasks": plugin_tasks,
-        "fork": _fork(kind, leads, plugin_tasks),
+        "fork": _fork(kind),
         "scan": scan,
     }
 
 
 def _handoff(facts: dict) -> dict:
-    """The handoff message's parts and its two plans from ``templates/handoff.md``, the machine plan cut to
-    this computer, so the model reads them only when it reaches the handoff."""
+    """The handoff message's parts and its two plans from ``templates/handoff.md``, the machine plan naming this
+    computer, so the model reads them only when it reaches the handoff."""
     text = (Path(__file__).resolve().parent.parent / "templates" / "handoff.md").read_text(encoding="utf-8")
     sections = dict(re.findall(r"^## (\S+)\n\n(.*?)\n*(?=^## |\Z)", text, re.M | re.S))
-    machine, scan = facts["machine"], facts.get("scan") or {}
-    arm = str(machine["native_arch"]).lower() in ("arm64", "aarch64")
-    crashes = scan.get("crash_30d")
-    parts = [
-        sections["machine"].replace("<description>", facts["signals"]["description"]),
-        sections["machine-crashes"].replace("<crash_30d>", str(crashes)) if isinstance(crashes, int) and crashes else "",
-        sections["machine-nvidia"] if machine["gpu_class"] == "nvidia" else "",
-        sections["machine-plan"],
-        sections.get(f"machine-drivers-{machine['os_family']}", ""),
-        sections["machine-arm"] if arm else "",
-        sections.get(f"machine-arm-nvidia-{machine['os_family']}", "") if arm and machine["gpu_class"] == "nvidia" else "",
-        sections["machine-end"],
-    ]
+    signals = facts["signals"]
+    machine = sections["machine"].replace("<machine_kind>", signals["machine_kind"])
     return {"message": sections["message"], "build": sections["build"],
-            "machine": '"' + " ".join(part for part in parts if part) + '"'}
+            "machine": machine.replace("<description>", signals["description"])}
 
 
 _LEVELS = {"beginner": "new to AI agent apps", "power-user": "a power user", "expert": "an expert"}
@@ -816,17 +830,26 @@ def _learned(facts: dict) -> list[str]:
         level = f"{level}, a developer" if level else "a developer"
     if level:
         lines.append(f"I am {level}.")
+    crashes = scan.get("crash_30d")
+    if isinstance(crashes, int) and crashes:
+        lines.append(f"It shut down unexpectedly {crashes} times in the last 30 days.")
     return lines
 
 
 def setup_cards(facts: dict) -> dict:
-    """What the setup cards take from these facts: the fork rows, the rows the apps and plugins cards start
-    with picked (apps seen in use; Blender when it is here), the handoff text the fork result carries, and
-    the scan lines ``start_chat`` appends to the task chat's first message."""
+    """What the setup cards take from these facts: the fork rows and what its first tasks are built from, the
+    rows the apps and plugins cards start with picked (apps seen in use; Blender when it is here), the handoff
+    text the fork result carries, and the scan lines ``start_chat`` appends to the task chat's first message."""
     used = (facts.get("scan") or {}).get("apps_used") or []
+    signals = facts["signals"]
     return {
         "learned": _learned(facts),
         "fork": facts["fork"],
+        # What ``fork_card`` builds first tasks from, beside the picks the cards record.
+        "suggest": {"kind": signals["machine_kind"], "spark": signals["is_spark"], "fresh": signals["looks_new"],
+                    "apps_used": used[:3]},
+        "plugin_tasks": {task["id"]: {"label": task["label"], "plugins": task["plugins"]}
+                         for task in facts["plugin_tasks"]},
         "preselected": {
             "connectors": [_SCAN_CONNECTORS[app] for app in used if app in _SCAN_CONNECTORS],
             "plugins": ["blender"] if facts["signals"].get("has_blender") else [],

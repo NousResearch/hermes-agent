@@ -9,6 +9,7 @@ import {
   PROCESS_NOTIFICATION_RE
 } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
+import { SetupLearnedNote, splitSetupLearned } from '@/components/assistant-ui/thread/setup-learned'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -249,7 +250,8 @@ export const UserMessage: FC<{
   const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
-  const messageText = messageContentText(content)
+  const fullText = messageContentText(content)
+  const [messageText, setupLearned] = splitSetupLearned(fullText)
   const threadRunning = useAuiState(s => s.thread.isRunning)
 
   const latestUserId = useAuiState(s => {
@@ -411,11 +413,14 @@ export const UserMessage: FC<{
           // it. No negative margin: -mt-* pulls the row up into the sticky box,
           // where the sticky-prompt clip hides its top even at rest. Image refs
           // render as thumbnails, file refs as chips; no border.
-          attachmentRefs.length > 0 && !chipOnlyTurn ? (
-            <div className="mb-2 flex flex-wrap gap-1">
-              <DirectiveContent text={attachmentRefs.join(' ')} />
-            </div>
-          ) : null
+          <>
+            {attachmentRefs.length > 0 && !chipOnlyTurn && (
+              <div className="mb-2 flex flex-wrap gap-1">
+                <DirectiveContent text={attachmentRefs.join(' ')} />
+              </div>
+            )}
+            {setupLearned && <SetupLearnedNote text={setupLearned} />}
+          </>
         }
         messageId={messageId}
       >
@@ -527,7 +532,7 @@ export const UserMessage: FC<{
                             event.stopPropagation()
                             triggerHaptic('selection')
                             onRequestRestoreConfirm?.(messageId, {
-                              text: messageText,
+                              text: fullText,
                               userOrdinal: runtimeUserOrdinal
                             })
                           }}

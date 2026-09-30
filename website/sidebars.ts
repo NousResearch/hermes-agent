@@ -558,6 +558,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
+                    'user-guide/skills/optional/productivity/productivity-first-task',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-initiate-setup',
                     'user-guide/skills/optional/productivity/productivity-live-dashboard',

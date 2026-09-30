@@ -21,10 +21,16 @@ def _setup_learned(cards: dict) -> str:
     lines = [f"- {label}: {', '.join(map(str, value)) if isinstance(value, list) else value}"
              for key, label in _PICK_LINES if (value := picks.get(key))]
     lines += [f"- {line}" for line in cards.get("learned") or ()]
-    if not lines:
-        return ""
-    return "\n".join(["What setup learned about me:", *lines,
-                      "Start from this; look at my computer again only when the task needs more."])
+    return "\n".join(["What setup learned about me:", *lines]) if lines else ""
+
+
+def _first_steps(cards: dict) -> tuple[list, list]:
+    """The connector and plugin ids the task chat sets up before its first task: the apps and plugins picked in
+    setup, plus the plugins of a plugin task picked at the fork."""
+    ids = cards.get("pick_ids") or {}
+    task = (cards.get("plugin_tasks") or {}).get(cards.get("fork_pick") or "") or {}
+    install = [*(ids.get("plugins") or ()), *(task.get("plugins") or ())]
+    return list(ids.get("connectors") or ()), list(dict.fromkeys(install))
 
 
 def start_chat(args: dict, caller_id: str | None = None) -> str:
@@ -54,9 +60,12 @@ def start_chat(args: dict, caller_id: str | None = None) -> str:
     target_home = Path(home or server._hermes_home)
     from_setup = (caller_home / SETUP_PROFILE_MARKER).is_file()
     if from_setup:
+        from agent.first_task_prompt import first_task_tail
+
         with server._session_profile_runtime_scope({"profile_home": str(caller_home)}, hydrate_secrets=False):
-            learned = _setup_learned(read_cards(caller.get("session_key") or ""))
-        message = f"{message}\n\n{learned}" if learned else message
+            cards = read_cards(caller.get("session_key") or "")
+        learned = _setup_learned(cards)
+        message = (f"{message}\n\n{learned}" if learned else message) + first_task_tail(*_first_steps(cards))
     token = bind_transport(caller.get("transport"))
     try:
         with server._session_profile_runtime_scope({"profile_home": str(home) if home else None}):

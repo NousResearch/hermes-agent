@@ -18,22 +18,22 @@ Sources mapped: `apps/desktop/src/store/onboarding-script.ts` (the runbook), `ap
 | `::onboarding{step="layout"}` (LayoutCard: preset + interface mode + window grow) | `cards/setup.tsx::LayoutCard`, `assembly.ts::assembleChatOnboarding` | `setup_choose kind:"layout"`; `apply_layout` only for a layout asked for in words | Beat 3 |
 | Step 4 model-picker explanation | runbook | Dropped; the tour's model picker stop covers it, in both presets | - |
 | `::ask` "Want a look around first?" + `gui_tour` targets/start | runbook step 4 | `setup_choose kind:"tour"` (rows filled by the backend) + one `gui_tour` `start` with `preset` `quick` or `full` (the app's own tour) | Beat 4 |
-| `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"fork"`; the backend fills `fork.options` computed by `scripts/host_facts.py` | Beat 5 |
-| `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | The same `fork` call: "Something else" opens `fork.fallback_options` in the backend | Beat 5 |
+| `::ask` fork, `input="true"` | runbook step 5, `forkOptions()` | `setup_choose kind:"fork"`; the backend fills the rows when the card is shown: two first tasks from the apps and plugins picked earlier and the scan (`host_facts.fork_card`), then `mind`, `machine`, `figure` | Beat 5 |
+| `::ask` "What sounds better?" (Something else) | runbook, `forkFallbackOptions()` | Dropped (2026-10-01): the first-task rows lead instead | - |
 | Machine branch: one question on main use | runbook step 6 | `setup_choose kind:"machine_use"`; the backend fills Work / Gaming / School / Creative / A bit of everything | Beat 6 |
 | `::onboarding{step="working" value}` (saves `answers.context`) | `directive.tsx` DATA_STEPS | Nothing. History + `start_chat` message part 2 | Beat 6, Beat 7 |
 | `::onboarding{step="first" options}` (FirstBuildCard, 2-4 pills, each <= 60 chars, fallback pill) | `cards/build.tsx::FirstBuildCard` | `setup_choose kind:"question"` with 3-4 options suited to pills | Beat 6 |
-| Install beat: one `manage_catalog` install batch in the setup chat | runbook `installBeat()` | Moved to the task chat (Sid, D4): handoff part 4 asks its first turn for ONE `manage_catalog` install call with only the plugins the task needs (all picked for machine setup or a task naming the app; `plugin_tasks` bring their own), then ONE `manage_connections` connect call | `templates/handoff.md` part 4 |
-| `::onboarding{step="handoff" task brief plan}` + HandoffCard + `requestSetupHandoff` + hidden runbook seed in the new session | `cards/build.tsx::HandoffCard`, `setup-profile.ts` | `start_chat {message, title, profile: primary_profile}`; the plan runbooks become paragraphs of the visible message, in `templates/handoff.md`, which the fork result carries | Beat 7 |
+| Install beat: one `manage_catalog` install batch in the setup chat | runbook `installBeat()` | Moved to the task chat (Sid, D4): the `first-task` skill asks its first turn for ONE `manage_connections` connect call and ONE `manage_catalog` install call with the ids `start_chat` hands it (the picks, plus a picked `plugin_tasks` row's plugins) | `first-task` skill |
+| `::onboarding{step="handoff" task brief plan}` + HandoffCard + `requestSetupHandoff` + hidden runbook seed in the new session | `cards/build.tsx::HandoffCard`, `setup-profile.ts` | `start_chat {message, title, profile: primary_profile}`: the visible ask, then the folded "What setup learned" block and the `first-task` skill that `start_chat` appends (`agent/first_task_prompt.py`) | Beat 7 |
 | `[setup] handoff complete` note | `setup-profile.ts::buildHandoffCompleteNote` | `start_chat` result `started` | Beat 8 |
 | Handoff-failed note + "Retry first build" button | runbook step 8, HandoffCard | `start_chat` result `rejected`; the bot says so and retries once, with the same `profile`, when the user says yes | Beat 8 |
 | `[setup] <summary>` hidden user rows after each card | `cards/frame.tsx` | `setup_choose` tool results | Tool rules |
 | `::onboarding{step="progress" title}` in the task chat | `setup-profile.ts`, ProgressCard | Dropped (directives are deleted). No replacement (open question 9) | - |
-| `::ask` "Does this match what you wanted?" in the task chat | `setup-profile.ts` | Handoff message part 6 asks the task chat to ask (it has `clarify`) | `templates/handoff.md` part 6 |
-| `::ask` "Want me to run this?" (machine-setup) in the task chat | `MACHINE_SETUP_RUNBOOK` | Machine-setup paragraph of the handoff message | Beat 7 |
+| `::ask` "Does this match what you wanted?" in the task chat | `setup-profile.ts` | The `first-task` skill closes the first slice with a `clarify` card | `first-task` skill |
+| `::ask` "Want me to run this?" (machine-setup) in the task chat | `MACHINE_SETUP_RUNBOOK` | The `first-task` skill runs machine setup as a short `clarify` interview | `first-task` skill |
 | `[setup] checkpoint` note after 8 and 20 tool calls in the task chat | `first-build.ts` | No carrier (open question 9) | - |
 | Post-handoff tour of the profile rail and sessions list | `signpost.ts::showHandoffTour` | Beat 8 line says where the setup chat lives. The rail tour itself is not in the skill: after `start_chat` the user may already be in the new chat (open question 6) | Beat 8 |
-| "Skip this for now" fork option | runbook step 6 | Fork id `skip` | Beat 6 |
+| "Skip this for now" fork option | runbook step 6 | Dropped (2026-10-01); a cancelled fork still steps down the skip ladder | Beat 6 |
 | Skip button (applies `basic` layout, marks skipped) | `assembly.ts::skipChatOnboarding` | Renderer / backend marker (NS-1016). The bot handles "I want to leave" in words | Failure handling |
 
 ## 2. Guidance to its new home
@@ -126,7 +126,7 @@ Directive parsing and `DATA_STEPS`/`STEP_CARDS`; `FUNNEL_STEPS` metrics (`record
 - The whole setup can run inside one agent turn because `setup_choose` blocks.
 - `start_chat` targets `primary_profile`, not always `default`, and a retry never drops it.
 - A later `/initiate-setup` after a handoff (`setup_completed_at` set) skips to the fork for a new task.
-- The first-task handoff carries its whole runbook as visible text.
+- The task chat's rules travel as the `first-task` skill at the tail of its first message; the visible text is only the ask.
 
 ## 5. Host facts: renderer field to script field
 
@@ -162,5 +162,5 @@ Resolved by Sid (2026-09-30): skill location (stays in `optional-skills/`); the 
 11. **SOUL check-ins.** `SETUP_SOUL` tells the bot to look at sessions, connectors and scheduled jobs before checking in. The setup profile's tools cannot read those.
 12. **One turn or many.** `setup_choose` blocks, so the whole setup can run in one agent turn. What happens on a card timeout, a closed window mid-card, or a relaunch with a pending card? The skill says: take the default and continue from the first unanswered beat.
 13. **Other surfaces.** P13 runs `/initiate-setup` on CLI, TUI and messaging too, in the user's own profile with full tools. The skill falls back to plain-text questions, skips the tour without `gui_tour`, and starts the task in the same chat without `start_chat`. Should it use the extra tools those sessions have?
-14. **Size.** `SKILL.md` is under 25 KB (~245 lines) after the 2026-09-30 trim; the handoff plan paragraphs are most of it.
+14. **Size.** `SKILL.md` is under 10 KB after the 2026-10-01 split; every task-chat rule moved to the `first-task` skill.
 15. **Host facts gaps.** Linux has no home birth time in `os.stat`, so a fresh Linux machine never leads with machine setup (Electron used `statx`). Name and locale are read in the skill script, not in `hermes_platform.host`, which covers hardware only. Should `hermes_platform.host` grow a birth-time helper and account facts?

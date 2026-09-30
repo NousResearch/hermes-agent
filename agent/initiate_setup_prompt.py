@@ -72,6 +72,11 @@ def collect_setup_cards() -> dict:
     return host_facts.setup_cards(_collect(host_facts))
 
 
+def fork_card(cards: dict) -> dict:
+    """The fork card as it is shown, its first rows built from the picks this setup conversation recorded."""
+    return _host_facts_module(_skill_dir()).fork_card(cards)
+
+
 def build_initiate_setup_prompt(surface: str, tools, primary_profile: str, session_id: str | None = None) -> str:
     """``session_id``: the desktop session the turn runs in; its ``setup_choose`` cards read these same facts."""
     from hermes_cli.anon_auth import free_tier_route

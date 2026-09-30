@@ -21,14 +21,8 @@ _MACHINE_USE_ROWS = [
     {"id": "creative", "label": "Creative"},
     {"id": "mix", "label": "A bit of everything"},
 ]
-# The fork when the /initiate-setup turn recorded none (host facts unknown).
-_FORK = {"question": "Know what you'd like it to make?", "options": [
-    {"id": "mind", "label": "I have something in mind"},
-    {"id": "automate", "label": "Automate something I already do"},
-    {"id": "machine", "label": "Help me set up this computer"},
-    {"id": "figure", "label": "Let's figure it out together"},
-    {"id": "skip", "label": "Skip this for now"},
-]}
+# The fork question when the /initiate-setup turn recorded none (host facts unknown).
+_FORK_QUESTION = "Know what you'd like it to make?"
 _NO_ANSWER = ("The card got no answer: it timed out, the turn was interrupted, or no Hermes desktop "
               "window answered.")
 # From the fork on, each skipped card steps down this ladder, so setup ends in a handoff or a stop.
@@ -43,6 +37,8 @@ _SKIP_LADDER = (
 _NO_CONNECTORS = ("Connecting apps needs a Nous account (free) and none is signed in here, so no card was shown; "
                   "it can be set up later.")
 _NO_PLUGINS = "No plugins on the list run on this computer, so no card was shown."
+# The task chat's first-task skill offers the options for a vague ask, so setup hands off at once.
+_FIGURE = "Hand off now with start_chat; the ask is \"Let's figure out a first task together.\""
 _MACHINE_USE_SKIPPED = "Hand off with the machine-setup plan and leave their use out."
 _RESEND = ("If this text does not answer the card, answer it in a sentence or two, then send this card again in "
            "the same turn: {card}")
@@ -60,7 +56,7 @@ _THEN: dict[str, Callable[[dict, object], str]] = {
     "layout": lambda cards, picked: "Send card tour: " + _card("tour", "Want a look around first?"),
     "tour": lambda cards, picked: (
         ("After the gui_tour call, send" if picked in ("basics", "tour") else "No tour. Send")
-        + " card fork in this same turn: " + _card("fork", (cards.get("fork") or _FORK)["question"])),
+        + " card fork in this same turn: " + _card("fork", (cards.get("fork") or {}).get("question") or _FORK_QUESTION)),
 }
 
 
@@ -138,8 +134,7 @@ def _follow_up(kind: str, card: str, result: dict, rows: Optional[list], cards: 
         state["step"] = min(max(step + 1, shape), len(_SKIP_LADDER) - 1)
         extra["next"] = _SKIP_LADDER[state["step"]]
     elif kind == "fork" and picked == "figure":
-        state["step"] = max(step, 0)
-        extra["next"] = _SKIP_LADDER[state["step"]]
+        extra["next"] = _FIGURE
     elif outcome == "submitted" and isinstance(picked, str) and rows and picked not in {row["id"] for row in rows}:
         extra["next"] = _RESEND.format(card=card)
     elif kind in _THEN:
@@ -152,19 +147,36 @@ _REMEMBERED = frozenset({"connectors", "plugins", "layout"})
 
 
 def _remember(kind: str, question: str, result: dict, state: dict) -> dict:
+    """Also the connector and plugin ids (the task chat connects and installs them first) and the fork pick (a
+    plugin task's plugins join those installs)."""
     from agent.initiate_setup_prompt import NAME_QUESTION
 
-    key = "name" if kind == "question" and question == NAME_QUESTION else kind if kind in _REMEMBERED else None
-    if key is None or result["outcome"] != "submitted":
+    if result["outcome"] != "submitted":
         return state
-    return {**state, "picks": {**state.get("picks", {}), key: result.get("label") or result["picked"]}}
+    picked = result["picked"]
+    if kind == "fork":
+        return {**state, "fork_pick": picked}
+    key = "name" if kind == "question" and question == NAME_QUESTION else kind if kind in _REMEMBERED else None
+    if key is None:
+        return state
+    state = {**state, "picks": {**state.get("picks", {}), key: result.get("label") or picked}}
+    if kind in ("connectors", "plugins") and isinstance(picked, list):
+        state["pick_ids"] = {**state.get("pick_ids", {}), kind: picked}
+    return state
+
+
+def _fork_rows(cards: dict) -> list:
+    # Built when the card is shown: the apps and plugins cards before it have been answered by then.
+    from agent.initiate_setup_prompt import fork_card
+
+    return fork_card(cards)["options"]
 
 
 # App-owned parts of a card, filled here from the recorded facts so the model can neither drop nor edit them.
 _APP_FILLED: dict[str, Callable[[dict], dict]] = {
     "tour": lambda cards: {"options": _TOUR_ROWS, "multi_select": False},
     "machine_use": lambda cards: {"options": _MACHINE_USE_ROWS, "multi_select": False},
-    "fork": lambda cards: {"options": (cards.get("fork") or _FORK)["options"], "multi_select": False},
+    "fork": lambda cards: {"options": _fork_rows(cards), "multi_select": False},
     "connectors": lambda cards: {"preselected": (cards.get("preselected") or {}).get("connectors") or [],
                                  "multi_select": True},
     "plugins": lambda cards: {"preselected": (cards.get("preselected") or {}).get("plugins") or [],
@@ -229,11 +241,6 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
                                "next": _THEN[kind](cards, None)}, ensure_ascii=False)
         payload.update(_APP_FILLED[kind](cards) if kind in _APP_FILLED else {})
         reply = callback(payload)
-        fork = cards.get("fork") if kind == "fork" else None
-        # "Something else" on a machine-first fork opens the rest of the fork in the same call.
-        if fork and fork.get("fallback_options") and (reply or {}).get("picked") == "something_else":
-            payload = {**payload, "question": fork["fallback_question"], "options": fork["fallback_options"]}
-            reply = callback(payload)
         result = _result(reply, payload["options"])
         extra, state = _follow_up(kind, card, result, payload["options"], cards)
         state = _remember(kind, text, result, state)

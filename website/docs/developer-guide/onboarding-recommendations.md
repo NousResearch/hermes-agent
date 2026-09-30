@@ -9,7 +9,7 @@ Guided onboarding suggests outcomes from the user's app preferences and observed
 
 ## What takes priority
 
-The existing `machineSetupLeads()` decision still leads with machine setup for a newly set-up machine or a recognized RTX/DGX Spark, with other tasks behind **Something else**. The fresh-machine signal is the existing age heuristic, not proof of the OS installation date. A Spark with unknown age gets a hardware-specific callout, not a claim that its OS is new.
+The fork card leads with two first tasks built from the setup picks and the scan; a recognized RTX/DGX Spark or a newly set-up machine gets "Install a few apps for this <machine>" among them, and "Help me set up this <machine>" is always a row. The fresh-machine signal is the existing age heuristic, not proof of the OS installation date. A Spark with unknown age gets a hardware-specific callout, not a claim that its OS is new.
 
 Otherwise the guide favors relevant app-backed tasks, with a connection-free alternative. Detecting an app earns at most one option; the remaining choices come from the user's goals and other capabilities. Several ideas for the same app are appropriate only when explicitly requested. Choosing an inbox task means using real inbox data after permission, not building a mock inbox when permission is missing. A skipped or unavailable required connection leaves that task blocked; the user can choose a different task or supply data.
 

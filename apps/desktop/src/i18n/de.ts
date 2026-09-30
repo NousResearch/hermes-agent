@@ -352,7 +352,7 @@ export const deOverrides = {
     scanHelp:
       'Überprüfen Sie Ihre Backend-Verbindung und versuchen Sie es dann erneut. Ältere Backends benötigen eventuell ein Update.',
     empty: 'Keine Konversationen gefunden',
-    emptyHelp: 'Claude Code- und Codex-Sessions auf diesem Backend werden hier angezeigt.',
+    emptyHelp: 'Claude Code-, Codex- und Cursor-Sessions auf diesem Backend werden hier angezeigt.',
     noMatches: 'Keine passenden Konversationen',
     searchHelp: 'Versuchen Sie es mit einem anderen Titel oder Ordner, oder laden Sie weitere Sessions.',
     skipped: 'Einige Protokolle waren leer, nicht lesbar oder zu groß für die Vorschau.',

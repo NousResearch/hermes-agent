@@ -942,7 +942,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           {
             icon: Download,
             id: 'session-import',
-            keywords: ['import', 'claude', 'codex', 'conversation'],
+            keywords: ['import', 'claude', 'codex', 'cursor', 'conversation'],
             label: t.sessionImport.action,
             run: go(SESSION_IMPORT_ROUTE)
           },

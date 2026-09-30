@@ -1607,13 +1607,14 @@ def _apply_in_dir(args) -> None:
 
 
 def _import_foreign_resume(args) -> None:
-    """--resume @claude / @codex: import a foreign session and resume it."""
-    _resume_foreign = getattr(args, "resume", None)
-    if not (isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in ("@claude", "@codex")):
-        return
-    from hermes_cli.foreign_sessions import import_foreign_session, pick_foreign_session
+    """--resume @claude / @codex / @cursor: import a foreign session and resume it."""
+    from hermes_cli.foreign_sessions import foreign_resume_source, import_foreign_session, pick_foreign_session
 
-    _picked = pick_foreign_session(_resume_foreign.strip().lower().lstrip("@"))
+    source = foreign_resume_source(getattr(args, "resume", None))
+    if not source:
+        return
+
+    _picked = pick_foreign_session(source)
     if _picked is None:
         sys.exit(1)
     try:
@@ -1621,7 +1622,7 @@ def _import_foreign_resume(args) -> None:
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
-    print(f"✓ Imported as {_imported_id} — resuming it now.")
+    print(f"✓ Session {_imported_id} is ready — resuming it now.")
     print(f"  (later: hermes --resume {_imported_id})")
     args.resume = _imported_id
 
@@ -1632,7 +1633,7 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     Order matters: ``--in DIR`` chdirs first so workspace-scoped "latest"/-c
     lookups key off DIR (and pins the session there, skipping cwd restore);
     then ``--resume latest`` → MRU id, ``--continue`` → ``--resume``,
-    ``--resume @claude/@codex`` → imported session id, title → id; finally
+    ``--resume @claude/@codex/@cursor`` → imported session id, title → id; finally
     cd back into a resumed session's recorded cwd (best-effort, opt-out via
     --no-restore-cwd, skipped under --worktree).
     """

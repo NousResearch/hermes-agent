@@ -792,32 +792,45 @@ WAL is also refused when the store sits on a cross-VM filesystem (virtiofs/9p),
 where WAL shared memory corrupts silently.
 
 
-## Importing Sessions from Claude Code and Codex CLI
+## Importing Sessions from Claude Code, Codex CLI, and Cursor
 
-Started a conversation in another agent CLI? You can pull it into Hermes and
+Started a conversation in another agent? You can pull it into Hermes and
 continue it here. Hermes reads Claude Code's session logs
 (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when Claude Code's
-config dir is relocated) and Codex CLI's rollouts (`~/.codex/sessions/`, or
-`$CODEX_HOME/sessions/`) — the foreign files are only read, never modified.
+config dir is relocated), Codex CLI's rollouts (`~/.codex/sessions/`, or
+`$CODEX_HOME/sessions/`), and Cursor agent transcripts
+(`~/.cursor/projects/*/agent-transcripts/`, or `$CURSOR_CONFIG_DIR/projects/`
+when that override is set). The foreign files are only read, never modified.
+Cursor subagent logs are not listed; pass the file path if you want one.
+The working directory comes from Cursor's own workspace record
+(`workspaceStorage/*/workspace.json`) when that record encodes to the
+project slug — including names with spaces, dots, or non-ASCII, which the
+slug itself deletes. If there is no record, Hermes walks the slug and keeps
+a path only when exactly one directory matches. A Windows slug (`C-Users-…`)
+is resolved on that drive; under WSL it is also tried at `/mnt/<drive>`
+when that mount exists.
 
 ```bash
-# Interactive picker across both tools, newest first
+# Interactive picker across all three, newest first
 hermes sessions import
 
 # Limit to one tool, or point at a specific file
 hermes sessions import --from claude
 hermes sessions import --from codex ~/.codex/sessions/2026/08/15/rollout-....jsonl
+hermes sessions import --from cursor
 
 # Import-and-resume in one step
 hermes --resume @claude
 hermes --resume @codex
+hermes --resume @cursor
 ```
 
-`hermes sessions import` creates a new Hermes session titled
-`Imported from Claude Code: <first user message>` (or Codex CLI) and prints
-the id plus a ready-to-paste `hermes --resume <id>` command.
-`--resume @claude` / `--resume @codex` show the same picker and drop you
-straight into the imported conversation.
+`hermes sessions import` creates a Hermes session titled
+`Imported from Claude Code: <first user message>` (or Codex CLI, or Cursor)
+and prints the id plus a ready-to-paste `hermes --resume <id>` command.
+Importing the same log again opens that copy instead of making another.
+`--resume @claude` / `--resume @codex` / `--resume @cursor` show the same
+picker and drop you straight into the imported conversation.
 
 **Hermes Desktop** has the same importer in the command palette (**Import
 session**). It lists the logs on the machine the
@@ -831,6 +844,8 @@ What carries over: the ordered user/assistant conversation, with tool
 activity condensed to short `[ran tool: …]` notes inside assistant turns.
 System prompts, injected context, reasoning traces, and raw tool output are
 left behind — the import is a clean transcript, not a byte-for-byte replay.
+Cursor's IDE injections (the "briefly inform the user" turns, subagent
+rosters, side-chat boundaries) are dropped the same way.
 
 
 ## Session Search Tool

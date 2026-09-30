@@ -355,7 +355,7 @@ export const frOverrides = {
     scanError: 'Impossible de trouver les sessions',
     scanHelp: 'Vérifiez la connexion au backend, puis réessayez. Une mise à jour du backend peut être nécessaire.',
     empty: 'Aucune conversation trouvée',
-    emptyHelp: 'Les sessions Claude Code et Codex de ce backend apparaîtront ici.',
+    emptyHelp: 'Les sessions Claude Code, Codex et Cursor de ce backend apparaîtront ici.',
     noMatches: 'Aucune conversation correspondante',
     searchHelp: 'Essayez un autre titre ou dossier, ou chargez davantage de sessions.',
     skipped: 'Certains journaux étaient vides, illisibles ou trop volumineux pour être prévisualisés.',

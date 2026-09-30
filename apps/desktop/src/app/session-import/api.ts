@@ -3,7 +3,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 export interface ForeignSession {
   id: string
-  source: 'claude' | 'codex'
+  source: 'claude' | 'codex' | 'cursor'
   label: string
   title: string
   cwd: string | null

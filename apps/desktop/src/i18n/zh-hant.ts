@@ -117,7 +117,7 @@ export const zhHant = defineLocale({
     scanError: '無法尋找工作階段',
     scanHelp: '請檢查後端連線並重試。舊版後端可能需要更新。',
     empty: '找不到對話',
-    emptyHelp: '此後端上的 Claude Code 和 Codex 工作階段將顯示在這裡。',
+    emptyHelp: '此後端上的 Claude Code、Codex 和 Cursor 工作階段將顯示在這裡。',
     noMatches: '沒有符合的對話',
     searchHelp: '嘗試其他標題或資料夾，或載入更多工作階段。',
     skipped: '部分記錄為空白、無法讀取或過大，已略過。',

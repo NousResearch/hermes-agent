@@ -122,7 +122,7 @@ export const ja = defineLocale({
     scanError: 'セッションを取得できません',
     scanHelp: 'バックエンドの接続を確認して再試行してください。古いバックエンドは更新が必要な場合があります。',
     empty: '会話が見つかりません',
-    emptyHelp: 'このバックエンドのClaude CodeとCodexのセッションがここに表示されます。',
+    emptyHelp: 'このバックエンドの Claude Code、Codex、Cursor のセッションがここに表示されます。',
     noMatches: '一致する会話がありません',
     searchHelp: '別のタイトルやフォルダーを検索するか、セッションを追加で読み込んでください。',
     skipped: '空、読み込み不可、または大きすぎるログをスキップしました。',

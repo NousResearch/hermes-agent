@@ -2186,7 +2186,7 @@ export interface SessionForeignListParams {
   offset?: number | null
   limit?: number | null
 }
-export type ForeignSource = 'claude' | 'codex'
+export type ForeignSource = 'claude' | 'codex' | 'cursor'
 /** ``unreadable`` counts logs on this page that failed to parse. */
 export interface SessionForeignListResult {
   sessions?: ForeignSessionRow[]

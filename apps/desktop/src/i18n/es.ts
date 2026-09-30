@@ -357,7 +357,7 @@ export const esOverrides = {
     scanHelp:
       'Comprueba la conexión con el backend e inténtalo de nuevo. Los backends antiguos pueden necesitar una actualización.',
     empty: 'No se encontraron conversaciones',
-    emptyHelp: 'Aquí aparecerán las sesiones de Claude Code y Codex de este backend.',
+    emptyHelp: 'Aquí aparecerán las sesiones de Claude Code, Codex y Cursor de este backend.',
     noMatches: 'No hay conversaciones que coincidan',
     searchHelp: 'Prueba con otro título o carpeta, o carga más sesiones.',
     skipped: 'Algunos registros estaban vacíos, no se podían leer o eran demasiado grandes para previsualizarlos.',

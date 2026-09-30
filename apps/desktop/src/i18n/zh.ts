@@ -148,7 +148,7 @@ export const zh = defineLocale({
     scanError: '无法查找会话',
     scanHelp: '请检查后端连接并重试。旧版后端可能需要更新。',
     empty: '未找到对话',
-    emptyHelp: '此后端上的 Claude Code 和 Codex 会话将显示在这里。',
+    emptyHelp: '此后端上的 Claude Code、Codex 和 Cursor 会话将显示在这里。',
     noMatches: '没有匹配的对话',
     searchHelp: '尝试其他标题或文件夹，或加载更多会话。',
     skipped: '部分日志为空、无法读取或过大，已跳过。',

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag, add_yes_flag
+from hermes_cli.foreign_sessions import foreign_source_names
 
 
 def _flag(parser, *names, help, **kw):
@@ -303,13 +304,13 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
 
     sessions_import = sessions_subparsers.add_parser(
-        "import", help="Import a Claude Code or Codex CLI session into Hermes",
-        description="Pull a conversation started in Claude Code (~/.claude/projects) "
-            "or Codex CLI (~/.codex/sessions) into the Hermes session store "
-            "so it can be resumed with 'hermes --resume <id>'. The foreign "
-            "files are only read, never modified.")
-    sessions_import.add_argument("--from", dest="from_source", choices=["claude", "codex"],
-        help="Which tool to import from (default: pick across both)")
+        "import", help="Import a Claude Code, Codex CLI, or Cursor session into Hermes",
+        description="Pull a conversation started in Claude Code (~/.claude/projects), "
+            "Codex CLI (~/.codex/sessions), or Cursor (~/.cursor/projects) into the "
+            "Hermes session store so it can be resumed with 'hermes --resume <id>'. "
+            "The foreign files are only read, never modified.")
+    sessions_import.add_argument("--from", dest="from_source", choices=list(foreign_source_names()),
+        help="Which tool to import from (default: pick across all)")
     sessions_import.add_argument(
         "path", nargs="?", help="Path to a specific session JSONL file (skips the picker)")
 

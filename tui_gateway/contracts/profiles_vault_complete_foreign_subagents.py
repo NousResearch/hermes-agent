@@ -532,6 +532,7 @@ method("vault.remove", params=VaultRemoveParams, result=VaultRemoveResult,
 class ForeignSource(WireEnum):
     claude = "claude"
     codex = "codex"
+    cursor = "cursor"
 
 
 class ForeignSessionRow(Result):

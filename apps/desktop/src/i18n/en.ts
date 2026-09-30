@@ -398,7 +398,7 @@ export const en: Translations = {
     scanError: 'Could not find sessions',
     scanHelp: 'Check your backend connection, then try again. Older backends may need an update.',
     empty: 'No conversations found',
-    emptyHelp: 'Claude Code and Codex sessions on this backend will appear here.',
+    emptyHelp: 'Claude Code, Codex, and Cursor sessions on this backend will appear here.',
     noMatches: 'No matching conversations',
     searchHelp: 'Try another title or folder, or load more sessions.',
     skipped: 'Some logs were empty, unreadable, or too large to preview.',

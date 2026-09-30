@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.foreign_sessions — Claude Code / Codex CLI import.
+"""Tests for hermes_cli.foreign_sessions — Claude Code, Codex CLI, and Cursor import.
 
 Fixture JSONL is synthesized inline (tmp_path); the SessionDB is opened
 against a temp path so nothing touches the real HERMES_HOME store.
@@ -10,11 +10,20 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.foreign_sessions import (
+    _cursor_uri_path,
+    _cursor_walk_starts,
+    _cursor_workspace_storage,
     _list_sessions,
+    _walk_cursor_slug,
+    cursor_slug_for_path,
+    foreign_resume_source,
     gather_foreign_sessions,
     import_foreign_session,
+    infer_foreign_source,
     parse_claude_session,
     parse_codex_session,
+    parse_cursor_session,
+    recover_cursor_cwd,
 )
 
 
@@ -180,6 +189,7 @@ def test_list_sessions(tmp_path):
     both = gather_foreign_sessions(
         claude_root=tmp_path / ".claude" / "projects",
         codex_root=tmp_path / ".codex" / "sessions",
+        cursor_root=tmp_path / "no-cursor",
     )
     assert len(both) == 2
     assert both[0].mtime >= both[1].mtime  # newest first
@@ -188,6 +198,7 @@ def test_list_sessions(tmp_path):
 def test_list_sessions_missing_roots(tmp_path):
     assert _list_sessions("claude", tmp_path / "nope") == []
     assert _list_sessions("codex", tmp_path / "nope") == []
+    assert _list_sessions("cursor", tmp_path / "nope") == []
 
 
 def test_env_overrides_relocate_default_roots(tmp_path, monkeypatch):
@@ -201,6 +212,7 @@ def test_env_overrides_relocate_default_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)  # default roots are empty
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_cfg))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CURSOR_CONFIG_DIR", raising=False)
     both = gather_foreign_sessions()
     assert {s.source for s in both} == {"claude", "codex"}
 
@@ -212,6 +224,7 @@ def test_blank_env_overrides_fall_back_to_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
     monkeypatch.setenv("CODEX_HOME", "   ")
+    monkeypatch.delenv("CURSOR_CONFIG_DIR", raising=False)
     both = gather_foreign_sessions()
     assert {s.source for s in both} == {"claude", "codex"}
 
@@ -302,3 +315,248 @@ def test_whitespace_only_user_turn_does_not_break_discovery(tmp_path):
     listed = _list_sessions("claude", project.parent)
     assert [s.title_guess for s in listed] == ["real question"]
     assert listed[0].turn_count == 3  # leading assistant reply gets the user stub
+
+
+def _cursor_lines():
+    def turn(role, text, extra=None):
+        content = [{"type": "text", "text": text}]
+        if extra:
+            content.extend(extra)
+        return {"role": role, "message": {"content": content}}
+
+    return [
+        turn(
+            "user",
+            "<timestamp>Saturday, Sep 26, 2026, 9:29 PM (UTC+2)</timestamp>\n"
+            "<user_query>\nwhy is the GPU missing?\n</user_query>",
+        ),
+        turn(
+            "assistant",
+            "The card is on the bus.",
+            [{"type": "tool_use", "name": "Shell", "input": {}}],
+        ),
+        turn("user", "<user_query>\nBriefly inform the user about the task result and stop.\n</user_query>"),
+        turn("user", "<user_query>\nSaturday, Sep 26, 2026, 9:40 PM (UTC+2)\n</user_query>"),
+        {"type": "status", "status": "error", "error": "aborted"},
+        turn("assistant", "Still no devices in nvidia-smi."),
+        turn(
+            "user",
+            "<user_query>\ncheck the riser\n</user_query>\n<image_files>\n/tmp/shot.png\n</image_files>",
+        ),
+    ]
+
+
+def _write_cursor_fixture(tmp_path, *, subagent=False):
+    slug = "Users-me-Projects-fisso-llm"
+    chat = "11111111-2222-3333-4444-555555555555"
+    root = tmp_path / ".cursor" / "projects" / slug / "agent-transcripts" / chat
+    root.mkdir(parents=True)
+    parent = root / f"{chat}.jsonl"
+    parent.write_text("\n".join(json.dumps(line) for line in _cursor_lines()) + "\n", encoding="utf-8")
+    side = root / "subagents"
+    side.mkdir()
+    (side / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl").write_text(
+        json.dumps({"role": "user", "message": {"content": [{"type": "text", "text": "<user_query>worker</user_query>"}]}})
+        + "\n",
+        encoding="utf-8",
+    )
+    return parent if not subagent else side / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+
+
+def test_parse_cursor_session(tmp_path):
+    f = _write_cursor_fixture(tmp_path)
+    parsed = parse_cursor_session(f)
+    turns = parsed["turns"]
+    _assert_alternating(turns)
+    assert parsed["session_id"] == f.stem
+    assert [t["content"] for t in turns if t["role"] == "user"] == [
+        "why is the GPU missing?",
+        "check the riser\n\n[image attached]",
+    ]
+    joined = "\n".join(t["content"] for t in turns)
+    assert "[ran tool: Shell]" in joined
+    assert "Briefly inform" not in joined
+    assert "shot.png" not in joined
+    assert all(set(t) == {"role", "content"} for t in turns)
+
+
+def test_cursor_discovery_skips_subagents_and_empty_stubs(tmp_path):
+    parent = _write_cursor_fixture(tmp_path)
+    empty = parent.parent / "empty-id" / "empty-id.jsonl"
+    empty.parent.mkdir()
+    empty.write_text('{"type": "status", "error": "boom"}\n', encoding="utf-8")
+    listed = _list_sessions("cursor", tmp_path / ".cursor" / "projects")
+    assert len(listed) == 1
+    assert listed[0].path == parent
+    assert listed[0].source == "cursor"
+    assert "worker" not in (listed[0].title_guess or "")
+
+
+def test_recover_cursor_cwd_prefers_the_hyphenated_directory(tmp_path):
+    projects = tmp_path / "Users" / "me" / "Projects"
+    (projects / "fisso").mkdir(parents=True)
+    (projects / "fisso-llm").mkdir()
+    slug = "Users-me-Projects-fisso-llm"
+    assert recover_cursor_cwd(slug, root=tmp_path) == str(projects / "fisso-llm")
+    assert recover_cursor_cwd("Users-me-Projects-gone", root=tmp_path) is None
+    assert recover_cursor_cwd("../etc", root=tmp_path) is None
+
+
+def test_walk_cursor_slug_backtracks_and_refuses_ambiguity(tmp_path):
+    short = tmp_path / "foo" / "bar-baz"
+    short.mkdir(parents=True)
+    (tmp_path / "foo-bar").mkdir()
+    # Longest-name-first would stop at foo-bar and miss bar-baz.
+    assert _walk_cursor_slug("foo-bar-baz", root=tmp_path, casefold=False) == str(short)
+    (tmp_path / "foo-bar" / "baz").mkdir()
+    assert _walk_cursor_slug("foo-bar-baz", root=tmp_path, casefold=False) is None
+
+
+def test_walk_cursor_slug_folds_case(tmp_path):
+    target = tmp_path / "Users" / "me"
+    target.mkdir(parents=True)
+    assert _walk_cursor_slug("users-me", root=tmp_path, casefold=True) == str(target)
+
+
+def test_cursor_walk_starts_on_windows_drive():
+    assert _cursor_walk_starts("C-Users-me", None, platform="nt") == [(Path("C:/"), "Users-me")]
+    assert _cursor_walk_starts("c-Users-me", None, platform="nt") == [(Path("C:/"), "Users-me")]
+
+
+def test_walk_cursor_slug_resolves_windows_slug_via_wsl_mount(tmp_path):
+    mount = tmp_path / "mnt"
+    target = mount / "c" / "Users" / "me" / "proj"
+    target.mkdir(parents=True)
+    assert _walk_cursor_slug("c-Users-me-proj", mounts=mount, casefold=False) == str(target)
+    assert _cursor_walk_starts("c-Users-me", None, platform="posix", mounts=mount)[1] == (
+        mount / "c", "Users-me",
+    )
+
+
+def test_cursor_workspace_storage_per_platform(tmp_path):
+    home = tmp_path / "home"
+    assert _cursor_workspace_storage("nt", environ={"APPDATA": str(tmp_path / "Roaming")}, home=home) == (
+        tmp_path / "Roaming" / "Cursor" / "User" / "workspaceStorage"
+    )
+    assert _cursor_workspace_storage("nt", environ={}, home=home) == (
+        home / "AppData" / "Roaming" / "Cursor" / "User" / "workspaceStorage"
+    )
+    assert _cursor_workspace_storage("darwin", home=home) == (
+        home / "Library" / "Application Support" / "Cursor" / "User" / "workspaceStorage"
+    )
+    assert _cursor_workspace_storage("linux", environ={"XDG_CONFIG_HOME": str(tmp_path / "xdg")}, home=home) == (
+        tmp_path / "xdg" / "Cursor" / "User" / "workspaceStorage"
+    )
+
+
+def _write_workspace(storage: Path, name: str, folder: str) -> None:
+    dest = storage / name
+    dest.mkdir(parents=True)
+    (dest / "workspace.json").write_text(json.dumps({"folder": folder}), encoding="utf-8")
+
+
+def test_recover_cursor_cwd_reads_windows_and_remote_uris(tmp_path):
+    storage = tmp_path / "workspaceStorage"
+    _write_workspace(storage, "win", "file:///C:/Users/me/proj")
+    assert _cursor_uri_path("file:///C:/Users/me/proj") == "C:/Users/me/proj"
+    assert recover_cursor_cwd("C-Users-me-proj", storage=storage) == "C:/Users/me/proj"
+    remote = (
+        "vscode-remote://ssh-remote%2B7b22686f73744e616d65223a22666973736f227d"
+        "/home/gabrielepalaj/Documents/Universita/DLA/Lab2"
+    )
+    _write_workspace(storage, "remote", remote)
+    # A second, different record for another slug must not disturb the first.
+    assert recover_cursor_cwd(
+        "home-gabrielepalaj-Documents-Universita-DLA-Lab2", storage=storage,
+    ) == "/home/gabrielepalaj/Documents/Universita/DLA/Lab2"
+
+
+def test_recover_cursor_cwd_leaves_ambiguous_records_unset(tmp_path):
+    storage = tmp_path / "workspaceStorage"
+    _write_workspace(storage, "a", "file:///tmp/foo_bar")
+    _write_workspace(storage, "b", "file:///tmp/foo.bar")
+    assert recover_cursor_cwd(cursor_slug_for_path("/tmp/foo_bar"), storage=storage) is None
+
+
+def test_recover_cursor_cwd_uses_workspace_record_not_the_slug(tmp_path):
+    recorded = "/Users/me/Documents/Università/Studio"
+    storage = tmp_path / "workspaceStorage"
+    dest = storage / "hash"
+    dest.mkdir(parents=True)
+    (dest / "workspace.json").write_text(
+        json.dumps({"folder": "file:///Users/me/Documents/Universit%C3%A0/Studio"}),
+        encoding="utf-8",
+    )
+    slug = cursor_slug_for_path(recorded)
+    assert slug == "Users-me-Documents-Universit-Studio"
+    # The directory does not exist. Claude/Codex still keep the recorded cwd string.
+    assert recover_cursor_cwd(slug, storage=storage) == recorded
+    assert cursor_slug_for_path(r"C:\Users\me\proj") == "C-Users-me-proj"
+    bom = storage / "bom"
+    bom.mkdir()
+    (bom / "workspace.json").write_bytes(
+        b"\xef\xbb\xbf" + json.dumps({"folder": "file:///Users/me/bom-proj"}).encode("utf-8")
+    )
+    assert recover_cursor_cwd("Users-me-bom-proj", storage=storage) == "/Users/me/bom-proj"
+
+
+def test_recover_cursor_cwd_prefers_the_record_that_exists(tmp_path):
+    live = tmp_path / "foo_bar"
+    live.mkdir()
+    gone = tmp_path / "foo.bar"
+    storage = tmp_path / "workspaceStorage"
+    for name, folder in (("live", live.as_uri()), ("gone", gone.as_uri())):
+        dest = storage / name
+        dest.mkdir(parents=True)
+        (dest / "workspace.json").write_text(json.dumps({"folder": folder}), encoding="utf-8")
+    slug = cursor_slug_for_path(str(live))
+    assert slug == cursor_slug_for_path(str(gone))
+    assert recover_cursor_cwd(slug, storage=storage) == str(live)
+
+
+def test_parse_cursor_image_only_turn(tmp_path):
+    chat = "22222222-3333-4444-5555-666666666666"
+    path = tmp_path / ".cursor" / "projects" / "empty-window" / "agent-transcripts" / chat / f"{chat}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({
+            "role": "user",
+            "message": {"content": [{"type": "image", "source": {"type": "base64", "data": "xx"}}]},
+        }) + "\n" + json.dumps({
+            "role": "assistant",
+            "message": {"content": [{"type": "text", "text": "seen"}]},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    parsed = parse_cursor_session(path)
+    assert [t["content"] for t in parsed["turns"] if t["role"] == "user"] == ["[image attached]"]
+    assert parsed["cwd"] is None
+
+
+def test_import_cursor_session(tmp_path, session_db):
+    f = _write_cursor_fixture(tmp_path)
+    session_id = import_foreign_session("@cursor", f, db=session_db)
+    row = session_db.get_session(session_id)
+    assert row["source"] == "cursor"
+    title = session_db.get_session_title(session_id)
+    assert title.startswith("Imported from Cursor: ")
+    assert "why is the GPU missing?" in title
+    messages = session_db.get_messages(session_id)
+    _assert_alternating(messages)
+    origin = json.loads(row["origin_json"])
+    assert origin["imported_from"]["tool"] == "cursor"
+    assert origin["imported_from"]["foreign_session_id"] == f.stem
+    again = import_foreign_session("cursor", f, db=session_db)
+    assert again == session_id
+
+
+def test_cursor_resume_token_and_path_inference():
+    assert foreign_resume_source("@cursor") == "cursor"
+    assert foreign_resume_source("@CURSOR") == "cursor"
+    assert foreign_resume_source("cursor") is None
+    assert foreign_resume_source("@gemini") is None
+    assert infer_foreign_source("/home/me/.cursor/projects/x/agent-transcripts/a/a.jsonl") == "cursor"
+    assert infer_foreign_source(r"C:\Users\me\.cursor\projects\x\agent-transcripts\a\a.jsonl") == "cursor"
+    assert infer_foreign_source(r"C:\Users\me\.codex\sessions\rollout-1.jsonl") == "codex"
+    assert infer_foreign_source("/home/me/.codex/sessions/rollout-1.jsonl") == "codex"
+    assert infer_foreign_source("/home/me/.claude/projects/p/chat.jsonl") == "claude"

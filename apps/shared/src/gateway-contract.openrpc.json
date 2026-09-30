@@ -13863,7 +13863,8 @@
       "ForeignSource": {
         "enum": [
           "claude",
-          "codex"
+          "codex",
+          "cursor"
         ],
         "title": "ForeignSource",
         "type": "string"

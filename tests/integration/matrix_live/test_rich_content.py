@@ -18,6 +18,7 @@ from tests.integration.matrix_live.conftest import (
     LiveRoom,
     _wait_for,
 )
+from tests.integration.matrix_live.context_client import hand_off
 
 
 @pytest.mark.parametrize("gateway", ["pause-image-context"], indirect=True)
@@ -77,7 +78,7 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
             "sticker context barrier",
             timeout=10,
         )
-        (home / "expected-media-change").write_text(target, encoding="utf-8")
+        hand_off(home / "expected-media-change", target)
 
         async def redact() -> None:
             client = live_room.observer.client(live_room.homeserver)
@@ -93,7 +94,7 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
             "sticker withdrawal barrier",
             timeout=10,
         )
-        (home / "context-release").write_text("release", encoding="utf-8")
+        hand_off(home / "context-release", "release")
         linux_nio_observer.run_python(
             prefix
             + (
@@ -150,13 +151,13 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
             "both native stickers queued",
             timeout=10,
         )
-        (home / "read-effective-event").write_text(
+        hand_off(
+            home / "read-effective-event",
             json.dumps({
                 "room": live_room.room_id,
                 "event": retained,
                 "sender": live_room.observer.user_id,
             }),
-            encoding="utf-8",
         )
         _wait_for(
             lambda: (home / "effective-event-read").exists(),
@@ -167,14 +168,14 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
         assert read["errors"] == []
         assert read["events"][0]["event_id"] == retained
         assert live_room.bot.user_id in read["events"][0]["body"]
-        (home / "expected-media-change").write_text(target, encoding="utf-8")
+        hand_off(home / "expected-media-change", target)
         asyncio.run(asyncio.wait_for(redact(), timeout=5))
         _wait_for(
             lambda: (home / "media-change-observed").exists(),
             "second queued sticker withdrawal",
             timeout=10,
         )
-        (home / "context-release").write_text("release", encoding="utf-8")
+        hand_off(home / "context-release", "release")
         linux_nio_observer.run_python(
             prefix
             + f"TARGET = {initiating!r}\nROOT = {received['root']!r}\n"

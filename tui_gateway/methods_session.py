@@ -452,13 +452,14 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
+    # Reflect the override now so the client doesn't clobber its sticky pick.
+    info_model, info_provider = ((override.get("model"), override.get("provider")) if override
+                                 else _session_default_route(_sessions[sid]))
     messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
         **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
-        # Reflect the override now so the client doesn't clobber its sticky pick.
-        "info": {"model": override.get("model") if override else _session_default_model(_sessions[sid]),
-                 **({"provider": override["provider"]} if override.get("provider") else {}),
+        "info": {"model": info_model, **({"provider": info_provider} if info_provider else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})

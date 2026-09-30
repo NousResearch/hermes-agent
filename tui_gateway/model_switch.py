@@ -150,6 +150,21 @@ def _session_default_model(session: dict) -> str:
         return _resolve_model()
 
 
+def _session_default_route(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` a not-yet-built session of this profile will run on. On the Nous free tier
+    the agent build pins ``nous/welcome`` (``pin_model_for_route``), so the configured default — often the
+    silent default, with no provider — is not what the session runs; report the pinned route instead."""
+    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
+                                        hydrate_secrets=False):
+        model, provider = _resolve_startup_runtime()
+        if not provider:
+            with contextlib.suppress(Exception):
+                from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
+                if free_tier_route():
+                    return GUEST_MODEL, "nous"
+        return model, provider or ""
+
+
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
     """Replace one completed failed build generation and start its retry."""
     if failed_ready is None:

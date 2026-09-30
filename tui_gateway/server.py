@@ -2276,9 +2276,12 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     agent = session.get("agent")
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
-             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
+             or getattr(agent, "model", "") or override.get("model"))
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
                 or getattr(agent, "provider", "") or override.get("provider") or "")
+    if not model:
+        model, default_provider = _session_default_route(session)
+        provider = provider or default_provider
     return str(model), str(provider or "")
 
 
@@ -2792,10 +2795,12 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 
 def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
+    if not model:
+        model, default_provider = _session_default_route({"profile_home": _profile_home(profile)})
+        provider = provider or default_provider
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _session_default_model({"profile_home": _profile_home(profile)}),
-        "tools": {}, "skills": {}, "lazy": True,
+        "model": model, "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
         **({"provider": provider} if provider else {}),
     }
@@ -3055,9 +3060,11 @@ def _fallback_session_info(session: dict) -> dict:
     # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
     # above already follows.
     cwd = _session_cwd(session)
+    model, provider = _session_default_route(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "model": model, "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        **({"provider": provider} if provider else {}),
     }
 
 

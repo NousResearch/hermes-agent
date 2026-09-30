@@ -318,7 +318,7 @@ _SAMPLE_INBOUND_TEXT_PAYLOAD = {
                         "messaging_product": "whatsapp",
                         "metadata": {
                             "display_phone_number": "15551797781",
-                            "phone_number_id": "7794189252778687",
+                            "phone_number_id": "1234567890",
                         },
                         "contacts": [
                             {
@@ -412,6 +412,91 @@ class TestWebhookDispatch:
     """End-to-end dispatch from a verified payload to handle_message."""
 
     @pytest.mark.asyncio
+    async def test_recipient_filter_isolates_mixed_batch_before_ingestion(self):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter._download_media_to_cache = AsyncMock(return_value=(None, None))
+        own_metadata = {"phone_number_id": adapter._phone_number_id}
+
+        def change(wamid, metadata, media=False):
+            message = {
+                "from": "15551234567", "id": wamid, "type": "text",
+                "text": {"body": wamid},
+            }
+            if media:
+                message.update(type="image", image={"id": "foreign-media"})
+            value = {"messaging_product": "whatsapp", "messages": [message]}
+            if metadata is not None:
+                value["metadata"] = metadata
+            return {"field": "messages", "value": value}
+
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {"id": "shared-waba", "changes": [
+                    change("wamid.own-first", own_metadata),
+                    change("wamid.foreign", {"phone_number_id": "another-phone"}, True),
+                    change("wamid.no-metadata", None, True),
+                    change("wamid.no-recipient", {}, True),
+                    change("wamid.empty-recipient", {"phone_number_id": ""}, True),
+                ]},
+                {"id": "shared-waba", "changes": [
+                    change("wamid.own-last", own_metadata),
+                ]},
+            ],
+        }
+        await adapter._dispatch_payload(payload)
+
+        accepted = [call.args[0].message_id for call in adapter.handle_message.call_args_list]
+        assert accepted == ["wamid.own-first", "wamid.own-last"]
+        assert list(adapter._seen_wamids) == accepted
+        assert adapter._accepted_count == len(accepted)
+        assert adapter._last_inbound_wamid_by_chat == {"15551234567": accepted[-1]}
+        adapter._download_media_to_cache.assert_not_awaited()
+
+        await adapter._dispatch_payload(payload)
+        assert adapter.handle_message.await_count == len(accepted)
+        assert adapter._duplicate_count == len(accepted)
+
+    @pytest.mark.asyncio
+    async def test_foreign_recipient_tap_preserves_pending_own_prompt(self, monkeypatch):
+        from tools import clarify_gateway
+
+        monkeypatch.setattr(clarify_gateway, "_entries", {})
+        monkeypatch.setattr(clarify_gateway, "_session_index", {})
+        adapter = _make_adapter(_dm_policy="allowlist", _allow_from={"15551234567"})
+        adapter.handle_message = AsyncMock()
+        pending = clarify_gateway.register("q1", "own-session", "Choose", ["Yes"])
+        adapter._clarify_state[pending.clarify_id] = pending.session_key
+        value = {
+            "metadata": {"phone_number_id": "another-phone"},
+            "messages": [{
+                "from": "15551234567", "id": "wamid.tap", "type": "interactive",
+                "interactive": {
+                    "type": "button_reply",
+                    "button_reply": {"id": "cl:q1:0", "title": "Yes"},
+                },
+            }],
+        }
+        payload = {"object": "whatsapp_business_account", "entry": [{
+            "changes": [{"field": "messages", "value": value}],
+        }]}
+
+        await adapter._dispatch_payload(payload)
+        assert not pending.event.is_set()
+        assert adapter._clarify_state == {pending.clarify_id: pending.session_key}
+        assert not adapter._seen_wamids
+        adapter.handle_message.assert_not_awaited()
+
+        # The same sender and button can still answer on this adapter's recipient.
+        value["metadata"]["phone_number_id"] = adapter._phone_number_id
+        await adapter._dispatch_payload(payload)
+        assert pending.event.is_set()
+        assert pending.response == "Yes"
+        assert not adapter._clarify_state
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_text_message_dispatched_with_event_shape(self):
         adapter = _make_adapter(app_secret="key")
         captured = []
@@ -475,7 +560,7 @@ class TestWebhookDispatch:
                             "field": "messages",
                             "value": {
                                 "messaging_product": "whatsapp",
-                                "metadata": {"phone_number_id": "1"},
+                                "metadata": {"phone_number_id": adapter._phone_number_id},
                                 "contacts": [
                                     {"profile": {"name": "U"}, "wa_id": "1555"}
                                 ],
@@ -826,7 +911,7 @@ class TestInboundMediaDispatch:
                     "field": "messages",
                     "value": {
                         "messaging_product": "whatsapp",
-                        "metadata": {"phone_number_id": "1"},
+                        "metadata": {"phone_number_id": adapter._phone_number_id},
                         "contacts": [{"profile": {"name": "U"}, "wa_id": "1555"}],
                         "messages": [{
                             "from": "1555",

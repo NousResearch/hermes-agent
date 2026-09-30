@@ -78,7 +78,7 @@ registry.register(
                 "kind": {"type": "string", "enum": ["room", "thread", "event", "state", "members", "permissions", "pins"]},
                 "event_id": {"type": "string", "description": "Event ID for an event read, or thread root. A thread read defaults to the current thread."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
-                          "description": "Maximum number of events to read. A thread read counts the root."},
+                          "description": "Maximum number of events or members to return. A thread read counts the root."},
             },
             "required": ["kind"],
         },

@@ -49,6 +49,26 @@ export function spawnLedgerPath(hermesHomeRoot: string, join: (...parts: string[
   return join(hermesHomeRoot, SPAWN_LEDGER_FILENAME)
 }
 
+/**
+ * Upgrade headers that make the `/api/ws` probe carry the renderer's Origin.
+ *
+ * A packaged renderer is `file://`, which every backend admits, so the probe
+ * needs nothing. A dev renderer is served from `HERMES_DESKTOP_DEV_SERVER`, and
+ * a backend admits that http origin only when it inherited the same variable
+ * (it trusts no fixed dev port). Presenting it here makes a dev build skip a
+ * host backend its renderer could not use, and spawn its own, instead of
+ * attaching and then failing every renderer socket.
+ */
+export function rendererOriginHeaders(devServer: string | undefined): Record<string, string> | undefined {
+  try {
+    const { origin, protocol } = new URL(devServer || '')
+
+    return protocol === 'http:' || protocol === 'https:' ? { Origin: origin } : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function wsUrlFor(baseUrl: string, token: string): string {
   return `${baseUrl.replace(/^http/, 'ws')}/api/ws?token=${encodeURIComponent(token)}`
 }
@@ -99,7 +119,7 @@ async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps):
   const probe = await deps.probeWebSocket(wsUrl).catch(error => ({ ok: false, reason: error.message }))
 
   if (!probe.ok) {
-    deps.log(`[attach] ${baseUrl} (pid ${record.pid}) rejected the session token on /api/ws: ${probe.reason}`)
+    deps.log(`[attach] ${baseUrl} (pid ${record.pid}) refused /api/ws (token or renderer origin): ${probe.reason}`)
 
     return null
   }

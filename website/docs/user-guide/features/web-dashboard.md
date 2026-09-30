@@ -1177,13 +1177,21 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 
 ## CORS
 
-The web server restricts CORS to localhost origins only:
+The web server grants CORS, and accepts browser WebSocket upgrades, only for its own origin: a
+loopback origin (`localhost`, `127.0.0.1`, `[::1]`) on the port the server is bound to. That is
+`http://127.0.0.1:9119` for a default `hermes dashboard`, the `--port` you chose, or the ephemeral
+port a Desktop backend binds. The packaged desktop app loads from `file://` and is not affected.
 
-- `http://localhost:9119` / `http://127.0.0.1:9119` (production)
-- `http://localhost:3000` / `http://127.0.0.1:3000`
-- `http://localhost:5173` / `http://127.0.0.1:5173` (Vite dev server)
+A backend spawned by a desktop dev build also trusts that build's own renderer (the loopback
+`HERMES_DESKTOP_DEV_SERVER` it inherits, such as an [`hgui` slot](../../developer-guide/worktree-ui-dev.md#hgui--desktop-app-from-the-worktree)
+on `5174+N`). No fixed dev-server port is trusted: pages served from any other local port, including
+Vite apps on `5173` or `5174`, get no CORS headers and their WebSocket upgrades are refused, so they
+cannot read the session token or open the terminal.
 
-If you run the server on a custom port, that origin is added automatically.
+A desktop dev build attaches to the host's running backend only when that backend accepts its
+renderer's origin; otherwise it starts its own. It also passes the variable to the backends it
+starts over SSH. A remote backend you start yourself serves a dev build only when it is started with
+`HERMES_DESKTOP_DEV_SERVER` set to that build's renderer URL.
 
 ## Development
 
@@ -1199,7 +1207,7 @@ npm install
 npm run dev
 ```
 
-The Vite dev server at `http://localhost:5173` proxies `/api` requests to the FastAPI backend at `http://127.0.0.1:9119`.
+The Vite dev server at `http://localhost:5173` proxies `/api` requests, WebSockets included, to the FastAPI backend at `http://127.0.0.1:9119` (set `HERMES_DASHBOARD_URL` to use another backend). It reads the session token from the backend server-side, and it presents WebSocket upgrades from its own page with the backend's origin, so the backend does not need to trust port `5173`. Vite's own CORS is turned off, so other local pages cannot read the token from the dev server either.
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
 

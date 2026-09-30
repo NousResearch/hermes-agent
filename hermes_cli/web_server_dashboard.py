@@ -9,7 +9,8 @@ import sys
 import threading
 import time
 import hermes_yaml as yaml
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, WebSocketException
+from fastapi.requests import HTTPConnection
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -802,6 +803,17 @@ async def _plugin_route_secret_scope(profile: Optional[str] = None):
         yield
 
 
+async def _plugin_ws_request_gate(conn: HTTPConnection) -> None:
+    """Host/Origin/peer gate for plugin WebSocket routes: the same ``_ws_request_is_allowed`` check
+    (and so the same ``_is_trusted_local_origin`` rule) the core sockets run before accept. HTTP
+    middleware (Host check, CORS) never sees an upgrade, so without this a plugin socket such as
+    kanban's ``/events`` accepted a stolen session token from any origin. Applied at mount time so no
+    plugin can skip or drift from it; plain HTTP requests pass through untouched."""
+    from hermes_cli.web_server_chat import _ws_request_is_allowed
+    if conn.scope["type"] == "websocket" and not _ws_request_is_allowed(conn):
+        raise WebSocketException(code=4403)
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
@@ -878,7 +890,7 @@ def _mount_plugin_api_routes():
             app.include_router(
                 router,
                 prefix=f"/api/plugins/{plugin['name']}",
-                dependencies=[Depends(_plugin_route_secret_scope)],
+                dependencies=[Depends(_plugin_ws_request_gate), Depends(_plugin_route_secret_scope)],
             )
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:

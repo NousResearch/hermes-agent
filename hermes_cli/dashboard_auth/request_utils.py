@@ -17,9 +17,11 @@ _NEXT_DENY_PREFIXES = ("/login", "/auth/", "/api/auth/")
 
 
 def client_ip(request: Request) -> str:
-    """First ``X-Forwarded-For`` hop, else the peer address."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
+    """The peer address. Never the raw ``X-Forwarded-For`` header: it is client-supplied, and
+    uvicorn's ProxyHeadersMiddleware already rewrites ``request.client`` from it when — and only
+    when — the direct peer is a trusted proxy (``dashboard.trusted_proxies``, gated mode). Reading
+    it here let a caller rotate the header to reset the password-login throttle and forge audit IPs."""
+    return request.client.host if request.client else ""
 
 
 def extract_bearer(request: Request) -> str:

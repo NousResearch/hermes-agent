@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { attachOrReserveSpawn, attachToHostBackend } from './host-backend-attach'
+import { attachOrReserveSpawn, attachToHostBackend, rendererOriginHeaders } from './host-backend-attach'
 import { claimHostSpawnGate } from './host-spawn-gate'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
 
@@ -141,6 +141,20 @@ test('a record whose backend rejects the session token does not attach', async (
   )
 
   assert.equal(attached, null)
+})
+
+/**
+ * The probe must see what the renderer's sockets send: a dev renderer's
+ * dev-server Origin, which a backend admits only when it was spawned for that
+ * renderer. A packaged (`file://`) renderer needs no header.
+ */
+test('the attach probe carries a dev renderer origin and nothing for a packaged one', () => {
+  assert.deepEqual(rendererOriginHeaders('http://127.0.0.1:5175'), { Origin: 'http://127.0.0.1:5175' })
+  assert.deepEqual(rendererOriginHeaders('http://localhost:5174/?win=main#/'), { Origin: 'http://localhost:5174' })
+
+  for (const devServer of [undefined, '', 'not a url', 'file:///opt/app/index.html']) {
+    assert.equal(rendererOriginHeaders(devServer), undefined)
+  }
 })
 
 /** A process that loses the atomic gate race waits for the winner's backend. */

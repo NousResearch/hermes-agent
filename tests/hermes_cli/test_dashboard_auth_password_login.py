@@ -331,6 +331,20 @@ class TestRateLimit:
         )
         assert good.status_code == 429
 
+    def test_a_forged_forwarded_for_does_not_buy_new_attempts(self, gated_app):
+        # X-Forwarded-For is client-supplied. uvicorn's ProxyHeadersMiddleware already rewrites
+        # request.client from it for a TRUSTED proxy (dashboard.trusted_proxies); read raw, a
+        # fresh value per request would make every guess a new "IP" and disable the throttle.
+        statuses = [
+            gated_app.post(
+                "/auth/password-login",
+                json={"provider": "testpw", "username": "admin", "password": "WRONG"},
+                headers={"X-Forwarded-For": f"203.0.113.{i}"},
+            ).status_code
+            for i in range(15)
+        ]
+        assert statuses[-1] == 429, statuses
+
 
 # ---------------------------------------------------------------------------
 # Login page rendering

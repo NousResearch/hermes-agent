@@ -434,14 +434,46 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
-# CORS: localhost origins only — allow_origins=["*"] on 0.0.0.0 would let any
-# website read/modify config and secrets.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS: this backend's own loopback origin (the port actually bound) and the desktop dev renderer it
+# was spawned for, nothing else (web-dashboard.md § CORS). allow_origins=["*"] on 0.0.0.0 would let
+# any website read/modify config and secrets; ANY local port would let a page previewed from another
+# port (an agent-built site, Live Server, a compromised dev app) read index.html's session token and
+# drive /api/pty. No fixed dev port is trusted either: 3000, 5173 and 5174 are where most local dev
+# servers land (Vite takes 5174 when 5173 is busy). The dashboard's Vite dev server presents its own
+# page's upgrades with this backend's origin (web/vite.config.ts), so it needs no grant here. The
+# WebSocket Origin gate applies the same rule (web_server_chat).
+
+
+def _loopback_origin(origin: str) -> Optional[Tuple[str, str, int]]:
+    """``(scheme, host, port)`` of an http(s) loopback origin, else None."""
+    parsed = urllib.parse.urlparse(origin)
+    try:
+        port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+    except ValueError:  # out-of-range / non-numeric port
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in _LOOPBACK_HOST_VALUES:
+        return None
+    return parsed.scheme, parsed.hostname, port
+
+
+def _is_trusted_local_origin(origin: str) -> bool:
+    """True for a loopback origin on the bound port, or the desktop dev renderer this backend
+    serves. Electron hands its ``HERMES_DESKTOP_DEV_SERVER`` down to the backend it spawns, and
+    worktree-ui-dev.md's ``hgui`` slots run that renderer on 5174+N."""
+    loopback = _loopback_origin(origin)
+    if loopback is None:
+        return False
+    if loopback[2] == getattr(app.state, "bound_port", None):
+        return True
+    return _loopback_origin(os.environ.get("HERMES_DESKTOP_DEV_SERVER", "")) == loopback
+
+
+class _LocalOriginCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _is_trusted_local_origin(origin)
+
+
+app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot

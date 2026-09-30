@@ -305,6 +305,7 @@ import {
   type AttachedBackend,
   attachOrReserveSpawn,
   HOST_SPAWN_GATE_STALE_MS,
+  rendererOriginHeaders,
   spawnLedgerPath,
   type SpawnReservation
 } from './host-backend-attach'
@@ -10502,6 +10503,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
       guestOnboarding: GUEST_ONBOARDING,
+      devServer: DEV_SERVER,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -12986,7 +12988,9 @@ function hostBackendAttachDeps() {
         return null
       }
     },
-    probeWebSocket: (wsUrl: string) => probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket }),
+    // A dev renderer's sockets carry its dev-server Origin: probe with it.
+    probeWebSocket: (wsUrl: string) =>
+      probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket, headers: rendererOriginHeaders(DEV_SERVER) }),
     publishedTokenFor: (record: HostBackendRecord) =>
       lookupPublishedSessionToken(
         record,

@@ -14,6 +14,7 @@ function compilerPreset() {
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { fileURLToPath } from "node:url";
+import { presentOwnPageAsBackend } from "./src/lib/dev-proxy-origin";
 
 const configDir: string = fileURLToPath(new URL(".", import.meta.url));
 
@@ -157,10 +158,18 @@ export default defineConfig({
     },
   },
   server: {
+    // Everything the dev page loads is same-origin. Vite's default CORS
+    // grants every localhost port, which would let another local page read
+    // the session token hermesDevToken() injects into index.html.
+    cors: false,
     proxy: {
       "/api": {
         target: BACKEND,
         ws: true,
+        // The backend trusts no fixed dev port; see dev-proxy-origin.ts.
+        configure: (proxy) => {
+          proxy.on("proxyReqWs", presentOwnPageAsBackend(BACKEND));
+        },
       },
       // Same host as `hermes dashboard` must serve these; Vite has no
       // dashboard-plugins/* files, so without this, plugin scripts 404

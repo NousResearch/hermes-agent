@@ -153,7 +153,10 @@ def redeem_code(*, code: str, code_verifier: str, now: Optional[int] = None) -> 
         raise CodeInvalid("unknown, expired, or already-redeemed code")
     if issued.expires_at < now:
         raise CodeInvalid("code expired")
-    if not hmac.compare_digest(issued.code_challenge, _s256(code_verifier)):
+    # cv_d (token body) and cc_d (authorize query) are client text; RFC 7636 values are ASCII, so
+    # anything else is a PKCE mismatch, not a raise out of ``_s256``/``compare_digest`` on ``str``.
+    if not code_verifier.isascii() or not hmac.compare_digest(
+            issued.code_challenge.encode(), _s256(code_verifier).encode()):
         raise CodeInvalid("PKCE verification failed")
     return issued.session
 

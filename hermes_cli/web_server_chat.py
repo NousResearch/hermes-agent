@@ -172,7 +172,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     bound host.  Non-web origins (packaged Electron: file://, null, app://) are
     trusted — the credential check is the real auth boundary there.
     """
-    from hermes_cli.web_server import _is_accepted_host, app
+    from hermes_cli.web_server import _LOOPBACK_HOST_VALUES, _is_accepted_host, _is_trusted_local_origin, app
     bound_host = getattr(app.state, "bound_host", None)
     if not bound_host:
         return None
@@ -187,6 +187,10 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if parsed.scheme not in {"http", "https"}:
         return None
     if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+        return f"origin_mismatch origin={origin} bound={bound_host}"
+    # _is_accepted_host drops the port: a page on ANOTHER loopback port is a different origin, the
+    # same one CORS refuses — without this it opens /api/pty with a token it read off index.html.
+    if parsed.hostname in _LOOPBACK_HOST_VALUES and not _is_trusted_local_origin(origin):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

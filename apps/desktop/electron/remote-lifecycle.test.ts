@@ -961,6 +961,56 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
 })
 
 test.skipIf(process.platform === 'win32')(
+  'a dev build hands its renderer origin to the remote serve (real sh parse)',
+  async (): Promise<void> => {
+    // The backend trusts a dev renderer's http origin only when it inherits HERMES_DESKTOP_DEV_SERVER,
+    // as a locally spawned backend does. A packaged build (no dev server) must not set it at all.
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const directory: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-dev-server-env-'))
+    const hermesPath: string = path.join(directory, 'hermes')
+    const reportPath: string = path.join(directory, 'dev-server-report')
+
+    try {
+      await writeFile(
+        hermesPath,
+        `#!${shell}\nprintf '%s' "\${HERMES_DESKTOP_DEV_SERVER-unset}" > ${expandRemotePath(reportPath)}.tmp\n` +
+          `mv ${expandRemotePath(reportPath)}.tmp ${expandRemotePath(reportPath)}\n`,
+        { encoding: 'utf8', mode: 0o700 }
+      )
+
+      for (const [devServer, expected] of [
+        ["http://127.0.0.1:5175/'$(x)", "http://127.0.0.1:5175/'$(x)"],
+        ['', 'unset']
+      ]) {
+        await rm(reportPath, { force: true })
+
+        const command: string = buildSpawnCommand(hermesPath, '', {
+          devServer,
+          hermesHome: path.join(directory, 'home'),
+          logPath: path.join(directory, 'spawn.log')
+        })
+
+        await exec(command, { shell, env: { ...process.env, HOME: directory, HERMES_HOME: directory } })
+
+        let report: null | string = null
+
+        for (let attempt: number = 0; attempt < 100 && report === null; attempt += 1) {
+          report = await readFile(reportPath, 'utf8').catch(() => null)
+
+          if (report === null) {
+            await new Promise(resolve => setTimeout(resolve, 25))
+          }
+        }
+
+        assert.equal(report, expected)
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
+
+test.skipIf(process.platform === 'win32')(
   'detached backend does not inherit the update mutex descriptor',
   async (): Promise<void> => {
     const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()

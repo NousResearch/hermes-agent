@@ -1174,9 +1174,13 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
     `owner=$(IFS= read -r owner < ${marker} && printf '%s' "$owner"); ` +
     `case "$owner" in ''|*[!0-9]*) return 1;; esac; if kill -0 "$owner" 2>/dev/null; then return 1; fi; return 0; }`
 
+  // A dev build's renderer is served from HERMES_DESKTOP_DEV_SERVER, an http origin the backend
+  // trusts only when it inherits the variable, exactly as a locally spawned backend does.
+  const devServerEnv = opts.devServer ? ` HERMES_DESKTOP_DEV_SERVER=${shq(opts.devServer)}` : ''
+
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''}${devServerEnv} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   // The inner shell backgrounds Hermes and reports its PID; backgrounding the
@@ -1295,6 +1299,7 @@ async function spawnRemoteDashboard(
     ownershipId,
     hermesHome = '~/.hermes',
     guestOnboarding = false,
+    devServer = '',
     assertInstallClear = async () => {}
   }
 ) {
@@ -1367,6 +1372,7 @@ async function spawnRemoteDashboard(
         logPath,
         hermesHome,
         guestOnboarding,
+        devServer,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1517,6 +1523,7 @@ async function connect(deps) {
     rememberLog = () => {},
     readyTimeoutMs = resolveReadyTimeoutMs(),
     guestOnboarding = false,
+    devServer = '',
     signal
   } = deps
 
@@ -1671,6 +1678,7 @@ async function connect(deps) {
     ownershipId,
     hermesHome,
     guestOnboarding,
+    devServer,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
   })
 

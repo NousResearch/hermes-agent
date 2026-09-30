@@ -341,6 +341,34 @@ def test_bearer_authenticates_gated_route_without_cookie(gated_client):
     assert r.json()["user_id"] == "stub-user-1"
 
 
+# ---------------------------------------------------------------------------
+# Non-ASCII PKCE inputs are an ordinary invalid code, never a 500
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("non_ascii", ["verifier", "challenge"])
+def test_native_token_non_ascii_pkce_input_fails_like_unknown_code(gated_client, non_ascii):
+    """``code_verifier`` (token body) and ``code_challenge`` (authorize query) are client text.
+    RFC 7636 values are ASCII, so a non-ASCII one is a PKCE mismatch: the same generic 400 as an
+    unknown code (no oracle), and the code is spent so the genuine verifier cannot replay it."""
+    verifier, challenge = _make_pkce()
+    if non_ascii == "challenge":
+        challenge += "é"
+    code, _state = _walk_native_login(
+        gated_client, redirect_uri="http://127.0.0.1:53999/cb", challenge=challenge)
+    attempt = verifier + "é" if non_ascii == "verifier" else verifier
+
+    unknown = gated_client.post(
+        "/auth/native/token", json={"code": "no-such-code", "code_verifier": verifier})
+    r = gated_client.post("/auth/native/token", json={"code": code, "code_verifier": attempt})
+    replay = gated_client.post(
+        "/auth/native/token", json={"code": code, "code_verifier": verifier})
+
+    assert unknown.status_code == 400
+    assert (r.status_code, r.json()) == (unknown.status_code, unknown.json())
+    assert (replay.status_code, replay.json()) == (unknown.status_code, unknown.json())
+
+
 
 
 # ---------------------------------------------------------------------------

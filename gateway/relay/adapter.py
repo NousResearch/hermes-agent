@@ -1224,16 +1224,25 @@ class RelayAdapter(BasePlatformAdapter):
         user_name = self._discord_user_labels.get((scope, user_id)) or next(
             (str(v) for v in ((member.get("nick") if isinstance(member, dict) else None),
                               user.get("global_name"), user.get("username")) if v), None)
-        chat_name, chat_topic = self._discord_chat_labels_for(scope, str(payload.get("channel_id") or ""))
+        chat_id = str(payload.get("channel_id") or "")
+        chat_name, chat_topic = self._discord_chat_labels_for(scope, chat_id)
+        # The text lane keys a message inside a thread on chat_type "thread" + thread_id (both session-key
+        # fields), so an interaction sent there must carry the same or it lands in a per-user "group"
+        # session beside the thread's. The partial channel object marks a thread by type (10 announcement,
+        # 11 public, 12 private: what discord.py's Thread covers) and names the parent.
+        channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
+        is_thread = bool(guild_id) and channel.get("type") in (10, 11, 12)
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
             # capability binding (platform="discord"), /sethome must file under the
             # logical platform, and _capture_scope skips the generic "relay".
             platform=Platform.DISCORD,
-            chat_id=str(payload.get("channel_id") or ""),
+            chat_id=chat_id,
             # "group", not "channel": both the connector's capability binding and the
             # native Discord adapter key guild channels as "group".
-            chat_type="group" if guild_id else "dm",
+            chat_type="thread" if is_thread else ("group" if guild_id else "dm"),
+            thread_id=chat_id if is_thread else None,
+            parent_chat_id=str(channel["parent_id"]) if is_thread and channel.get("parent_id") else None,
             user_id=str(user["id"]) if user.get("id") else None,
             user_name=user_name,
             chat_name=chat_name,

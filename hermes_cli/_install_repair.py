@@ -86,7 +86,9 @@ def ensure_windows_bin_launchers(
     A name counts as present when an exe exists that does NOT boot the
     venv interpreter — legacy copied-venv trampolines (detected by their
     embedded interpreter path) and placeholder .cmd delegators are replaced
-    with a store-python launcher as soon as one can be minted.
+    with a store-python launcher as soon as one can be minted. An exe left
+    in place while Smart App Control is enforcing is not healthy: Windows
+    resolves it ahead of a ``.cmd`` and blocks it before Hermes starts.
 
     Two targets, two gates, both failing toward inaction:
 
@@ -129,17 +131,21 @@ def ensure_windows_bin_launchers(
     from hermes_cli._launchers import (
         ensure_install_launchers,
         exe_is_venv_bound,
+        smart_app_control_enforcing,
         stage_launcher,
     )
 
     from hermes_constants import project_venv_dir
 
     venv_dir = project_venv_dir(root)
+    app_control = smart_app_control_enforcing()
 
     def _needs_attention(target: Path, name: str) -> bool:
         """Missing, a placeholder .cmd, or a launcher that still boots the
         venv interpreter — anything the store-python launcher should replace."""
         exe = target / f"{name}.exe"
+        if app_control and exe.exists():
+            return True
         if not exe.exists():
             return not ((target / f"{name}.cmd").is_file()
                         and _launcher_present(root / ".hermes" / "bin", name))
@@ -194,7 +200,9 @@ def ensure_windows_bin_launchers(
                 # Already a store-python launcher (or a form this heal does
                 # not understand but that does not boot the venv): leave it.
                 continue
-            final = stage_launcher(name, root, target)
+            final = stage_launcher(
+                name, root, target, windows=windows, app_control=app_control,
+            )
             if final is not None:
                 # Windows resolves .exe before .cmd. A surviving venv-bound
                 # launcher would shadow the successfully staged fallback.

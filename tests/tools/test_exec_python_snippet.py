@@ -11,6 +11,8 @@ must execute byte-identical through the new transport.
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from tests.tools.test_file_operations import make_real_subprocess_env
 from tools.file_operations import ShellFileOperations
 
@@ -43,11 +45,12 @@ class TestSnippetEmissionShape:
         ops, env = _mock_ops()
         ops._exec_python_snippet("print(1)", py="python")
         (command,), kwargs = env.execute.call_args.args, env.execute.call_args.kwargs
-        assert command.startswith("python ")
+        assert command == "'python' -"
         assert kwargs.get("stdin_data") == "print(1)"
 
 
 class TestSnippetLiveEquivalence:
+    @pytest.mark.platforms("windows")
     def test_backslash_and_unicode_payload_runs_unmangled(self, tmp_path):
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         snippet = (

@@ -59,6 +59,24 @@ def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
     return flags
 
 
+def _sibling_cmd_launcher(argv0: str) -> str:
+    """Map a minted-fallback sibling ``.py`` argv0 back to its ``.cmd`` launcher.
+
+    The Windows ``mint_launcher`` fallback delegates to a same-stem ``.py`` carrying the
+    bootstrap verbatim (the old ``exec(base64.b64decode(...))`` one-liner matched EDR
+    malware heuristics, #122463), so a process started that way sees
+    ``sys.argv[0] == '...hermes.py'`` instead of the old ``'-c'``. The ``.py`` itself is
+    never exec-able — the ``.py`` rejection below stays as-is — but a same-stem ``.cmd``
+    beside it IS the launcher the user invoked, so resolve to it and relaunch keeps
+    working instead of falling through to ``python -m``. Pure argv0-plus-filesystem
+    logic (no host check): the pair only exists where the fallback minted it.
+    """
+    if not argv0.lower().endswith((".py", ".pyc")):
+        return argv0
+    cmd = str(pathlib.Path(argv0).with_suffix(".cmd"))
+    return cmd if os.path.isfile(cmd) else argv0
+
+
 def resolve_hermes_bin() -> Optional[str]:
     """Hermes entry point: ``sys.argv[0]`` if a real executable, else ``which hermes``, else ``None``
     (caller falls back to ``python -m hermes_cli.main``).
@@ -67,8 +85,12 @@ def resolve_hermes_bin() -> Optional[str]:
     POSIX the git installer runs the extensionless source launcher under the managed venv
     interpreter while its ``#!/usr/bin/env python3`` shebang would pick the system Python and
     lose the venv. Falling through to ``sys.executable -m hermes_cli.main`` keeps the venv.
+
+    A ``.py`` argv0 with a same-stem ``.cmd`` beside it is the minted Windows fallback
+    launcher pair: normalize to the ``.cmd`` first so the executable checks below see
+    the entry point the user actually invoked (#122479).
     """
-    argv0 = sys.argv[0]
+    argv0 = _sibling_cmd_launcher(sys.argv[0])
     _is_windows = sys.platform == "win32"
 
     def _is_python_script(p: str) -> bool:

@@ -25,6 +25,29 @@ class TestResolveHermesBin:
         monkeypatch.setattr(relaunch_mod.shutil, "which", lambda _name: None)
         assert relaunch_mod.resolve_hermes_bin() == str(fake)
 
+    def test_sibling_py_argv0_resolves_to_cmd_launcher(self, monkeypatch, tmp_path):
+        """Minted Windows fallback (.cmd delegating to a sibling .py): argv[0] names the
+        .py, but relaunch must resolve the .cmd the user invoked (#122479). Host-independent
+        (argv0 plus filesystem, no platform faking); the .cmd carries no python shebang so
+        the POSIX safety predicate accepts it too."""
+        sibling = tmp_path / "hermes.py"
+        launcher = tmp_path / "hermes.cmd"
+        sibling.write_text("print(1)\n", encoding="utf-8")
+        launcher.write_text("@echo off\r\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        monkeypatch.setattr(sys, "argv", [str(sibling)])
+        monkeypatch.setattr(relaunch_mod.shutil, "which", lambda _name: None)
+        assert relaunch_mod.resolve_hermes_bin() == str(launcher)
+
+    def test_bare_py_argv0_without_cmd_sibling_still_falls_through(self, monkeypatch, tmp_path):
+        """A .py WITHOUT a same-stem .cmd is still an unsafe launcher: the predicate is
+        not loosened, only the minted pair normalizes (#122479)."""
+        lonely = tmp_path / "lonely.py"
+        lonely.write_text("print(1)\n", encoding="utf-8")
+        monkeypatch.setattr(sys, "argv", [str(lonely)])
+        monkeypatch.setattr(relaunch_mod.shutil, "which", lambda _name: None)
+        assert relaunch_mod.resolve_hermes_bin() is None
+
     def test_falls_back_to_path_which(self, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["-c"])  # not a real path
         monkeypatch.setattr(

@@ -50,3 +50,22 @@ class TestCmdEmissionShape:
     def test_sibling_is_valid_python(self, tmp_path, monkeypatch):
         target = _mint_cmd(tmp_path, monkeypatch)
         assert py_compile.compile(str(target.with_name("hermes.py")), doraise=True)
+
+    def test_cmd_write_failure_removes_sibling_py(self, tmp_path, monkeypatch):
+        """A failed .cmd write must not leave a stale hermes.py behind (#122479)."""
+        real_write = launchers._write_atomic
+
+        def fail_cmd(target, write):
+            if target.suffix == ".cmd":
+                return None
+            return real_write(target, write)
+
+        monkeypatch.setattr(launchers, "_write_atomic", fail_cmd)
+        monkeypatch.setattr(launchers, "_is_windows", lambda: True)
+        monkeypatch.setattr(launchers, "_load_script_maker", lambda: None)
+        repo = tmp_path / "repo"
+        out = tmp_path / "out"
+        repo.mkdir()
+        out.mkdir()
+        assert launchers.mint_launcher("hermes", repo, out, Path(sys.executable), None) is None
+        assert not (out / "hermes.py").exists()

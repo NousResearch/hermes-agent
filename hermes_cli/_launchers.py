@@ -267,7 +267,12 @@ def mint_launcher(
     )
     if _write_atomic(script_path, lambda p: p.write_text(script, encoding="utf-8")) is None:
         return None
-    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+    target = _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+    if target is None:
+        # Don't orphan the sibling: without its .cmd nothing references it, and a later
+        # mint would mistake the stale payload for current (#122479).
+        script_path.unlink(missing_ok=True)
+    return target
 
 
 def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> str:

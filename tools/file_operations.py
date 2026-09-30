@@ -556,7 +556,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """
         if py is None:
             py = self._python_interpreter_cmd()
-        return self._exec(f"{py} -", stdin_data=snippet)
+        # Shell-escape the interpreter: on Windows under Git Bash a raw
+        # ``C:\Python\python.exe`` loses its backslashes (exit 127), so an
+        # explicit ``py=sys.executable`` needs the same quoting as every
+        # other interpolated path (#122479).
+        return self._exec(f"{self._escape_shell_arg(py)} -", stdin_data=snippet)
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,
                         file_size: int) -> "Optional[ReadResult]":

@@ -265,7 +265,8 @@ def test_zip_recovers_crashed_backup_before_failed_copy_and_retry(zip_update, mo
     original = getattr(shutil, function)
 
     def fail(src, dst, *args, **kwargs):
-        if str(dst) == str(leftover):
+        # Extended and ordinary Win32 spellings address the same destination.
+        if Path(dst).name == leftover.name and Path(dst).parent.samefile(leftover.parent):
             raise OSError("copy refused after crash")
         return original(src, dst, *args, **kwargs)
 

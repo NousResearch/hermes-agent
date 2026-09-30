@@ -106,6 +106,23 @@ def test_skills_table_offers_no_launch_for_a_disabled_colliding_skill(monkeypatc
     assert NOTE in sink.getvalue() and "hermes -s" not in sink.getvalue()
 
 
+def test_gated_commands_listing_omits_collision_notes(monkeypatch):
+    """A gated non-admin's ``/commands`` hides skill commands, so a colliding skill changes nothing in it."""
+    import tools.skills_tool as skills_tool
+    from hermes_cli.slash_exec import CommandContext, _exec_commands
+
+    ctx = CommandContext(
+        args="", options={"page_size": 500, "allowed_commands": {"help", "whoami"}}
+    )
+    _write_skill("tidy-notes")
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+    without_collision = _exec_commands(ctx).text
+
+    _write_skill("handoff")
+    skills_tool._SKILLS_CACHE.clear()
+    assert _exec_commands(ctx).text == without_collision
+
+
 def test_catalog_discovery_failure_warning_outranks_the_collision_note(monkeypatch):
     """A colliding skill must not hide a real discovery failure: the failure stays in ``warning``."""
     from tools import skills_tool

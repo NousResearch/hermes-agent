@@ -43,7 +43,11 @@ def test_commit_build_refuses_without_gui_advice(commit_build, git_present):
 def test_root_cannot_update_user_owned_install(tmp_path, monkeypatch):
     from hermes_cli.update_contract import ROOT_UPDATE_MESSAGE
 
+    class UserStat:
+        st_uid = 1000
+
     monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
+    monkeypatch.setattr(type(tmp_path), "stat", lambda self: UserStat())
     refusal = evaluate_update_admission(tmp_path)
 
     assert refusal is not None

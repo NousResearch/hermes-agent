@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — standart işleme"
     choice_auto: "auto — her turun ilk saniyelerinde hızlı"
     choice_cold: "cold — yalnızca oturumun ilk turunda hızlı"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6 kat fiyat)"
+    ultrafast_not_supported: "⚡ Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: `{model}`)."
   footer:
     status: "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
     usage: "Kullanım: `/footer [on|off|status]`"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Akıl yürütme düzeyini ve gösterimini yönet"
   fast:
-    description: "Hızlı mod — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Hızlı mod — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Görüntü görünümünü/temasını göster veya değiştir"
   indicator:
@@ -2651,7 +2653,9 @@ cli:
       feature_generic: "Hızlı mod"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Kullanım: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: {model})."
+      usage: "Kullanım: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} {value} olarak ayarlandı {scope}"
     hatch:

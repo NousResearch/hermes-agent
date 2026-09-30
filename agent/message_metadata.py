@@ -106,6 +106,35 @@ def message_identity(msg: MutableMapping[str, Any], *, with_tool_uids: bool = Fa
     return identity
 
 
+# The ``display_metadata`` entry in which the gateway saves a snapshot of the chat (its name, topic and
+# similar state) on a user row. The newest row with one is the snapshot that the conversation has
+# acknowledged, so a rewrite that removes that row must record the snapshot on a row that it keeps.
+CHANNEL_STATE_METADATA_KEY = "channel_state"
+
+
+def _channel_state(msg: Any) -> Optional[dict]:
+    metadata = msg.get("display_metadata") if isinstance(msg, Mapping) else None
+    state = metadata.get(CHANNEL_STATE_METADATA_KEY) if isinstance(metadata, Mapping) else None
+    return state if isinstance(state, dict) else None
+
+
+def newest_channel_state(messages: List[Any]) -> Optional[dict]:
+    """The channel state saved on the newest row of *messages* that has one."""
+    return next((state for msg in reversed(messages) if (state := _channel_state(msg)) is not None), None)
+
+
+def keep_newest_channel_state(
+    original: List[Any], rewritten: List[Any], carrier: MutableMapping[str, Any],
+) -> None:
+    """Record the newest channel state of *original* on *carrier* when *rewritten* no longer has it as
+    its newest. *carrier* is the row of *rewritten* that replaces the removed rows (a compaction summary
+    or a merge survivor), and every row after it in *rewritten* must be a row of *original*."""
+    state = newest_channel_state(original)
+    if state is None or newest_channel_state(rewritten) == state:
+        return
+    carrier["display_metadata"] = {**(carrier.get("display_metadata") or {}), CHANNEL_STATE_METADATA_KEY: state}
+
+
 def record_absorbed_message(
     survivor: MutableMapping[str, Any], dropped: Mapping[str, Any], *, dropped_leads: bool = False,
 ) -> None:
@@ -116,8 +145,9 @@ def record_absorbed_message(
     text leads; with *dropped_leads* the dropped dict's text was put first (the real user anchor folded
     into a scaffolding turn), so its uid becomes the survivor's and the survivor's former uid is recorded.
     A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
-    leaves the survivor untouched.
+    leaves the survivor untouched. The survivor also keeps the newest channel state of the two constituents.
     """
+    keep_newest_channel_state([dropped, survivor] if dropped_leads else [survivor, dropped], [survivor], survivor)
     survivor_uid = message_uid_or_none(survivor)
     dropped_uid = message_uid_or_none(dropped)
     own = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS))

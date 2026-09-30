@@ -1059,6 +1059,43 @@ async def test_room_state_read_failure_adds_no_note_and_keeps_baseline(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_room_baseline_survives_compaction_of_every_saved_snapshot(tmp_path):
+    from agent.context_compressor import ContextCompressor
+
+    store, source = _room_session(tmp_path)
+    session_id = store.get_or_create_session(source).session_id
+    renamed_state = {"m.room.name": {"name": "Ops 2"}, "m.room.topic": {"topic": "Incidents 2"}}
+    runner = _room_context_runner(store, _room_context_adapter(_OPS_STATE))
+
+    def media_turns(count):
+        # Media turns get no room snapshot.
+        for index in range(count):
+            store.append_to_transcript(session_id, {"role": "user", "content": f"[image {index}] " + "x" * 400})
+            store.append_to_transcript(session_id, {"role": "assistant", "content": f"seen {index} " + "y" * 400})
+
+    await _prepare_room_turn(runner, source, "$first", persist=True)
+    media_turns(2)
+    runner.adapters = {Platform.MATRIX: _room_context_adapter(renamed_state)}
+    renamed, _ = await _prepare_room_turn(runner, source, "$renamed", persist=True)
+    media_turns(15)
+    with patch("agent.context_compressor.get_model_context_length", return_value=8000):
+        compressor = ContextCompressor(model="test-model", quiet_mode=True, config_context_length=8000)
+    summary = MagicMock()
+    summary.choices[0].message.content = "## Active Task\nroom chat"
+    with patch("agent.context_compressor.call_llm", return_value=summary):
+        compacted = compressor.compress(store.load_transcript(session_id), current_tokens=100_000, force=True)
+    store._db.archive_and_compact(session_id, compacted)
+
+    after_compaction, _ = await _prepare_room_turn(runner, source, "$after-compaction")
+
+    assert (renamed, after_compaction) == (
+        '[The room display name is now: "Ops 2"]\n[The room topic changed to: "Incidents 2"]\n'
+        f'{_UNTRUSTED_MARKER}\n\n[New message]\nhello',
+        "hello",
+    )
+
+
+@pytest.mark.asyncio
 async def test_room_state_reads_overlap_and_stop_at_the_deadline(tmp_path, monkeypatch):
     from plugins.platforms.matrix import adapter as matrix_adapter
 
@@ -1095,6 +1132,53 @@ async def test_turn_reuses_the_fresh_room_identity(tmp_path):
     message, _ = await _prepare_room_turn(runner, source, "$m")
 
     assert (message, adapter._client.get_state_event.await_count) == ("hello", reads)
+
+
+_NAMED_ROOM_STATE = {**_OPS_STATE, "m.room.canonical_alias": {"alias": "#ops:example.org"}}
+
+
+def _fail_state_reads(adapter, state):
+    adapter._client.get_state_event = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _fail_member_reads(adapter, state):
+    adapter._client.state_store.has_full_member_list = AsyncMock(side_effect=asyncio.TimeoutError())
+    adapter._client.get_joined_members = AsyncMock(side_effect=asyncio.TimeoutError())
+
+
+def _empty_room_names(adapter, state):
+    state.update({
+        "m.room.name": {"name": ""}, "m.room.topic": {"topic": ""}, "m.room.canonical_alias": {"alias": ""},
+    })
+
+
+def _delete_room_names(adapter, state):
+    state.clear()
+
+
+def _report_room_names_missing_by_errcode(adapter, state):
+    adapter._client.get_state_event = AsyncMock(
+        side_effect=_sync_error("Event not found.", errcode="M_NOT_FOUND", http_status=404),
+    )
+
+
+@pytest.mark.parametrize("state,refresh,expected", [
+    (_NAMED_ROOM_STATE, _fail_state_reads, ("Ops", "Incidents", "#ops:example.org", "Ops")),
+    ({}, _fail_member_reads, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _empty_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _delete_room_names, (None, None, None, "Alice and Bob")),
+    (_NAMED_ROOM_STATE, _report_room_names_missing_by_errcode, (None, None, None, "Alice and Bob")),
+], ids=["state-read-fails", "member-read-fails", "state-emptied", "state-not-found", "state-not-found-errcode"])
+@pytest.mark.asyncio
+async def test_room_identity_keeps_the_last_names_only_when_a_read_fails(state, refresh, expected):
+    state = dict(state)
+    adapter = _room_context_adapter(state)
+    await adapter._resolve_room_identity(_ROOM_ID)
+
+    refresh(adapter, state)
+    identity = await adapter._resolve_room_identity(_ROOM_ID, force_refresh=True)
+
+    assert (identity.room_name, identity.room_topic, identity.canonical_alias, identity.display_name) == expected
 
 
 @pytest.mark.asyncio
@@ -1294,6 +1378,7 @@ def _make_room_adapter():
     ("> quoted from elsewhere\n\nwhat does this mean?", "> quoted from elsewhere\n\nwhat does this mean?"),
     ("> <@alice:example.org> root\n\n> my own quote\n\nquestion", "> my own quote\n\nquestion"),
     ("> * <@alice:example.org> waves\n\nhello", "hello"),
+    ("> <@bob:example.org> said it failed\nI disagree", "> <@bob:example.org> said it failed\nI disagree"),
 ])
 async def test_thread_message_strips_only_the_reply_fallback(body, expected_text):
     adapter = _make_room_adapter()
@@ -1386,7 +1471,7 @@ async def test_inline_reply_fallback_does_not_verify_claimed_author(claimed_auth
     adapter._is_sender_authorized = MagicMock(return_value=True)
 
     reply = await adapter._extract_reply_context(
-        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue",
+        "!room:example.org", f"> <{claimed_author}> earlier\n\nContinue", {},
         {"m.in_reply_to": {"event_id": "$parent"}},
         sender="@alice:example.org", chat_type="group",
     )

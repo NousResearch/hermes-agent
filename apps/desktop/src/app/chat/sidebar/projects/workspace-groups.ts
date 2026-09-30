@@ -1,4 +1,4 @@
-import type { HermesGitWorktree } from '@/global'
+import type { HermesGitBranch, HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
 
@@ -132,6 +132,32 @@ export function kanbanWorktreeDir(path: string): null | string {
 
 /** Label for a main-checkout lane whose session recorded no branch. */
 export const DEFAULT_BRANCH_LABEL = 'main'
+
+/**
+ * The branch "+" on a lane should `git switch` to before opening a session, or
+ * null to open on whatever the checkout is on now. A main-checkout lane label
+ * is a display value: a row with no recorded `git_branch` falls back to
+ * DEFAULT_BRANCH_LABEL (backend and live overlay alike). `git switch main` then
+ * dies with "invalid reference: main" on a `master` repo (#108694). Only a
+ * label that git lists as a branch (local, or a remote-tracking ref
+ * `git switch` can DWIM) counts as a switch target.
+ */
+export function laneSwitchTarget(
+  group: Pick<SidebarSessionGroup, 'isGit' | 'isMain' | 'label' | 'path'>,
+  branches: readonly Pick<HermesGitBranch, 'isRemote' | 'name'>[]
+): null | string {
+  const label = group.label.trim()
+
+  if (!group.isMain || group.isGit === false || !group.path || !label) {
+    return null
+  }
+
+  const known = branches.some(branch =>
+    branch.isRemote ? branch.name.slice(branch.name.indexOf('/') + 1) === label : branch.name === label
+  )
+
+  return known ? label : null
+}
 
 /** Id of the Home bucket (must match the backend tree's `NO_PROJECT_ID`). */
 export const NO_PROJECT_ID = '__no_project__'

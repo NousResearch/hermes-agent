@@ -417,6 +417,7 @@ class OnboardingStateResult(Result):
     intro: OnboardingIntro
     failed_starts: int
     completed_at: str | None = None
+    profile: str | None = None
 
 
 method("onboarding.state", params=Params, result=OnboardingStateResult)

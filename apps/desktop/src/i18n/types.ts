@@ -71,9 +71,9 @@ export interface Translations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string
+    dialogTitle: string
     consentBody: string
     whatIsCollected: string
-    collectedIntro: string
     collectedActivity: string
     collectedModels: string
     collectedNames: string
@@ -81,13 +81,11 @@ export interface Translations {
     collectedReliability: string
     collectedUsage: string
     collectedMachine: string
-    installId: string
-    consentWindow: string
+    sending: string
     readDocs: string
     share: string
     local: string
     off: string
-    changeLater: string
     saveFailed: string
     collectLabel: string
     collectDesc: string

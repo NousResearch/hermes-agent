@@ -6,10 +6,10 @@ import { introFr } from './intro-fr'
 export const frOverrides = {
   sharedMetrics: {
     consentTitle: 'Aider à améliorer Hermes ?',
+    dialogTitle: 'Aider à améliorer Hermes ?',
     consentBody:
       'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
     whatIsCollected: 'Ce qui est collecté',
-    collectedIntro: 'Uniquement des compteurs bornés :',
     collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
     collectedModels: 'Routes de modèles et totaux de tokens',
     collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
@@ -20,15 +20,12 @@ export const frOverrides = {
       "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
     collectedMachine:
       "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
-    installId:
-      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
-    consentWindow:
-      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    sending:
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées. Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment. Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
     readDocs: 'Lire tous les détails',
     share: 'Collecter et envoyer à Nous',
     local: 'Collecter en local uniquement',
     off: 'Non merci',
-    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
     saveFailed: 'Impossible d’enregistrer votre choix',
     collectLabel: 'Collecter les statistiques d’utilisation',
     collectDesc:

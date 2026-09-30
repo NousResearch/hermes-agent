@@ -72,12 +72,13 @@ def _(rid, params: dict) -> dict:
 
 
 def _onboarding_state_result(rid, change) -> dict:
-    from hermes_cli.setup_profile import onboarding_eligible
+    from hermes_cli.setup_profile import find_setup_profile, onboarding_eligible
     try:
         state = change()
+        found = find_setup_profile()
     except Exception as e:
         return _err(rid, 5076, str(e))
-    return _ok(rid, {"eligible": onboarding_eligible(), **state})
+    return _ok(rid, {"eligible": onboarding_eligible(), "profile": found[0] if found else None, **state})
 
 
 def _clear_setup_sessions(profile_dir) -> None:

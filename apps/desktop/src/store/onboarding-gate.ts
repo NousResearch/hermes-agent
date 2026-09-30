@@ -25,7 +25,22 @@ export const $onboardingGate = atom<OnboardingGateState>({ phase: 'idle', guideQ
 
 const $onboardingStateRead = atom(false)
 
+/** The setup profile's name, from `onboarding.state` or from the kickoff that creates it; `null` when none is known. */
+export const $setupProfileName = atom<null | string>(null)
+
 let guideKickoff: GuideKickoff = { status: 'idle' }
+
+const guidedPhase = (phase: OnboardingPhase) => phase === 'pending' || phase === 'guided' || phase === 'handoff'
+
+/**
+ * Guided first run is behind the user: finished, skipped, or never due. The phase is only
+ * trusted once the backend's `onboarding.state` (its `intro`) has been read.
+ */
+export const $guidedOnboardingSettled = computed(
+  [$onboardingGate, $onboardingStateRead],
+  (gate, read) => !isOnboardingEnabled() || (read && !guidedPhase(gate.phase))
+)
+
 export const $guideOpening = computed(
   $onboardingGate,
   gate =>
@@ -51,7 +66,7 @@ function reportOnboarding(method: 'onboarding.mark_seen' | 'onboarding.record_fa
 export function guidedOnboardingActive(): boolean {
   const { phase } = $onboardingGate.get()
 
-  return isOnboardingEnabled() && (phase === 'pending' || phase === 'guided' || phase === 'handoff')
+  return isOnboardingEnabled() && guidedPhase(phase)
 }
 
 export function markOnboardingStateRead(): void {

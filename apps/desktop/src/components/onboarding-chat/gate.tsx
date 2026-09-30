@@ -9,6 +9,7 @@ import { $desktopOnboarding, clearFreeTierIntro } from '@/store/onboarding'
 import {
   $guideOpening,
   $onboardingGate,
+  $setupProfileName,
   abandonGuide,
   beginOnboardingFlow,
   type GuideKickoffResult,
@@ -36,6 +37,7 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
     void requestGateway<OnboardingStateResult>('onboarding.state')
       .then(
         state => {
+          $setupProfileName.set(state.profile ?? null)
           beginOnboardingFlow(state, $desktopOnboarding.get().firstRunSkipped)
 
           if ($onboardingGate.get().guideQueued) {

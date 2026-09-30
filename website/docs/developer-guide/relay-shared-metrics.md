@@ -574,9 +574,10 @@ telemetry:
 
 Both keys are asked once per profile: by the Shared Metrics section of
 `hermes setup`, or in Hermes Desktop by an offer strip above the composer
-(Send to Nous / Local only / No thanks, with a Details view). The Desktop offer
-never blocks the composer or takes focus, appears only after first-run
-onboarding, and stays until answered. A profile whose `config.yaml` already
+(Share with Nous / Keep on this computer / No thanks, with a Details view). The
+Desktop offer never blocks the composer or takes focus, appears only after
+first-run onboarding is finished or skipped, never in the internal setup
+profile that hosts the welcome chat, and stays until answered. A profile whose `config.yaml` already
 carries either key is never asked again on any surface. Settings › Safety ›
 Privacy & network toggles both keys later.
 

@@ -12,10 +12,10 @@ export const zh = defineLocale({
   },
   sharedMetrics: {
     consentTitle: '帮助改进 Hermes？',
+    dialogTitle: '帮助改进 Hermes？',
     consentBody:
       '共享指标只包含有上限的计数，绝不包含提示词、文件、路径或错误文本。收集仅在本地进行；发送给 Nous 需要另行同意。',
     whatIsCollected: '收集哪些内容',
-    collectedIntro: '仅限有上限的计数：',
     collectedActivity: '活动、会话时长、结果和错误类别',
     collectedModels: '模型路由和 token 总量',
     collectedNames: '内置工具、命令和目录项名称',
@@ -25,15 +25,12 @@ export const zh = defineLocale({
       'Hermes 的使用方式：代理的准确度与效率（编辑是否成功、循环、错误后的恢复、每个任务的 token 与工具调用数、缓存中断），各界面与 Desktop 模式的活跃时间，哪些应用区域、操作与设置被使用、很快关闭或被关闭，以及提供商设置的结果',
     collectedMachine:
       '概略的机器信息：内存范围、GPU 类型、Hermes 版本新旧与发布通道、落后的更新数、是否使用本地模型服务器',
-    installId:
-      '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。',
-    consentWindow:
-      '只有整个收集周期都落在已记录同意时段内的数据包才会被发送——你同意之前的数据，或发送关闭期间的数据，都会留在本机。你可以随时再次关闭发送。',
+    sending:
+      '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。只有整个收集周期都落在已记录同意时段内的数据包才会被发送——你同意之前的数据，或发送关闭期间的数据，都会留在本机。你可以随时再次关闭发送。你可以随时在 设置 → 安全 中更改。',
     readDocs: '查看完整说明',
     share: '收集并发送给 Nous',
     local: '仅在本地收集',
     off: '不用了',
-    changeLater: '你可以随时在 设置 → 安全 中更改。',
     saveFailed: '无法保存你的选择',
     collectLabel: '收集使用统计',
     collectDesc: '在此设备上保存有上限的计数。绝不包含提示词、文件、路径或错误文本。',

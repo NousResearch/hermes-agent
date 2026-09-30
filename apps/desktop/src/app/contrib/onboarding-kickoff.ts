@@ -16,7 +16,7 @@ import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gat
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
-import type { GuideKickoffResult } from '@/store/onboarding-gate'
+import { $setupProfileName, type GuideKickoffResult } from '@/store/onboarding-gate'
 import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
@@ -113,6 +113,8 @@ export function useOnboardingKickoff({ requestGateway, resumeSession }: Onboardi
         'onboarding.ensure_setup_profile',
         {}
       )
+
+      $setupProfileName.set(setupProfile)
 
       const record = await requestGatewayForProfile<SetupStatus>(setupProfile, 'setup.status', {})
 

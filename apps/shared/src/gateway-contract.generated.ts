@@ -2113,6 +2113,7 @@ export interface OnboardingStateResult {
   intro: OnboardingIntro
   failed_starts: number
   completed_at?: string | null
+  profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
 export interface OnboardingResetSetupProfileResult {

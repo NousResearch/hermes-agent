@@ -6,10 +6,10 @@ import { introEs } from './intro-es'
 export const esOverrides = {
   sharedMetrics: {
     consentTitle: '¿Nos ayudas a mejorar Hermes?',
+    dialogTitle: '¿Nos ayudas a mejorar Hermes?',
     consentBody:
       'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
     whatIsCollected: 'Qué se recopila',
-    collectedIntro: 'Solo contadores acotados:',
     collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error',
     collectedModels: 'Rutas de modelo y totales de tokens',
     collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
@@ -20,15 +20,12 @@ export const esOverrides = {
       'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
     collectedMachine:
       'Datos generales del equipo: rango de RAM, tipo de GPU, antigüedad y canal de la versión de Hermes, actualizaciones pendientes, si se usa un servidor de modelos local',
-    installId:
-      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
-    consentWindow:
-      'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
+    sending:
+      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas. Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras. Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
     readDocs: 'Leer todos los detalles',
     share: 'Recopilar y enviar a Nous',
     local: 'Recopilar solo en local',
     off: 'No, gracias',
-    changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
     saveFailed: 'No se pudo guardar tu elección',
     collectLabel: 'Recopilar estadísticas de uso',
     collectDesc:

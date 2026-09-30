@@ -215,6 +215,55 @@ async def test_two_leftover_steers_complete_with_the_turn_that_reads_them(monkey
     ])
 
 
+class _HeldSendAdapter(LifecycleLogAdapter):
+    """Holds every send until the test releases it."""
+
+    def __init__(self):
+        super().__init__()
+        self.sending, self.release = asyncio.Event(), asyncio.Event()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sending.set()
+        await self.release.wait()
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked", [True, False])
+async def test_leftover_steer_completes_with_its_turn_while_its_handler_still_sends(monkeypatch, tracked):
+    """The model can return a /steer as a leftover while the adapter is still sending the command's
+    acknowledgement. The steer's own turn then starts before the command's handler returns. The
+    message must complete once, when that turn completes, with that turn's outcome."""
+    from gateway.run_turn_followup_ack import _run_followup_processing_hook
+
+    runner, _adapter = _priority_runner(monkeypatch, "steer")
+    adapter = _HeldSendAdapter()
+    adapter.platform = Platform.SLACK
+    runner.adapters[Platform.SLACK] = adapter
+    adapter.set_message_handler(runner._handle_message)
+    source, key, receiver, running = _running_slack_turn(runner, finished=False)
+    if tracked:
+        await adapter._run_processing_hook("on_processing_start", running)
+
+    await adapter.handle_message(MessageEvent(text="/steer late", source=source, message_id="corr-1"))
+    await asyncio.wait_for(adapter.sending.wait(), 30)
+    (admitted,) = receiver.steer.call_args.args
+    pending_event, _pending = await runner._run_agent_drain_pending(
+        {"final_response": "reply", "pending_steer": admitted}, adapter, source, key, processing_event=running)
+    await adapter._run_processing_hook("on_processing_complete", running, ProcessingOutcome.SUCCESS)
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_start")
+    adapter.release.set()
+    await asyncio.gather(*adapter._background_tasks)
+    handler_returned = [entry for entry in adapter.log if entry[0] != "send"]
+    await _run_followup_processing_hook(adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+
+    started = [_START_RUNNING, _START_CORR] if tracked else [_START_CORR]
+    assert (handler_returned, [entry for entry in adapter.log if entry[0] != "send"]) == (
+        [*started, _DONE_RUNNING],
+        [*started, _DONE_RUNNING, ("complete", "corr-1", ProcessingOutcome.FAILURE)],
+    )
+
+
 class _CompleteOnlyAdapter(LifecycleLogAdapter):
     """Overrides only on_processing_complete, as A2A, Google Chat and the webhook adapter do."""
 

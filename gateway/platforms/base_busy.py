@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from agent.i18n import t
-from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageEvent, ProcessingOutcome, MessageType
 from gateway.platforms.base_pending import can_join_pending_event, pending_dispatch_scope, reserve_pending_dispatch, release_pending_dispatch_record
 
@@ -169,7 +168,7 @@ class BaseBusyMixin:
                 # Photo bursts/albums: queue without interrupting; they run after the current task.
                 if event.message_type == MessageType.PHOTO:
                     logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                    merge_pending_message_event(self._pending_messages, session_key, event)
+                    self._merge_into_pending_slot(session_key, event)
                     event._gateway_accepted = True
                     return
                 if self._is_queue_text_debounce_candidate(event):
@@ -182,7 +181,7 @@ class BaseBusyMixin:
                 else:
                     logger.debug("[%s] New message while session %s is active — queuing follow-up "
                                  "(no interrupt, will cascade after current turn)", self.name, session_key)
-                    merge_pending_message_event(self._pending_messages, session_key, event,
+                    self._merge_into_pending_slot(session_key, event,
                                                 merge_text=event.message_type == MessageType.TEXT)
                     event._gateway_accepted = True
         finally:

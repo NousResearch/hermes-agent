@@ -9,9 +9,6 @@ import time
 from dataclasses import dataclass, field
 
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending_merge import (
-    merge_pending_message_event,
-)
 from gateway.platforms.base_pending import can_join_pending_event, ingress_order, merge_recorded
 from gateway.platforms import base_pending_merge
 
@@ -176,9 +173,7 @@ class BaseTextDebounceMixin:
             state.earlier_events.pop(0)
         else:
             store.pop(session_key, None)
-        merge_pending_message_event(
-            self._pending_messages, session_key, event, merge_text=True
-        )
+        self._merge_into_pending_slot(session_key, event, merge_text=True)
         return True
 
     def _discard_text_debounce(self: BasePlatformAdapter, session_key: str) -> None:

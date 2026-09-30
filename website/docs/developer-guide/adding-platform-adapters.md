@@ -224,6 +224,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | System prompt hints | `platform_hint` injected into LLM context |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
+| Status notices | `reads_non_conversational_mark` flag: the gateway sets `metadata["non_conversational"]` on lifecycle and status sends, so the adapter can leave them out of history scans |
 | `hermes status` | Shows plugin platforms with `(plugin)` tag |
 | `hermes gateway setup` | Plugin platforms appear in setup menu |
 | `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |

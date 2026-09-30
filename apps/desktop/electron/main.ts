@@ -9772,6 +9772,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      devServer: DEV_SERVER,
       signal: lease.signal
     })
   } catch (error: any) {

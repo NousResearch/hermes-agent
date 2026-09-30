@@ -1208,6 +1208,8 @@ export const en: Translations = {
       chatFontPreview: 'Preview',
       chatFontSample: 'The quick brown fox jumps over the lazy dog. 0123456789',
       chatFontReset: 'Use theme font',
+      chatTextSizeTitle: 'Chat Text Size',
+      chatTextSizeDesc: 'Scale the size of conversation text and captions without zooming the whole UI.',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window, text and all. Tuned separately for light and dark.',
       translucencyGlassDesc:

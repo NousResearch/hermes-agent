@@ -303,6 +303,20 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     root.style.setProperty(k, v)
   }
 
+  // Optional typography knobs. They are the ONLY vars applyTheme may paint
+  // inline conditionally: styles.css declares the same fallbacks on :root, so
+  // a theme that stops providing one must drop the inline value — otherwise
+  // the previous skin's size/leading/tracking sticks across a switch (#41766).
+  for (const key of ['baseSize', 'lineHeight', 'letterSpacing'] as const) {
+    const cssVar = `--dt-${key === 'baseSize' ? 'base-size' : key === 'lineHeight' ? 'line-height' : 'letter-spacing'}`
+
+    if (typo[key]) {
+      root.style.setProperty(cssVar, typo[key] as string)
+    } else {
+      root.style.removeProperty(cssVar)
+    }
+  }
+
   const chromeBg = chromeBackground(c.background, isDark)
 
   window.hermesDesktop?.setTitleBarTheme?.({

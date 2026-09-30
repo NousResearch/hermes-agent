@@ -1179,6 +1179,8 @@ export const esOverrides = {
       chatFontPreview: 'Vista previa',
       chatFontSample: 'El veloz murciélago hindú comía feliz cardillo y kiwi. 0123456789',
       chatFontReset: 'Usar la fuente del tema',
+      chatTextSizeTitle: 'Tamaño del texto del chat',
+      chatTextSizeDesc: 'Escala el tamaño del texto de la conversación y las leyendas sin ampliar toda la interfaz.',
       translucencyTitle: 'Translucidez de la ventana',
       translucencyDesc: 'Verás tu escritorio a través de toda la ventana. Solo macOS y Windows.',
       translucencyGlassDesc:

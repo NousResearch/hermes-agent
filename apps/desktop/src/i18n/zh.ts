@@ -891,6 +891,8 @@ export const zh = defineLocale({
       chatFontPreview: '预览',
       chatFontSample: '敏捷的棕色狐狸跳过懒狗。0123456789',
       chatFontReset: '使用主题字体',
+      chatTextSizeTitle: '聊天文字大小',
+      chatTextSizeDesc: '在不缩放整个界面的情况下调整会话正文与说明文字的大小。',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口（包括文字）透出桌面。',
       translucencyGlassDesc: '磨砂玻璃：桌面以柔和模糊透出，文字保持清晰。',

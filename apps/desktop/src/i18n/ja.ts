@@ -733,6 +733,8 @@ export const ja = defineLocale({
       chatFontPreview: 'プレビュー',
       chatFontSample: 'いろはにほへと ちりぬるを 0123456789',
       chatFontReset: 'テーマのフォントを使用',
+      chatTextSizeTitle: 'チャットの文字サイズ',
+      chatTextSizeDesc: 'UI全体を拡大せずに、会話テキストとキャプションのサイズを調整します。',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'テキストも含めウィンドウ全体を透過させてデスクトップを表示します。',
       translucencyGlassDesc: 'マットガラス: デスクトップが滑らかなぼかしとして透け、テキストは鮮明なまま。',

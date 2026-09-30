@@ -675,6 +675,8 @@ export const zhHant = defineLocale({
       chatFontPreview: '預覽',
       chatFontSample: '敏捷的棕色狐狸跳過懶狗。0123456789',
       chatFontReset: '使用主題字型',
+      chatTextSizeTitle: '聊天文字大小',
+      chatTextSizeDesc: '在不縮放整個介面的情況下調整會話文字與說明文字的大小。',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗（包括文字）透出桌面。',
       translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。',

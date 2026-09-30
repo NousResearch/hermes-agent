@@ -765,6 +765,8 @@ export const ru = defineLocale({
       chatFontPreview: 'Предпросмотр',
       chatFontSample: 'Съешь же ещё этих мягких французских булок. 0123456789',
       chatFontReset: 'Шрифт темы',
+      chatTextSizeTitle: 'Размер текста чата',
+      chatTextSizeDesc: 'Масштабирует размер текста беседы и подписей, не увеличивая весь интерфейс.',
       translucencyTitle: 'Полупрозрачность окна',
       translucencyDesc:
         'Рабочий стол виден сквозь всё окно, включая текст. Отдельная настройка для светлой и тёмной тем.',

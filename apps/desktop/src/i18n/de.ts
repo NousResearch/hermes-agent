@@ -1178,6 +1178,8 @@ export const deOverrides = {
       chatFontPreview: 'Vorschau',
       chatFontSample: 'Franz jagt im komplett verwahrlosten Taxi quer durch Bayern. 0123456789',
       chatFontReset: 'Theme-Schrift verwenden',
+      chatTextSizeTitle: 'Chat-Textgröße',
+      chatTextSizeDesc: 'Skaliert die Größe des Gesprächstexts und der Beschriftungen, ohne die gesamte Benutzeroberfläche zu vergrößern.',
       translucencyTitle: 'Fenster-Transluzenz',
       translucencyDesc:
         'Sehen Sie Ihren Desktop durch das ganze Fenster hindurch, einschließlich Text. Für hell und dunkel separat abgestimmt.',

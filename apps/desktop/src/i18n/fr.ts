@@ -1183,6 +1183,8 @@ export const frOverrides = {
       chatFontPreview: 'Aperçu',
       chatFontSample: 'Portez ce vieux whisky au juge blond qui fume. 0123456789',
       chatFontReset: 'Utiliser la police du thème',
+      chatTextSizeTitle: 'Taille du texte de la conversation',
+      chatTextSizeDesc: "Ajuste la taille du texte de la conversation et des légendes sans zoomer sur toute l'interface.",
       translucencyTitle: 'Translucidité de la fenêtre',
       translucencyDesc: 'Voir votre bureau à travers toute la fenêtre. macOS et Windows uniquement.',
       translucencyGlassDesc:

@@ -15,6 +15,7 @@ def _absorb_pending_media(existing: MessageEvent, event: MessageEvent) -> None:
     from gateway.platforms.base import BasePlatformAdapter
 
     existing.absorb_context_dependencies(event)
+    existing.absorb_channel_context(event)
     existing_type = existing.message_type
     existing_is_photo = existing_type == MessageType.PHOTO
     incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -38,6 +39,7 @@ def _absorb_pending_media(existing: MessageEvent, event: MessageEvent) -> None:
 
 def _absorb_pending_text(existing: MessageEvent, event: MessageEvent) -> None:
     existing.absorb_context_dependencies(event)
+    existing.absorb_channel_context(event)
     if event.text:
         existing.text = _append_text(existing.text, event.text)
     existing.absorb_message_ids(event)
@@ -47,6 +49,7 @@ def _absorb_pending_text(existing: MessageEvent, event: MessageEvent) -> None:
 
 def _append_batched_text(existing: MessageEvent, event: MessageEvent) -> None:
     existing.absorb_context_dependencies(event)
+    existing.absorb_channel_context(event)
     if event.text:
         existing.text = _append_text(existing.text, event.text)
     if event.media_urls:
@@ -58,6 +61,7 @@ def _append_batched_text(existing: MessageEvent, event: MessageEvent) -> None:
 
 def _append_debounced_text(existing: MessageEvent, event: MessageEvent) -> None:
     existing.absorb_context_dependencies(event)
+    existing.absorb_channel_context(event)
     if event.text:
         existing.text = _append_text(existing.text, event.text)
     if event.media_urls:

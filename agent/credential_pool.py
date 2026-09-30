@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
-from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_model_cooldowns import (
+    CredentialPoolModelCooldownMixin,
+    MODEL_ENTITLEMENT_BENCH_SECONDS,
+    model_cooldown_until,
+)
 
 import logging
 import os
@@ -261,6 +265,16 @@ class PooledCredential:
         # surface for core logic; unknown keys are opaque payload. ``provider`` is the row's owner
         # (excluded from ``field_names`` above), never metadata — sweeping it in would write a
         # stray provider name back over the row on to_dict().
+        # Cooldowns persisted before the bounded entitlement policy may outlive the
+        # new maximum; cap them while rehydrating so old auth.json rows recover too.
+        cooldowns = data.get("model_cooldowns")
+        if isinstance(cooldowns, dict):
+            deadline = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
+            data["model_cooldowns"] = {
+                model: min(float(until), deadline)
+                for model, until in cooldowns.items()
+                if isinstance(until, (int, float))
+            }
         data["extra"] = {
             k: v for k, v in payload.items() if k not in field_names and k != "provider" and v is not None
         }

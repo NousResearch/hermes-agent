@@ -82,6 +82,20 @@ def test_entitlement_400_benches_only_that_model_and_rotates(pool):
     assert pool.reset_statuses() >= 1 and not pool.entries()[0].model_cooldowns
 
 
+def test_rehydrates_legacy_entitlement_cooldown_with_new_bound():
+    from agent.credential_pool import PooledCredential
+
+    old_deadline = time.time() + 365 * 24 * 3600
+    entry = PooledCredential.from_dict("openai-codex", {
+        "id": "legacy", "label": "legacy", "auth_type": "oauth", "priority": 0,
+        "source": "manual", "access_token": "tok", "model_cooldowns": {MODEL: old_deadline},
+    })
+
+    assert entry.model_cooldowns[MODEL] <= time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
+    assert entry.model_cooldowns[MODEL] > time.time() + 24 * 3600
+
+
+
 def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     from agent.fallback_cooldown import _is_entitlement_rejected, _mark_entitlement_rejected_model
 

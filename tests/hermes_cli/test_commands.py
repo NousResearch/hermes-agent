@@ -393,6 +393,22 @@ class TestSubcommandCompletion:
 
         assert capsys.readouterr().out.splitlines() == [f"✓ {verb}: {', '.join(offered)}"]
 
+    def test_tools_enable_offers_a_builtin_plugin_toolset_once(self, monkeypatch):
+        """A plugin toolset whose key is also built in is one row, with the built-in label."""
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+        builtin, label, _description = CONFIGURABLE_TOOLSETS[0]
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_a, **_k: set())
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys", lambda: {builtin, "plugin-only-probe"})
+
+        rows = [
+            (c.text, c.display_meta_text) for c in _completions(SlashCommandCompleter(), "/tools enable ")
+            if c.text in {builtin, "plugin-only-probe"}]
+        assert rows == [(builtin, label), ("plugin-only-probe", "plugin toolset")]
+
+
 
     def _fake_gateway(self, monkeypatch, platforms):
         """Patch load_gateway_config with a fake whose connected platforms are

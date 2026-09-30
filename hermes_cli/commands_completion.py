@@ -137,7 +137,7 @@ def _tools_completions(sub_text: str, sub_lower: str):
     mcp_servers = config.get("mcp_servers") or {}
     want_enabled = subcommand != "enable"
     rows = [(k, label) for k, label, _d in CONFIGURABLE_TOOLSETS]
-    rows += [(k, "plugin toolset") for k in sorted(_get_plugin_toolset_keys())]
+    rows += [(k, "plugin toolset") for k in sorted(_get_plugin_toolset_keys() - {k for k, _m in rows})]
     rejected = toolset_rejections([k for k, _m in rows], "cli")
     rows = [(k, m) for k, m in rows if k not in rejected and (k in enabled) == want_enabled]
     if isinstance(mcp_servers, dict):

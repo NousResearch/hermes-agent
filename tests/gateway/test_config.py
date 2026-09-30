@@ -1813,3 +1813,76 @@ class TestTopLevelBlockVsAuthoredExtra:
         assert os.environ["SLACK_REQUIRE_MENTION"] == "false"
         assert os.environ["SLACK_STRICT_MENTION"] == "false"
         assert self._precedence_warnings(caplog) == []
+
+    @pytest.mark.parametrize("managed_yaml", [
+        "slack:\n  require_mention: true\n  allow_from:\n    - U_ADMIN\n",
+        "slack:\n  extra:\n    require_mention: true\n    allow_from:\n      - U_ADMIN\n",
+        "gateway:\n  platforms:\n    slack:\n      require_mention: true\n      allow_from:\n        - U_ADMIN\n",
+    ], ids=["root-block", "root-block-extra-subdict", "nested-block"])
+    def test_managed_block_pin_is_not_overridden_by_user_authored_extra(
+            self, managed_yaml, tmp_path, monkeypatch, caplog):
+        """A key the administrator pinned in a managed ``slack:`` block (any shape the loader
+        accepts) is not the user's to override from ``platforms.slack.extra``; authored keys the
+        pin does not cover are kept."""
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        (managed / "config.yaml").write_text(managed_yaml, encoding="utf-8")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            "    extra:\n"
+            "      require_mention: false\n"
+            "      strict_mention: true\n"
+            "      allow_from:\n"
+            "        - U_USER\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        for var in [k for k in os.environ if k.startswith("SLACK_")]:
+            monkeypatch.delenv(var, raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+
+        extra = config.platforms[Platform.SLACK].extra
+        assert extra["require_mention"] is True
+        assert extra["allow_from"] == ["U_ADMIN"]
+        # The env rung (read first by the adapter) never carries the user's value; the
+        # extra: sub-dict shape bridges no env var at all.
+        assert os.environ.get("SLACK_REQUIRE_MENTION", "true") == "true"
+        assert extra["strict_mention"] is True
+        assert self._precedence_warnings(caplog) == []
+
+    def test_managed_extra_pin_beats_user_toplevel_block(self, tmp_path, monkeypatch):
+        """The mirror shape: a managed ``platforms.slack.extra`` key is authored extra like any
+        other, so a user's top-level ``slack:`` block cannot replace it."""
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        (managed / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    extra:\n"
+            "      require_mention: true\n"
+            "      allow_from:\n"
+            "        - U_ADMIN\n",
+            encoding="utf-8",
+        )
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n  require_mention: false\n  allow_from:\n    - U_USER\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        for var in [k for k in os.environ if k.startswith("SLACK_")]:
+            monkeypatch.delenv(var, raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.SLACK].extra
+        assert extra["require_mention"] is True
+        assert extra["allow_from"] == ["U_ADMIN"]
+        assert os.environ["SLACK_REQUIRE_MENTION"] == "true"

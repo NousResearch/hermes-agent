@@ -417,6 +417,35 @@ def test_structural_executable_projection_reaches_device_identity_guard(command)
                              force=True, env=env, cwd="/")
     assert env.queries == ["/tmp/alias"]
 
+@pytest.mark.parametrize("command,expected_path", [
+    ('cp source "notes[2]"', "/work/notes[2]"),
+    (r"cp source notes\[3\]", "/work/notes[3]"),
+    ('cp source "notes{4}"', "/work/notes{4}"),
+    ('printf x > "notes[6]"', "/work/notes[6]"),
+])
+def test_literal_quoted_or_escaped_targets_keep_shell_provenance(command, expected_path):
+    env = _FakeDeviceEnv({})
+    assert _resolved_guard_variants(command, env, "/work") == []
+    assert env.queries == [expected_path]
+
+
+@pytest.mark.parametrize("command", [
+    'cp source "$HOME/notes"',
+    "cp source notes[1]",
+    'cp source "$(printf notes)"',
+    "printf x > notes{1,2}",
+])
+def test_active_target_expansions_still_fail_closed(command):
+    with pytest.raises(_GuardTargetIndeterminate, match="dynamic mutation target"):
+        _resolved_guard_variants(command, _FakeDeviceEnv({}), "/work")
+
+
+def test_quoted_cat_heredoc_body_is_not_treated_as_executable_stage():
+    command = "cat <<\'EOF\'\ncp source \"$HOME/notes\"\nEOF\n"
+    env = _FakeDeviceEnv({})
+    assert _resolved_guard_variants(command, env, "/work") == []
+    assert env.queries == []
+
 
 def test_symlink_parent_components_are_preserved_for_backend_resolution():
     source_path = "/tmp/link/../sda"

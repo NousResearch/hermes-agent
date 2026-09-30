@@ -930,10 +930,10 @@ def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
-    with contextlib.suppress(ValueError):
-        path.relative_to(root)
-        return True
-    return False
+    """Containment judged like the read guard's (``agent.file_safety._is_under``): by file
+    identity as well as spelling, so a case variant (macOS, Windows) or a hardlink counts."""
+    from agent.file_safety import _is_under
+    return _is_under(path, root)
 
 
 def _tenv(name: str, default: str = "") -> str:

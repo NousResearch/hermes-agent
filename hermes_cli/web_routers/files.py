@@ -102,6 +102,12 @@ def _is_sensitive_path(path: Path) -> bool:
     (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
     to them is out of scope for this fix.
     """
+    from agent.file_safety import is_secret_store_path
+
+    # Where the store actually is, not what the requested path is called: a store behind a
+    # symlinked or renamed directory, a case variant or a hardlink has no sensitive name.
+    if is_secret_store_path(path):
+        return True
     if _is_sensitive_filename(path.name):
         return True
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)

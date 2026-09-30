@@ -1033,7 +1033,7 @@ def test_durable_gc_preserves_unclaimed_event(kanban_conn):
     publish_task_notification(conn, task_id, "offline-while-pending")
     (eid,) = [ev.id for ev in _task_events(conn, task_id, kind="notification")]
 
-    # Archive the task and age the event past retention WITHOUT ever claiming it (fence stays NULL).
+    # Offline-past-retention before the first claim: task archived, event aged, fence still NULL.
     conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (task_id,))
     conn.execute("UPDATE task_events SET created_at = 0 WHERE id = ?", (eid,))
     conn.commit()

@@ -214,16 +214,43 @@ def _fresh_claim(conn: sqlite3.Connection, sub: dict) -> list:
 
 
 def _run_concurrent_claim_deliver(conn: sqlite3.Connection, sub: dict, *, n: int = 2):
-    """Model N drainers racing on one durable sub. SQLite serializes writers, and the fence makes
-    every claim after the first empty — so exactly one delivers and the cursor advances once."""
-    deliveries = advances = 0
-    for _ in range(n):
-        old, new, events = kbn.claim_unseen_events_for_sub(conn, **_sub_kwargs(sub), kinds=knw.TERMINAL_KINDS)
-        if events:
-            deliveries += 1
-            if new != old:
-                advances += 1
-    return deliveries, {"advances": advances}
+    """Race N drainers on one durable sub — each on its OWN connection, released together by a
+    Barrier and actually delivering through ``deliver_durable_batch``. SQLite serializes the
+    ``BEGIN IMMEDIATE`` claims and the fence makes every claim after the first empty, so exactly one
+    drainer delivers (one real wake) and the cursor advances once. Returns (delivered_wakes,
+    {"advances"}) — real wake calls, not merely non-empty claims."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    barrier = threading.Barrier(n)
+    key = _sub_kwargs(sub)
+
+    def _drainer() -> tuple:
+        c = kbc.connect()
+        try:
+            barrier.wait()
+            old, new, events = kbn.claim_unseen_events_for_sub(c, **key, kinds=knw.TERMINAL_KINDS)
+            if not events:
+                return 0, 0
+
+            async def settle(settled_event_id, next_pending_id):
+                kbn.settle_notify_pending(c, **key, settled_event_id=settled_event_id,
+                                          next_pending_id=next_pending_id)
+
+            async def note_failure(event_id, reason):
+                knw._note_durable_failure(c, sub, event_id, reason)
+
+            result = asyncio.run(knw.deliver_durable_batch(
+                sub, events, deliver_wake=_fake_persist_wake(True), settle=settle,
+                note_failure=note_failure, adapter=None, session_id="s", profile=None))
+            wakes = sum(result.wakes_for(k) for k in knw._WAKE_KINDS)
+            return wakes, (1 if new != old else 0)
+        finally:
+            c.close()
+
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        outcomes = [f.result() for f in [ex.submit(_drainer) for _ in range(n)]]
+    return sum(w for w, _ in outcomes), {"advances": sum(a for _, a in outcomes)}
 
 
 def _drain_with_persist(conn: sqlite3.Connection, sub: dict, *, persisted: bool):
@@ -251,14 +278,14 @@ def _drain_with_persist(conn: sqlite3.Connection, sub: dict, *, persisted: bool)
 
 
 def _drain(conn: sqlite3.Connection, sub: dict, *, wake):
-    """Model the notifier's pre-claim capability gate: a durable sub whose wake API cannot
-    persist-confirm is NOT claimed (no fence), the sub is retained, and an operator alert fires."""
-    durable = kbn.notify_retry_policy(conn, **_sub_kwargs(sub)) == "durable"
-    if durable and not knw._wake_supports_persist_ack(wake):
-        knw._note_durable_failure(conn, sub, None, "wake API lacks require_persist_ack (PR-B absent)")
-        return SimpleNamespace(claimed=False, operator_alerted=True, settled=False)
-    events = _claim_durable_batch(conn, sub)
-    return SimpleNamespace(claimed=bool(events), operator_alerted=False, settled=bool(events))
+    """Drive the REAL collector's pre-claim capability gate (``_Collector._claim_for_sub`` via
+    ``_collector_claim``): a durable sub whose ``wake`` cannot persist-confirm is NOT claimed (no
+    fence set), the sub is retained, and the operator alert is recorded — so removing the production
+    gate would break this test, not just a reimplementation of it."""
+    claimed = _collector_claim(conn, sub, wake=wake)
+    return SimpleNamespace(claimed=claimed is not None,
+                           operator_alerted=_operator_alerted(conn, sub),
+                           settled=False)
 
 
 def _deliver_true_receipt(conn: sqlite3.Connection, sub: dict, *, event_id: int):
@@ -282,13 +309,15 @@ async def _persist_capable_wake(adapter=None, *, text, session_id="", profile=No
     return True
 
 
-def _collector_claim(conn: sqlite3.Connection, sub: dict):
+def _collector_claim(conn: sqlite3.Connection, sub: dict, *, wake=None):
     """Drive the REAL ``_Collector._claim_for_sub`` for one durable sub and return its claim dict
     (or None). A fenced sub returns the un-acked range ``[pending_event_id, last_event_id]`` — this
     is the RUNNING-collector recovery decision (the P0 fix), not a reimplementation of it. Simulates
-    a connected ``api_server`` adapter and, by swapping ``gateway.wake.deliver_wake`` for a
-    persist-capable stub, the presence of PR-B (without which the pre-claim gate fails closed)."""
+    a connected ``api_server`` adapter and swaps ``gateway.wake.deliver_wake`` for ``wake`` (default
+    a persist-capable stub, i.e. PR-B present); pass a wake WITHOUT ``require_persist_ack`` to drive
+    the pre-claim fail-closed gate (AC-9, PR-A alone)."""
     import gateway.wake as _wake_mod
+    wake = wake or _persist_capable_wake
     adapter = SimpleNamespace()
     runner = SimpleNamespace(
         adapters={"api_server": adapter}, _profile_adapters={},
@@ -306,7 +335,7 @@ def _collector_claim(conn: sqlite3.Connection, sub: dict):
                if r["platform"] == sub["platform"] and r["chat_id"] == sub["chat_id"]
                and (r.get("thread_id") or "") == (sub.get("thread_id") or ""))
     _orig = _wake_mod.deliver_wake
-    _wake_mod.deliver_wake = _persist_capable_wake
+    _wake_mod.deliver_wake = wake
     try:
         return collector._claim_for_sub(conn, "default", row)
     finally:

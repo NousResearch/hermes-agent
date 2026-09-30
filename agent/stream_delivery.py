@@ -61,8 +61,10 @@ class StreamDeliveryMixin:
 
     def _deliver_to_stream_callbacks(self, text: str) -> bool:
         """Send ``text`` to the display + TTS delta callbacks; True if at least one accepted it.
-        Nothing leaves while a ``hold_stream`` plugin holds this turn's reply (``_hold_stream``)."""
-        if getattr(self, "_hold_stream", False):
+        Nothing leaves while a ``hold_stream`` plugin holds this turn's reply (``_hold_stream``)
+        or a ``before_turn_end`` callback reviews it."""
+        from agent.turn_end_hooks import defers_text_delivery
+        if getattr(self, "_hold_stream", False) or defers_text_delivery():
             return False
         results = [self._call_quietly(cb, text) for cb in (self.stream_delta_callback, self._stream_callback)]
         return any(results)
@@ -70,6 +72,12 @@ class StreamDeliveryMixin:
     def _enqueue_stream_hook(self, event: str, *, label: str | None = None, **fields: Any) -> None:
         """Best-effort plugin stream hook enqueue; never raises into the stream path."""
         try:
+            from agent.turn_end_hooks import defers_text_delivery
+            if defers_text_delivery():
+                if event in {"on_stream_delta", "on_interim_message"}:
+                    return
+                if event == "on_stream_end":
+                    fields["final_text"] = ""
             from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 
             enqueue_plugin_stream_hook(event, **self._stream_hook_base_payload(), **fields)
@@ -209,6 +217,9 @@ class StreamDeliveryMixin:
     def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str]) -> None:
         """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors.
         Commentary is model text ``transform_llm_output`` never sees, so a held turn drops it."""
+        from agent.turn_end_hooks import defers_text_delivery
+        if defers_text_delivery():
+            return
         cb = None if getattr(self, "_hold_stream", False) else getattr(self, "interim_assistant_callback", None)
         if cb is None:
             return

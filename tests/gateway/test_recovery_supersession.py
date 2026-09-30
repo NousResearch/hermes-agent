@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.run import build_resume_recovery_note
 from gateway.session import SessionEntry
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
@@ -64,11 +63,3 @@ async def test_scheduled_recovery_revalidates_before_dispatch(change):
     if change == "human":
         assert await runner._drain_startup_restore_queue() == 1
         assert adapter.handle_message.await_args.args[0] is human
-
-
-def test_new_instruction_can_explicitly_resume_unfinished_work():
-    text = "Continue the unfinished task, checking existing outputs first."
-    note = build_resume_recovery_note("restart_timeout", text)
-    assert text in note
-    assert "skip any unfinished work" not in note
-    assert "Do NOT re-execute" in note

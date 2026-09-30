@@ -2215,6 +2215,13 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
 
     if (isOpen(entry.gateway)) {
       if (!forceOpenSockets) {
+        // A secondary may remain OPEN after its transport has gone half-open;
+        // treating that state as healthy leaves the next session-scoped send
+        // waiting on the stale socket indefinitely. Probe it on ordinary
+        // recovery signals too; healthy sockets stay attached, while a failed
+        // probe closes the entry and lets the normal reconnect path heal it.
+        probeSecondaryLiveness(entry)
+
         continue
       }
 

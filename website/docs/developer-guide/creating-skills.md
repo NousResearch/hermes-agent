@@ -289,7 +289,7 @@ When a skill is loaded, the activation message exposes the absolute skill direct
 |---|---|
 | `${HERMES_SKILL_DIR}` | Absolute path to the skill's directory |
 | `${HERMES_SESSION_ID}` | The active session id (left in place if there is no session) |
-| `${HERMES_PYTHON}` | Absolute path to the Python interpreter running Hermes |
+| `${HERMES_PYTHON}` | Absolute path to the interpreter of Hermes's own dependency environment, as the package manager selected it (it has Hermes's code and dependencies importable) |
 
 So a SKILL.md can tell the agent to run a bundled script directly with:
 

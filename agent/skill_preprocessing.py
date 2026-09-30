@@ -4,7 +4,6 @@ inline ``!`cmd``` shell expansion."""
 import logging
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 from agent.compression_marker import elide
@@ -33,6 +32,14 @@ def load_skills_config() -> dict:
     return {}
 
 
+def _project_python() -> str | None:
+    from pm.environments import project_python
+    from pm.paths import repo_root
+
+    python = project_python(repo_root())
+    return str(python) if python.is_file() else None
+
+
 def substitute_template_vars(content: str, skill_dir: Path | None, session_id: str | None) -> str:
     """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID}; tokens without a value stay in place."""
     if not content:
@@ -40,7 +47,7 @@ def substitute_template_vars(content: str, skill_dir: Path | None, session_id: s
     values = {
         "HERMES_SKILL_DIR": str(skill_dir) if skill_dir else None,
         "HERMES_SESSION_ID": str(session_id) if session_id else None,
-        "HERMES_PYTHON": sys.executable or None,
+        "HERMES_PYTHON": _project_python() if "${HERMES_PYTHON}" in content else None,
     }
     return _SKILL_TEMPLATE_RE.sub(lambda m: values[m.group(1)] or m.group(0), content)
 

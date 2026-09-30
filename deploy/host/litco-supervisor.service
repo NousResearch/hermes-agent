@@ -1,0 +1,39 @@
+# litco-supervisor: the root daemon that starts and stops per-matter slots
+# (litco-agent@<id>.service) on a firm host. FIRM_AGENT_HOST_2026-09-30 §3.4.
+#
+# It listens on port 8700 bound to tailscale0 only, and every route but
+# /health requires the machine's supervisor secret. The secret lives in
+# /etc/litco-supervisor.env (root:root 0600, written by cloud-init). The daemon
+# reads that file itself (--env-file) rather than through EnvironmentFile=, so
+# the secret never sits in its environment or in the commands it runs.
+#
+# Slots are separate units, not children: stopping or restarting this service
+# leaves running slots alone.
+
+[Unit]
+Description=litco-agent slot supervisor (per-matter users, env files, units)
+Documentation=file:///opt/litco-agent/current/deploy/host/README.md
+After=network-online.target tailscaled.service systemd-logind.service
+Wants=network-online.target
+ConditionPathExists=/etc/litco-supervisor.env
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/sbin/litco-supervisor --env-file /etc/litco-supervisor.env
+# The bind to tailscale0 fails until tailscaled has brought the interface up;
+# retry until it has.
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+# The supervisor never needs the droplet metadata API (it serves user-data).
+IPAddressDeny=169.254.169.254
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litco-supervisor
+
+[Install]
+WantedBy=multi-user.target

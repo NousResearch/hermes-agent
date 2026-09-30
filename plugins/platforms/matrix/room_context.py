@@ -13,7 +13,7 @@ from plugins.platforms.matrix.client_events import Method
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
-from plugins.platforms.matrix.thread_context import PreviousTurnCheck, history_entry
+from plugins.platforms.matrix.thread_context import PreviousTurnCheck, ends_scan, history_entry
 
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ async def fetch_room_entries(
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root or relation.is_edit:
             continue
-        if is_previous_turn is not None and is_previous_turn(entry.sender, content):
+        if ends_scan(is_previous_turn, entry, content):
             break
         newest_first.append((raw["event_id"], entry))
 

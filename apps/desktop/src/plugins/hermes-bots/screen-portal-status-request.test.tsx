@@ -72,7 +72,7 @@ it('a portal status reply superseded by a newer status request does not move run
   )
 
   const view = renderHook(() => useScreenPortalState(bot))
-  expect(host.requestProfile).toHaveBeenCalledWith('ops', 'display.status', {})
+  expect(host.requestProfile).toHaveBeenCalledWith('ops', 'display.status', { profile: 'ops' })
 
   // The pane opens while the portal's fetch is still in flight and asks again (newer request).
   const paneRequest = beginScreenStatusRequest(bot)

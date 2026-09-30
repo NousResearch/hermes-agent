@@ -18,15 +18,17 @@ class DiscordVoiceLifecycleMixin:
         self._disconnecting = True
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
+        # The runner cancels a disconnect that outlasts its budget, and a leave can block on a dead
+        # gateway WS, so report the ended calls before leaving.
+        for text_ch_id in list(self._voice_text_channels.values()):
+            self._notify_voice_disconnect(text_ch_id)
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):
-            text_ch_id = self._voice_text_channels.get(guild_id)
             try:
                 await self.leave_voice_channel(guild_id)
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
-            self._notify_voice_disconnect(text_ch_id)
         # Cancel the bot task before closing: after a connect() timeout client.start() may still run
         # and discord.py's reconnect loop can ignore the closed flag mid-handshake.
         await self._cancel_bot_task()
@@ -50,6 +52,7 @@ class DiscordVoiceLifecycleMixin:
         self._missed_message_backfill_task = None
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self.name)
+
 
 
 

@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -778,9 +779,14 @@ class TestDiscordVoiceChannelMethods:
         ]
 
     @pytest.mark.asyncio
-    async def test_disconnect_reports_each_call_it_ends(self):
+    @pytest.mark.parametrize(("leave_returns", "budget"), [(True, 30.0), (False, 0.2)])
+    async def test_disconnect_reports_each_call_it_ends(self, leave_returns, budget):
         """Disconnecting ends every call, so the runner must reset each bound text
-        channel's voice mode, as it does after an inactivity timeout."""
+        channel's voice mode, as it does after an inactivity timeout. The runner
+        cancels a disconnect that outlasts its budget, for example when a dead
+        gateway connection blocks the voice leave, and the reset must still happen."""
+        from gateway.run import GatewayRunner
+
         adapter = self._make_adapter()
         ended = []
         adapter._on_voice_disconnect = ended.append
@@ -797,10 +803,16 @@ class TestDiscordVoiceChannelMethods:
             vc.disconnect = AsyncMock()
             adapter._voice_clients[guild_id] = vc
             adapter._voice_text_channels[guild_id] = text_channel_id
+        if not leave_returns:
+            async def leave_that_never_returns(guild_id):
+                await asyncio.Event().wait()
 
-        await adapter.disconnect()
+            adapter.leave_voice_channel = leave_that_never_returns
 
-        assert ended == ["999", "888"]
+        completed = await GatewayRunner._wait_or_detach(
+            asyncio.ensure_future(adapter.disconnect()), budget)
+
+        assert (completed, ended) == (leave_returns, ["999", "888"])
 
 
     def test_voice_timeout_zero_disables_auto_leave(self):

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from plugins.platforms.matrix.effective_event import _decrypt, event_content
 from plugins.platforms.matrix.polls import MatrixPoll, REQUESTER, UNSTABLE, poll_results, subtype
-from plugins.platforms.matrix.read_context import Method, _raw_event
+from plugins.platforms.matrix.client_events import Method, raw_event
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ async def _native_event(session: _PollSession, raw: dict[str, Any], room_id: str
     decrypted, error = await _decrypt(session.client, raw)
     if error:
         return None, error["error"]
-    clear = _raw_event(decrypted)
+    clear = raw_event(decrypted)
     if clear.get("room_id", room_id) != room_id:
         return None, "decrypted relation belongs to another room"
     content = event_content(decrypted)
@@ -76,7 +76,7 @@ async def _native_event(session: _PollSession, raw: dict[str, Any], room_id: str
 async def fetch_poll(session: _PollSession, event_id: str, limit: int) -> PollSnapshot:
     room_id = session.room_id
     path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id, safe='')}"
-    raw = _raw_event(await asyncio.wait_for(session.client.api.request(Method.GET, path), timeout=10.0))
+    raw = raw_event(await asyncio.wait_for(session.client.api.request(Method.GET, path), timeout=10.0))
     if raw.get("event_id") != event_id:
         raise ValueError("The server returned a different poll event")
     start, error = await _native_event(session, raw, room_id)

@@ -2055,3 +2055,36 @@ class TestCompatibleProvidersMalformedLegacyKey:
 
         assert names == ["legacy"]
         assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]
+
+def _run_isolated(code: str, env_home: str) -> str:
+    """Run *code* in a fresh interpreter against *env_home* as HERMES_HOME."""
+    import subprocess
+    import sys as _sys
+    return subprocess.run(
+        [_sys.executable, "-c", code],
+        env={**os.environ, "HERMES_HOME": env_home, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+        capture_output=True, text=True, timeout=300)
+
+
+def test_load_config_readonly_never_creates_hermes_home(tmp_path):
+    """#128632: reading config against a nonexistent Hermes home must not scaffold it.
+
+    Checked in a subprocess because the home used to be created at IMPORT time:
+    _inject_profile_env_vars() -> provider discovery -> _get_enabled_plugins() ->
+    load_config() -> ensure_hermes_home()."""
+    home = tmp_path / "fresh-home"
+    assert not home.exists()
+    result = _run_isolated(
+        "import hermes_cli.config as c;" + "c.load_config_readonly()", str(home))
+    assert result.returncode == 0, result.stderr
+    assert not home.exists(), "load_config_readonly() created the Hermes home"
+
+
+def test_import_hermes_cli_config_does_not_create_hermes_home(tmp_path):
+    """Importing the config module alone must not scaffold the home either."""
+    home = tmp_path / "import-only-home"
+    assert not home.exists()
+    result = _run_isolated("import hermes_cli.config", str(home))
+    assert result.returncode == 0, result.stderr
+    assert not home.exists(), "importing hermes_cli.config created the Hermes home"
+

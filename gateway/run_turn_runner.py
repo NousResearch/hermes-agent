@@ -1758,6 +1758,14 @@ class TurnRunner:
         if _final_for_stream is None:
             stream_consumer.finish()
             return
+        # Discord's stream consumer can seal the answer before the normal final-send path runs.
+        # Mark this authoritative finish as notify-worthy so its final edit receives the routed
+        # profile attribution; interim tool/status frames remain unmarked and therefore unlabeled.
+        _platform = str(getattr(getattr(ctx.source, "platform", None), "value", None)
+                        or getattr(ctx.source, "platform", "")).lower()
+        if _platform == "discord":
+            stream_consumer.metadata = dict(getattr(stream_consumer, "metadata", None) or {})
+            stream_consumer.metadata["notify"] = True
         # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
         try:
             stream_consumer.finish(_final_for_stream)

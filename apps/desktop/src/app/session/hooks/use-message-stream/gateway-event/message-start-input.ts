@@ -90,7 +90,7 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
       id: first.id,
       inputIds: ids,
       // A queued durable row is re-placed before dispatch; its old row ID is no longer authoritative.
-      rowId: first.inputIds?.length ? undefined : first.rowId,
+      rowId: own.some(row => row.inputIds?.length) ? undefined : first.rowId,
       attachmentRefs: message.attachmentRefs
     }
 

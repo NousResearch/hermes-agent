@@ -237,6 +237,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'inputIds',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -261,7 +262,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'inputIds'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -363,6 +364,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.rowId !== b.rowId ||
+    (a.inputIds?.length ?? 0) !== (b.inputIds?.length ?? 0) ||
+    a.inputIds?.some((id, index) => id !== b.inputIds?.[index]) ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||

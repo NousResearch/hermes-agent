@@ -564,10 +564,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # above the cron live-delivery wait (future.result(timeout=60)): a send still in flight at
         # 60s is then treated as delivered there, instead of failing here at 30s and being resent
         # (duplicated) by the standalone fallback. A non-positive value falls back to the default.
-        self._send_timeout = _setting("send_timeout_seconds", "PHOTON_SEND_TIMEOUT_SECONDS", 90.0, float)
-        if not self._send_timeout > 0:
-            logger.debug("[photon] send_timeout_seconds=%r is not positive; using 90s", self._send_timeout)
-            self._send_timeout = 90.0
+        self._send_timeout = _resolve_send_timeout(extra)
         self._probe_enabled = self._probe_interval > 0
         # Never advertise fences: a URL-bearing message goes out as raw text (literal ```), and the
         # markdown path renders a fence as inline Unicode monospace, not a block.
@@ -1585,6 +1582,26 @@ def _standalone_token_from_record(port: int) -> Tuple[Optional[str], int, str]:
         "or set PHOTON_SIDECAR_TOKEN in this process's environment." + stale_hint)
 
 
+_DEFAULT_SEND_TIMEOUT = 90.0
+
+
+def _resolve_send_timeout(extra: Optional[Dict[str, Any]]) -> float:
+    """``send_timeout_seconds`` (env ``PHOTON_SEND_TIMEOUT_SECONDS``) for outbound sends.
+
+    Shared by the adapter and ``_standalone_send`` so a cron run without a live
+    gateway gets the same timeout. A missing, unparsable, non-positive or
+    infinite value falls back to 90s.
+    """
+    try:
+        value = float(_extra_or_secret(extra or {}, "send_timeout_seconds", "PHOTON_SEND_TIMEOUT_SECONDS", None))
+    except (TypeError, ValueError):
+        return _DEFAULT_SEND_TIMEOUT
+    if not value > 0 or value == float("inf"):
+        logger.debug("[photon] send_timeout_seconds=%r is not usable; using %ss", value, _DEFAULT_SEND_TIMEOUT)
+        return _DEFAULT_SEND_TIMEOUT
+    return value
+
+
 async def _standalone_send(
     pconfig: PlatformConfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None,  # noqa: ARG001 — Spectrum has no threads yet
@@ -1604,7 +1621,8 @@ async def _standalone_send(
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        # Every call on this client is an outbound send, so it takes the send timeout.
+        async with httpx.AsyncClient(timeout=_resolve_send_timeout(pconfig.extra), trust_env=False) as client:
             async def _post(path: str, body: Dict[str, Any]) -> Tuple[Any, Optional[Dict[str, Any]]]:
                 """(response, data-if-ok-else-None)."""
                 resp = await client.post(f"{base}{path}", json=body, headers=headers)

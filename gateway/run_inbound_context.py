@@ -14,7 +14,7 @@ from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_turn_context import prepend_turn_context_note, turn_context_update
-from gateway.session import SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
+from gateway.session import SessionSource, format_untrusted_prompt_value, is_shared_multi_user_session, neutralize_untrusted_inline_text
 
 if TYPE_CHECKING:
     from gateway.run import GatewayRunner
@@ -236,7 +236,7 @@ class GatewayInboundContextMixin:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
+            reply_text = format_untrusted_prompt_value(event.reply_to_text, max_chars=0)
             if getattr(event, "reply_to_is_own_message", False):
                 pointer = "Replying to your previous message: "
             elif event.reply_to_author_authorized is None:
@@ -257,7 +257,7 @@ class GatewayInboundContextMixin:
                     f"Replying to {trust}{neutralize_untrusted_inline_text(author)}: " if author
                     else f"Replying to: {trust}"
                 )
-            message_text = f'[{pointer}"{reply_text}"]\n\n{message_text}'
+            message_text = f'[{pointer}{reply_text}]\n\n{message_text}'
 
         # Keep the source notes outermost because strip_inbound_source_note removes them by prefix match.
         if (

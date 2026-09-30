@@ -3829,8 +3829,17 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         if kind == "file" and duration > 0:
             data["duration"] = str(duration)
+        # Match requests' environment proxy/CA policy; only the HTTP version changes.
+        client_options: Dict[str, Any] = {"http2": False, "timeout": 60.0}
+        ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("CURL_CA_BUNDLE")
+        if ca_bundle:
+            import ssl
+            client_options["verify"] = ssl.create_default_context(
+                capath=ca_bundle if os.path.isdir(ca_bundle) else None,
+                cafile=None if os.path.isdir(ca_bundle) else ca_bundle,
+            )
         try:
-            async with httpx.AsyncClient(http2=False, trust_env=False, timeout=60.0) as client:
+            async with httpx.AsyncClient(**client_options) as client:
                 token_response = await client.post(
                     f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
                     json={"app_id": self._app_id, "app_secret": self._app_secret},

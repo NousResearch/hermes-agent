@@ -9,7 +9,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { revealFile } from '@/store/file-actions'
+import { revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
@@ -380,6 +380,10 @@ export async function openReviewForPath(
   if (file) {
     await selectReviewFile(file)
 
+    return
+  }
+
+  if (isExcludedPath(path) || !shouldOfferLocalReveal(null)) {
     return
   }
 

@@ -1268,11 +1268,21 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+_USERNS_SANDBOX_OPT_IN_ENV = "HERMES_DESKTOP_USERNS_SANDBOX"
+
+
 def _desktop_linux_userns_sandbox_available() -> bool:
     """True when the unprivileged userns sandbox works (probed with ``unshare``, fails closed) — then
     the setuid ``chrome-sandbox`` helper is never consulted and no sudo prompt is needed."""
     if sys.platform != "linux":
         return False
+    # Explicit opt-in for hosts where a per-executable AppArmor ``userns`` profile
+    # lifts the restriction for the packaged Electron binary but not for this CLI
+    # process (#129234): the probe below runs unconfined, so it can never observe
+    # the profile the user installed — the user declares it instead. Fail-closed
+    # default: without the declaration the probe still decides.
+    if os.environ.get(_USERNS_SANDBOX_OPT_IN_ENV) == "1":
+        return True
     unshare = shutil.which("unshare")
     if not unshare:
         return False
@@ -1693,12 +1703,22 @@ def _check_desktop_skip_build(
         desktop_launch_notice(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
 
 
+def _warn_linux_no_sandbox_fallback() -> None:
+    """The ``--no-sandbox`` fallback notice, naming the rootless alternatives (#129234).
+
+    The 4755-helper route the fixup just failed at needs passwordless sudo (or a TTY
+    for it); the AppArmor route needs root only once, to install the profile, so the
+    notice must not suggest sudo is the only way out."""
+    print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+    print(f"  To keep the sandbox instead: install a per-executable AppArmor userns profile (root once, no passwordless sudo after that) and relaunch with {_USERNS_SANDBOX_OPT_IN_ENV}=1, or configure the setuid helper with sudo.")
+
+
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            _warn_linux_no_sandbox_fallback()
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
@@ -2032,7 +2052,7 @@ def _launch_bundled_desktop(
     launch_command = [str(layout.launcher)]
     if not _desktop_linux_sandbox_fixup(layout.launcher):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(layout.launcher):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            _warn_linux_no_sandbox_fallback()
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)

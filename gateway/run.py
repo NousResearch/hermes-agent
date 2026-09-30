@@ -6071,7 +6071,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument("--verbose", "-v", action="count", default=0,
+                        help="Verbose output (-v for INFO, -vv for DEBUG)")
     args = parser.parse_args()
 
     config = None
@@ -6096,7 +6097,7 @@ def main():
         # planned-restart, and service-restart paths, all of which complete teardown first. Routing those
         # codes through the same os._exit backstop means EVERY exit path is wedge-proof, not just the
         # boolean-return ones.
-        success = asyncio.run(start_gateway(config))
+        success = asyncio.run(start_gateway(config, verbosity=args.verbose))
         exit_code = 0 if success else 1
     except SystemExit as e:
         # e.code may be None (→ 0), an int, or a str (→ 1, like CPython).

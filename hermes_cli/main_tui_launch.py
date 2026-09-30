@@ -14,6 +14,7 @@ import sys
 
 from pathlib import Path
 from typing import Optional
+from agent.i18n import t
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -63,7 +64,7 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     from hermes_cli.profiles import get_active_profile_name
     active_profile = get_active_profile_name()
     profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
-    print(f"\nResume this session with:\n  hermes --tui --resume {target}{profile_flag}")
+    print(f"\n{t('cli.session.exit_resume_hint')}\n  hermes --tui --resume {target}{profile_flag}")
     if title:
         print(f'  hermes --tui -c "{title}"{profile_flag}')
     print(f"\nSession:        {target}")

@@ -12,6 +12,7 @@ from contextvars import copy_context
 from typing import Any
 from uuid import uuid4
 
+from agent.i18n import t
 from gateway.run_agent_cache import _first_agent
 from gateway.slash_access import policy_for_runner_source
 from hermes_cli import anon_auth
@@ -168,7 +169,7 @@ class GatewayLoginCommandsMixin:
             if state.model_changed and state.model:
                 failed = await self._sweep_sessions_off_welcome()
                 if failed:
-                    copy += "\nSome chats are still on the free tier; use /model in those chats to switch."
+                    copy += t("gateway.login.free_tier_remaining")
             await self._push_login(attempt, copy)
             return
         await self._push_login(attempt, state.copy)

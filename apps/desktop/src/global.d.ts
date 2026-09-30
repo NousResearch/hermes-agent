@@ -1048,6 +1048,9 @@ export interface DesktopConnectionConfigInput {
   sshKeyPath?: string
   sshRemoteHermesPath?: string
   sshRemoteProfile?: string
+  // For a URL-remote/cloud per-profile override: the profile name on the remote
+  // host when it differs from this Desktop routing label.
+  remoteProfile?: string
 }
 
 export interface DesktopConnectionTestResult {
@@ -1477,7 +1480,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

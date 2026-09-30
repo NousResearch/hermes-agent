@@ -492,7 +492,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.scan_skill_commands().items()):
+    for k, info in sorted(sc.get_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -561,7 +561,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
     if r:
-        return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
+        return _ok(rid, {"canonical": r.name, "description": r.describe(), "category": r.category})
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
 
@@ -1096,8 +1096,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        keys = ("hash", "timestamp", "message")
-        rows = [{k: c.get(k, "") for k in keys} for c in mgr.list_checkpoints(cwd)]
+        # The TUI renders ``message``; the manager calls it ``reason``.
+        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", "")}
+                for c in mgr.list_checkpoints(cwd)]
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 
@@ -1327,7 +1328,7 @@ del _name, _fn, _keys
 def _skills_search(rid, params, query):
     search, gh = _tools_mod("tools.skills_hub_search"), _tools_mod("tools.skills_hub_github")
     raw = search.unified_search(query, search.create_source_router(gh.GitHubAuth()), source_filter="all", limit=20) or []
-    return _ok(rid, {"results": [{"name": r.name, "description": r.description} for r in raw]})
+    return _ok(rid, {"results": [{"name": r.name, "description": r.describe()} for r in raw]})
 
 
 def _skills_install(rid, params, query):

@@ -68,7 +68,8 @@ export function SharedMetricsSettings() {
 
       // This page applies to the focused profile (unscoped, or scoped to it by name): Desktop
       // telemetry follows its switch at once.
-      const focused = scopeProfile === null || normalizeProfileKey(scopeProfile) === normalizeProfileKey($activeGatewayProfile.get())
+      const focused =
+        scopeProfile === null || normalizeProfileKey(scopeProfile) === normalizeProfileKey($activeGatewayProfile.get())
 
       if (saved && focused) {
         setDesktopMetricsGate(saved.enabled ? 'on' : 'off')

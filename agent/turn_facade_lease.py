@@ -260,11 +260,18 @@ def admit_durable_turn_lease(
     holder = (
         f"pid={os.getpid()}:turn={relay_turn_id}:platform={task_context['platform'] or 'unknown'}"
     )
-    waited = False
+    reload_needed = announced = False
+
+    def _on_contended() -> None:
+        # A busy state.db, not a known holder: say nothing, but still reload after admission,
+        # since the busy writer may have been the previous holder's final flush (one that fits
+        # inside the write patience never gets here, before or after this signal existed).
+        nonlocal reload_needed
+        reload_needed = True
 
     def _on_wait(elapsed: float) -> None:
-        nonlocal waited
-        waited = True
+        nonlocal reload_needed, announced
+        reload_needed = announced = True
         agent._emit_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
@@ -274,7 +281,8 @@ def admit_durable_turn_lease(
 
     if not db.acquire_session_turn_lease(
         session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
-        on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+        on_wait=_on_wait, on_contended=_on_contended,
+        should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
         return admission
@@ -297,8 +305,9 @@ def admit_durable_turn_lease(
         # row is written, and reloading an absent row would erase that seed. An unknown row still
         # reads the transcript after a wait and adopts it only if it returns rows; that read
         # raising ends the turn.
-        if waited and durable is not False:
-            agent._emit_status("Session is free; loading the latest transcript...")
+        if reload_needed and durable is not False:
+            if announced:
+                agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
             latest_session_id = db.resolve_resume_session_id(session_id)

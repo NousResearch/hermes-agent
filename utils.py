@@ -514,9 +514,9 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
                                extra_content_on_create: "str | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
-    THE writer for ``config.yaml`` (every production caller reaches it through
-    ``hermes_cli.config.atomic_config_write``): the on-disk document is loaded through ruamel
-    round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
+    THE on-disk primitive for ``config.yaml`` (production callers reach it through
+    ``hermes_cli.config.atomic_config_write`` or ``atomic_config_replace``): the document is
+    loaded through ruamel round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
     lines and readable Unicode survive. Only nodes whose value actually changed are reassigned;
     an untouched scalar or list keeps its inline comments and formatting. Keys absent from
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).

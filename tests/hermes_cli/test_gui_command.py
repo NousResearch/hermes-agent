@@ -71,6 +71,7 @@ def _ns(**kw):
         cwd=None,
         setup_tcc_identity=False,
         identity=None,
+        close_preview=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -290,6 +291,41 @@ def test_gui_brew_install_launches_installed_app_when_present(tmp_path, monkeypa
 
     assert exc.value.code == 0
     assert launched == [1]
+
+
+def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
+    """`hermes desktop --close-preview` must reach the Electron binary so the
+    running instance's single-instance handler can close a fullscreened
+    preview pane the user cannot otherwise escape (#97213)."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    # Patching hermes_cli.main_desktop.subprocess.run swaps the shared stdlib
+    # module's attribute, so the desktop-entry install's interpreter probe
+    # (`<python> -I -c 'import hermes_cli.main'`) would be captured as a
+    # launch too. Neutralize the entry install the way the other foreground
+    # tests do; this test is only about the flag reaching the packaged exe.
+    monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda **kw: None)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    launched: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        launched.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main_desktop.subprocess.run", side_effect=fake_run), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(close_preview=True))
+
+    assert exc.value.code == 0
+    if sys.platform.startswith("linux"):
+        # A present non-setuid chrome-sandbox makes the launcher pass
+        # --disable-setuid-sandbox before the forwarded flag.
+        assert launched == [[str(packaged_exe), "--disable-setuid-sandbox", "--close-preview"]]
+    else:
+        assert launched == [[str(packaged_exe), "--close-preview"]]
 
 
 @pytest.mark.parametrize("exists,platform", [(True, "darwin"), (False, "darwin"), (True, "linux")])

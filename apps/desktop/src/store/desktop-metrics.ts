@@ -148,7 +148,8 @@ export function routeArea(pathname: string, contributedPaths: readonly string[] 
   return contributedPaths.includes(`/${segment}`) ? 'extension_page' : null
 }
 
-export type DesktopFrictionKind = 'backend_disconnect' | 'error_toast' | 'notice_dismissed' | 'renderer_crash' | 'slow_frame'
+export type DesktopFrictionKind =
+  'backend_disconnect' | 'error_toast' | 'notice_dismissed' | 'renderer_crash' | 'slow_frame'
 
 /** notifyError's summary rules (store/notifications.ts) → category. */
 export type ErrorToastCategory =
@@ -234,15 +235,17 @@ export function slowFrameBucket(durationMs: number): SlowFrameBucket | null {
     return null
   }
 
-  return durationMs < 250 ? '100ms_to_250ms' : durationMs < 1000 ? '250ms_to_1s' : durationMs < 5000 ? '1s_to_5s' : 'gte_5s'
+  return durationMs < 250
+    ? '100ms_to_250ms'
+    : durationMs < 1000
+      ? '250ms_to_1s'
+      : durationMs < 5000
+        ? '1s_to_5s'
+        : 'gte_5s'
 }
 
 export type DesktopFrictionDetail =
-  | BackendDisconnectDetail
-  | DesktopNoticeId
-  | ErrorToastCategory
-  | RendererCrashDetail
-  | SlowFrameBucket
+  BackendDisconnectDetail | DesktopNoticeId | ErrorToastCategory | RendererCrashDetail | SlowFrameBucket
 
 export type DesktopOnboardingStep =
   | 'choose_later'
@@ -278,18 +281,15 @@ export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut'
 /** Built-in action ids (DESKTOP_ACTION_IDS on the backend); anything else — a plugin's palette
  *  command or keybinding, a numbered slot (`profile.switch.3`) — is `other`. */
 const ACTION_IDS: ReadonlySet<string> = new Set(
-  [...KEYBIND_ACTION_IDS, ...KEYBIND_READONLY.map(action => action.id), ...Object.values(DESKTOP_BUTTON_ACTIONS)].filter(
-    id => !/\.\d+$/.test(id)
-  )
+  [
+    ...KEYBIND_ACTION_IDS,
+    ...KEYBIND_READONLY.map(action => action.id),
+    ...Object.values(DESKTOP_BUTTON_ACTIONS)
+  ].filter(id => !/\.\d+$/.test(id))
 )
 
 export type DesktopDislikeSignal =
-  | 'cancelled'
-  | 'feature_disabled'
-  | 'quick_close'
-  | 'rage_click'
-  | 'setting_off_default'
-  | 'undo'
+  'cancelled' | 'feature_disabled' | 'quick_close' | 'rage_click' | 'setting_off_default' | 'undo'
 
 export type DesktopFlowId =
   | 'command_palette'
@@ -590,7 +590,8 @@ export function noteBackendDrop(reason: 'timeout' | null, now = Date.now()): voi
     return
   }
 
-  const detail: BackendDisconnectDetail = now - lastBackendExitAt < DROP_SETTLE_MS ? 'backend_exit' : (reason ?? 'network')
+  const detail: BackendDisconnectDetail =
+    now - lastBackendExitAt < DROP_SETTLE_MS ? 'backend_exit' : (reason ?? 'network')
 
   pendingDrop = {
     detail,
@@ -625,7 +626,9 @@ export function cancelPendingBackendDrop(): void {
 
 export function recordFriction(kind: DesktopFrictionKind, detail: DesktopFrictionDetail): void {
   withState(current => {
-    if (!takeCap(current, `friction:${kind}:${detail}`, kind === 'slow_frame' ? SLOW_FRAME_DAILY_CAP : FRICTION_DAILY_CAP)) {
+    if (
+      !takeCap(current, `friction:${kind}:${detail}`, kind === 'slow_frame' ? SLOW_FRAME_DAILY_CAP : FRICTION_DAILY_CAP)
+    ) {
       return
     }
 
@@ -667,7 +670,11 @@ export function configPatchKeys(patch: unknown, prefix = ''): string[] {
 /** A Settings autosave landed. Only keys the config schema publishes go out (never a key below a
  *  user-named container such as `providers.<name>`); the backend reads the saved values itself and
  *  records whether each moved to or away from its default. */
-export function recordSettingsSaved(patch: unknown, published: Readonly<Record<string, unknown>>, profile?: null | string): void {
+export function recordSettingsSaved(
+  patch: unknown,
+  published: Readonly<Record<string, unknown>>,
+  profile?: null | string
+): void {
   const keys = configPatchKeys(patch).filter(key => Object.hasOwn(published, key))
 
   for (const key of keys.slice(0, MAX_SETTING_KEYS_PER_SAVE)) {

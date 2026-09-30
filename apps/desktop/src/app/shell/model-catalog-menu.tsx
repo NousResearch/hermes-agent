@@ -93,9 +93,8 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
     return null
   }
 
-  const discount = typeof pricing.discount_percent === 'number' && pricing.discount_percent > 0
-    ? pricing.discount_percent
-    : null
+  const discount =
+    typeof pricing.discount_percent === 'number' && pricing.discount_percent > 0 ? pricing.discount_percent : null
 
   return (
     <span
@@ -111,9 +110,7 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
         </span>
       ) : null}
       {discount ? (
-        <span className="rounded bg-(--ui-green)/10 px-1 py-px font-medium text-(--ui-green)">
-          −{discount}%
-        </span>
+        <span className="rounded bg-(--ui-green)/10 px-1 py-px font-medium text-(--ui-green)">−{discount}%</span>
       ) : null}
     </span>
   )

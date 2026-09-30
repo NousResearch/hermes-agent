@@ -615,10 +615,19 @@ def _memory_provider_honcho(issues: list) -> None:
 
 def _memory_provider_mem0(issues: list) -> None:
     from plugins.memory import import_provider_module
+    # Call via attribute lookup on the import so a test that monkeypatches
+    # ``plugins.memory.mem0._load_config`` (bound on the provider module, not on this
+    # import's private handle) intercepts it; loading via the provider module and
+    # calling its own symbol resolves to the same config otherwise.
     mem0_cfg = import_provider_module("mem0")._load_config()
     if mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+    # Local (re-applied 2026-09-30): OSS mode needs no cloud key; it talks to the local store.
+    # Without this branch doctor reported a spurious "API key missing" issue on the hub.
+    elif str(mem0_cfg.get("mode", "")).lower() == "oss" or mem0_cfg.get("oss"):
+        check_ok("Mem0 local/self-hosted backend configured")
+        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')} (OSS mode, no cloud key needed)")
     else:
         _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)",
                         "Mem0 is set as memory provider but API key is missing", issues)

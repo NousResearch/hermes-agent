@@ -15,6 +15,8 @@ export interface SetupChooseSpec {
   kind: SetupChooseKind
   options: SetupChooseOption[] | null
   multiSelect: boolean
+  /** Row ids the card starts with picked (the backend fills them from the machine scan). */
+  preselected: string[]
 }
 
 export interface ClarifyRequest {
@@ -111,7 +113,16 @@ export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
 
 export const SETUP_CHOOSE_QID = 'setup_choose'
 
-const SETUP_CHOOSE_KINDS = new Set<unknown>(['accent', 'connectors', 'layout', 'plugins', 'question', 'theme'])
+const SETUP_CHOOSE_KINDS = new Set<unknown>([
+  'accent',
+  'connectors',
+  'fork',
+  'layout',
+  'plugins',
+  'question',
+  'theme',
+  'tour'
+])
 
 export function normalizeSetupChoose(
   params: Record<string, unknown>
@@ -127,6 +138,10 @@ export function normalizeSetupChoose(
 
   const multiSelect = params.multi_select === true
 
+  const preselected = Array.isArray(params.preselected)
+    ? params.preselected.filter((id): id is string => typeof id === 'string')
+    : []
+
   return {
     questions: [
       {
@@ -136,7 +151,7 @@ export function normalizeSetupChoose(
         question
       }
     ],
-    setup: { kind: params.kind as SetupChooseKind, multiSelect, options }
+    setup: { kind: params.kind as SetupChooseKind, multiSelect, options, preselected }
   }
 }
 

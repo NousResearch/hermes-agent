@@ -32336,7 +32336,9 @@
           "theme",
           "layout",
           "connectors",
-          "plugins"
+          "plugins",
+          "tour",
+          "fork"
         ],
         "title": "SetupChooseKind",
         "type": "string"
@@ -32405,6 +32407,21 @@
             "default": false,
             "title": "Multi Select",
             "type": "boolean"
+          },
+          "preselected": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preselected"
           }
         },
         "required": [

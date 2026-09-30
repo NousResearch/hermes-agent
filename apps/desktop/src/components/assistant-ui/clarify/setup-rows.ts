@@ -38,6 +38,8 @@ const APP_ROWS: Record<SetupChooseKind, (sources: RowSources) => null | SetupRow
   connectors: ({ connectors }) =>
     connectors &&
     orderConnectorPicks(connectors).map(row => ({ id: row.connector, label: connectorTitle(row.connector) })),
+  // The backend fills the fork and tour rows, so they are known only once the request arrives.
+  fork: () => null,
   layout: () => LAYOUTS.map(layout => ({ detail: layout.description, id: layout.id, label: layout.name })),
   plugins: ({ plugins }) =>
     plugins &&
@@ -47,16 +49,19 @@ const APP_ROWS: Record<SetupChooseKind, (sources: RowSources) => null | SetupRow
       label: plugin.title
     })),
   question: () => [],
-  theme: ({ t }) => THEME_TILES.map(id => ({ id, label: modeLabel(id, t) }))
+  theme: ({ t }) => THEME_TILES.map(id => ({ id, label: modeLabel(id, t) })),
+  tour: () => null
 }
 
 const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources, 'plugins' | 't'>) => string> = {
   accent: id => [...accentsFor(false), ...accentsFor(true)].find(swatch => swatch.hex === normalizeHex(id))?.name ?? id,
   connectors: id => connectorTitle(id),
+  fork: id => id,
   layout: id => LAYOUTS.find(layout => layout.id === id)?.name ?? id,
   plugins: (id, { plugins }) => plugins?.find(plugin => plugin.name === id)?.title ?? id,
   question: id => id,
-  theme: (id, { t }) => modeLabel(id, t)
+  theme: (id, { t }) => modeLabel(id, t),
+  tour: id => id
 }
 
 interface LiveLook {

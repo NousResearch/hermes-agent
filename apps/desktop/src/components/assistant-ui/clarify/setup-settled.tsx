@@ -24,8 +24,10 @@ function readSetupChooseResult(result: unknown) {
   }
 
   const picked = Array.isArray(row.picked) ? row.picked.map(String) : typeof row.picked === 'string' ? [row.picked] : []
+  // Rows the backend filled (tour, fork) are not in the call's args; the result names the pick.
+  const labels = Array.isArray(row.label) ? row.label.map(String) : typeof row.label === 'string' ? [row.label] : null
 
-  return { outcome: row.outcome, picked }
+  return { labels, outcome: row.outcome, picked }
 }
 
 export function SetupChooseSettled(props: ToolCallMessagePartProps) {
@@ -40,7 +42,7 @@ export function SetupChooseSettled(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  const answer = result.picked.map(label).join(', ')
+  const answer = (result.labels ?? result.picked.map(label)).join(', ')
 
   const question = source?.questions[0]?.question
 

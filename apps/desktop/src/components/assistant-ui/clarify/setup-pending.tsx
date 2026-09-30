@@ -3,7 +3,7 @@
 import type { SetupChooseKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
-import { type ComponentType, type FormEvent, useCallback, useMemo, useRef } from 'react'
+import { type ComponentType, type FormEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
@@ -28,7 +28,7 @@ import { useTheme } from '@/themes'
 import { ClarifyConfirmBar } from './core/confirm-bar'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
-import { PICKER_COLUMNS, QuestionPills, SETUP_PICKERS } from './setup-pickers'
+import { isSetupPickerKind, PICKER_COLUMNS, QuestionPills, SETUP_PICKERS } from './setup-pickers'
 import { LIVE_LOOK, useSetupRows } from './setup-rows'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
@@ -38,10 +38,12 @@ type SetupSource = Pick<ClarifyRequest, 'questions' | 'setup'>
 const KIND_ICONS: Record<SetupChooseKind, ComponentType<{ className?: string }>> = {
   accent: Palette,
   connectors: Plug,
+  fork: MessageQuestion,
   layout: LayoutDashboard,
   plugins: Puzzle,
   question: MessageQuestion,
-  theme: Moon
+  theme: Moon,
+  tour: MessageQuestion
 }
 
 export function SetupChoosePending({
@@ -65,13 +67,23 @@ export function SetupChoosePending({
   const source = request ?? fromArgs
   const setup = source?.setup ?? null
   const kind = setup?.kind ?? 'question'
-  const pickerKind = kind === 'question' ? null : kind
+  const pickerKind = isSetupPickerKind(kind) ? kind : null
   const freeText = pickerKind === null
   const rows = useSetupRows(setup, storedId)
 
   const requestId = ready ? (request?.requestId ?? null) : null
   const stages = useStore($setupChooseStages)
   const { draft, picked } = (requestId && stages[requestId]) || EMPTY_SETUP_STAGE
+  const preselected = setup?.preselected
+
+  // Start the card with the rows the scan saw in use, once its list is known; the card may not list them all.
+  useEffect(() => {
+    if (requestId && rows && preselected?.length && !$setupChooseStages.get()[requestId]) {
+      const ids = new Set(rows.map(row => row.id))
+
+      stageSetupChoose(requestId, { picked: preselected.filter(id => ids.has(id)) })
+    }
+  }, [preselected, requestId, rows])
 
   const question: ClarifyQuestion = useMemo(
     () => ({
@@ -225,7 +237,19 @@ export function SetupChoosePending({
           <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
-        {Picker === null ? (
+        {Picker === null && rows === null ? (
+          <div className="grid gap-2">
+            <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+              {question.question}
+            </span>
+            <div className="flex flex-wrap gap-2 p-1" role="status">
+              <span className="sr-only">{setupCopy.loading}</span>
+              {Array.from({ length: 3 }, (_, index) => (
+                <div className="h-7 w-28 animate-pulse rounded-full bg-muted/40" key={index} />
+              ))}
+            </div>
+          </div>
+        ) : Picker === null ? (
           <QuestionPills
             cursor={cursor}
             details={(rows ?? []).map(row => row.detail)}

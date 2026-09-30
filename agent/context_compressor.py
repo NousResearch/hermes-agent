@@ -1396,6 +1396,31 @@ def _content_text_for_contains(content: Any) -> str:
     return "" if content is None else content if isinstance(content, str) else str(content)
 
 
+# Gateway reply pointer prepended to a user turn (gateway/run_inbound.py
+# ``_prepend_inbound_reply_context``), optionally behind the Discord triggering note.
+# Non-greedy: a quote that itself contains the closing delimiter is only partly
+# stripped, which over-counts the request and keeps the conservative anchor.
+_GATEWAY_REPLY_POINTER_RE = re.compile(
+    r'\A(?:\[Triggering message id: [^\n]*\]\n\n)?'
+    r'\[Replying to(?: your previous message)?: ".*?"\]\n\n',
+    re.DOTALL,
+)
+
+
+def _authored_request_text(content: Any) -> str:
+    """Text the user wrote in a turn, without the gateway's reply-to pointer.
+
+    The pointer quotes another message verbatim; it disambiguates which message is being
+    answered but is not part of the request, so it must not count toward request size. A
+    request restated after an earlier compaction carries the replay header first: measure
+    the restated text after it, as ``_reappend_inflight_user_task`` does.
+    """
+    text = _content_text_for_contains(content).strip()
+    if _INFLIGHT_TASK_REPLAY_HEADER in text:
+        text = text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+    return _GATEWAY_REPLY_POINTER_RE.sub("", text, count=1).strip()
+
+
 def _is_text_only_content(content: Any) -> bool:
     """Whether the active request can be restated without losing a content part."""
     if isinstance(content, str):
@@ -4427,9 +4452,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
             if not text:
                 continue
+            if len(text) > _ACTIVE_TASK_MAX_CHARS:
+                # Past the cap, drop a gateway reply quote first so elision cannot keep the quote
+                # and cut the request; the split-turn gate measures the same authored text.
+                text = _redact_compaction_text(_authored_request_text(msg.get("content"))) or text
             text = re.sub(r"\s+", " ", text)
             # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the
-            # guard. Text within the cap stays whole (the split-turn path relies on that).
+            # guard. Authored text within the cap stays whole (the split-turn path relies on that).
             text = repr(text) if len(text) <= _ACTIVE_TASK_MAX_CHARS else elide(repr(text), _ACTIVE_TASK_MAX_CHARS)
             return (
                 f"User asked (deterministic, from compacted turns): {text}\n"
@@ -5060,8 +5089,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
             and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
-            and len(_content_text_for_contains(messages[last_user_idx].get("content")).strip())
-            <= _ACTIVE_TASK_MAX_CHARS
+            # Measure what the user wrote: a gateway reply pointer quotes another message and
+            # would otherwise disable the split for a short reply to a long answer.
+            and len(_authored_request_text(messages[last_user_idx].get("content"))) <= _ACTIVE_TASK_MAX_CHARS
             # Only split when there is real turn body to summarize: if the oversized weight is the
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.

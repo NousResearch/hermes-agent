@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
+import copy
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from gateway.platforms.event import MessageEvent
 
@@ -172,3 +173,133 @@ def is_pending_redispatch(adapter: object, session_key: str, event: MessageEvent
         and original.message_id == event.message_id
         and (bool(event.message_id) or original.timestamp == event.timestamp)
     )
+
+
+Merge = Callable[[MessageEvent, MessageEvent], None]
+# Applied to one pending value: (whether a message matched, what remains or None).
+Withdraw = Callable[[Any], Tuple[bool, Any]]
+
+
+def pending_part(event: MessageEvent) -> MessageEvent:
+    """Copy ``event`` so that later merges into the original leave the copy unchanged."""
+    part = copy.copy(event)
+    part.media_urls, part.media_types = list(event.media_urls), list(event.media_types)
+    part.media_text_inlined = list(event.media_text_inlined)
+    part.merged_message_ids = list(event.merged_message_ids)
+    part._merged_parts = list(event._merged_parts)
+    return part
+
+
+def merge_recorded(existing: MessageEvent, event: MessageEvent, merge: Merge) -> None:
+    """Merge ``event`` into ``existing`` with ``merge`` and record both as parts of the result.
+    The first part is a copy taken before any merge changes ``existing``."""
+    if not existing._merged_parts:
+        existing._merged_parts = [(pending_part(existing), None)]
+    existing._merged_parts.append((event, merge))
+    merge(existing, event)
+
+
+def withdraw_from_event(event: Any, matches: Callable[[MessageEvent], bool]) -> Tuple[bool, Any]:
+    """Remove the messages selected by ``matches`` from the pending value ``event``.
+
+    Returns whether any message matched, and the pending value that remains: ``event`` unchanged
+    when nothing matched, None when no message remains, or else an event rebuilt by replaying the
+    remaining parts with the functions that originally merged them."""
+    if not isinstance(event, MessageEvent):
+        return False, event
+    if not event._merged_parts:
+        return (True, None) if matches(event) else (False, event)
+    found, remaining = False, []
+    for part, merge in event._merged_parts:
+        part_found, rest = withdraw_from_event(part, matches)
+        found = found or part_found
+        if rest is not None:
+            remaining.append((rest, merge))
+    if not found:
+        return False, event
+    if not remaining:
+        return True, None
+    rebuilt = pending_part(remaining[0][0])
+    for part, merge in remaining[1:]:
+        merge_recorded(rebuilt, part, merge)
+    return True, rebuilt
+
+
+class PendingWithdrawalMixin:
+    """``withdraw_pending_message`` for ``BasePlatformAdapter``."""
+
+    _pending_messages: Dict[str, MessageEvent]
+    _pending_text_batches: Dict[str, MessageEvent]
+    _pending_text_batch_tasks: Dict[str, asyncio.Task]
+    _pop_text_batch: Callable[[str], Optional[MessageEvent]]
+    _text_debounce_store: Callable[[], Dict[str, Any]]
+    # ``handler(adapter, withdraw)``, installed by the runner; see set_queued_withdrawal_handler.
+    _queued_withdrawal_handler: Optional[Callable[[Any, Withdraw], bool]] = None
+
+    def set_queued_withdrawal_handler(self, handler: Optional[Callable[[Any, Withdraw], bool]]) -> None:
+        """Install the runner's handler for queued follow-ups. ``withdraw_pending_message`` calls
+        ``handler(adapter, withdraw)`` for the pending slots and the runner's FIFO overflow behind
+        them, and the handler returns whether anything was withdrawn. Without a handler, only the
+        pending slots are searched."""
+        self._queued_withdrawal_handler = handler
+
+    def withdraw_pending_message(self, message_id: str, *, chat_id: str, sender_id: str) -> bool:
+        """Remove a message that its sender deleted before its turn started, so that it never
+        reaches the agent. A merged pending turn keeps its other messages. A message matches
+        only if it has the ID ``message_id``, is in ``chat_id`` and was sent by ``sender_id``.
+        Returns whether the message was found.
+
+        A turn that has already started is not changed. Platform adapters call this when they
+        observe the deletion. A deletion event does not identify a session, so every buffer is
+        searched."""
+        def matches(event: MessageEvent) -> bool:
+            source = event.source
+            return (event.message_id == message_id and source is not None
+                    and source.chat_id == chat_id and source.user_id == sender_id)
+
+        def withdraw(event: Any) -> Tuple[bool, Any]:
+            return withdraw_from_event(event, matches)
+
+        found = False
+        for key, event in list(self._pending_text_batches.items()):
+            matched, rest = withdraw(event)
+            if not matched:
+                continue
+            found = True
+            if rest is not None:
+                self._pending_text_batches[key] = rest
+                continue
+            self._pop_text_batch(key)
+            task = self._pending_text_batch_tasks.pop(key, None)
+            if task is not None and not task.done():
+                task.cancel()
+        debounce = self._text_debounce_store()
+        for key, state in list(debounce.items()):
+            matched, rest = withdraw(state.event)
+            if not matched:
+                continue
+            found = True
+            if rest is not None:
+                state.event = rest
+                continue
+            state.cancel_timer()
+            debounce.pop(key, None)
+        handler = self._queued_withdrawal_handler
+        if handler is not None:
+            return handler(self, withdraw) or found
+        return self.withdraw_from_pending_slots(withdraw) or found
+
+    def withdraw_from_pending_slots(self, withdraw: Withdraw) -> bool:
+        """Apply ``withdraw`` to every pending slot, removing a slot that it empties. Returns
+        whether anything was withdrawn."""
+        found = False
+        for key, event in list(self._pending_messages.items()):
+            matched, rest = withdraw(event)
+            if not matched:
+                continue
+            found = True
+            if rest is None:
+                self._pending_messages.pop(key, None)
+            else:
+                self._pending_messages[key] = rest
+        return found

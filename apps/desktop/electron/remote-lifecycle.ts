@@ -1151,9 +1151,13 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // when its owning remote shell is dead.
   const markerAbsent = `[ ! -e ${marker} ]`
 
+  // A dev build's renderer is served from HERMES_DESKTOP_DEV_SERVER, an http origin the backend
+  // trusts only when it inherits the variable, exactly as a locally spawned backend does.
+  const devServerEnv = opts.devServer ? ` HERMES_DESKTOP_DEV_SERVER=${shq(opts.devServer)}` : ''
+
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${devServerEnv} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   // The inner shell backgrounds Hermes and reports its PID; backgrounding the
@@ -1295,7 +1299,15 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
 
 async function spawnRemoteDashboard(
   ssh,
-  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
+  {
+    hermesPath,
+    profile,
+    token,
+    ownershipId,
+    hermesHome = '~/.hermes',
+    devServer = '',
+    assertInstallClear = async () => {}
+  }
 ) {
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(
@@ -1365,6 +1377,7 @@ async function spawnRemoteDashboard(
         tokenFilePath,
         logPath,
         hermesHome,
+        devServer,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1514,6 +1527,7 @@ async function connect(deps) {
     adoptServedToken,
     rememberLog = () => {},
     readyTimeoutMs = resolveReadyTimeoutMs(),
+    devServer = '',
     signal
   } = deps
 
@@ -1674,6 +1688,7 @@ async function connect(deps) {
     token: spawnToken,
     ownershipId,
     hermesHome,
+    devServer,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 

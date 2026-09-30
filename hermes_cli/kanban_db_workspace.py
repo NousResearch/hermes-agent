@@ -39,10 +39,14 @@ def _path_key(path: Path | str | None) -> str:
     return unicodedata.normalize("NFC", str(path)) if path is not None else ""
 
 # Statuses after which a child no longer needs its parent's workspace artifacts.
+# Local patch 362 (re-applied 2026-09-30): walk ALL descendants, not only direct
+# children, so an active grandchild keeps an ancestor's workspace alive.
 _ACTIVE_CHILDREN_SQL = (
-    "SELECT 1 FROM task_links l "
-    "JOIN tasks t ON t.id = l.child_id "
-    "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled') "
+    "WITH RECURSIVE descendants(id) AS ("
+    "SELECT child_id FROM task_links WHERE parent_id = ? "
+    "UNION SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id"
+    ") SELECT 1 FROM descendants d JOIN tasks t ON t.id = d.id "
+    "WHERE t.status NOT IN ('done', 'archived', 'failed', 'cancelled') "
     "LIMIT 1"
 )
 
@@ -61,7 +65,34 @@ def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProce
 
 
 def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
-    return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
+    if conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None:
+        return True
+    # A live task whose workspace sits inside (or around) this one also needs it,
+    # even without a task_links edge between them.
+    row = conn.execute("SELECT workspace_path FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row or not row["workspace_path"]:
+        return False
+    root = Path(row["workspace_path"]).resolve()
+    for other in conn.execute(
+        "SELECT workspace_path FROM tasks WHERE id != ? AND "
+        "status NOT IN ('done', 'archived', 'failed', 'cancelled') "
+        "AND workspace_path IS NOT NULL", (task_id,),
+    ):
+        path = Path(other["workspace_path"]).resolve()
+        if root == path or root in path.parents or path in root.parents:
+            return True
+    return False
+
+
+def _scratch_contains_repository(path: Path) -> bool:
+    """Never recursively erase Git work/evidence through a scratch ancestor."""
+    def fail_closed(error: OSError) -> None:
+        raise error
+
+    for _, dirs, files in os.walk(path, onerror=fail_closed, followlinks=False):
+        if ".git" in dirs or ".git" in files:
+            return True
+    return False
 
 
 def _lexical_path(path: Path | str) -> Path:
@@ -206,6 +237,8 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         wp = Path(path)
+        if _scratch_contains_repository(wp):
+            return
         if wp.is_dir():
             # Containment guard: a board's ``default_workdir`` can pair
             # ``workspace_kind='scratch'`` with a user path pointing at a real
@@ -330,6 +363,8 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])
                 continue
             wp = Path(row["workspace_path"])
+            if _scratch_contains_repository(wp):
+                continue
             if wp.is_dir() and _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)

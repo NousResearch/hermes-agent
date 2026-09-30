@@ -284,15 +284,25 @@ def _keep_untouched_line_endings(original: str, edited: str, fallback: Optional[
         tail += 1
     old_end, new_end = len(old) - tail, len(new) - tail
     blocks = [("equal", 0, head, 0, head)]
+    by_position = ("span", head, old_end, head, new_end)
     if max(old_end, new_end) - head > _LINE_MATCH_LIMIT:
         # Matching is quadratic; past the limit the span is paired by position rather
         # than stalling the edit, so a line between two distant hunks keeps its own ending.
-        blocks.append(("span", head, old_end, head, new_end))
+        blocks.append(by_position)
     else:
-        matcher = difflib.SequenceMatcher(
-            None, [body for body, _ in old[head:old_end]], [body for body, _ in new[head:new_end]])
-        blocks += [(tag, i1 + head, i2 + head, j1 + head, j2 + head)
-                   for tag, i1, i2, j1, j2 in matcher.get_opcodes()]
+        old_span = [body for body, _ in old[head:old_end]]
+        new_span = [body for body, _ in new[head:new_end]]
+        opcodes = difflib.SequenceMatcher(None, old_span, new_span).get_opcodes()
+        matched = sum(i2 - i1 for tag, i1, i2, _j1, _j2 in opcodes if tag == "equal")
+        in_place = sum(a == b for a, b in zip(old_span, new_span))
+        if len(old_span) == len(new_span) and in_place >= matched:
+            # Repeated text lets the matcher pair a new line with a line the edit removed
+            # (c,b,a -> b,b,c pairs the last c with the first). A line-for-line edit that
+            # leaves as many lines in place is read by position instead.
+            blocks.append(by_position)
+        else:
+            blocks += [(tag, i1 + head, i2 + head, j1 + head, j2 + head)
+                       for tag, i1, i2, j1, j2 in opcodes]
     blocks.append(("equal", old_end, len(old), new_end, len(new)))
 
     def ending_near(index: int) -> str:

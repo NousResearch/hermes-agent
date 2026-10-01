@@ -720,6 +720,7 @@ export const frOverrides = {
       'workspace.openFolder': 'Ouvrir le dossier comme projet',
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
+      'composer.planMode': 'Activer/désactiver le mode plan',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
       'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
       'composer.reasoningDown': 'Réduire le niveau de raisonnement',
@@ -4196,6 +4197,10 @@ export const frOverrides = {
       'Ajustez ou continuez'
     ],
     startVoice: 'Démarrer la conversation vocale',
+    planMode: 'Plan',
+    planModeOnHint:
+      'Mode plan activé : les nouveaux messages partent en /plan, l’agent rédige un plan au lieu de faire des modifications',
+    planModeOffHint: 'Mode plan : envoyer les nouveaux messages en /plan pour obtenir d’abord un plan écrit',
     openDirective: 'Ouvrir',
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",

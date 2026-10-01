@@ -720,6 +720,7 @@ export const deOverrides = {
       'workspace.openFolder': 'Ordner als Projekt öffnen',
       'composer.focus': 'Composer fokussieren',
       'composer.modelPicker': 'Modellauswahl öffnen',
+      'composer.planMode': 'Planmodus umschalten',
       'composer.voice': 'Sprachkonversation starten / stoppen',
       'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
       'composer.reasoningDown': 'Reasoning-Stufe senken',
@@ -4185,6 +4186,10 @@ export const deOverrides = {
       'Anpassen oder fortfahren'
     ],
     startVoice: 'Sprachkonversation starten',
+    planMode: 'Plan',
+    planModeOnHint:
+      'Planmodus an – neue Nachrichten gehen als /plan raus: Der Agent schreibt einen Plan, statt Änderungen vorzunehmen',
+    planModeOffHint: 'Planmodus – neue Nachrichten als /plan senden, um zuerst einen schriftlichen Plan zu erhalten',
     openDirective: 'Öffnen',
     queueMessage: 'Nachricht einreihen',
     steer: 'Laufenden Lauf steuern',

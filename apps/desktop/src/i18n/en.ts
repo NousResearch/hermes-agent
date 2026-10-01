@@ -778,6 +778,7 @@ export const en: Translations = {
       'workspace.openFolder': 'Open folder as project',
       'composer.focus': 'Focus composer',
       'composer.modelPicker': 'Open model picker',
+      'composer.planMode': 'Toggle plan mode',
       'composer.voice': 'Start / stop voice conversation',
       'composer.dictate': 'Start / stop dictation',
       'composer.reasoningUp': 'Reasoning level up',
@@ -3805,6 +3806,9 @@ export const en: Translations = {
       'Adjust or continue'
     ],
     startVoice: 'Start voice conversation',
+    planMode: 'Plan',
+    planModeOnHint: 'Plan mode on — new messages go out as /plan, so the agent writes a plan instead of making changes',
+    planModeOffHint: 'Plan mode — send new messages as /plan to get a written plan first',
     openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',

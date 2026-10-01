@@ -52,6 +52,7 @@ import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { withPlanMode } from '@/store/plan-mode'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -780,11 +781,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // Runs outside the selected ChatBar so queues belonging to background
   // sessions continue once those sessions are idle.
+  const backgroundDrainSubmit = useMemo(() => withPlanMode(submitText), [submitText])
+
   useBackgroundQueueDrain({
     enabled: gatewayState === 'open',
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
-    submitText
+    // Same plan-mode wrapper the composer's own sends and drains go through.
+    submitText: backgroundDrainSubmit
   })
 
   // Session-tile delegate (resume/submit/interrupt/slash + the session verbs

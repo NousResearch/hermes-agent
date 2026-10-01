@@ -436,6 +436,7 @@ export const ru = defineLocale({
       'workspace.openFolder': 'Открыть папку как проект',
       'composer.focus': 'Сфокусировать композер',
       'composer.modelPicker': 'Открыть выбор модели',
+      'composer.planMode': 'Переключить режим плана',
       'composer.voice': 'Начать / остановить голосовой диалог',
       'composer.dictate': 'Начать / остановить диктовку',
       'composer.reasoningUp': 'Повысить уровень размышлений',
@@ -2912,6 +2913,9 @@ export const ru = defineLocale({
       'Скорректируйте или продолжите'
     ],
     startVoice: 'Начать голосовой разговор',
+    planMode: 'План',
+    planModeOnHint: 'Режим плана включён: новые сообщения уходят как /plan, и агент пишет план вместо изменений',
+    planModeOffHint: 'Режим плана: отправлять новые сообщения как /plan, чтобы сначала получить план',
     openDirective: 'Открыть',
     queueMessage: 'Вставить сообщение в очередь',
     steer: 'Направить текущий запуск',

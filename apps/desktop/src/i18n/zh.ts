@@ -486,6 +486,7 @@ export const zh = defineLocale({
       'workspace.openFolder': '打开文件夹为项目',
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
+      'composer.planMode': '切换计划模式',
       'composer.voice': '开始 / 停止语音对话',
       'composer.dictate': '开始 / 停止听写',
       'composer.reasoningUp': '提高推理等级',
@@ -3572,6 +3573,9 @@ export const zh = defineLocale({
       '调整或继续'
     ],
     startVoice: '开始语音对话',
+    planMode: '计划',
+    planModeOnHint: '计划模式已开启：新消息以 /plan 发送，智能体只写计划、不做修改',
+    planModeOffHint: '计划模式：以 /plan 发送新消息，先得到一份书面计划',
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',

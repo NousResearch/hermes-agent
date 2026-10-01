@@ -520,7 +520,7 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
-def _include_symlink_paths(worktree_path: str, repo_root, timeout: int = 10) -> set:
+def _include_symlink_paths(worktree_path: str, repo_root) -> set:
     """Relative paths in *worktree_path* that are ``.worktreeinclude`` directory symlinks.
 
     ``_copy_worktree_includes`` symlinks included directories back to the main checkout
@@ -555,7 +555,7 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
             return False
         if any(not e.startswith("?? ") for e in entries):
             return True
-        include_links = _include_symlink_paths(worktree_path, repo_root, timeout=timeout)
+        include_links = _include_symlink_paths(worktree_path, repo_root)
         return any(e[3:].rstrip("/") not in include_links for e in entries)
     except Exception:
         return True

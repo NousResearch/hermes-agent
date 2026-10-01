@@ -177,3 +177,16 @@ async def test_event_read_without_message_content_is_an_error(event):
                                        requester="@alice:server")
 
     assert result == {"error": "Matrix event has no message content"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["thread", "event"])
+async def test_targeted_read_requires_an_event_before_network(kind):
+    client = _client()
+
+    result = await read_matrix_context(_adapter(client), kind, "!room:server", None, 5,
+                                       requester="@alice:server")
+
+    assert result == {"error": "event_id is required for thread and event reads"}
+    client.api.request.assert_not_awaited()
+    client.get_event.assert_not_awaited()

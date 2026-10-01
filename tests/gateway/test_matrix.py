@@ -4721,7 +4721,13 @@ class TestMatrixImageOnlyMediaNormalization:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("declared", [{}, {"filename": "photo.png"}], ids=["legacy", "declared"])
-    async def test_captionless_media_reply_forwards_no_text(self, declared):
+    @pytest.mark.parametrize("quote, expected_text, expected_author", [
+        ("> <@erin:example.org> nice photo", "", "@erin:example.org"),
+        ("> an ordinary quotation", "> an ordinary quotation\n\nphoto.png", None),
+    ], ids=["reply-fallback", "authored-quotation"])
+    async def test_media_reply_keeps_authored_quotes_separate_from_filenames(
+        self, declared, quote, expected_text, expected_author,
+    ):
         self.adapter.handle_message = AsyncMock()
 
         await self.adapter._handle_media_message(
@@ -4731,7 +4737,7 @@ class TestMatrixImageOnlyMediaNormalization:
             event_ts=0.0,
             source_content={
                 "msgtype": "m.image",
-                "body": "> <@erin:example.org> nice photo\n\nphoto.png",
+                "body": f"{quote}\n\nphoto.png",
                 "url": "mxc://example/photo.png",
                 "info": {"mimetype": "image/png"},
                 **declared,
@@ -4742,7 +4748,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
         assert (event.text, event.reply_to_message_id, event.reply_to_author_id) == (
-            "", "$target", "@erin:example.org",
+            expected_text, "$target", expected_author,
         )
 
 

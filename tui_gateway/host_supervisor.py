@@ -36,6 +36,10 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
 _REGISTRY_NAME = "dashboard-compute-host.json"
 _RESPAWN_WINDOW_SECS = 300.0
 _SHUTDOWN_TIMEOUT_SECS = 10.0
+_OOM_RESPAWN_MAX = 1
+_OOM_RESPAWN_MEMORY_FRACTION = 0.80
+_OOM_RESPAWN_WAIT_SECS = 60.0
+_OOM_RESPAWN_POLL_SECS = 5.0
 # Late control-ack handlers: a compress that outlives its RPC waiter can run for the full
 # compression ceiling plus a stall-fallback retry, so keep registrations past that — bounded.
 # See #97948.
@@ -122,6 +126,80 @@ def _signal_pid(pid: int, sig: int, label: str) -> bool:
         return False
 
 
+def _nonnegative_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _own_cgroup_v2_dir() -> Path | None:
+    """Return this process' cgroup-v2 directory, or None outside Linux/cgroup-v2."""
+    with contextlib.suppress(Exception):
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0":
+                relative = parts[2].lstrip("/")
+                return Path("/sys/fs/cgroup") / relative if relative else Path("/sys/fs/cgroup")
+    return None
+
+
+def _read_cgroup_int(cgroup: Path, name: str) -> int | None:
+    with contextlib.suppress(Exception):
+        raw = (cgroup / name).read_text(encoding="utf-8").strip()
+        if raw and raw != "max":
+            return int(raw)
+    return None
+
+
+def _read_cgroup_events(cgroup: Path) -> dict[str, int]:
+    events: dict[str, int] = {}
+    with contextlib.suppress(Exception):
+        for line in (cgroup / "memory.events").read_text(encoding="utf-8").splitlines():
+            key, raw = line.split(maxsplit=1)
+            events[key] = int(raw)
+    return events
+
+
+def _read_cgroup_memory_state() -> dict[str, Any]:
+    """Best-effort cgroup-v2 memory counters for OOM post-mortems.
+
+    Empty means unavailable; callers must never treat it as healthy memory.
+    """
+    cgroup = _own_cgroup_v2_dir()
+    if cgroup is None:
+        return {}
+    events = _read_cgroup_events(cgroup)
+    return {
+        "path": str(cgroup),
+        "oom_kill": events.get("oom_kill"),
+        "current": _read_cgroup_int(cgroup, "memory.current"),
+        "max": _read_cgroup_int(cgroup, "memory.max"),
+    }
+
+
+def _memory_usage_fraction(state: dict[str, Any]) -> float | None:
+    current = _nonnegative_int(state.get("current"))
+    maximum = _nonnegative_int(state.get("max"))
+    if current is None or maximum is None or maximum <= 0:
+        return None
+    return current / maximum
+
+
+def _memory_below_oom_respawn_threshold(state: dict[str, Any]) -> bool:
+    fraction = _memory_usage_fraction(state)
+    return fraction is not None and fraction < _OOM_RESPAWN_MEMORY_FRACTION
+
+
+def _format_memory_state(state: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if path := state.get("path"):
+        parts.append(f"cgroup={path}")
+    for label, key in (("memory.current", "current"), ("memory.max", "max"), ("oom_kill", "oom_kill")):
+        if state.get(key) is not None:
+            parts.append(f"{label}={state[key]}")
+    if (fraction := _memory_usage_fraction(state)) is not None:
+        parts.append(f"usage={fraction:.1%}")
+    return "; ".join(parts) if parts else "cgroup memory state unavailable"
+
+
 def _pid_command(pid: int) -> str:
     if pid <= 0:
         return ""
@@ -164,6 +242,9 @@ class HostSupervisor:
         self._closing = False
         self._stopped_respawning = False
         self._restart_times: list[float] = []
+        self._oom_restart_times: list[float] = []
+        self._oom_respawn_pending = False
+        self._spawn_memory_state: dict[str, Any] = {}
         self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
         self._pending_controls: dict[str, queue.Queue[dict]] = {}
         # request_id -> (registered_at, handler) for control waiters that timed out while their
@@ -189,6 +270,9 @@ class HostSupervisor:
         with self._lock:
             if self.is_running():
                 return
+            if self._oom_respawn_pending:
+                raise RuntimeError(
+                    "compute host respawn is deferred after a cgroup OOM until memory recovers")
             self._closing = False
             self.reconcile_startup_orphan()
             self._spawn_locked(reason="startup")
@@ -335,6 +419,7 @@ class HostSupervisor:
         if root not in env["PYTHONPATH"].split(os.pathsep):
             env["PYTHONPATH"] = root + os.pathsep + env["PYTHONPATH"]
         # Lossy UTF-8 decode: a locale-mismatched byte must not raise inside the drain threads.
+        self._spawn_memory_state = _read_cgroup_memory_state()
         proc = subprocess.Popen(
             self.argv, cwd=str(self.cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -434,8 +519,27 @@ class HostSupervisor:
                 return
             self._proc = None
         self._remove_registry()
-        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
-        self._maybe_respawn_after_crash()
+        exit_reason, message, exit_info = self._classify_exit(code)
+        self._fail_pending_turns(reason=exit_reason, message=message)
+        self._maybe_respawn_after_crash(exit_reason=exit_reason, exit_info=exit_info)
+
+    def _classify_exit(self, code: int) -> tuple[str, str, dict[str, Any]]:
+        info: dict[str, Any] = {"exit_code": code}
+        if code == -signal.SIGKILL:
+            before = self._spawn_memory_state
+            after = _read_cgroup_memory_state()
+            before_oom = _nonnegative_int(before.get("oom_kill"))
+            after_oom = _nonnegative_int(after.get("oom_kill"))
+            if before_oom is not None and after_oom is not None and after_oom > before_oom:
+                delta = after_oom - before_oom
+                info.update({"oom_kill_delta": delta, "memory": after})
+                return (
+                    "oom_kill",
+                    f"compute host exited with code {code}; cgroup OOM kill detected "
+                    f"(oom_kill delta={delta}; {_format_memory_state(after)})",
+                    info,
+                )
+        return "crash", f"compute host exited with code {code}", info
 
     def _fail_pending_turns(self, *, reason: str, message: str) -> None:
         with self._lock:
@@ -457,7 +561,12 @@ class HostSupervisor:
             frame = {"type": "control.error", "request_id": request_id, **failure}
             _call_logged(handler, frame, "compute host late control error handler failed")
 
-    def _maybe_respawn_after_crash(self) -> None:
+    def _maybe_respawn_after_crash(
+        self, *, exit_reason: str = "crash", exit_info: dict[str, Any] | None = None,
+    ) -> None:
+        if exit_reason == "oom_kill":
+            self._maybe_respawn_after_oom(exit_info or {})
+            return
         now = time.monotonic()
         self._restart_times = [t for t in self._restart_times if now - t <= _RESPAWN_WINDOW_SECS]
         if len(self._restart_times) >= self.respawn_max:
@@ -480,6 +589,52 @@ class HostSupervisor:
                 except Exception:
                     logger.exception("compute host respawn failed")
         threading.Thread(target=_respawn, name="compute-host-respawn", daemon=True).start()
+
+    def _maybe_respawn_after_oom(self, exit_info: dict[str, Any]) -> None:
+        now = time.monotonic()
+        self._oom_restart_times = [t for t in self._oom_restart_times if now - t <= _RESPAWN_WINDOW_SECS]
+        if len(self._oom_restart_times) >= _OOM_RESPAWN_MAX:
+            self._stopped_respawning = True
+            logger.error(
+                "compute host OOM restart loop: max %s OOM restarts per 5min reached; "
+                "not respawning; %s", _OOM_RESPAWN_MAX,
+                _format_memory_state(exit_info.get("memory") or {}))
+            return
+        self._oom_restart_times.append(now)
+        self._oom_respawn_pending = True
+        logger.error(
+            "compute host was OOM-killed; waiting for cgroup memory below %.0f%% before respawn; %s",
+            _OOM_RESPAWN_MEMORY_FRACTION * 100,
+            _format_memory_state(exit_info.get("memory") or {}))
+        if not self._wait_until_oom_pressure_recedes(exit_info):
+            self._oom_respawn_pending = False
+            self._stopped_respawning = True
+            logger.error(
+                "compute host OOM respawn suppressed: cgroup memory did not fall below %.0f%%; %s",
+                _OOM_RESPAWN_MEMORY_FRACTION * 100,
+                _format_memory_state(_read_cgroup_memory_state()))
+            return
+        with self._lock:
+            self._oom_respawn_pending = False
+            if self._closing or self._stopped_respawning or self._proc is not None:
+                return
+            try:
+                self._spawn_locked(reason="oom_recovery")
+            except Exception:
+                logger.exception("compute host OOM recovery respawn failed")
+
+    def _wait_until_oom_pressure_recedes(self, exit_info: dict[str, Any]) -> bool:
+        raw_state = exit_info.get("memory")
+        state = raw_state if isinstance(raw_state, dict) else {}
+        deadline = time.monotonic() + _OOM_RESPAWN_WAIT_SECS
+        while True:
+            if _memory_below_oom_respawn_threshold(state):
+                return True
+            # A confirmed OOM without a readable finite cap has no safe threshold to wait for.
+            if _memory_usage_fraction(state) is None or time.monotonic() >= deadline:
+                return False
+            time.sleep(min(_OOM_RESPAWN_POLL_SECS, max(0.0, deadline - time.monotonic())))
+            state = _read_cgroup_memory_state()
 
     _pid_matches_compute_host = staticmethod(is_compute_host_identity)
 

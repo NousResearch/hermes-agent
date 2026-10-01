@@ -106,7 +106,10 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
     return None if profile == "default" else profile
 
 
-class RelayAdapter(BasePlatformAdapter):
+from gateway.relay.approval import RelayApprovalMixin
+
+
+class RelayAdapter(RelayApprovalMixin, BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
     # Connector egress splits against negotiated max_message_length, so the
@@ -2036,17 +2039,6 @@ class RelayAdapter(BasePlatformAdapter):
 
     _EA_CMD_BUDGET = 1500
 
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Native-button exec approval over the relay (the press resolves via
-        tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
-        (success=False) so run.py's button→text fallback runs."""
-        options = [{"id": choice, "label": label, **({"style": style} if style else {})}
-                   for label, choice, style in prompt.actions]
-        result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
-            text=prompt.text, options=options, metadata=prompt.metadata,
-        )
-        return result if result is not None else self._PROMPT_UNAVAILABLE
 
     async def send_slash_confirm(
         self,
@@ -2154,17 +2146,6 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
 
-    async def _resolve_exec_approval(self, state, option_id, chat_id, ack_meta) -> None:
-        from tools.approval import resolve_gateway_approval
-
-        choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
-        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
-        # In-channel ack preserves the audit trail the native edit gives (the
-        # connector's prompt message can't be edited cross-platform yet).
-        self._send_lifecycle_ack(chat_id, label, ack_meta)
-        if count:
-            self.resume_typing_for_chat(chat_id)
 
     async def _resolve_slash_confirm(self, state, option_id, chat_id, ack_meta) -> None:
         from tools import slash_confirm as slash_confirm_mod

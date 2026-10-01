@@ -1003,13 +1003,14 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
+from plugins.platforms.slack.approval import SlackApprovalMixin
 from plugins.platforms.slack.inbound_context import SlackInboundContextMixin
 
 
 from plugins.platforms.slack.outbound_targets import SlackOutboundTargetsMixin
 
 
-class SlackAdapter(SlackOutboundTargetsMixin, SlackInboundContextMixin, BasePlatformAdapter):
+class SlackAdapter(SlackApprovalMixin, SlackOutboundTargetsMixin, SlackInboundContextMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -4671,22 +4672,6 @@ class SlackAdapter(SlackOutboundTargetsMixin, SlackInboundContextMixin, BasePlat
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
         return max(0, self._EA_SECTION_CAP - fixed)
 
-    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Block Kit approval prompt; the buttons call ``resolve_gateway_approval()`` to unblock the
-        waiting agent thread — same mechanism as the text ``/approve`` flow."""
-
-        def _build() -> tuple[str, list]:
-            actions = [
-                self._button(label, self._EA_ACTION_IDS[choice], prompt.session_key, style=style)
-                for label, choice, style in prompt.actions]
-            blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
-                {"type": "actions", "elements": actions}]
-            return t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
-
-        return await self._send_interactive_prompt(
-            prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
-            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -5317,37 +5302,7 @@ class SlackAdapter(SlackOutboundTargetsMixin, SlackInboundContextMixin, BasePlat
             "[Slack] Feedback button clicked: value=%s user=%s channel=%s ts=%s", value, user_id,
             channel_id, message.get("ts", ""))
 
-    async def _handle_approval_action(self, ack, body, action) -> None:
-        """Handle an approval button click from Block Kit."""
-        started = await self._begin_interaction(ack, body, action, "approval")
-        if started is None:
-            return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, _user_id = started
-        choice = self._APPROVAL_CHOICES.get(action_id, "deny")
-        # Double-click guard (atomic pop). Also accept the bare ts: the approval may
-        # have been stored without a team id while the click carries one.
-        approval_key = self._workspace_message_marker(team_id, msg_ts)
-        if msg_ts in self._approval_resolved:
-            approval_key = msg_ts
-        if self._approval_resolved.pop(approval_key, True):
-            return
-        # Resolve FIRST (unblocks the agent); render after so a click past the
-        # timeout (count == 0) shows "expired", not "approved".
-        try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
-                session_key, choice, user_name)
-        except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
-            count = 0
-        decision_text = t(self._APPROVAL_DECISION_KEYS[choice], user=user_name)
-        if not count:
-            decision_text = t("platform.shared.approval_expired")
-        await self._finalize_interactive_message(
-            channel_id, msg_ts, self._section_text(message), decision_text,
-            "Command approval request", "approval", team_id or None)
+
 
     async def _update_clarify_message(
         self, channel_id: str, msg_ts: str, question_text: str, decision_text: str) -> None:

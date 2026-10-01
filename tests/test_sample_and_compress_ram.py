@@ -13,8 +13,9 @@ import pytest
 def _load_sample_and_compress():
     path = Path(__file__).resolve().parents[1] / "scripts" / "sample_and_compress.py"
     spec = importlib.util.spec_from_file_location("sample_and_compress", path)
-    module = importlib.util.module_from_spec(spec)
+    assert spec is not None
     assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -89,7 +90,7 @@ def test_iter_dataset_entries_labels_non_streaming_fallback(monkeypatch, capsys)
         return [{"conversations": [{"value": "row"}]}]
 
     fake_datasets = types.ModuleType("datasets")
-    fake_datasets.load_dataset = fake_load_dataset
+    monkeypatch.setattr(fake_datasets, "load_dataset", fake_load_dataset, raising=False)
     monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
 
     rows = list(sac.iter_dataset_entries("fake/ds"))

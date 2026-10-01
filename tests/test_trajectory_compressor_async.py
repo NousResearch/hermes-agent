@@ -110,7 +110,6 @@ async def test_process_directory_does_not_gather_one_task_per_entry(tmp_path):
         AggregateMetrics,
         CompressionConfig,
         TrajectoryCompressor,
-        TrajectoryMetrics,
     )
 
     n_entries = 12
@@ -137,12 +136,6 @@ async def test_process_directory_does_not_gather_one_task_per_entry(tmp_path):
     )
     compressor.aggregate_metrics = AggregateMetrics()
     compressor.logger = MagicMock()
-
-    async def fake_process(entry):
-        await asyncio.sleep(0)
-        return entry, TrajectoryMetrics()
-
-    compressor.process_entry_async = fake_process
 
     with patch("trajectory_compressor.asyncio.gather", spy_gather):
         await compressor._process_directory_async(in_dir, out_dir)
@@ -190,8 +183,8 @@ async def test_process_directory_timeout_skips_and_error_keeps_original(tmp_path
             raise RuntimeError("boom")
         return {**entry, "ok": True}, TrajectoryMetrics()
 
-    compressor.process_entry_async = fake_process
-    await compressor._process_directory_async(in_dir, out_dir)
+    with patch.object(compressor, "process_entry_async", fake_process):
+        await compressor._process_directory_async(in_dir, out_dir)
 
     rows = [
         json.loads(line)

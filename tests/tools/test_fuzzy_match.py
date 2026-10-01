@@ -551,8 +551,8 @@ class TestEscapeNormalizedNewString:
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
         assert strategy == "exact"
-        assert "\tprint(\"after\")" in new
-        assert "\\t" not in new
+        assert "\\tprint(\"after\")" in new
+        assert "\tprint(\"after\")" not in new
 
     def test_carriage_return_in_new_string_unescaped(self):
         """File has real CR, model sends literal \\r in new_string. Line breaks
@@ -592,8 +592,8 @@ class TestEscapeNormalizedNewString:
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
         # \t -> real tab
-        assert "\treturn 1" in new
-        assert "\\t" not in new
+        # Exact matches preserve new_string byte-for-byte, including escapes.
+        assert "\\treturn 1" in new
         # \n preserved as literal backslash-n
         assert "\\n" in new
 

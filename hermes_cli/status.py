@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import shutil
 import sys
 import time
 import importlib.util
@@ -32,9 +34,65 @@ def _section(title: str) -> None:
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
 
+# SGR escapes only (``\x1b[...m``): they never contain whitespace, so word-wrapping a
+# colored string on spaces can never split one in half.
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# Floor for the value column so an absurdly narrow terminal degrades to wide-but-wrapped
+# lines instead of one word per line. Small enough that COLUMNS=40 still never overflows
+# with the widest label column this module uses (21 visible columns).
+_MIN_WRAP_WIDTH = 12
+
+
+def _visible_len(text: str) -> int:
+    """Length a string occupies on screen: SGR escapes carry zero width."""
+    return len(_ANSI_SGR_RE.sub("", text))
+
+
+def _terminal_columns(default: int = 80) -> int:
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return default
+
+
+def _print_wrapped(prefix: str, prefix_width: int, text: str) -> None:
+    """Print ``prefix + text``, wrapping at the terminal width with a hanging indent.
+
+    The wrap is measured on visible width, so colored values keep their escape
+    sequences intact, and every continuation line is indented to the value column so
+    the label/mark alignment that carries the meaning survives narrow terminals
+    (#109625).
+    """
+    available = max(_terminal_columns() - prefix_width, _MIN_WRAP_WIDTH)
+    tokens = text.split()
+    if not tokens:
+        print(prefix)
+        return
+    lines: list[str] = []
+    current: list[str] = []
+    used = 0
+    for token in tokens:
+        token_width = _visible_len(token)
+        if current and used + 1 + token_width > available:
+            lines.append(" ".join(current))
+            current = [token]
+            used = token_width
+        else:
+            used += (1 if current else 0) + token_width
+            current.append(token)
+    if current:
+        lines.append(" ".join(current))
+    hanging = " " * prefix_width
+    print(f"{prefix}{lines[0]}")
+    for line in lines[1:]:
+        print(f"{hanging}{line}")
+
+
 def _row(name: str, ok: bool, text: str, width: int = 12, sep: str = "  ") -> None:
-    """Print one ``name  ✓/✗ text`` status row."""
-    print(f"  {name:<{width}}{sep}{check_mark(ok)} {text}")
+    """Print one ``name  ✓/✗ text`` status row, wrapped to the terminal width."""
+    prefix = f"  {name:<{width}}{sep}{check_mark(ok)} "
+    _print_wrapped(prefix, _visible_len(prefix), text)
 
 
 def _detail(label: str, value) -> None:
@@ -43,8 +101,10 @@ def _detail(label: str, value) -> None:
 
 
 def _kv(label: str, value, indent: str = "  ", width: int = 14) -> None:
-    """Print a ``  Label:        value`` line (label padded to the 14-col status layout)."""
-    print(f"{indent}{label:<{width}}{value}")
+    """Print a ``  Label:        value`` line (label padded to the 14-col status layout),
+    wrapped to the terminal width with the continuation aligned under the value."""
+    prefix = f"{indent}{label:<{width}}"
+    _print_wrapped(prefix, _visible_len(prefix), str(value))
 
 
 def _kv_flag(label: str, ok, on: str, off: str) -> None:

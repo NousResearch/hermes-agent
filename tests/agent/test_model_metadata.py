@@ -698,6 +698,31 @@ class TestCodexOAuthContextLength:
                  patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_CACHE_TTL + 1):
                 assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 600_000
 
+    def test_a_probe_that_finds_no_catalog_is_not_repeated_within_the_negative_ttl(self):
+        """Every context resolution (init, /status, aux, @-reference turns) used to re-probe a dead or
+        non-Codex-shaped catalog; one miss is now remembered for the short negative TTL, then retried."""
+        import agent.model_metadata as mm
+
+        calls = []
+
+        def down(url, **_kw):
+            calls.append(url)
+            raise OSError("catalog down")
+
+        route = dict(base_url="https://chatgpt.com/backend-api/codex", api_key=_codex_jwt("fake-token"), provider="openai-codex")
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch("agent.model_metadata.model_metadata_http.get", side_effect=down), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            assert mm.get_model_context_length(model="gpt-5.6-sol", **route) == 272_000
+            per_probe = len(calls)
+            mm.get_model_context_length(model="gpt-5.6-sol", **route)
+            mm.get_model_context_length(model="gpt-5.6-sol-900k", **route)
+            assert per_probe and len(calls) == per_probe
+            with patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_NEGATIVE_TTL + 1):
+                mm.get_model_context_length(model="gpt-5.6-sol", **route)
+        assert len(calls) == 2 * per_probe
+
     def test_catalog_max_is_published_before_the_context_entry(self):
         """A reader that sees a fresh context entry must already be able to see its cap, or a
         concurrent -900k resolution between the two writes skips the catalog max."""

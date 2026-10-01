@@ -1782,6 +1782,7 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
 # returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
@@ -1850,6 +1851,19 @@ def _codex_oauth_token_fingerprint(access_token: str, base_url: str = "") -> str
     return hashlib.sha256(f"{access_token}\n{(base_url or '').strip().rstrip('/')}".encode("utf-8")).hexdigest()[:16]
 
 
+def _remember_no_codex_catalog(cache_key: str) -> None:
+    """A probe that found no catalog (down, non-200, not Codex-shaped) is remembered briefly: context
+    resolution runs on init, /status, aux and @-reference turns, and each miss can block ~30s. The entry is
+    stamped as if cached ``TTL - NEGATIVE_TTL`` ago, so the shared freshness check expires it after
+    ``_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL``. A fresh catalog a concurrent probe just stored is kept, and the
+    max cache is left alone so an observed cap survives."""
+    now = time.time()
+    current = _codex_oauth_context_cache.get(cache_key)
+    if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+        return
+    _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
+
+
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
     fingerprint (windows vary by entitlement); ``max_context_window`` lands in
@@ -1873,9 +1887,11 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         )
         if status != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
+            _remember_no_codex_catalog(cache_key)
             return {}, False
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
+        _remember_no_codex_catalog(cache_key)
         return {}, False
     result: Dict[str, int] = {}
     max_result: Dict[str, int] = {}
@@ -1885,10 +1901,12 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
             result[slug.strip()] = ctx
             if isinstance(max_ctx, int) and max_ctx > 0:
                 max_result[slug.strip()] = max_ctx
-    if result:
-        # Max first: a reader that sees the fresh context entry must also see its cap.
-        _codex_oauth_max_context_cache[cache_key] = max_result
-        _codex_oauth_context_cache[cache_key] = (result, now)
+    if not result:
+        _remember_no_codex_catalog(cache_key)
+        return {}, False
+    # Max first: a reader that sees the fresh context entry must also see its cap.
+    _codex_oauth_max_context_cache[cache_key] = max_result
+    _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
 
 

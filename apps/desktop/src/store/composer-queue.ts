@@ -327,17 +327,8 @@ const sidOf = (key: string | null | undefined): null | string => {
   return trimmed ? trimmed : null
 }
 
-const queueFor = (sid: string) => {
-  const current = $queuedPromptsBySession.get()
-  const migrated = migrateLegacyQueueState(current)
-
-  if (migrated.changed) {
-    $queuedPromptsBySession.set(migrated.state)
-    save(migrated.state)
-  }
-
-  return migrated.state[sid] ?? []
-}
+// A plain read: every writer of the atom stores state that `load()` already migrated.
+const queueFor = (sid: string) => $queuedPromptsBySession.get()[sid] ?? []
 
 const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 

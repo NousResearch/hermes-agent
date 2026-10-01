@@ -135,49 +135,36 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts('rt-new')[0]?.envelope).toEqual(envelope)
   })
 
-  it('migrates legacy persisted entries with queuedAt as authored time and saves the envelope', async () => {
-    const queuedAt = 1_790_594_548_125
-    window.localStorage.setItem(
-      QUEUE_STORAGE_KEY,
-      JSON.stringify({
-        'legacy-session': [{ id: 'legacy-q', text: 'legacy queue', attachments: [], queuedAt }]
-      })
-    )
-    vi.resetModules()
-
-    const reloaded = await import('./composer-queue')
-    const migrated = reloaded.getQueuedPrompts('legacy-session')[0]
-
-    const persisted = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!) as Record<
-      string,
-      Array<{ envelope?: { clientMessageId: string; submittedAt: number } }>
-    >
-
-    expect(migrated?.envelope).toEqual({
-      clientMessageId: expect.any(String),
-      submittedAt: queuedAt / 1000
-    })
-    expect(persisted['legacy-session']?.[0]?.envelope).toEqual(migrated?.envelope)
-  })
-
-  it('migrates legacy in-memory entries before drain and persists the remaining queue', () => {
+  it('migrates legacy persisted entries with queuedAt as authored time, saves the envelope and drains it', async () => {
     const entries = [
       { id: 'legacy-head', text: 'first', attachments: [], queuedAt: 1_790_594_548_125 },
       { id: 'legacy-next', text: 'second', attachments: [], queuedAt: 1_790_594_549_250 }
     ]
 
-    $queuedPromptsBySession.set({ 'legacy-drain': entries })
-    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ 'legacy-drain': entries }))
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ 'legacy-session': entries }))
+    vi.resetModules()
 
-    const drained = dequeueQueuedPrompt('legacy-drain')
+    const reloaded = await import('./composer-queue')
+    const [head, next] = reloaded.getQueuedPrompts('legacy-session')
 
-    const persisted = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!) as Record<
-      string,
-      Array<{ envelope?: { clientMessageId: string; submittedAt: number } }>
-    >
+    const readPersisted = () =>
+      JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!) as Record<
+        string,
+        Array<{ envelope?: { clientMessageId: string; submittedAt: number } }>
+      >
 
-    expect(drained?.envelope).toMatchObject({ submittedAt: entries[0].queuedAt / 1000 })
-    expect(persisted['legacy-drain']?.[0]?.envelope).toMatchObject({ submittedAt: entries[1].queuedAt / 1000 })
+    expect(head?.envelope).toEqual({
+      clientMessageId: expect.any(String),
+      submittedAt: entries[0].queuedAt / 1000
+    })
+    expect(readPersisted()['legacy-session']?.map(entry => entry.envelope)).toEqual([head?.envelope, next?.envelope])
+
+    // The drain hands out the identity the reload minted, not a fresh one.
+    expect(reloaded.dequeueQueuedPrompt('legacy-session')?.envelope).toEqual(head?.envelope)
+    expect(readPersisted()['legacy-session']?.[0]?.envelope).toEqual({
+      clientMessageId: next?.envelope?.clientMessageId,
+      submittedAt: entries[1].queuedAt / 1000
+    })
   })
 
   it('queues prompts in FIFO order', () => {

@@ -375,12 +375,6 @@ class GatewayInboundContextMixin:
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
-        if "@" in message_text:
-            expanded_message_text = await self._expand_inbound_context_references(source, session_key, message_text)
-            if expanded_message_text is None:
-                return None
-            message_text = expanded_message_text
-
         adapter = self._intake_adapter_for(source)
         context_snapshot = None
         fetch_inbound_context = getattr(type(adapter), "fetch_inbound_context", None)
@@ -389,6 +383,12 @@ class GatewayInboundContextMixin:
             context_snapshot.use_turn_context(await turn_context_update(
                 self, event=event, source=source, session_key=session_key, history=history,
             ))
+        if "@" in message_text:
+            expanded_message_text = await self._expand_inbound_context_references(source, session_key, message_text)
+            if expanded_message_text is None:
+                return None
+            message_text = expanded_message_text
+
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         media_event = context_snapshot.media_event(event) if context_snapshot is not None else event
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(media_event, _pending_stt_prepared)

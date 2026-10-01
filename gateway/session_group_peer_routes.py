@@ -25,6 +25,7 @@ import hashlib
 import logging
 
 from gateway import hosted_room_links as links
+from gateway import session_group_peer_cleanup as cleanup
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -77,11 +78,18 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
             raise RuntimeStoreError('peer_target_mismatch')
         replaced = previous.grant if previous is not None and previous.grant != route.grant else None
         if replaced is not None and not renewal:
+            cleanup.retain(service.db_path, previous)
             _retire(client, replaced)
+        def publication_fence(conn):
+            if authorize is not None:
+                authorize(conn)
+            if replaced is not None:
+                cleanup.retain(service.db_path, previous, conn=conn)
+            cleanup.release(conn, route.grant)
         service._save_link(
             room_id=room_id, member_id=member_id, target_url=target_url, target_profile=route.target_profile,
             grant=route.grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
-            trace_id=route.trace_id, authorize=authorize)
+            trace_id=route.trace_id, authorize=publication_fence)
         service._publish_route((room_id, member_id), route, client)
         if not renewal:  # an operator's new grant is scheduled afresh, not after the old one's
             getattr(service, '_peer_renewals', {}).pop((room_id, member_id), None)
@@ -146,6 +154,7 @@ class CanonicalPeerClient:
         self._renewal_lease = renewal_lease  # a maintenance renewal publishes only under this lease
         self._members = service._room(binding.room_id)['members']
         self._grant = route.grant  # this attempt's grant: its own renewal, or an adopted one
+        self._stored_link = links.load_room_link(service.db_path, room_id=key[0], member_id=key[1])
 
     def __getattr__(self, name):
         value = getattr(self._client, name)
@@ -246,6 +255,11 @@ class CanonicalPeerClient:
         if not replacement:
             raise RuntimeError('peer returned no refreshed room grant')
         try:
+            stored = self._stored_link
+            if stored is None:
+                raise RuntimeStoreError('peer_target_mismatch')
+            # The route may have been deleted during refresh; its captured target still owns cleanup.
+            cleanup.retain(self._service.db_path, replace(stored, grant=replacement))
             self._verify_renewal(grant, replacement)
             if refreshed.get('catalog') is not None:
                 from gateway.hosted_room_peer import GatewayRoomCatalog
@@ -257,9 +271,6 @@ class CanonicalPeerClient:
                 if drift is not None:
                     self._status('needs_reauthorization', grant)
                     raise drift
-            stored = links.load_room_link(self._service.db_path, room_id=self._key[0], member_id=self._key[1])
-            if stored is None:
-                raise RuntimeStoreError('peer_target_mismatch')
             publish_route(self._service, room_id=self._key[0], member_id=self._key[1],
                           route=replace(self._route, grant=replacement), client=self._client,
                           target_url=stored.target_url, catalog=stored.catalog,
@@ -268,7 +279,7 @@ class CanonicalPeerClient:
             try:
                 _retire(self._client, replacement)
             except Exception:
-                pass  # the refusal below still stands; the unpublished grant expires on its own
+                pass  # the durable obligation retries after restart as well
             raise
         self._grant = replacement
         return replacement

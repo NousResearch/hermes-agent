@@ -157,6 +157,18 @@ _SCHEMA_DDL = (
             PRIMARY KEY (scope_key, token_sha256)
         )""")
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
+_SCHEMA_DDL += ("""CREATE TABLE IF NOT EXISTS hosted_room_peer_cleanup (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)""", """CREATE TABLE IF NOT EXISTS hosted_room_grant_refresh_receipts (
+    request_key TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    issued_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    status INTEGER,
+    body BLOB
+)""",)
+
 _REQUIRED_COLUMNS = tuple(
     (re.search(r"EXISTS (\w+)", ddl).group(1),
      frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.M))) for ddl in _SCHEMA_DDL)
@@ -823,7 +835,9 @@ def reserve_peer_room(
                    updated_at=excluded.updated_at""", (*values, expiry, timestamp, timestamp))
 
 
-def _read_one(db_path: DbPath, sql: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
+def _read_one(db_path: DbPath, sql: str, params: tuple[Any, ...], *, conn=None) -> sqlite3.Row | None:
+    if conn is not None:
+        return conn.execute(sql, params).fetchone()
     with _transaction(db_path) as conn:
         return conn.execute(sql, params).fetchone()
 
@@ -834,30 +848,31 @@ def peer_room_is_reserved(db_path: DbPath, *, room_id: str, target_profile: str,
     return _read_one(db_path, _SELECT_LIVE_RESERVATION, params) is not None
 
 
-def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None,
+                               conn=None) -> bool:
     """Require a grant to match the target's current live reservation."""
     timestamp = _now(now)
     return _read_one(
         db_path, """SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=?
             AND target_profile=? AND authority_gateway_id=? AND authority_epoch=?
-            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp)) is not None
+            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp), conn=conn) is not None
 
 
 def room_grant_is_revoked(
     db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None,
-    token_sha256: str | None = None) -> bool:
+    token_sha256: str | None = None, conn=None) -> bool:
     """Return whether a grant predates its scope's revocation fence, or was itself revoked exactly."""
     timestamp = _now(now)
     scope_key = _room_grant_scope_key(claims)
     if token_sha256 is not None and _read_one(
             db_path, """SELECT 1 FROM hosted_room_revoked_grant_tokens
                 WHERE scope_key=? AND token_sha256=? AND expires_at>?""",
-            (scope_key, token_sha256, timestamp)) is not None:
+            (scope_key, token_sha256, timestamp), conn=conn) is not None:
         return True
     issued_at = float(claims.get("issued_at") or 0)
     row = _read_one(
         db_path, """SELECT revoked_before FROM hosted_room_revoked_grants
-            WHERE scope_key=? AND expires_at>?""", (scope_key, timestamp))
+            WHERE scope_key=? AND expires_at>?""", (scope_key, timestamp), conn=conn)
     return row is not None and issued_at <= float(row["revoked_before"])
 
 

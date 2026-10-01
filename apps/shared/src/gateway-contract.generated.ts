@@ -1370,6 +1370,7 @@ export interface RoomDriverStatus {
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
   peer_routes: PeerRouteStatus[]
+  peer_cleanup?: Record<string, unknown>[] | null
 }
 export interface PeerRouteStatus {
   room_id: string

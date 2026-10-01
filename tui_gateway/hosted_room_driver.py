@@ -746,6 +746,15 @@ class HostedRoomRuntime:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
+            if (transport is not self.rpc and info.get("status") == "cancelled"
+                    and info.get("task_id") == task["identity"].task_id
+                    and info.get("execution_generation") == task["execution_generation"]):
+                # Exact target evidence: cessation was observed, not inferred from sending Stop.
+                cancelled = state.begin_task_cancel(
+                    self.db_path, task["identity"], clock=self.clock,
+                    cancel_id=f"remote-cancel:{task['execution_generation']}")
+                self._complete_cancel(cancelled)
+                return None
             lease = self._maintain_room(binding, lease)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             self._wake.wait(min(self.active_poll_interval_seconds, remaining))

@@ -870,6 +870,16 @@ export interface Translations {
       allBrands: string
       limitsTitle: string
       limitsBody: string
+      usageTotal: string
+      usageInput: string
+      usageOutput: string
+      usageCache: string
+      usageReasoning: string
+      usageCost: string
+      usageChats: (count: number) => string
+      usageModels: string
+      usageEmpty: string
+      usageUnavailable: string
       signOut: string
       signIn: string
       signedOut: string

@@ -763,6 +763,37 @@ method("session.events.stats", params=SessionEventsStatsParams, result=SessionEv
        doc="Replay-buffer occupancy telemetry (ops/debug).")
 
 
+class UsageSummaryParams(ProfileParams):
+    """All chats on this desktop profile. No filter: archived and child sessions count too."""
+
+
+class UsageModelTotal(Result):
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0
+
+
+class UsageSummaryResult(Result):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0
+    chat_count: int = 0
+    models: list[UsageModelTotal] = Field(default_factory=list)
+
+
+method("usage.summary", params=UsageSummaryParams, result=UsageSummaryResult,
+       doc="Token totals across every stored chat on this profile.")
+
+
 # ── one-shot LLM ──────────────────────────────────────────────────────────────────────────────
 
 

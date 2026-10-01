@@ -226,7 +226,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         target_install_id=hosted_rooms.local_authority_gateway_id(), target_profile='default',
         issued_at=now, ttl_seconds=300, status_expires_at=now + 1000)
     claims = decode_room_grant(api._room_grant_secret(), grant, permission='status')
-    hosted_rooms.reserve_peer_room(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+    hosted_rooms.reserve_peer_room(owner.db.db_path, claims=claims, expires_at=now + 1000)
     headers = {'Authorization': f'HermesRoom {grant}'}
     admitted = admit_api_turn(api, session_id='room-clarify', request_id='run_room', user_message='hello',
                               conversation_history=[])
@@ -258,7 +258,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         assert (await answered.json())['status'] == 'resolved'
         await asyncio.wait_for(run, timeout=10)
         assert api._run_statuses['run_room']['output'] == 'b'
-        hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+        hosted_rooms.revoke_room_grant_scope(owner.db.db_path, claims=claims, expires_at=now + 1000)
         denied = await client.post('/v1/runs/run_room/clarify', json=body, headers=headers)
         assert denied.status == 403
         assert (await denied.json())['error']['code'] == 'room_reauthorization_required'

@@ -1205,9 +1205,14 @@ class GatewayNotificationsMixin:
         from gateway.wake import deliver_wake, persist_delegation_delivery
         scope = contextlib.nullcontext()
         if evt.get("type") == "async_delegation":
-            info = "Async delegation completion — persisting delivery row for api_server session %s (no wake turn)"
-            fail = "Async delegation delivery persist failed for session %s: %s"
-            deliver = lambda: persist_delegation_delivery(adapter, text=synth_text, session_id=raw_sid, evt=evt)  # noqa: E731
+            if self._delegation_completion_wake_allowed(adapter, raw_sid):
+                info = "Async delegation completion — waking api_server session %s (delegation_completion_wake)"
+                fail = "Async delegation wake failed for session %s: %s"
+                deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid)  # noqa: E731
+            else:
+                info = "Async delegation completion — persisting delivery row for api_server session %s (no wake turn)"
+                fail = "Async delegation delivery persist failed for session %s: %s"
+                deliver = lambda: persist_delegation_delivery(adapter, text=synth_text, session_id=raw_sid, evt=evt)  # noqa: E731
         else:
             info = "Watch pattern notification — waking api_server session %s via self-post"
             fail = "Watch notification self-post wake failed for session %s: %s"
@@ -1233,6 +1238,20 @@ class GatewayNotificationsMixin:
         except Exception as e:
             logger.warning(fail, raw_sid, e)
             return False
+
+    def _delegation_completion_wake_allowed(self, adapter, raw_sid: str) -> bool:
+        """True when an async-delegation completion may start a wake turn on *raw_sid*: the
+        ``gateway.delegation_completion_wake`` opt-in AND an idle session (no live run, no pending
+        approval gate — the #85957 concern). Anything ambiguous keeps the durable persist row."""
+        if not self._delegation_wake_enabled():
+            return False
+        try:
+            from gateway.platforms.api_server_runs import session_has_live_run
+            live = session_has_live_run(adapter, raw_sid)
+        except Exception:
+            logger.warning("delegation_completion_wake: live-run check failed for session %s — persisting instead", raw_sid)
+            return False
+        return not live
 
     def _served_api_server_wake_profile(self, evt: dict, raw_sid: str) -> Optional[str]:
         """The served (non-primary) profile whose own session store holds *raw_sid*, else ``None``

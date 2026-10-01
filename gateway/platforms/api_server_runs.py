@@ -962,6 +962,17 @@ def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
             unregister_gateway_notify(approval_session_key)
 
 
+def session_has_live_run(self, session_id: str) -> bool:
+    """True while any run for *session_id* is queued/executing or holds an approval gate —
+    the idle-check behind ``gateway.delegation_completion_wake`` (#85957 persist-only fallback)."""
+    for run_id, status in list(self._run_statuses.items()):
+        if status.get("session_id") != session_id:
+            continue
+        if status.get("status") in ("running", "queued") or run_id in self._run_approval_sessions:
+            return True
+    return False
+
+
 def _release_run_owner_if_forgotten(self, run_id: str) -> None:
     """Drop the owner stamp only once nothing keyed by *run_id* survives: ownership must
     outlive every surface it protects (retired on different clocks); ownerless = fail-closed."""

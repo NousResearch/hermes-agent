@@ -474,6 +474,16 @@ class GatewayConfigLoadersMixin:
         return DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT
 
     @staticmethod
+    def _delegation_wake_enabled() -> bool:
+        """Opt-in ``gateway.delegation_completion_wake``: wake the session when an async-delegation
+        batch completes (default off). #85957 keeps api_server completions persist-only because an
+        external client owns the next turn; a personal single-user gateway (browser WebUI chat)
+        wants the messaging behaviour — the parent resumes on completion without a user prompt.
+        Only activates on an IDLE session; a live run or approval gate keeps the durable row."""
+        from gateway.run import _load_gateway_config
+        return bool(cfg_get(_load_gateway_config(), "gateway", "delegation_completion_wake", default=False))
+
+    @staticmethod
     def _load_background_notifications_mode() -> str:
         """Background process notification mode from env/config (default ``concise``), resolved for
         the AMBIENT profile — callers deciding for another profile's event enter its scope first

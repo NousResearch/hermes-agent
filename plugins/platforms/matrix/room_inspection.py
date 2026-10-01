@@ -441,6 +441,11 @@ async def _change_pin_state(
 
     dispatched = False
     try:
+        if recheck_before_write is not None:
+            try:
+                await recheck_before_write()
+            except ValueError as exc:
+                return {"error": str(exc)}
         state = await _state(context, "m.room.pinned_events") or {}
         permissions = await _permissions(context)
         actor, required = permissions["requester"], permissions["required"]["edit_pins"]
@@ -462,12 +467,11 @@ async def _change_pin_state(
         if updated == pinned:
             return {"pinned": event_ids, "unchanged": True}
 
-        if recheck_before_write is not None:
-            try:
-                await recheck_before_write()
-            except ValueError as exc:
-                return {"error": str(exc)}
-        if interrupt_check():
+        try:
+            interrupted = interrupt_check()
+        except ValueError as exc:
+            return {"error": str(exc)}
+        if interrupted:
             return {"error": "Matrix pin update interrupted"}
 
         before_write()

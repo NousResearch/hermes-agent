@@ -1,4 +1,4 @@
-"""``hermes governor`` subcommand parser: certified context-engine key lifecycle."""
+"""``hermes governor`` subcommand parser: context-engine key lifecycle."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ def build_governor_parser(subparsers, *, cmd_governor: Callable) -> None:
     """Attach the ``governor`` subcommand group."""
     parser = subparsers.add_parser(
         "governor",
-        help="Certified context engine (ri-context-governor) key lifecycle",
+        help="Context-governor engine (ri-context-governor) key lifecycle",
         description=(
             "Initialize, inspect, and rotate the governed HMAC key used by the "
             "receipt-carrying context engine (exact-fallback recovery + lineage).\n\n"

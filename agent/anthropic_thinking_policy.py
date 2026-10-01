@@ -18,7 +18,9 @@ from agent.anthropic_endpoints import (
 
 
 _CLAUDE_VERSION_RE = re.compile(
-    r"claude[-_.](opus|sonnet|fable|mythos)[-_.](\d+)(?:[-_.](\d+))?",
+    # Semantic minors are short version components. Snapshot dates such as
+    # claude-opus-4-20250514 must remain 4.0 rather than becoming 4.20250514.
+    r"claude[-_.](opus|sonnet|fable|mythos)[-_.](\d+)(?:[-_.](\d{1,2})(?=$|[-_.]))?",
     re.IGNORECASE,
 )
 

@@ -2248,7 +2248,12 @@ describe('usePromptActions submit / queue drain semantics', () => {
         promptCalls.push(params ?? {})
 
         if ('submitted_at' in (params ?? {})) {
-          throw new Error('invalid params: submitted_at and client_message_id are extra inputs not permitted')
+          // tui_gateway/contracts/registry.py::validate_params, answered as 4000 by rpc_dispatch.
+          throw new JsonRpcGatewayError(
+            'invalid params for prompt.submit: submitted_at: Extra inputs are not permitted — the client and the ' +
+              'Hermes backend are out of sync (different versions); run `hermes update` and restart both',
+            { code: 4000 }
+          )
         }
       }
 

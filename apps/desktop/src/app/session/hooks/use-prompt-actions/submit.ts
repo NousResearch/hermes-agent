@@ -1,4 +1,4 @@
-import type { PromptSubmitResult } from '@hermes/shared'
+import { JsonRpcGatewayError, type PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -111,15 +111,12 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   setMessages
 }
 
-const promptEnvelopeFieldsUnsupported = (error: unknown): boolean => {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return (
-    /invalid params/i.test(message) &&
-    /(submitted_at|client_message_id)/i.test(message) &&
-    /(extra|not permitted|out of sync)/i.test(message)
-  )
-}
+// 4000 is the dispatcher's unknown-key contract rejection
+// (tui_gateway/contracts/registry.py::validate_params); its message names the key.
+const promptEnvelopeFieldsUnsupported = (error: unknown): boolean =>
+  error instanceof JsonRpcGatewayError &&
+  error.code === 4000 &&
+  /\b(submitted_at|client_message_id)\b/.test(error.message)
 
 export interface ResumedRuntimeBindingDeps {
   activeSessionIdRef: MutableRefObject<string | null>

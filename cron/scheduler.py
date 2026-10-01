@@ -2154,14 +2154,13 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def _run_doc_header(job: dict, title: str, job_id: str, prompt: str, *, frame_prompt: bool = False) -> str:
+def _normalize_newlines(text: str) -> str:
+    """CRLF/CR -> LF, matching what text-mode reads of the archive return."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _run_doc_header(job: dict, title: str, job_id: str, prompt: str, *, prompt_stamp: str = "") -> str:
     """Header of the persisted run document (title, ids, schedule, prompt)."""
-    prompt_stamp = ""
-    if frame_prompt:
-        # Text-file reads normalize newlines. Count the same logged characters
-        # so quoted response markers inside the prompt cannot become boundaries.
-        prompt = prompt.replace("\r\n", "\n").replace("\r", "\n")
-        prompt_stamp = f"**Prompt Characters:** {len(prompt)}\n"
     return (
         f"# Cron Job: {title}\n\n"
         f"**Job ID:** {job_id}\n"
@@ -2545,11 +2544,14 @@ def run_job(
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        # Readers normalize line endings; count the same characters they read.
-        logged_response = logged_response.replace("\r\n", "\n").replace("\r", "\n")
+        # Text-file reads normalize newlines; count the same characters the
+        # context_from reader sees so quoted markers can never become boundaries.
+        framed_prompt = _normalize_newlines(prompt)
+        logged_response = _normalize_newlines(logged_response)
         output = (
-            _run_doc_header(job, job_name, job_id, prompt, frame_prompt=True)
-            + f"**Response Characters:** {len(logged_response)}\n## Response\n\n"
+            _run_doc_header(job, job_name, job_id, framed_prompt,
+                            prompt_stamp=f"{_PROMPT_FRAME}{len(framed_prompt)}\n")
+            + f"{_RESPONSE_FRAME}{len(logged_response)}\n## Response\n\n"
             + f"{logged_response}\n"
         )
         logger.info("Job '%s' completed successfully", job_name)
@@ -4293,7 +4295,8 @@ from cron.scheduler_script import (  # noqa: E402
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (  # noqa: E402
-    _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil, _parse_wake_gate,
+    _PROMPT_FRAME, _RESPONSE_FRAME, _block_and_pause_job, _build_job_prompt,
+    _guard_job_credential_exfil, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

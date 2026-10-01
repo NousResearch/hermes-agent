@@ -42,6 +42,21 @@ def _write_archive(cron_env, job_id: str, filename: str, body: str) -> None:
     (out_dir / filename).write_text(body, encoding="utf-8")
 
 
+def _run_stub_job(monkeypatch, job, answer):
+    """Run ``job`` through the real writer with a stub agent returning ``answer``."""
+    class Agent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": answer, "completed": True, "failed": False}
+
+    monkeypatch.setattr(run_agent, "AIAgent", Agent)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
+    return cron.scheduler.run_job(job)
+
+
 class TestResponseSurvivesLongPrompt:
     """The answer, not the prompt, is the part continuity needs."""
 
@@ -93,13 +108,14 @@ class TestScriptModeArchives:
         from cron.scheduler_prompt import _inject_context_from
 
         job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
-        _write_archive(cron_env, job["id"], "2026-09-19_08-00-00.md", "plain script payload\nline two")
+        _write_archive(cron_env, job["id"], "2026-09-19_08-00-00.md",
+                       "\n\nplain script payload\nline two\n\n")
 
         prompt, injected = _inject_context_from(job, "Report")
 
         assert injected is True
-        assert "plain script payload" in prompt
-        assert "line two" in prompt
+        # Whole document, but trimmed like every other archive answer.
+        assert "```\nplain script payload\nline two\n```" in prompt
 
 
 def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatch):
@@ -108,19 +124,9 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
 
     answer = "摘要 before heading\r\n\r\n## Response\nsubsection\n**Response Characters:** 4\n## Response\n\nbody\n\n  "
 
-    class Agent:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def run_conversation(self, *args, **kwargs):
-            return {"final_response": answer, "completed": True, "failed": False}
-
-    monkeypatch.setattr(run_agent, "AIAgent", Agent)
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
-                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
     job = create_job(prompt="Original prompt noise\r\n**Response Characters:** 4\n## Response\n\nbody",
                      schedule="0 8 * * *", context_from="self")
-    success, archive, final, error = cron.scheduler.run_job(job)
+    success, archive, final, error = _run_stub_job(monkeypatch, job, answer)
     assert success, error
     assert final == answer
     save_job_output(job["id"], archive)
@@ -141,18 +147,8 @@ def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, mon
               f"**Response Characters:** {len(quoted)}\n## Response\n\n{quoted}"
               + suffix)
 
-    class Agent:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def run_conversation(self, *args, **kwargs):
-            return {"final_response": answer, "completed": True, "failed": False}
-
-    monkeypatch.setattr(run_agent, "AIAgent", Agent)
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
-                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
     job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
-    success, archive, final, error = cron.scheduler.run_job(job)
+    success, archive, final, error = _run_stub_job(monkeypatch, job, answer)
     assert success, error
     assert final == answer
     save_job_output(job["id"], archive)

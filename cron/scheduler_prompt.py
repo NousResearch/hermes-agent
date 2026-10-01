@@ -63,16 +63,33 @@ _UPSTREAM_CONTEXT_INTRO = (
     "your analysis."
 )
 
+# Run-document length frames. The writer (``cron.scheduler.run_job``) stamps
+# these labels; the reader below parses them. Defined here (not in scheduler.py)
+# because this module binds ``_sched`` only at import tail, so module-level
+# patterns cannot be built from scheduler attributes without an import cycle.
+_PROMPT_FRAME = "**Prompt Characters:** "
+_RESPONSE_FRAME = "**Response Characters:** "
+_PROMPT_HEADING = "## Prompt\n\n"
+_RESPONSE_HEADING = "## Response\n\n"
+_PROMPT_SEPARATOR = "\n\n"  # writer's blank line after the prompt body
+_RESPONSE_TERMINATOR = "\n"  # writer's trailing newline after the response body
+_PROMPT_FRAME_RE = re.compile(
+    rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
+_RESPONSE_FRAME_RE = re.compile(
+    rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
+
 
 def _archive_answer(archive: str) -> str | None:
-    """The reusable answer of a stored run, using its frame when available.
+    """The reusable answer of a stored run, using its length frame when available.
 
-    Framed runs validate the response length before whitespace normalization.
-    Archives without the heading (script-mode runs) stay whole-document. For legacy
-    archives without a frame, the LAST
-    occurrence is the writer's boundary — the assembled prompt half can itself carry
-    the literal heading (a skill documenting its response format, an injected previous
-    answer quoting it), so an early split would re-inject the prompt noise this
+    Framed runs (``_PROMPT_FRAME``/``_RESPONSE_FRAME`` stamps) validate the
+    response length before whitespace normalization, so quoted frames inside the
+    prompt or answer can never become boundaries and a truncated write is
+    rejected. Archives without the heading (script-mode runs) stay whole-document.
+    For legacy unframed archives the LAST ``## Response`` occurrence is the
+    writer's boundary — the assembled prompt half can itself carry the literal
+    heading (a skill documenting its response format, an injected previous answer
+    quoting it), so an early split would re-inject the prompt noise this
     extraction exists to drop.
     ``None`` marks "no usable answer" — a blank or silent response (any form the
     delivery lane itself suppresses) — so the caller falls through to an older
@@ -80,19 +97,19 @@ def _archive_answer(archive: str) -> str | None:
     """
     # New writers stamp the prompt length outside user-owned text. Jump past
     # that prompt instead of searching its quoted markers for a response frame.
-    prompt_frame = re.search(r"(?m)^\*\*Prompt Characters:\*\* (\d+)\n## Prompt\n\n", archive)
+    prompt_frame = _PROMPT_FRAME_RE.search(archive)
     if (prompt_frame is not None
-            and archive.find("## Prompt\n\n") == prompt_frame.end() - len("## Prompt\n\n")):
-        response_start = prompt_frame.end() + int(prompt_frame.group(1)) + 2
-        frame = re.compile(r"(?m)^\*\*Response Characters:\*\* (\d+)\n## Response\n\n").match(
-            archive, response_start)
+            and archive.find(_PROMPT_HEADING) == prompt_frame.end() - len(_PROMPT_HEADING)):
+        response_start = prompt_frame.end() + int(prompt_frame.group(1)) + len(_PROMPT_SEPARATOR)
+        frame = _RESPONSE_FRAME_RE.match(archive, response_start)
         tail = archive[frame.end():] if frame is not None else ""
         # A missing or truncated writer-owned boundary is unusable.
-        if frame is None or len(tail) != int(frame.group(1)) + 1 or not tail.endswith("\n"):
+        if (frame is None or len(tail) != int(frame.group(1)) + len(_RESPONSE_TERMINATOR)
+                or not tail.endswith(_RESPONSE_TERMINATOR)):
             return None
-        answer = tail[:-1].strip()
+        answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
     elif "## Response" not in archive:
-        return archive
+        return archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):
@@ -148,7 +165,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if not candidate.strip() or silent_audit:
+                if not candidate or candidate.isspace() or silent_audit:
                     continue
                 answer = _archive_answer(candidate)
                 if answer is None:

@@ -433,6 +433,8 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
             logger.warning("Signal: rate-limited on batch %d/%d (attempt %d/%d, server retry_after=%s); "
                            "scheduler will pace the retry",
                            idx + 1, n_batches, attempt, max_attempts, retry_after_label)
+        except OSError as e:
+            return _error(f"Signal attachment staging failed: {e}")
         except Exception as e:
             if attempt >= max_attempts:
                 logger.error("Signal: send error on batch %d/%d after %d attempts: %s",

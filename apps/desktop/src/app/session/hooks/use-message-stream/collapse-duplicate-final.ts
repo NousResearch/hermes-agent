@@ -138,8 +138,9 @@ export function collapseDuplicateFinalOntoIdenticalInterim(
     finalText: string
   }
 ): DuplicateFinalCollapse | null {
-  // A non-negative interimIndex already implies a non-empty finalText and no failure.
-  if (streamIndex < 0 || interimIndex < 0 || chatMessageText(messages[streamIndex]).trim() !== options.finalText) {
+  // Callers pass a live streamIndex; a non-negative interimIndex already implies
+  // a non-empty finalText and no failure.
+  if (interimIndex < 0 || chatMessageText(messages[streamIndex]).trim() !== options.finalText) {
     return null
   }
 

@@ -479,6 +479,32 @@ def test_a_stop_during_worker_publication_emits_a_terminal_frame(
         "terminal": [({"message": "Turn cancelled before the agent started"},)],
     }
 
+
+def test_a_fresh_personal_delivery_clears_the_previous_stop_latch(monkeypatch, turn_env):
+    session = _idle_session()
+    session.update(_turn_claim=1, _turn_cancel_requested=True)
+    _bot_delivery(monkeypatch, session)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+
+    def prepare(_sid, _session, _st, text, _images):
+        turn_env.ran.append(text)
+        return None
+
+    monkeypatch.setattr(server, "_prepare_turn_input", prepare)
+    server._sessions[SID] = session
+    try:
+        started = server._poll_bot_live_delivery_once(SID, session)
+        turn_env.join_all()
+        outcome = {
+            "started": started, "claim": session["_turn_claim"],
+            "cancelled": session.get("_turn_cancel_requested"), "ran": turn_env.ran,
+        }
+    finally:
+        turn_env.finish.set()
+        turn_env.join_all()
+        server._sessions.pop(SID, None)
+    assert outcome == {"started": True, "claim": 2, "cancelled": False, "ran": ["delivery"]}
+
 def test_a_replaced_worker_keeps_the_successor_input_mark(monkeypatch, turn_env):
     session = _idle_session()
     entered, release = threading.Event(), threading.Event()

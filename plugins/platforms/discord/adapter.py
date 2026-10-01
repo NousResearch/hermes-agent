@@ -1591,6 +1591,14 @@ class DiscordAdapter(DiscordPlatformEventsMixin, DiscordInboundContextMixin, Dis
                 await adapter_self._on_platform_message_delete(message)
 
             @self._client.event
+            async def on_raw_message_delete(payload):
+                await adapter_self._on_raw_message_delete(payload)
+
+            @self._client.event
+            async def on_raw_bulk_message_delete(payload):
+                await adapter_self._on_raw_bulk_message_delete(payload)
+
+            @self._client.event
             async def on_thread_create(thread):
                 await adapter_self._on_platform_thread_create(thread)
 

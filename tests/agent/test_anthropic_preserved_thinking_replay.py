@@ -573,3 +573,175 @@ def test_usage_anchor_still_overrides_projected_rough_pressure(monkeypatch):
     assert assembled.approx_tokens > 1000
     assert assembled.request_pressure_tokens == 1234
     assert agent._request_pressure_anchored is True
+
+
+def _session_db(tmp_path, *session_ids):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    for session_id in session_ids:
+        db.create_session(session_id, source="cli", model="claude-opus-4-6")
+    return db
+
+
+def _session_agent(db, session_id):
+    agent = _assembly_agent(db)
+    agent.session_id = session_id
+    agent.log_prefix = ""
+    agent._vprint = lambda *args, **kwargs: None
+    return agent
+
+
+def _reject_signatures(agent, history):
+    """Drive the production signature-rejection recovery on a request copy of ``history``."""
+    from agent.error_classifier import FailoverReason
+    from agent.turn_recovery import _recover_format_errors
+    from agent.turn_retry_state import TurnRetryState
+
+    assert _recover_format_errors(
+        agent,
+        RuntimeError("Invalid signature in thinking block"),
+        SimpleNamespace(reason=FailoverReason.thinking_signature),
+        TurnRetryState(),
+        history,
+        copy.deepcopy(history),
+    )
+
+
+def _request_and_wire(agent, history):
+    from agent.turn_context import build_api_messages
+
+    api_messages, _ = build_api_messages(
+        agent,
+        copy.deepcopy(history),
+        current_turn_user_idx=len(history) - 1,
+        ext_prefetch_cache="",
+        plugin_user_context="",
+        moa_config=None,
+        active_system_prompt="",
+    )
+    _, wire = convert_messages_to_anthropic(
+        copy.deepcopy(api_messages), base_url=agent.base_url, model=agent.model
+    )
+    blocks = [
+        block
+        for message in wire
+        if message["role"] == "assistant" and isinstance(message["content"], list)
+        for block in message["content"]
+        if isinstance(block, dict) and block.get("type") in {"thinking", "redacted_thinking"}
+    ]
+    return api_messages, blocks
+
+
+@pytest.mark.parametrize(
+    "boundary", ["rebuild", "session_switch", "compression_child", "unfingerprintable", "kimi_route"]
+)
+def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(tmp_path, boundary):
+    """Invariant: once Anthropic rejects a signature, every later request in that conversation
+    replays exactly the never-rejected signed thinking, whatever lifetime boundary it crosses.
+    Routes Anthropic does not sign for keep their own replay contract."""
+    from agent.conversation_compression import _carry_session_state_to_child
+
+    db = _session_db(tmp_path, "s1", "s2")
+    agent = _session_agent(db, "s1")
+    if boundary == "kimi_route":
+        agent.base_url, agent.model = "https://api.kimi.com/coding", "kimi-k2.5"
+    rejected = _signed_turn("Q1", "A1", "sig_rejected_1") + _signed_turn("Q2", "A2", "sig_rejected_2")
+    if boundary == "unfingerprintable":
+        rejected = [{"role": "user", "content": "Q1"}, {"role": "assistant", "content": "A1"}]
+    _reject_signatures(agent, rejected)
+    reader = agent
+
+    if boundary == "rebuild":
+        reader = _session_agent(db, "s1")  # fresh process on the same session
+    elif boundary == "session_switch":
+        # s2 was rejected by an earlier process; the live agent then resumes s2.
+        rejected = _signed_turn("Q1", "A1", "sig_rejected_s2")
+        _reject_signatures(_session_agent(db, "s2"), rejected)
+        agent.session_id = "s2"
+    later = (
+        rejected
+        + _signed_turn("Q3", "A3", "sig_kept")
+        + _signed_turn("Q4", "A4", "sig_new")
+        + [{"role": "user", "content": "continue"}]
+    )
+    if boundary == "compression_child":
+        # Rotation publishes the child with the session's initial model_config, then carries
+        # per-session state; the child's retained tail still holds the rejected rows.
+        db.publish_compression_child(
+            parent_session_id="s1", child_session_id="s1-child", source="cli",
+            model=agent.model, model_config={}, messages=later[2:], require_compression_lease=False,
+        )
+        agent.session_id = "s1-child"
+        _carry_session_state_to_child(agent, "s1", None)
+        reader = _session_agent(db, "s1-child")  # resume the child in a fresh process
+        later = later[2:]
+
+    _, wire_blocks = _request_and_wire(reader, later)
+    replayed = ["sig_kept", "sig_new"]
+    if boundary == "kimi_route":  # one-request repair only; Kimi replays its history as-is
+        replayed = ["sig_rejected_1", "sig_rejected_2"] + replayed
+    assert [block.get("signature") for block in wire_blocks] == replayed
+
+
+def _readable_tokens(blocks):
+    from agent.model_metadata import estimate_tokens_rough
+
+    return sum(estimate_tokens_rough(block.get("thinking", "")) for block in blocks)
+
+
+@pytest.mark.parametrize("shape", ["rejected", "reasoning_only", "invalid_ordered_then_details"])
+def test_native_preflight_and_tail_walk_charge_exactly_the_replayed_thinking(tmp_path, shape):
+    """Invariant: on a preserved-thinking native route, growing thinking text moves the
+    preflight estimate and the compressor tail walk by exactly what reaches the wire: nothing for
+    rejected or storage-only reasoning, the full valid historical block otherwise."""
+    from agent.context_compressor import ContextCompressor
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.turn_context import _preflight_request_tokens
+
+    db = _session_db(tmp_path, "s1")
+    agent = _session_agent(db, "s1")
+    compressor = ContextCompressor(
+        agent.model, provider=agent.provider, base_url=agent.base_url,
+        api_mode=agent.api_mode, quiet_mode=True, config_context_length=200_000,
+    )
+    compressor.bind_session_state(db, "s1")
+
+    def history(size):
+        thinking = "x" * size
+        if shape == "reasoning_only":  # e.g. rows written by another provider before a switch
+            assistant = {"role": "assistant", "content": "A1", "reasoning": thinking}
+        else:
+            assistant = _signed_turn("Q1", "A1", "sig_1", thinking=thinking)[1]
+            if shape == "invalid_ordered_then_details":
+                # Dataless redacted_thinking sanitizes to nothing, so the converter falls back
+                # to reasoning_details.
+                assistant["anthropic_content_blocks"] = [{"type": "redacted_thinking"}]
+        return [
+            {"role": "user", "content": "Q1"},
+            assistant,
+            {"role": "user", "content": "Q2"},
+            {"role": "assistant", "content": "A2"},
+            {"role": "user", "content": "continue"},
+        ]
+
+    if shape == "rejected":
+        _reject_signatures(agent, history(1))
+
+    def measure(size):
+        canonical = history(size)
+        _, wire_blocks = _request_and_wire(agent, canonical)
+        walked = compressor._walk_tail_budget(
+            canonical, 0, 10**9, 0, cut_at_break=False
+        )[1]
+        return (
+            _preflight_request_tokens(agent, copy.deepcopy(canonical), ""),
+            walked,
+            _readable_tokens(wire_blocks),
+        )
+
+    small, large = measure(1), measure(8000)
+    preflight_delta, walk_delta, wire_delta = (b - a for a, b in zip(small, large))
+    replayed = estimate_tokens_rough("x" * 8000) - estimate_tokens_rough("x")
+    expected = replayed if shape == "invalid_ordered_then_details" else 0
+    assert preflight_delta == walk_delta == wire_delta == expected

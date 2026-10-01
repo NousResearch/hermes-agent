@@ -268,10 +268,13 @@ class SessionMaintenanceMixin:
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
 
-    def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
-                            **filters) -> int:
-        """Count-only :meth:`list_prune_candidates` (CLI reports spared pinned sessions)."""
+    def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None, *,
+                            pinned_only: bool = False, **filters) -> int:
+        """Count-only :meth:`list_prune_candidates`; ``pinned_only`` counts rows carrying the pin
+        itself, not the continuations it protects (CLI reports spared pinned sessions)."""
         where, params = self._prune_where(older_than_days, source, filters)
+        if pinned_only:
+            where += " AND COALESCE(s.pinned, 0) = 1"
         return int(self._read_one(f"SELECT COUNT(*) FROM sessions s WHERE {where}", params)[0])
 
     def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,

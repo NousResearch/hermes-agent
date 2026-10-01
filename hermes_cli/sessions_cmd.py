@@ -652,10 +652,9 @@ def _note_pinned_skipped(db, filters, action):
     """Tell the user how many pinned rows bulk prune/archive spared (pin = durable keep; only
     `prune --include-pinned` opts in, archive always spares them)."""
     _base = {k: v for k, v in filters.items() if k != "include_pinned"}
-    # Count matching pinned rows only: whole-lineage selection would also drop the unpinned
-    # ancestors a pinned tip spares, and report them as pinned.
-    with_pinned, without = (int(db.count_prune_matches(**_base, include_pinned=flag)) for flag in (True, False))
-    skipped = max(with_pinned - without, 0)
+    # Count matching pinned rows only: neither the unpinned ancestors a pinned tip spares nor the
+    # unpinned continuations a pinned segment protects carry the pin.
+    skipped = int(db.count_prune_matches(**_base, include_pinned=True, pinned_only=True))
     if not skipped:
         return
     suffix = "" if skipped == 1 else "s"

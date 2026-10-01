@@ -2,6 +2,7 @@
 import time
 from contextlib import closing
 
+from hermes_cli.sessions_cmd import _note_pinned_skipped
 from hermes_state import SessionDB
 
 
@@ -20,7 +21,7 @@ def _pinned_then_rotated(db):
     db._conn.commit()
 
 
-def test_a_pin_follows_the_chat_through_compression_and_bulk_cleanup_spares_it(tmp_path):
+def test_a_pin_follows_the_chat_through_compression_and_bulk_cleanup_spares_it(tmp_path, capsys):
     """The published segment joins the pin. Stores written before it did hold a pinned segment
     with an unpinned tip, and bulk cleanup spares those too."""
     with closing(SessionDB(tmp_path / "state.db")) as db:
@@ -31,6 +32,8 @@ def test_a_pin_follows_the_chat_through_compression_and_bulk_cleanup_spares_it(t
         db._conn.commit()
 
         assert db.list_prune_candidates(older_than_days=90, whole_lineages=True) == []
+        _note_pinned_skipped(db, {"older_than_days": 90}, "prune")
+        assert "Note: 1 pinned session also match" in capsys.readouterr().out
         assert db.prune_sessions(older_than_days=90) == 0
         assert db.archive_stale_sessions(3) == db.archive_sessions(older_than_days=90) == 0
         assert db.get_compression_lineage("keep") == ["keep", "keep-2"]

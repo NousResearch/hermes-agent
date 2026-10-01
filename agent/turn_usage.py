@@ -70,6 +70,48 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _record_usage_less_call(agent: Any) -> None:
+    """Persist a provider response that carried no usage: one call happened, zero tokens.
+
+    The request completed and was billed, but its token counts are unknowable. Leaving it
+    out of state.db entirely made ``sessions.api_call_count``, every token counter and
+    ``billing_provider`` all read zero for a session that demonstrably talked to the
+    provider (#71578) — indistinguishable from a session that never ran. ``billing_provider``
+    NULL was the reporter's discriminator and it is a *co-symptom*: it rides in this same
+    write, so the correlation was perfect while the cause sat one block away.
+
+    ``api_call_count=1`` makes ``update_token_counts`` treat this as real usage, so the
+    session gets a ``session_model_usage`` row with zero tokens rather than no row at all.
+    Never raises: losing accounting must not kill the turn, so the attribute reads sit
+    inside the try — a stripped-down agent (``tui_gateway/synthetic_turn.py``'s
+    ``SyntheticHeavyAgent`` has no ``_session_db`` at all) must degrade to a no-op rather
+    than an ``AttributeError`` mid-turn.
+    """
+    try:
+        db = getattr(agent, "_session_db", None)
+        session_id = getattr(agent, "session_id", None)
+        if not (db and session_id):
+            return
+        if not getattr(agent, "_session_db_created", False):
+            agent._ensure_db_session()
+        db.queue_token_counts(
+            session_id,
+            source=_agent_session_source(agent),
+            billing_provider=getattr(agent, "provider", None),
+            billing_base_url=getattr(agent, "base_url", None),
+            model=getattr(agent, "model", None),
+            api_call_count=1,
+            # This call proves the route ran, but not which one served the session: the
+            # provider never sent usage. Letting it win first_accounted_route would strand
+            # `sessions` on a provider that may well have been the one that failed, while
+            # every real token lands on the fallback's row (#71578).
+            route_authoritative=False,
+        )
+    except Exception as exc:
+        logger.warning("usage-less API call accounting failed (session=%s): %s",
+                       getattr(agent, "session_id", None), exc)
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -96,6 +138,7 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        _record_usage_less_call(agent)
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = with_served_service_tier(

@@ -2166,7 +2166,7 @@ def _run_doc_header(job: dict, title: str, job_id: str, prompt: str, *, prompt_s
         f"**Job ID:** {job_id}\n"
         f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"**Schedule:** {job.get('schedule_display', 'N/A')}\n\n"
-        f"{prompt_stamp}## Prompt\n\n{prompt}\n\n"
+        f"{prompt_stamp}{_PROMPT_HEADING}{prompt}{_PROMPT_SEPARATOR}"
     )
 
 
@@ -2551,8 +2551,7 @@ def run_job(
         output = (
             _run_doc_header(job, job_name, job_id, framed_prompt,
                             prompt_stamp=f"{_PROMPT_FRAME}{len(framed_prompt)}\n")
-            + f"{_RESPONSE_FRAME}{len(logged_response)}\n## Response\n\n"
-            + f"{logged_response}\n"
+            + f"{_RESPONSE_FRAME}{len(logged_response)}\n{_RESPONSE_HEADING}{logged_response}{_RESPONSE_TERMINATOR}"
         )
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
@@ -4295,8 +4294,9 @@ from cron.scheduler_script import (  # noqa: E402
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (  # noqa: E402
-    _PROMPT_FRAME, _RESPONSE_FRAME, _block_and_pause_job, _build_job_prompt,
-    _guard_job_credential_exfil, _parse_wake_gate,
+    _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
+    _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
+    _parse_wake_gate,
 )
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

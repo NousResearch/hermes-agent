@@ -165,7 +165,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if not candidate or candidate.isspace() or silent_audit:
+                if not candidate.strip() or silent_audit:
                     continue
                 answer = _archive_answer(candidate)
                 if answer is None:

@@ -8358,15 +8358,28 @@ function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reenco
   // unknown and refuses a policy-change ACK; never drop the recovery journal.
   const roomDirectory = path.join(app.getPath('userData'), 'room-setup')
   if (fs.existsSync(roomDirectory)) {
+    const directory = fs.lstatSync(roomDirectory)
+    if (!directory.isDirectory() || directory.isSymbolicLink() ||
+        (process.getuid && (directory.uid !== process.getuid() || (directory.mode & 0o077) !== 0))) {
+      throw new RoomSetupError('setup_journal_unreadable')
+    }
     for (const name of fs.readdirSync(roomDirectory).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))) {
       const file = path.join(roomDirectory, name)
       const stat = fs.lstatSync(file)
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) {throw new RoomSetupError('setup_journal_unreadable')}
       const secret = JSON.parse(fs.readFileSync(file, 'utf8'))
       if (shouldRewrite(secret)) {
+        const original = decryptDesktopSecret(secret)
+        if (!original) {throw new RoomSetupError('setup_journal_unreadable')}
         const next = reencode(secret)
         if (next === secret) {throw new RoomSetupError('setup_journal_unreadable')}
-        writeSecretFileAtomic(file, JSON.stringify(next), { encoding: 'utf8' })
+        writeSecretFileAtomic(file, JSON.stringify(next), { encoding: 'utf8', durable: {
+          verify: bytes => {
+            if (decryptDesktopSecret(JSON.parse(bytes.toString('utf8'))) !== original) {
+              throw new RoomSetupError('setup_journal_write_failed')
+            }
+          }
+        } })
         touched = true
       }
     }

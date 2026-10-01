@@ -2,6 +2,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
+import { writeSecretFileAtomic } from './hardening'
+
 export class RoomSetupError extends Error {
   constructor(readonly reason: string) {super(reason)}
 }
@@ -20,15 +22,41 @@ export function roomSetupStore(options: {
     if (!ID.test(id)) {throw new RoomSetupError('invalid_setup_record')}
     return path.join(options.directory, `${id}.json`)
   }
+  const syncDirectory = async (directory: string) => {
+    // Node cannot open a directory handle on Windows. Match the existing
+    // desktop-boot-preference writer; the file itself is flushed on every OS.
+    if (process.platform === 'win32') {return}
+    const handle = await fs.open(directory, 'r')
+    try {await handle.sync()} finally {await handle.close()}
+  }
+  const privateDirectory = async (create = false) => {
+    let created = false
+    if (create) {
+      try {await fs.mkdir(options.directory, { mode: 0o700 }); created = true} catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {throw error}
+      }
+    }
+    const stat = await fs.lstat(options.directory)
+    if (!stat.isDirectory() || stat.isSymbolicLink() ||
+        (process.getuid && (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0))) {
+      throw new RoomSetupError('setup_journal_unreadable')
+    }
+    // The new directory entry must survive too, not just its first file.
+    if (created) {await syncDirectory(path.dirname(options.directory))}
+  }
+  const decode = (plaintext: string, id: string): SetupRecord => {
+    const result = JSON.parse(plaintext)
+    if (result?.id !== id || !ID.test(result.setupId) || !['home', 'peer'].includes(result.kind) ||
+        !result.route?.connectionId || !result.route.profile || !result.installationId || !result.roomId) {throw new Error()}
+    return result
+  }
   const get = async (id: string): Promise<SetupRecord> => {
     try {
+      await privateDirectory()
       const stat = await fs.lstat(file(id))
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536 ||
           (process.getuid && (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0))) {throw new Error()}
-      const result = JSON.parse(options.decrypt(await fs.readFile(file(id), 'utf8')))
-      if (result?.id !== id || !ID.test(result.setupId) || !['home', 'peer'].includes(result.kind) ||
-          !result.route?.connectionId || !result.route.profile || !result.installationId || !result.roomId) {throw new Error()}
-      return result
+      return decode(options.decrypt(await fs.readFile(file(id), 'utf8')), id)
     } catch {throw new RoomSetupError('setup_journal_unreadable')}
   }
 
@@ -36,7 +64,7 @@ export function roomSetupStore(options: {
     get,
     async list() {
       let names: string[]
-      try {names = await fs.readdir(options.directory)} catch (error) {
+      try {await privateDirectory(); names = await fs.readdir(options.directory)} catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {return { records: [], unreadable: [] as string[] }}
         throw new RoomSetupError('setup_journal_unreadable')
       }
@@ -48,20 +76,25 @@ export function roomSetupStore(options: {
       return { records, unreadable }
     },
     async put(record: SetupRecord) {
-        const destination = file(record.id)
+      const destination = file(record.id)
+      try {await privateDirectory(true)} catch {throw new RoomSetupError('setup_journal_unreadable')}
       const serialized = JSON.stringify(record)
       const sealed = options.encrypt(serialized)
       if (Buffer.byteLength(sealed) > 65536) {throw new RoomSetupError('setup_journal_full')}
-      await fs.mkdir(options.directory, { recursive: true, mode: 0o700 })
-      const temporary = `${destination}.${crypto.randomUUID()}.tmp`
       try {
-        await fs.writeFile(temporary, sealed, { mode: 0o600, flag: 'wx' })
-        await fs.rename(temporary, destination)
-        if (JSON.stringify(await get(record.id)) !== serialized) {throw new Error()}
+        writeSecretFileAtomic(destination, sealed, { encoding: 'utf8', durable: {
+          verify: bytes => {
+            // Read and decrypt the actual staged bytes BEFORE replacing a valid
+            // issuance intent. Wrong seals and readback faults cannot erase it.
+            const plaintext = options.decrypt(bytes.toString('utf8'))
+            if (plaintext !== serialized) {throw new Error()}
+            decode(plaintext, record.id)
+          }
+        } })
       } catch {throw new RoomSetupError('setup_journal_write_failed')}
-      finally {await fs.rm(temporary, { force: true }).catch(() => undefined)}
     },
     async remove(id: string) {
+      await privateDirectory()
       const destination = file(id)
       // Only after an owner receipt: remove abandoned stages before the live
       // obligation, so a crash never leaves a credential without its journal.
@@ -69,6 +102,7 @@ export function roomSetupStore(options: {
         if (name.startsWith(`${id}.json.`) && name.endsWith('.tmp')) {await fs.unlink(path.join(options.directory, name))}
       }
       await fs.unlink(destination)
+      await syncDirectory(options.directory)
     }
   }
 }

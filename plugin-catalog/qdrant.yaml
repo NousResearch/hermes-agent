@@ -1,8 +1,8 @@
 name: qdrant
 repo: https://github.com/kuehnberger/hermes-qdrant-memory
-sha: d2ec4578387be26924b56656653c7e1cbdf3ee02
-version: "0.1.3"
-image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/d2ec4578387be26924b56656653c7e1cbdf3ee02/docs/banner.jpg
+sha: 6722dba936928ca6918c154c085ee00dfc5350fd
+version: "0.1.4"
+image: https://raw.githubusercontent.com/kuehnberger/hermes-qdrant-memory/6722dba936928ca6918c154c085ee00dfc5350fd/docs/banner.jpg
 description: >-
   Dense semantic memory for Hermes, stored in a Qdrant collection you host. Each turn
   becomes one point — user and assistant text verbatim, no LLM summarization step —

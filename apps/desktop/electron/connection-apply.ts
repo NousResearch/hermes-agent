@@ -98,7 +98,7 @@ async function teardownSshState(state, { cleanupRemote }) {
 
   try {
     if (state.localPort && state.remotePort) {
-      await state.ssh.cancelForward(state.localPort, state.remotePort)
+      await state.ssh.cancelForward(state.localPort, state.remotePort, state.remoteHost)
     }
   } catch {
     // Best effort; closing the transport below drops any remaining forwards.

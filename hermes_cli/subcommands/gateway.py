@@ -121,6 +121,11 @@ def build_gateway_parser(
                                 help="Total startup deadline in seconds (default: 60)")
     gateway_ensure.set_defaults(func=cmd_gateway_ensure)
 
+    from hermes_cli.gateway_runtime_cli import cmd_gateway_ticket
+    gateway_ticket = gateway_subparsers.add_parser(
+        "ticket", help="Mint a single-use private native ticket from a pinned endpoint on stdin")
+    gateway_ticket.set_defaults(func=cmd_gateway_ticket)
+
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")
     _add_system_flag(gateway_start)

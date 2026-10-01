@@ -1,5 +1,6 @@
 import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
+import type { GatewayEndpoint } from './local-gateway'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection, Attached> {
   assertCurrentAttempt: () => void
@@ -29,7 +30,8 @@ export type PrimaryBackendStartupResult<RuntimeBackend, Connection, Attached = n
   | { kind: 'remote'; connection: Connection }
 
 interface ResolvedPrimaryRemote {
-  authMode?: 'oauth' | 'token'
+  gatewayEndpoint?: GatewayEndpoint
+  authMode?: 'oauth' | 'token' | 'native'
   baseUrl: string
   connectionId?: string
   headers?: Record<string, string>
@@ -62,6 +64,7 @@ export function createPrimaryRemoteConnection<State extends object>(
 ) {
   return {
     baseUrl: remote.baseUrl,
+    ...(remote.gatewayEndpoint ? { gatewayEndpoint: remote.gatewayEndpoint } : {}),
     mode: 'remote' as const,
     source: remote.source,
     authMode: remote.authMode || 'token',

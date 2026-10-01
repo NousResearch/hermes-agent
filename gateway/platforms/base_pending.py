@@ -9,13 +9,6 @@ does not repeat the choice that selected it. A photo followed by two texts merge
 in the pending slot, and withdrawing the photo leaves one event with both texts, although the two
 texts alone would have queued as two turns.
 
-A rebuilt event contains only what the recorded merges produced. An attribute that other code set
-on a merged event without ``merge_recorded`` is lost. Today this affects only the voice-transcript
-echo count (``_gateway_pending_stt_echoed``), so an already posted transcript can be echoed
-again. That needs two voice notes merged in the pending slot, which happens only on the base
-adapter path without a runner or on the requeue at the interrupt depth limit: the runner's FIFO
-gives each voice note its own turn.
-
 ``PendingWithdrawalMixin`` declares the attributes that its host (``BasePlatformAdapter``)
 provides.
 
@@ -243,10 +236,18 @@ def merge_recorded(existing: MessageEvent, event: MessageEvent, merge: Merge) ->
     if not existing._merged_parts:
         existing._merged_parts = [(pending_part(existing), None)]
     existing._merged_parts.append((event, merge))
+    echoed: set[str] = set(getattr(existing, "_gateway_pending_stt_echoed_paths", ()))
+    echoed.update(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
     merge(existing, event)
+    if echoed:
+        existing._gateway_pending_stt_echoed_paths = echoed.intersection(
+            existing.media_urls
+        )
 
 
-def withdraw_from_event(event: Any, matches: Callable[[MessageEvent], bool]) -> Tuple[bool, Any]:
+def withdraw_from_event(
+    event: Any, matches: Callable[[MessageEvent], bool]
+) -> Tuple[bool, Any]:
     """Remove the messages selected by ``matches`` from the pending value ``event``.
 
     Returns whether any message matched, and the pending value that remains: ``event`` unchanged
@@ -269,13 +270,18 @@ def withdraw_from_event(event: Any, matches: Callable[[MessageEvent], bool]) -> 
     rebuilt = pending_part(remaining[0][0])
     for part, merge in remaining[1:]:
         merge_recorded(rebuilt, part, merge)
+    echoed: set[str] = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
+    if echoed:
+        rebuilt._gateway_pending_stt_echoed_paths = echoed.intersection(
+            rebuilt.media_urls
+        )
     return True, rebuilt
 
 
 class PendingWithdrawalMixin:
     """``withdraw_pending_message`` for ``BasePlatformAdapter``."""
 
-    platform: Any
+    platform: Platform
     _pending_messages: Dict[str, MessageEvent]
     _pending_text_batches: Dict[str, MessageEvent]
     _pending_text_batch_tasks: Dict[str, asyncio.Task]
@@ -284,14 +290,18 @@ class PendingWithdrawalMixin:
     # ``handler(adapter, withdraw)``, installed by the runner; see set_queued_withdrawal_handler.
     _queued_withdrawal_handler: Optional[Callable[[Any, Withdraw], bool]] = None
 
-    def set_queued_withdrawal_handler(self, handler: Optional[Callable[[Any, Withdraw], bool]]) -> None:
+    def set_queued_withdrawal_handler(
+        self, handler: Optional[Callable[[Any, Withdraw], bool]]
+    ) -> None:
         """Install the runner's handler for queued follow-ups. ``withdraw_pending_message`` calls
         ``handler(adapter, withdraw)`` for the pending slots and the runner's FIFO overflow behind
         them, and the handler returns whether anything was withdrawn. Without a handler, only the
         pending slots are searched."""
         self._queued_withdrawal_handler = handler
 
-    def withdraw_pending_message(self, message_id: str, *, chat_id: str, sender_id: str) -> bool:
+    def withdraw_pending_message(
+        self, message_id: str, *, chat_id: str, sender_id: str
+    ) -> bool:
         """Remove a message that its sender deleted before its turn started, so that it never
         reaches the agent. A merged pending turn keeps its other messages. A message matches
         only if it has the ID ``message_id``, is in ``chat_id`` and was sent by ``sender_id``.
@@ -302,11 +312,16 @@ class PendingWithdrawalMixin:
         the busy handler awaits authorization or steering, or a drained slot event while its
         voice note is transcribed. Platform adapters call this when they observe the deletion.
         A deletion event does not identify a session, so every buffer is searched."""
+
         def matches(event: MessageEvent) -> bool:
             source = event.source
-            return (event.message_id == message_id and source is not None
-                    and source.platform == self.platform
-                    and source.chat_id == chat_id and source.user_id == sender_id)
+            return (
+                event.message_id == message_id
+                and source is not None
+                and source.platform == self.platform
+                and source.chat_id == chat_id
+                and source.user_id == sender_id
+            )
 
         def withdraw(event: Any) -> Tuple[bool, Any]:
             return withdraw_from_event(event, matches)

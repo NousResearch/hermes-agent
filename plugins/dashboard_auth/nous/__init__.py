@@ -11,6 +11,7 @@ every refresh or the next refresh replays a rotated token and revokes the whole 
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, Optional
 
 from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
@@ -43,11 +44,18 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
     name = "nous"
     display_name = "Nous Research"
 
-    def __init__(self, *, client_id: str, portal_url: str) -> None:
+    def __init__(self, *, client_id: str, portal_url: str, access_token_leeway: float = 0.0) -> None:
         # Defense-in-depth: register() filters too, but a malformed id must never construct a provider.
         if not client_id.startswith("agent:"):
             raise ValueError(f"client_id must match contract shape 'agent:{{instance_id}}', got {client_id!r}")
         self._client_id = client_id
+        try:
+            leeway = float(access_token_leeway)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("access_token_leeway must be finite, non-negative seconds") from exc
+        if isinstance(access_token_leeway, bool) or not math.isfinite(leeway) or leeway < 0:
+            raise ValueError("access_token_leeway must be finite, non-negative seconds")
+        self._access_token_leeway = leeway
         self._agent_instance_id = client_id[len("agent:") :]
         self._portal_url = portal_url.rstrip("/")
         self._jwks_url = f"{self._portal_url}/.well-known/jwks.json"
@@ -93,7 +101,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         claims = verify_jwt(
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
-            issuer=self._portal_url, label="access token")
+            issuer=self._portal_url, label="access token", leeway=self._access_token_leeway)
         # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
         # (the aud check already binds the token to this instance).
         token_instance_id = claims.get("agent_instance_id")
@@ -142,7 +150,8 @@ def _settings() -> dict:
             f"shape 'agent:{{instance_id}}'. The Nous Portal provisions this value at deploy "
             f"time; check your Fly app's secrets or override with the value from the Portal admin UI.",
             level="warning")
-    return {"client_id": client_id, "portal_url": portal_url}
+    return {"client_id": client_id, "portal_url": portal_url,
+            "access_token_leeway": section.get("access_token_leeway", 0.0)}
 
 
 def register(ctx) -> None:

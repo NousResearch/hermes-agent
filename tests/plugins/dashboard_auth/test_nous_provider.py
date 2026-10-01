@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import time
 import urllib.parse
 from typing import Any, Dict
@@ -122,6 +123,81 @@ def _patched_jwks(provider: nous_plugin.NousDashboardAuthProvider, rsa_keypair):
 # ---------------------------------------------------------------------------
 # Provider construction
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("grant", ["login", "refresh"])
+def test_configured_clock_skew_preserves_grant_tokens(tmp_path, monkeypatch, rsa_keypair, grant):
+    """Regression for #47815: accept a signed fresh token and retain its rotated RT."""
+    from datetime import datetime, timezone
+
+    now = 1800000000
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp(now, timezone.utc)
+
+    monkeypatch.setattr(jwt.api_jwt, "datetime", Clock)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_PORTAL_URL", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "dashboard:\n  oauth:\n    client_id: agent:inst123\n"
+        "    portal_url: https://portal.example.com\n    access_token_leeway: 30\n",
+        encoding="utf-8",
+    )
+    ctx = MagicMock()
+    nous_plugin.register(ctx)
+    provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+    _patched_jwks(provider, rsa_keypair)
+    token = _mint_token(rsa_keypair, extra_claims={"iat": now + 3, "exp": now + 900})
+    response = httpx.Response(200, json={
+        "access_token": token, "token_type": "Bearer", "refresh_token": "rotated-rt",
+    })
+    with patch("plugins.dashboard_auth._shared.httpx.post", return_value=response):
+        try:
+            session = (provider.refresh_session(refresh_token="old-rt") if grant == "refresh"
+                       else provider.complete_login(code="code", state="state", code_verifier="verifier",
+                                                    redirect_uri="https://dashboard.example/auth/callback"))
+        except ProviderError:
+            session = None
+    assert session is not None, "configured skew must not discard a successful token grant"
+    assert (session.access_token, session.refresh_token) == (token, "rotated-rt")
+    assert provider.verify_session(access_token=token).user_id == session.user_id
+
+
+@pytest.mark.parametrize("leeway", [0, 30, "5", None, -1, float("nan"), float("inf"), True, "bad"])
+def test_clock_skew_is_opt_in_and_does_not_bypass_validation(monkeypatch, rsa_keypair, leeway):
+    from datetime import datetime, timezone
+
+    now = 1800000000
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp(now, timezone.utc)
+
+    monkeypatch.setattr(jwt.api_jwt, "datetime", Clock)
+    kwargs = {"client_id": "agent:inst123", "portal_url": "https://portal.example.com"}
+    if leeway is None or isinstance(leeway, bool) or leeway == "bad" or (
+        isinstance(leeway, (int, float)) and (leeway < 0 or not math.isfinite(leeway))
+    ):
+        with pytest.raises(ValueError, match="access_token_leeway"):
+            nous_plugin.NousDashboardAuthProvider(**kwargs, access_token_leeway=leeway)
+        return
+    provider = nous_plugin.NousDashboardAuthProvider(**kwargs, access_token_leeway=leeway)
+    _patched_jwks(provider, rsa_keypair)
+    tolerance = float(leeway)
+    for claims in ({"iat": now + tolerance + 1}, {"nbf": now + tolerance + 1},
+                   {"aud": "agent:other"}, {"iss": "https://other.example"}, {"sub": None}):
+        token = _mint_token(rsa_keypair, extra_claims={"iat": now, "exp": now + 900, **claims})
+        with pytest.raises(ProviderError):
+            provider.verify_session(access_token=token)
+    expired = _mint_token(rsa_keypair, extra_claims={"iat": now - 900, "exp": now - tolerance - 1})
+    assert provider.verify_session(access_token=expired) is None
+    default = nous_plugin.NousDashboardAuthProvider(**kwargs)
+    _patched_jwks(default, rsa_keypair)
+    future = _mint_token(rsa_keypair, extra_claims={"iat": now + 1, "exp": now + 900})
+    with pytest.raises(ProviderError):
+        default.verify_session(access_token=future)
+
 
 class TestConstruction:
     def test_protocol_compliance(self):

@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+from agent.skill_utils import is_runtime_cache
+
 
 SCANNER_VERSION = "skills-guard-v7"
 
@@ -659,11 +661,17 @@ def _content_digest(skill_path: Path) -> str:
     Ordering by ``sorted(rglob(...))`` diverged from the bundle side on Windows: Path comparison is
     case-insensitive there (normcase), while ``bundle_content_hash`` sorts plain strings — the same skill
     hashed to different digests and every installed skill reported ``update_available`` forever (#62310).
+
+    Generated runtime caches (``__pycache__`` et al.) are excluded on BOTH sides of the
+    content_hash/bundle_content_hash pair: running a skill's scripts must not read as a local
+    edit and wedge ``hermes skills update`` (#130331). The traversal order and byte mixing are
+    unchanged, so hashes recorded before this exclusion still match cache-free installs.
     """
     if not skill_path.is_dir():
         return hashlib.sha256(skill_path.read_bytes()).hexdigest()
     h = hashlib.sha256()
-    for rel, p in sorted((p.relative_to(skill_path).as_posix(), p) for p in skill_path.rglob("*") if p.is_file()):
+    for rel, p in sorted((p.relative_to(skill_path).as_posix(), p) for p in skill_path.rglob("*")
+                         if p.is_file() and not is_runtime_cache(p, skill_path)):
         h.update(rel.encode("utf-8") + b"\x00")
         h.update(p.read_bytes())
     return h.hexdigest()

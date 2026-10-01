@@ -529,6 +529,45 @@ class TestContentHash:
         h2 = content_hash(tmp_path)
         assert h1 != h2
 
+    def test_hash_ignores_generated_runtime_caches(self, tmp_path):
+        # #130331: executing a skill's scripts drops __pycache__ next to them; that
+        # must not read as a local edit and wedge `hermes skills update` forever.
+        skill = tmp_path / "skill"
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        (skill / "scripts" / "tool.py").write_text("print('hi')\n", encoding="utf-8")
+        h_clean = content_hash(skill)
+
+        pycache = skill / "scripts" / "__pycache__"
+        pycache.mkdir()
+        (pycache / "tool.cpython-314.pyc").write_bytes(b"\x00fake bytecode")
+        (skill / ".pytest_cache" / "v").mkdir(parents=True)
+        (skill / ".pytest_cache" / "v" / "cache").write_text("lastfailed", encoding="utf-8")
+
+        assert content_hash(skill) == h_clean
+
+    def test_hash_changes_when_real_content_changes_around_caches(self, tmp_path):
+        skill = tmp_path / "skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# v1\n", encoding="utf-8")
+        pycache = skill / "__pycache__"
+        pycache.mkdir()
+        (pycache / "tool.cpython-314.pyc").write_bytes(b"\x00stale")
+        h1 = content_hash(skill)
+        (skill / "SKILL.md").write_text("# v2\n", encoding="utf-8")
+        assert content_hash(skill) != h1
+
+    def test_sourceless_sibling_bytecode_stays_content(self, tmp_path):
+        # Legacy sibling .pyc is ignored only alongside its .py source; a
+        # source-less .pyc can be deliberately shipped content (parity with
+        # _skill_file_list in tools.skills_sync_optional).
+        skill = tmp_path / "skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        h1 = content_hash(skill)
+        (skill / "shipped.pyc").write_bytes(b"\x00payload")
+        assert content_hash(skill) != h1
+
 
 # ---------------------------------------------------------------------------
 # _unicode_char_name

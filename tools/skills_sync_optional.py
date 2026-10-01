@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import RUNTIME_CACHE_DIRS as _RUNTIME_CACHE_DIRS
+from agent.skill_utils import is_runtime_cache as _is_runtime_cache
 from utils import atomic_write_text
 
 logger = logging.getLogger("tools.skills_sync")
@@ -38,24 +40,9 @@ def _safe_rel_install_path(path: Path, base: Path) -> str:
     return "/".join(parts)
 
 
-# Only generated runtime state, never generic cache/ or arbitrary dotfiles. This
-# is updater ownership, not the security scanner's content-integrity policy.
-_RUNTIME_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
-
-
-def _is_runtime_cache(path: Path, skill_dir: Path) -> bool:
-    """Whether a skill-relative path is disposable Python/tool runtime state.
-
-    Install prefixes may themselves contain a cache directory name. Legacy
-    sibling bytecode is ignored only alongside its source; source-less .pyc
-    files can be deliberately shipped or user-owned content.
-    """
-    relative = path.relative_to(skill_dir)
-    if any(part in _RUNTIME_CACHE_DIRS for part in relative.parts[:-1]):
-        return True
-    if path.name in _RUNTIME_CACHE_DIRS and path.is_dir():
-        return True
-    return path.suffix in {".pyc", ".pyo"} and path.with_suffix(".py").is_file()
+# _RUNTIME_CACHE_DIRS / _is_runtime_cache moved to agent.skill_utils (shared with the
+# skills-guard content hash); re-imported above under the same private names so
+# tools.skills_sync's re-exports keep resolving.
 
 
 def _ignore_runtime_cache(directory: str, names: List[str]) -> List[str]:

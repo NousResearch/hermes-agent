@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import sys
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import (
@@ -86,6 +86,45 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
         for idx, part in enumerate(parts[:-1])
         if idx > 0
     )
+
+
+# Only generated runtime state, never generic cache/ or arbitrary dotfiles. This
+# is updater ownership, not the security scanner's content-integrity policy.
+RUNTIME_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
+
+_PYCACHE_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+
+def is_runtime_cache(path: Path, root: Path) -> bool:
+    """Whether *path* under skill *root* is disposable Python/tool runtime state.
+
+    Install prefixes may themselves contain a cache directory name. Legacy
+    sibling bytecode is ignored only alongside its source; source-less .pyc
+    files can be deliberately shipped or user-owned content.
+    """
+    relative = path.relative_to(root)
+    if any(part in RUNTIME_CACHE_DIRS for part in relative.parts[:-1]):
+        return True
+    if path.name in RUNTIME_CACHE_DIRS and path.is_dir():
+        return True
+    return path.suffix in _PYCACHE_SUFFIXES and path.with_suffix(".py").is_file()
+
+
+def is_runtime_cache_relpath(rel_path: str, *, has_file: Callable[[str], bool]) -> bool:
+    """In-memory bundle twin of :func:`is_runtime_cache` so hashes stay symmetric.
+
+    *rel_path* is a POSIX-style relative path inside a fetched bundle and
+    *has_file* reports whether a sibling relative path exists in that same
+    bundle. A bundle holds no directory entries, so a file merely NAMED like a
+    cache dir is content — matching the on-disk twin, which only excludes
+    actual directories.
+    """
+    rel = PurePosixPath(rel_path)
+    if any(part in RUNTIME_CACHE_DIRS for part in rel.parts[:-1]):
+        return True
+    if rel.name in RUNTIME_CACHE_DIRS:
+        return False
+    return rel.suffix in _PYCACHE_SUFFIXES and has_file(rel.with_suffix(".py").as_posix())
 
 
 _yaml_load_fn = None

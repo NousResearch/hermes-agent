@@ -13,7 +13,7 @@ import hashlib
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path, is_runtime_cache_relpath
 from tools.skills_guard import ScanResult, content_hash
 from tools.skills_hub_github import GitHubAuth
 from tools.skills_hub_models import (
@@ -234,10 +234,16 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     path is hashed too so swapping contents between two files changes the hash.
 
     That function keys files by ``relative_to(...).as_posix()`` — forward slashes on every OS. See #62310.
+
+    Generated runtime caches (``__pycache__`` et al.) are excluded here exactly
+    as on the disk side (#130331); a cache entry inside a fetched bundle must
+    not desync the pair.
     """
     h = hashlib.sha256()
     normalized = {rel_path.replace("\\", "/"): content for rel_path, content in bundle.files.items()}
     for rel_path in sorted(normalized):
+        if is_runtime_cache_relpath(rel_path, has_file=normalized.__contains__):
+            continue
         h.update(rel_path.encode("utf-8"))
         h.update(b"\x00")
         content = normalized[rel_path]

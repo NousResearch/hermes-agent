@@ -15,12 +15,8 @@ import {
   requestPreviewReload
 } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import {
-  $focusedRuntimeId,
-  $focusedStoredSessionId,
-  $sessionTiles,
-  storedSessionIdForRuntimeId
-} from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $focusedRuntimeId, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 type EventHandler = (event: GatewayEvent) => void
 

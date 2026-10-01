@@ -711,9 +711,11 @@ def matrix_deps_present() -> bool:
     anything. The ACTIVE lazy-installer (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
     and runs from ``create_adapter()`` when this returns False (#79812).
 
-    Encryption is config-gated: with ``MATRIX_E2EE_MODE=required`` the closure in ``[matrix-e2ee]`` is
-    part of "deps are present", otherwise the update's configured-features pass sees a ready platform
-    and never installs it (the adapter would then fail closed at connect).
+    Encryption is config-gated: the closure in ``[matrix-e2ee]`` is part of "deps are present"
+    whenever E2EE is not off (``optional`` or ``required``), so the updater's configured-features
+    pass picks up ``extra_names_fn`` and proactively installs ``[matrix-e2ee]``.  The connect gate
+    (``_import``) still distinguishes ``required`` (fail closed) from ``optional`` (degrade to plain
+    client) — this function only controls configured-extra readiness, not the connect decision.
     """
     try:
         from pm import available as is_available
@@ -721,7 +723,7 @@ def matrix_deps_present() -> bool:
             return False
     except Exception:  # pragma: no cover — defensive
         return False
-    return _resolve_e2ee_mode() != "required" or _check_e2ee_deps()
+    return _resolve_e2ee_mode() == "off" or _check_e2ee_deps()
 
 
 def check_matrix_requirements() -> bool:
@@ -2909,15 +2911,18 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
-        if reply_to:
-            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
+        # Use explicit reply_to, then metadata fallback, then None.
+        effective_reply_to = reply_to or (metadata or {}).get("reply_to_message_id") or None
+        if effective_reply_to:
+            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": effective_reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
             relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            # Non-thread clients render the reply fallback; default it to the thread root
+            # only when there's no specific message to reply to.
+            relates_to.setdefault("m.in_reply_to", {"event_id": effective_reply_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

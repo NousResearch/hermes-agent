@@ -5106,6 +5106,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _fetch_channel_context(
         self, channel: Any, before: "DiscordMessage", reply_target: Optional[Any] = None,
+        *, include_self_boundary: bool = False,
     ) -> str:
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
@@ -5120,7 +5121,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         _cached_id = self._last_self_message_id.get(channel_id)
         _after_obj = None
         try:
-            if _cached_id and int(_cached_id) < int(before.id):
+            if _cached_id and not include_self_boundary and int(_cached_id) < int(before.id):
                 _after_obj = discord.Object(id=int(_cached_id))
         except (ValueError, TypeError):
             pass  # Malformed cache entry — fall back to cold-start scan
@@ -5169,6 +5170,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # ── Primary window: recent channel activity since the last bot turn ──
             collected: List[Tuple[str, str]] = []  # (message_id, line)
             seen_ids: set = set()
+            included_self_boundary = seen_nonself_after_boundary = False
             # oldest_first=False explicitly — discord.py 2.x flips the default to True when `after=`
             # is given, selecting the *earliest* N messages (see test_fetch_channel_context_cache_*).
             async for msg in channel.history(
@@ -5184,7 +5186,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     continue
                 # Partition point: our own conversational message (needed for cold start).
                 if msg.author == self._client.user:
-                    break
+                    if not include_self_boundary or (included_self_boundary and seen_nonself_after_boundary):
+                        break
+                    included_self_boundary = True
+                elif included_self_boundary:
+                    seen_nonself_after_boundary = True
                 line = _keep(msg)
                 if line is None:
                     continue
@@ -6040,11 +6046,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = (
-                "*" in free_channels
-                or bool(channel_keys & free_channels)
-                or is_voice_linked_channel
-            )
+            is_configured_free_response_channel = "*" in free_channels or bool(channel_keys & free_channels)
+            is_free_channel = is_configured_free_response_channel or is_voice_linked_channel
             in_bot_thread = self._in_bot_thread(message)
             if require_mention and not is_free_channel and not in_bot_thread:
                 if (
@@ -6156,10 +6159,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
             _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
+            from gateway.config import _coerce_bool
+            free_response_trigger = (
+                is_configured_free_response_channel and msg_type != MessageType.COMMAND
+                and _coerce_bool(self.config.extra.get("history_backfill_free_response"), default=True)
+            )
+            existing_trigger = _has_mention_gap or is_thread or _is_reply
+            if (existing_trigger or free_response_trigger) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                     reply_target=self._reply_target(message.reference) if _is_reply else None,
+                    include_self_boundary=free_response_trigger and not existing_trigger,
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text
@@ -7401,6 +7411,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    if "history_backfill_free_response" in discord_cfg:
+        seeded_extra["history_backfill_free_response"] = discord_cfg["history_backfill_free_response"]
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]

@@ -1555,6 +1555,7 @@ DEFAULT_CONFIG = {
         # Prepend recent channel scrollback when triggered (recovers messages gated out by
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
+        "history_backfill_free_response": True,  # include the preceding turn in configured free-response channels
         "history_backfill_limit": 50,
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {

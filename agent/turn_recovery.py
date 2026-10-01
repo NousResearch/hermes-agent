@@ -483,13 +483,53 @@ def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages:
     return True
 
 
+# AgentRouter's route is a load balancer over heterogeneous upstreams: an unchanged, complete
+# thinking replay is accepted by some and rejected by others, so recovery is a bounded retry
+# budget (with a pause between attempts) rather than a request rewrite.
+_AGENTROUTER_THINKING_MAX_ATTEMPTS = 3
+_AGENTROUTER_THINKING_BACKOFF_SECONDS = 1.5
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
 ) -> bool:
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
-    replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
-    the request was repaired and should be retried."""
+    replay disable → native-compaction reject → llama.cpp grammar strip; plus AgentRouter's
+    intermittent thinking-replay 400, which is retried unchanged a bounded number of times.
+    Returns True when the request was repaired and should be retried."""
+    # AgentRouter reports an Anthropic-style missing-thinking 400 on its OpenAI Chat Completions
+    # route even when every prior assistant tool turn already carries the reasoning the model
+    # returned (verified on the wire: the same byte-identical payload both 400s and succeeds
+    # within minutes, so the rejection is per-upstream, not per-request). Rewriting the replay as
+    # Anthropic thinking blocks is invalid OpenAI wire format (422), so retry the request
+    # unchanged, pausing between attempts so the retry can land on another upstream.
+    error_text = str(api_error).lower()
+    if (
+        classified.reason == FailoverReason.format_error
+        and getattr(api_error, "status_code", None) == 400
+        and _retry.agentrouter_thinking_retry_attempts < _AGENTROUTER_THINKING_MAX_ATTEMPTS
+        and getattr(agent, "api_mode", None) == "chat_completions"
+        and base_url_host_matches(getattr(agent, "base_url", "") or "", "agentrouter.org")
+        and "content[].thinking" in error_text
+        and "must be passed back" in error_text
+        and isinstance(api_messages, list)
+    ):
+        tool_turns = [m for m in api_messages if isinstance(m, dict)
+                      and m.get("role") == "assistant" and m.get("tool_calls")]
+        if tool_turns and all(isinstance(m.get("reasoning_content"), str) and m["reasoning_content"]
+                              for m in tool_turns):
+            _retry.agentrouter_thinking_retry_attempts += 1
+            attempt = _retry.agentrouter_thinking_retry_attempts
+            _vlines(agent, "⚠️  AgentRouter rejected a complete thinking replay; retrying the same "
+                           f"request unchanged (attempt {attempt}/{_AGENTROUTER_THINKING_MAX_ATTEMPTS})...")
+            logger.warning(
+                "%sAgentRouter thinking-replay 400: retrying the unchanged request (attempt %d/%d)",
+                getattr(agent, "log_prefix", "") or "", attempt, _AGENTROUTER_THINKING_MAX_ATTEMPTS,
+            )
+            time.sleep(_AGENTROUTER_THINKING_BACKOFF_SECONDS)
+            return True
+
     # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
     # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:

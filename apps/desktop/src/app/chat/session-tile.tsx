@@ -80,6 +80,7 @@ import { paneMirror } from './pane-mirror'
 import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
+import { SessionTabLabel, sessionTabOwnerLabel, sessionTabText } from './session-tab-label'
 import { useSessionTileActions } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { reasoningEffortPending, type SessionView, SessionViewProvider } from './session-view'
@@ -745,6 +746,13 @@ function tileCaption(storedSessionId: string): string {
   )
 }
 
+function tileTabText(storedSessionId: string): string {
+  const stored = tileStoredRow(storedSessionId)
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  return sessionTabText(sessionTabOwnerLabel(stored, tile), tileTitle(storedSessionId))
+}
+
 /** The `@session` link payload for a tile tab drag — id + owning profile + title.
  *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
@@ -959,7 +967,7 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   // and without it the tab stays stuck on its "New session" placeholder.
   // (The tab's status dot subscribes to color/state itself, so it needs no
   // `also` entry.)
-  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
+  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels, $profiles],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,
@@ -976,11 +984,17 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   ),
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.
-  tabTitle: storedSessionId =>
-    tileStoredRow(storedSessionId) ||
-    $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId && tile.workspaceTabTitle) ? null : (
+  tabTitle: storedSessionId => {
+    const stored = tileStoredRow(storedSessionId)
+    const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+    return stored ? (
+      <SessionTabLabel scope={tile} session={stored} title={tileTitle(storedSessionId)} />
+    ) : tile?.workspaceTabTitle ? null : (
       <SessionDraftTitle scope={storedSessionId} />
-    ),
+    )
+  },
+  tabTitleText: tileTabText,
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu

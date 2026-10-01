@@ -2517,6 +2517,8 @@
     "settings.appearance.sessionDensityDesc",
     "settings.appearance.sessionDensityDetailed",
     "settings.appearance.sessionDensityTitle",
+    "settings.appearance.sessionTabAgentNamesDesc",
+    "settings.appearance.sessionTabAgentNamesTitle",
     "settings.appearance.tabStripAlways",
     "settings.appearance.tabStripAuto",
     "settings.appearance.tabStripDesc",

@@ -88,3 +88,14 @@ def test_gateway_owned_oneshot_session_keeps_skill_manage_and_takes_its_prompt_f
                                              skills_dir_override=skills)
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")  # inherited by a daemon a -q client auto-started
     assert shape("cli")[1] == interactive
+def test_dispatcher_owned_kanban_worker_is_not_charged(oneshot, monkeypatch):
+    from tools import delegate_tool
+
+    monkeypatch.setattr(delegate_tool, "_get_oneshot_max_children", lambda: 2)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    parent = type("P", (), {})()
+    assert delegate_tool._oneshot_spawn_budget(parent, 3) is None
+    assert not hasattr(parent, "_oneshot_children_spawned")
+
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    assert delegate_tool._oneshot_spawn_budget(parent, 3) is not None

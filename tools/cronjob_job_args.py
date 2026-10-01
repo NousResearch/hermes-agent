@@ -320,31 +320,45 @@ def _same_origin(base_url: str, configured: str) -> bool:
     return bool(want[1]) and got == want
 
 
+def _base_url_refused(bu: str, prov: str, why: str) -> str:
+    """The one refusal wording for a base_url override; ``why`` names the endpoint rule."""
+    return f"base_url {bu!r} is not allowed for provider {prov!r}. {why}"
+
+
 def _custom_stored_key_error(bu: str) -> Optional[str]:
     """Bare 'custom' is BYOK only while the runtime attaches no stored key. The resolver picks
     the host-gated env keys by HOSTNAME, so a base_url that would receive one must be an origin
     the operator or the provider registry names; pool and ``model.key_env`` keys already match
     their configured URL exactly."""
     from agent.credential_pool import _iter_custom_providers
+    from agent.secret_scope import get_secret_str
     from hermes_cli import runtime_provider as rp
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
     from hermes_constants import OPENROUTER_BASE_URL
+    from utils import base_url_origin
 
+    custom_why = (
+        "A stored API key matches its hostname, and a stored credential may only be sent to a "
+        "configured endpoint (same scheme, host and port); configure the endpoint as a custom "
+        "provider to use it.")
+    try:  # a URL urlparse rejects (unclosed IPv6 bracket) would raise in the key lookup below
+        base_url_origin(bu)
+    except ValueError:
+        return _base_url_refused(bu, "custom", custom_why)
     if not any(rp.has_usable_secret(key) for key in rp._host_gated_env_key_candidates(bu, ollama=True)):
         return None
+    # The RAW configured model.base_url: _get_model_config() may network-probe a local model.
+    model_cfg = rp.load_config().get("model")
     configured = [
-        rp._get_model_config().get("base_url"), rp.get_secret_str("OPENAI_BASE_URL", ""),
-        OPENROUTER_BASE_URL, *_DIRECT_API_BASE_URLS.values(),
+        model_cfg.get("base_url") if isinstance(model_cfg, dict) else None,
+        get_secret_str("OPENAI_BASE_URL", ""), OPENROUTER_BASE_URL,
+        # PROVIDER_REGISTRY already carries the direct OpenAI origin (openai-api).
         *(getattr(p, "inference_base_url", "") for p in PROVIDER_REGISTRY.values()),
         *(entry.get("base_url") for _, entry in _iter_custom_providers()),
     ]
     if any(_same_origin(bu, str(url)) for url in configured if url):
         return None
-    return (
-        f"base_url {bu!r} is not allowed for provider 'custom'. A stored API key matches its "
-        f"hostname, and a stored credential may only be sent to a configured endpoint (same "
-        f"scheme, host and port); configure the endpoint as a custom provider to use it.")
+    return _base_url_refused(bu, "custom", custom_why)
 
 
 def _validate_cron_base_url(
@@ -381,9 +395,8 @@ def _validate_cron_base_url(
         cfg_url = str((cp or {}).get("base_url") or "")
         if cfg_url and _same_origin(bu, cfg_url):
             return None
-        return (
-            f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
-            f"custom provider's stored credential may only be sent to its own "
+        return _base_url_refused(
+            bu, prov, "A named custom provider's stored credential may only be sent to its own "
             f"configured endpoint ({cfg_url or 'unknown'}): same scheme, host and port.")
     try:
         resolved = resolve_requested_provider(prov)
@@ -394,11 +407,10 @@ def _validate_cron_base_url(
     if known_url and _same_origin(bu, known_url):
         return None
     # Fail closed: named providers with stored credentials AND unknown names we cannot origin-match.
-    return (
-        f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
-        f"provider's stored credential may only be sent to its own endpoint "
-        f"(same scheme, host and port); "
-        f'use a configured custom provider (provider="custom") for a custom base_url.')
+    return _base_url_refused(
+        bu, prov, "A named provider's stored credential may only be sent to its own endpoint "
+        '(same scheme, host and port); use a configured custom provider (provider="custom") '
+        "for a custom base_url.")
 
 
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:

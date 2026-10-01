@@ -3084,7 +3084,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 normal final reply may omit it. Treating every unmarked send
                 as non-final would make the receipt misleading.
                 """
-                if final_delivery or not delivery_surface or not result.success:
+                if (
+                    final_delivery
+                    or not delivery_surface
+                    or not result.success
+                    or (result.raw_response or {}).get("warnings")
+                ):
                     return
                 message_ids = list(
                     (result.raw_response or {}).get("message_ids")

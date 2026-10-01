@@ -46,7 +46,7 @@ _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
 _ABANDONED_LOADERS: List[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
-_IN_PLUGIN_LOAD = threading.local()  # ``.active`` on a loader worker thread
+_IN_PLUGIN_LOAD = contextvars.ContextVar("hermes_plugin_load_active", default=False)
 
 
 class PluginLoadTimeout(Exception):
@@ -55,7 +55,7 @@ class PluginLoadTimeout(Exception):
 
 def in_plugin_load_worker() -> bool:
     """True on a deadline worker thread; re-entrant discovery from there must not block on its own parent."""
-    return bool(getattr(_IN_PLUGIN_LOAD, "active", False))
+    return _IN_PLUGIN_LOAD.get()
 
 
 def _resolve_plugin_load_timeout() -> float:
@@ -113,11 +113,13 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     failure: List[BaseException] = []
 
     def _worker() -> None:
-        _IN_PLUGIN_LOAD.active = True
+        token = _IN_PLUGIN_LOAD.set(True)
         try:
             outcome.append(fn())
         except BaseException as exc:  # re-raised on the loading thread, KeyboardInterrupt included
             failure.append(exc)
+        finally:
+            _IN_PLUGIN_LOAD.reset(token)
 
     worker = threading.Thread(
         target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,

@@ -2271,6 +2271,45 @@ describe('overlayConcurrentMessageChanges', () => {
     expect(overlaid.map(message => message.id)).toEqual([user.id, durable.id])
   })
 
+  // A live run does not have to start at the turn's first part: the narration
+  // is sealed as an interim bubble and the surviving live row holds the LAST
+  // tool round plus the reply (CDP dump shape from #127665: committed row with
+  // the turn's tools, live row with the last tool blocks + the same reply, one
+  // turn). The walk must find the run inside the committed fold.
+  it('folds a live run that starts mid-turn inside the committed fold', () => {
+    const reply = 'The reply the user saw twice.'
+
+    const user = msg('116-user', 'user', 'do it', { rowId: 116 })
+
+    const durable = {
+      id: '117-assistant',
+      role: 'assistant',
+      rowId: 117,
+      parts: [
+        { type: 'text', text: 'Working on it.' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal' },
+        { type: 'text', text: reply }
+      ]
+    } as ChatMessage
+
+    const live = {
+      id: 'assistant-stream-1-9',
+      role: 'assistant',
+      pending: false,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal' },
+        { type: 'text', text: reply }
+      ]
+    } as ChatMessage
+
+    const page = [user, durable]
+    const overlaid = overlayConcurrentMessageChanges(page, page, [...page, live])
+
+    expect(overlaid.map(message => message.id)).toEqual([user.id, durable.id])
+  })
+
   // The walk stops where the page stops: a live row that streamed past the fold
   // keeps its place, and only the segments the committed parts actually spell
   // out are retired.

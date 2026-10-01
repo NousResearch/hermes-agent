@@ -1630,9 +1630,10 @@ export function overlayConcurrentMessageChanges(
   // its own: the lead-in duplicates the fold's first text part and the tail its
   // last, so neither bubble matches the fold on its own text. Walk the live run
   // against the committed rows the way the resume fold does — ordered parts,
-  // tool-anchored — and retire what the walk consumes. Text-only runs stay (no
-  // anchor), and a run that grew past the fold keeps its survivor, so this
-  // cannot swallow a coincidentally equal paragraph.
+  // tool-anchored, from every possible offset — and retire what the walk
+  // consumes. Text-only runs stay (no anchor), and a run that grew past the
+  // fold keeps its survivor, so this cannot swallow a coincidentally equal
+  // paragraph.
   const lastUserInPage = nextMessages.findLastIndex(message => message.role === 'user')
 
   const committedAfterPrompt = nextMessages
@@ -1648,13 +1649,30 @@ export function overlayConcurrentMessageChanges(
     (message, index) => index > lastUserLocally && message.role === 'assistant' && isLiveTailReplyId(message.id)
   )
 
-  const liveRunSurvivors = new Set(
-    withoutCoveredAssistantPrefix(committedAfterPrompt, liveRunAfterPrompt).map(message => message.id)
-  )
+  const liveRunIds = liveRunAfterPrompt.map(message => message.id)
+  const coveredLiveRunIds = new Set<string>()
+  const committedParts = committedAfterPrompt.flatMap(message => message.parts)
 
-  const coveredLiveRunIds = new Set(
-    liveRunAfterPrompt.map(message => message.id).filter(id => !liveRunSurvivors.has(id))
-  )
+  // A live run does not have to start at the turn's first part: a tool-heavy
+  // turn seals its narration as an interim bubble and the surviving live row
+  // holds the LAST tool round plus the reply, so its parts begin mid-sequence.
+  // Try the walk from every part offset — one ordered, tool-anchored walk that
+  // consumes a row whole proves the same coverage as starting at zero.
+  for (let offset = 0; offset < committedParts.length; offset += 1) {
+    const window = [
+      { id: 'committed-window', parts: committedParts.slice(offset), role: 'assistant' } as ChatMessage
+    ]
+
+    const survivors = new Set(
+      withoutCoveredAssistantPrefix(window, liveRunAfterPrompt).map(message => message.id)
+    )
+
+    for (const id of liveRunIds) {
+      if (!survivors.has(id)) {
+        coveredLiveRunIds.add(id)
+      }
+    }
+  }
 
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)

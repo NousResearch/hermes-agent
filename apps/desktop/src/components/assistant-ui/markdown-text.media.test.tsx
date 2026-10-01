@@ -1,6 +1,8 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
+import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { $connection } from '@/store/session'
 
 import { MarkdownImage, MarkdownTextContent, MessageTextContent } from './markdown-text'
@@ -48,6 +50,34 @@ describe('MarkdownTextContent remote images', () => {
       path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fimages%2Fremote-preview.png',
       profile: 'remote-work'
     })
+  })
+
+  it('keeps foreign-history images, local-file links and a real registered directive inert', async () => {
+    const live = vi.fn(() => <div data-testid="foreign-live-card">Live action</div>)
+
+    const dispose = registry.register({ id: 'test:foreign-history', area: TRANSCRIPT_DIRECTIVE_AREA, source: 'plugin:test',
+      data: { name: 'foreign-history', render: live } satisfies TranscriptDirectiveContribution })
+
+    try {
+      // Positive control: this exact registered directive mounts in ordinary chat.
+      const ordinary = render(<MessageTextContent media={false} text="::foreign-history" />)
+      await screen.findByTestId('foreign-live-card')
+      expect(live).toHaveBeenCalled()
+      ordinary.unmount(); live.mockClear(); api.mockClear()
+
+      const foreign = render(<MessageTextContent media={false} previewOnly text={
+        `![Foreign image](${REMOTE_IMAGE_PATH})\n\n[Owner notes](/home/user/project/notes.md)\n\n::foreign-history\n\nMEDIA:/home/user/project/private.mp3`
+      } />)
+
+      await screen.findByText('Foreign image')
+      expect(screen.getByText('Owner notes')).toBeTruthy()
+      expect(foreign.container.textContent).toContain('::foreign-history')
+      expect(foreign.container.textContent).toContain('MEDIA:/home/user/project/private.mp3')
+      expect(foreign.container.querySelector('a, img, video, audio, button')).toBeNull()
+      expect(screen.queryByTestId('foreign-live-card')).toBeNull()
+      expect(live).not.toHaveBeenCalled()
+      expect(api).not.toHaveBeenCalled()
+    } finally {dispose()}
   })
 })
 

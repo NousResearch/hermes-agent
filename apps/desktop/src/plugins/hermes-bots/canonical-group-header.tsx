@@ -1,9 +1,37 @@
-import { Button, gatewayActivationEpoch } from '@hermes/plugin-sdk'
+import { Button, Codicon, ConfirmDialog, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  gatewayActivationEpoch, Input, StatusDot, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 
+import { CanonicalMemberFace, canonicalMemberName } from './canonical-group-identity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { canonicalGroupRequest, readGroupExecutionMode } from './canonical-groups'
-import type { CanonicalGroupBinding } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
+
+export function CanonicalGroupHeader({ name, members, status, working, attention, onBack, children }: {
+  name: string; members: CanonicalRoomMember[]; status?: string; working?: boolean; attention?: boolean
+  onBack?: () => void; children?: ReactNode
+}) {
+  const labels = useCanonicalGroupLabels()
+
+  return <header className="flex shrink-0 items-center gap-3 px-4 py-3">
+    {onBack && <Tip label={labels.back}><Button aria-label={labels.back} onClick={onBack} size="icon-xs" variant="ghost"><Codicon name="arrow-left" /></Button></Tip>}
+    <div aria-label={labels.members} className="hidden shrink-0 items-center -space-x-1.5 sm:flex">
+      {members.slice(0, 3).map(member => <div className="rounded-full bg-(--ui-bg-primary) p-0.5" key={member.member_id}>
+        <CanonicalMemberFace member={member} name={canonicalMemberName(member, labels.unknownBot)} size={28} />
+      </div>)}
+    </div>
+    <div className="min-w-0 flex-1">
+      <h2 className="truncate text-sm font-medium text-(--ui-text-primary)"><bdi>{name}</bdi></h2>
+      <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {!!members.length && <span>{labels.memberCount.replace('{count}', String(members.length))}</span>}
+        {status && <span aria-live="polite" className="flex min-w-0 items-center gap-1.5"><StatusDot tone={attention ? 'warn' : working ? 'good' : 'muted'} /><span className="truncate">{status}</span></span>}
+      </div>
+    </div>
+    <div className="flex shrink-0 items-center gap-1">{children}</div>
+  </header>
+}
 
 /** Rename and disband for a gateway room, offered only when its gateway advertises them. */
 export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbanded }: {
@@ -15,6 +43,7 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const pending = useRef(false)
   // One intended name keeps one event id across retries; a different name is a new intent.
   const renameIntent = useRef<null | { name: string; eventId: string }>(null)
 
@@ -28,6 +57,8 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
   }, [binding])
 
   const run = async (operation: () => Promise<void>) => {
+    if (pending.current) {return}
+    pending.current = true
     setBusy(true)
     setError('')
 
@@ -36,6 +67,7 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      pending.current = false
       setBusy(false)
     }
   }
@@ -59,34 +91,55 @@ export function CanonicalGroupRoomActions({ binding, name, onChanged, onDisbande
     })
   }
 
-  const disband = () => void run(async () => {
-    const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
-      room_id: binding.roomId, cancel_id: crypto.randomUUID()
-    })
+  const disband = async () => {
+    if (pending.current) {throw new Error(labels.actionInFlight)}
+    pending.current = true
+    setBusy(true)
+    setError('')
 
-    const tombstone = result?.tombstone
+    try {
+      const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
+        room_id: binding.roomId, cancel_id: crypto.randomUUID()
+      })
 
-    if (tombstone?.room_id !== binding.roomId || !Number.isFinite(tombstone.disbanded_at)) {
+      const tombstone = result?.tombstone
+
+      if (tombstone?.room_id !== binding.roomId || !Number.isFinite(tombstone.disbanded_at)) {
+        throw new Error(labels.disbandUnconfirmed)
+      }
+
+      onDisbanded?.()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
       throw new Error(labels.disbandUnconfirmed)
-    }
-
-    onDisbanded?.()
-  })
+    } finally {pending.current = false; setBusy(false)}
+  }
 
   return <>
-    {methods.includes('groups.rename') && (draft === null
-      ? <Button disabled={busy} onClick={() => setDraft(name)}>{labels.rename}</Button>
-      : <form className="flex gap-1" onSubmit={event => { event.preventDefault(); rename() }}>
-        <input aria-label={labels.roomName} maxLength={120} onChange={event => setDraft(event.target.value)} value={draft} />
-        <Button disabled={busy || !draft.trim()} type="submit">{labels.save}</Button>
-        <Button disabled={busy} onClick={() => setDraft(null)}>{labels.cancel}</Button>
-      </form>)}
-    {methods.includes('groups.disband') && <Button disabled={busy} onClick={() => setConfirming(true)}>{labels.disband}</Button>}
-    {confirming && <div aria-label={labels.disband} role="alertdialog">
-      <p>{labels.disbandWarning}</p>
-      <Button disabled={busy} onClick={disband}>{labels.confirmDisband}</Button>
-      <Button disabled={busy} onClick={() => setConfirming(false)}>{labels.cancel}</Button>
-    </div>}
-    {error && <p role="alert">{error}</p>}
+    {(methods.includes('groups.rename') || methods.includes('groups.disband')) && <DropdownMenu>
+      <DropdownMenuTrigger asChild><Button aria-label={labels.groupActions} disabled={busy} size="icon-xs" variant="ghost"><Codicon name="ellipsis" /></Button></DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {methods.includes('groups.rename') && <DropdownMenuItem onSelect={() => { setError(''); setDraft(name) }}><Codicon name="edit" />{labels.rename}</DropdownMenuItem>}
+        {methods.includes('groups.rename') && methods.includes('groups.disband') && <DropdownMenuSeparator />}
+        {methods.includes('groups.disband') && <DropdownMenuItem onSelect={() => { setError(''); setConfirming(true) }} variant="destructive"><Codicon name="close" />{labels.disband}</DropdownMenuItem>}
+      </DropdownMenuContent>
+    </DropdownMenu>}
+    <Dialog onOpenChange={open => { if (!open && !busy) {setDraft(null)} }} open={draft !== null}>
+      <DialogContent aria-describedby={undefined} className="max-w-sm">
+        <DialogHeader><DialogTitle>{labels.rename}</DialogTitle></DialogHeader>
+        <form className="grid gap-4" onSubmit={event => { event.preventDefault(); rename() }}>
+          <Input aria-label={labels.roomName} autoFocus disabled={busy} maxLength={120} onChange={event => setDraft(event.target.value)} value={draft ?? ''} />
+          {error && <div className="grid gap-1 text-xs text-destructive" role="alert"><p>{labels.pendingActionUnconfirmed}</p>
+            <details className="text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>
+          </div>}
+          <DialogFooter><Button disabled={busy} onClick={() => setDraft(null)} type="button" variant="ghost">{labels.cancel}</Button>
+            <Button disabled={busy || !draft?.trim()} loading={busy} type="submit" variant="secondary">{labels.save}</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+    <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={labels.confirmDisband} description={labels.disbandWarning}
+      destructive onClose={() => setConfirming(false)} onConfirm={disband} open={confirming} title={labels.disband}>
+      {error && error !== labels.disbandUnconfirmed && <details className="text-xs text-(--ui-text-quaternary)"><summary className="cursor-pointer">{labels.setupDetails}</summary><p className="mt-1 whitespace-pre-wrap break-words">{error}</p></details>}
+    </ConfirmDialog>
   </>
 }

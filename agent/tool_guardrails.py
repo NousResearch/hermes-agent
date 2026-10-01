@@ -668,16 +668,16 @@ def _int_at_least(value: Any, default: int, minimum: int) -> int:
 
 _FILE_DISCOVERY_TOOLS = frozenset({"read_file", "search_files"})
 _TERMINAL_DISCOVERY_COMMANDS = frozenset({"cat", "head", "tail", "get-content", "rg", "grep"})
-_PYTHON_COMMAND_RE = re.compile(r"^(?:python(?:3(?:\\.\\d+)?)?|py)(?:\\.exe)?$", re.IGNORECASE)
+_PYTHON_COMMAND_RE = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
 _PYTHON_FILE_READ_RE = re.compile(
-    r"(?:open\\s*\\([^)]*\\)\\s*\\.\\s*(?:read|readlines)\\s*\\("
-    r"|path\\s*\\([^)]*\\)\\s*\\.\\s*read_(?:text|bytes)\\s*\\()",
+    r"(?:open\s*\([^)]*\)\s*\.\s*(?:read|readlines)\s*\("
+    r"|path\s*\([^)]*\)\s*\.\s*read_(?:text|bytes)\s*\()",
     re.IGNORECASE,
 )
 
 
 def _command_basename(token: str) -> str:
-    return token.replace("\\\\", "/").rsplit("/", 1)[-1].lower()
+    return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
 def _terminal_is_clear_file_discovery(command: Any) -> bool:

@@ -182,11 +182,13 @@ gateway:
     label_normal: "NORMÁL"
     status_fast: "gyors"
     status_normal: "normál"
-    picker_title: "⚡ **Priority Processing**\\n\\nJelenlegi mód: `{mode}`\\n\\nVálassz egy opciót:"
+    picker_title: "⚡ **Priority Processing**\n\nJelenlegi mód: `{mode}`\n\nVálassz egy opciót:"
     choice_fast: "fast — Priority Processing bekapcsolva"
     choice_normal: "normal — normál feldolgozás"
     choice_auto: "auto — gyors minden kör első másodperceiben"
     choice_cold: "cold — gyors csak a munkamenet első körében"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, hatszoros ár)"
+    ultrafast_not_supported: "⚡ Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: `{model}`)."
   footer:
     status: "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
     usage: "Használat: `/footer [on|off|status]`"
@@ -283,7 +285,7 @@ gateway:
     reset_global_unsupported: "⚠️ A `/reasoning reset --global` nem támogatott. Használd a `/reasoning <level> --global` parancsot a globális alapérték módosításához."
     reset_done: "🧠 ✓ A munkamenet gondolkodási felülbírálása törölve; visszaállás a globális konfigurációra."
     unknown_arg: "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes szintek:** none, minimal, low, medium, high, xhigh, max, ultra\n**Megjelenítés:** show, hide\n**Megőrzés:** add hozzá a `--global` opciót a munkameneten túli mentéshez"
-    picker_title: "🧠 **Gondolkodási beállítások**\\n\\n**Erőfeszítés:** `{level}`\\n**Hatókör:** {scope}\\n**Megjelenítés:** {display}\\n\\nVálassz egy opciót:"
+    picker_title: "🧠 **Gondolkodási beállítások**\n\n**Erőfeszítés:** `{level}`\n**Hatókör:** {scope}\n**Megjelenítés:** {display}\n\nVálassz egy opciót:"
     choice_none: "none — gondolkodás kikapcsolása"
     choice_reset: "reset — munkameneti felülbírálás törlése"
     choice_show: "gondolkodás megjelenítése a válaszokban"
@@ -1615,7 +1617,7 @@ slash:
   reasoning:
     description: "Gondolkodási erőfeszítés és megjelenítés kezelése"
   fast:
-    description: "Gyors mód — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Gyors mód — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "A megjelenítési skin/téma megjelenítése vagy módosítása"
   indicator:
@@ -2668,7 +2670,9 @@ cli:
       feature_generic: "Gyors mód"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Használat: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: {model})."
+      usage: "Használat: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} beállítva: {value} {scope}"
     hatch:
@@ -3300,6 +3304,7 @@ cli:
     shallow_clone_keeping: "⚠ Sekély klón — a push állapota nem ellenőrizhető, megtartva: {path}"
     next_session_deepens: "A következő `hermes -w` munkamenet mélyíti a klónt, és automatikusan eltávolítja a beolvasztott worktree-ket."
     unpushed_keeping: "⚠ A worktree-ben feltöltetlen commitok vannak, megtartva: {path}"
+    uncommitted_keeping: "⚠ A worktree-ben nem commitolt változások vannak, megtartva: {path}"
     clean_up_manually: "Kézi takarításhoz: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree eltakarítva: {path}"
 display:

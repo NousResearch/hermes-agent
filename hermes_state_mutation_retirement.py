@@ -28,7 +28,9 @@ def retire_terminal_receipts(conn, session_ids):
         states = {r['status'] for r in [*admissions, *workers]} - {'terminal'}
         if states:
             raise RuntimeStoreError('unknown_execution' if 'unknown' in states else 'session_busy')
+        from hermes_state_logical_attempts import project_admission, finish_retirement
         for raw in admissions:
+            project_admission(conn, raw, migrating=True)
             row = dict(raw)
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
@@ -53,6 +55,7 @@ def retire_terminal_receipts(conn, session_ids):
             conn.execute('DELETE FROM worker_receipts WHERE execution_id=?', (row['execution_id'],))
         conn.execute('DELETE FROM worker_executions WHERE session_id=?', (sid,))
         conn.execute('DELETE FROM session_admissions WHERE target_session_id=?', (sid,))
+        finish_retirement(conn, [row['admission_id'] for row in admissions])
 
 
 _LIVE_LEDGER_SQL = """SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'

@@ -216,10 +216,13 @@ def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
     """
     if not (original := _ac_inflight_original(session)):
         return
-    head = session.get("queued_prompt")
-    cleaned = (_sanitize_queued_entry_vs_inflight_user(e, original)
-               for e in ([head] if head else []) + list(session.get("queued_prompts") or []))
+    cleaned = (_sanitize_queued_entry_vs_inflight_user(e, original) for e in _queued_envelopes(session))
     _ac_set_queue(session, [c for c in cleaned if c is not None])
+
+
+def _queued_envelopes(session: dict) -> list[dict]:
+    """The server queue in drain order: ``queued_prompt`` (head) then ``queued_prompts``."""
+    return [e for e in (session.get("queued_prompt"), *(session.get("queued_prompts") or ())) if isinstance(e, dict)]
 
 
 def _ac_set_queue(session: dict, entries: list) -> None:
@@ -269,11 +272,7 @@ def _ac_try_correction(
         _record_inflight_correction(session, plain_text)
         _drop_queued_duplicates_of_inflight_user(session)
         session["last_active"] = time.time()
-        ack = {
-            "status": status,
-            **({"client_message_id": client_message_id} if client_message_id else {}),
-            **({"user_timestamp": user_timestamp} if user_timestamp is not None else {}),
-        }
+        ack = _submit_ack(status, client_message_id, user_timestamp=user_timestamp)
         _remember_client_message_ack_locked(session, client_message_id, ack)
     return _ok(rid, ack)
 
@@ -363,13 +362,10 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
     from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
-    persist_metadata = dict(envelope.get("display_metadata") or {})
-    if envelope.get("client_message_id"):
-        persist_metadata["_prompt_submit_status"] = "queued"
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
         accept_metadata={QUEUED_PROMPT_METADATA_KEY: True},
-        display_metadata=persist_metadata or None,
+        display_metadata=envelope.get("display_metadata"),
         user_timestamp=envelope.get("user_timestamp"))
     if strict and staged is None and isinstance(envelope.get("text"), str) and envelope["text"].strip():
         raise RuntimeError("queued prompt user row was not persisted")
@@ -404,12 +400,9 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
                                  display_metadata=queued.get("display_metadata"), **identity)
     else:
         from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
-        still_queued = dict(queued.get("display_metadata") or {})
-        if queued.get("client_message_id"):
-            still_queued["_prompt_submit_status"] = "queued"
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
                                  accept_metadata={QUEUED_PROMPT_METADATA_KEY: True},
-                                 display_metadata=still_queued or None, **identity)
+                                 display_metadata=queued.get("display_metadata"), **identity)
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
@@ -433,25 +426,6 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
             # losing text would be worse.
             logger.debug("queued-prompt row re-placement deactivate failed", exc_info=True)
     return fresh
-
-
-def _queued_prompt_persist_error(rid, exc: Exception) -> dict:
-    from hermes_state_user_copy import describe_storage_failure
-
-    failure = describe_storage_failure(exc)
-    if failure.code == "disk_full":
-        message = (
-            "Session storage could not be written, so this message was not queued: the disk is full. "
-            "Free some disk space, then send your message again."
-        )
-        code = 5070
-    else:
-        message = (
-            f"Session storage could not be written, so this message was not queued. Cause: {failure.gloss}. "
-            f"{failure.action} Then send your message again."
-        )
-        code = 5071
-    return _err(rid, code, message, data=_storage_error_data(failure, exc))
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
@@ -513,13 +487,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             envelope = None
         else:
-            queue_before = [
-                dict(entry)
-                for entry in (
-                    ([session["queued_prompt"]] if isinstance(session.get("queued_prompt"), dict) else [])
-                    + [entry for entry in (session.get("queued_prompts") or []) if isinstance(entry, dict)]
-                )
-            ]
+            queue_before = [dict(entry) for entry in _queued_envelopes(session)]
             envelope = _enqueue_prompt(
                 session, text, transport, image_paths=image_paths, turn_author=turn_author,
                 display_metadata=display_metadata, user_timestamp=user_timestamp,
@@ -533,18 +501,13 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
                     _ac_set_queue(session, queue_before)
                     if image_paths:
                         session["attached_images"] = image_paths + list(session.get("attached_images", []))
-                    error = _queued_prompt_persist_error(rid, exc)
+                    error = _storage_write_error(rid, exc, outcome="queued")
                     _release_client_message_admission_locked(session, client_message_id, error)
                     return error
-                staged = envelope.get("_submit_user_row") or {}
-                ack = {"status": "queued"}
-                if isinstance(staged.get("_row_id"), int):
-                    ack["user_row_id"] = staged["_row_id"]
-                if envelope.get("user_timestamp") is not None:
-                    ack["user_timestamp"] = envelope["user_timestamp"]
-                if envelope.get("client_message_id"):
-                    ack["client_message_id"] = envelope["client_message_id"]
-                envelope["_submit_ack"] = ack
+                row_id = (envelope.get("_submit_user_row") or {}).get("_row_id")
+                envelope["_submit_ack"] = ack = _submit_ack(
+                    "queued", envelope.get("client_message_id"), user_timestamp=envelope.get("user_timestamp"),
+                    user_row_id=row_id if isinstance(row_id, int) else None)
                 _remember_client_message_ack_locked(session, client_message_id, ack)
             session["last_active"] = time.time()
     if duplicate_ack is not None:
@@ -586,8 +549,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             # Generation bump cancelled the claim (Stop, compress re-anchor, …): don't dispatch, but restore the
             # envelope (claimed head first, then whatever advanced into the slot) so a legitimate follow-up isn't dropped.
             # See #84417.
-            advanced = session.get("queued_prompt")
-            _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
+            _ac_set_queue(session, [queued, *_queued_envelopes(session)])
             session["running"] = False
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
@@ -609,9 +571,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     # its own row write between the re-append and the deactivation.
     with session["history_lock"]:
         dispatch_row = _replace_queued_user_row_for_turn(session, queued, is_dispatching=True)
-        still_queued = (([session["queued_prompt"]] if session.get("queued_prompt") else [])
-                        + list(session.get("queued_prompts") or []))
-        for envelope in still_queued:
+        for envelope in _queued_envelopes(session):
             _replace_queued_user_row_for_turn(session, envelope)
         # The single adoption slot must hold the DISPATCHING envelope's row (the loop above leaves
         # the last processed one there) or the turn would adopt the wrong prompt's row.

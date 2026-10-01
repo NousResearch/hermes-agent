@@ -402,14 +402,22 @@ def _start_inflight_turn(
     if client_message_id:
         turn["client_message_id"] = client_message_id
         turn["_submit_ack"] = (
-            dict(submit_ack)
-            if isinstance(submit_ack, dict)
-            else {
-                "status": "streaming", "client_message_id": client_message_id,
-                **({"user_timestamp": user_timestamp} if user_timestamp is not None else {}),
-            }
-        )
+            dict(submit_ack) if isinstance(submit_ack, dict)
+            else _submit_ack("streaming", client_message_id, user_timestamp=user_timestamp))
     session["inflight_turn"] = turn
+
+
+def _submit_ack(
+    status: str, client_message_id: str | None, *, user_timestamp: float | None = None,
+    user_row_id: int | None = None,
+) -> dict:
+    """The ``prompt.submit`` result a client keys its send on; a retry of the same id gets it back verbatim."""
+    return {
+        "status": status,
+        **({"client_message_id": client_message_id} if client_message_id else {}),
+        **({"user_timestamp": user_timestamp} if user_timestamp is not None else {}),
+        **({"user_row_id": user_row_id} if user_row_id is not None else {}),
+    }
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:

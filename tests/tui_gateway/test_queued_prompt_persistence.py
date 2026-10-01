@@ -11,6 +11,8 @@ instead of writing a duplicate.
 
 import types
 
+import pytest
+
 from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -136,56 +138,24 @@ def test_busy_queue_rolls_back_completely_when_accept_time_persistence_raises(mo
         db.close()
 
 
-def test_inflight_snapshot_carries_client_send_envelope():
-    session = {"inflight_turn": {
-        "user": "resume me",
-        "assistant": "working",
-        "streaming": True,
-        "client_message_id": "client-live",
-        "user_timestamp": 1_790_594_548.125,
-    }}
-
-    assert server._inflight_snapshot(session) == {
-        "user": "resume me",
-        "assistant": "working",
-        "streaming": True,
-        "client_message_id": "client-live",
-        "user_timestamp": 1_790_594_548.125,
-    }
-
-
-def test_queued_snapshot_carries_client_send_envelope():
-    session = {"queued_prompt": {
-        "text": "run next",
-        "client_message_id": "client-queued",
-        "user_timestamp": 1_790_594_548.125,
-    }}
-
-    assert server._queued_prompt_snapshot(session) == {
-        "user": "run next",
-        "client_message_id": "client-queued",
-        "user_timestamp": 1_790_594_548.125,
-    }
-
-
-def test_snapshots_keep_user_timestamp_without_client_identity():
+@pytest.mark.parametrize("client_message_id", ["client-send", None])
+def test_snapshots_carry_exactly_the_send_envelope_their_source_carries(client_message_id):
+    """A reconnecting client rebuilds the live and the queued bubble from these snapshots: each
+    carries the send's timestamp, its client id only when the send had one, and nothing private."""
+    envelope = {"user_timestamp": 1_790_594_548.125,
+                **({"client_message_id": client_message_id} if client_message_id else {})}
     inflight_session = {}
-    server._start_inflight_turn(
-        inflight_session, "resume me", user_timestamp=1_790_594_548.125)
-    queued_session = {"queued_prompt": {
-        "text": "run next",
-        "user_timestamp": 1_790_594_549.25,
-    }}
+    server._start_inflight_turn(inflight_session, "resume me", **envelope)
+    queued_session = {"queued_prompt": {"text": "run next", "transport": "ws-1", **envelope}}
 
-    assert server._inflight_snapshot(inflight_session)["user_timestamp"] == 1_790_594_548.125
-    assert "client_message_id" not in server._inflight_snapshot(inflight_session)
-    assert server._queued_prompt_snapshot(queued_session) == {
-        "user": "run next",
-        "user_timestamp": 1_790_594_549.25,
-    }
+    assert server._inflight_snapshot(inflight_session) == {
+        "user": "resume me", "assistant": "", "streaming": True, **envelope}
+    assert server._queued_prompt_snapshot(queued_session) == {"user": "run next", **envelope}
 
 
-def test_identity_bearing_repeat_of_inflight_prose_is_enqueued():
+def test_identity_bearing_repeat_of_inflight_prose_is_queued_and_survives_sanitization():
+    """A deliberate re-send of the live prompt's prose is a distinct occurrence (#84417's
+    self-duplicate suppression is for identity-less copies only)."""
     session = {
         "inflight_turn": {
             "user": "same repeated prompt",
@@ -195,16 +165,10 @@ def test_identity_bearing_repeat_of_inflight_prose_is_enqueued():
 
     envelope = server._enqueue_prompt(
         session, "same repeated prompt", "ws-1", client_message_id="client-new")
+    server._drop_queued_duplicates_of_inflight_user(session)
 
-    assert envelope is session["queued_prompt"]
+    assert session["queued_prompt"] is envelope
     assert envelope["client_message_id"] == "client-new"
-
-
-def test_identity_bearing_repeat_survives_queue_sanitization():
-    entry = {"text": "same repeated prompt", "client_message_id": "client-new"}
-
-    assert server._sanitize_queued_entry_vs_inflight_user(
-        entry, "same repeated prompt") is entry
 
 
 def test_retried_queued_client_message_id_returns_original_ack_without_duplicate(monkeypatch, tmp_path):

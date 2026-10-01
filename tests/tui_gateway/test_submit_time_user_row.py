@@ -143,7 +143,7 @@ def test_pending_live_ack_never_falls_through_to_partial_durable_reconstruction(
                 "client_message_id": client_message_id,
                 "survivor_user_row_ids": [17],
             }
-            session["inflight_turn"]["_submit_ack_ready"] = threading.Event()
+            server._reserve_client_message_admission_locked(session, client_message_id)
         assert server._persist_session_row_for_submit(
             "rid", session, "pending exact ack", None,
             {"client_message_id": client_message_id}, 1_790_594_548.125,
@@ -153,7 +153,6 @@ def test_pending_live_ack_never_falls_through_to_partial_durable_reconstruction(
     finally:
         server._sessions.pop(sid, None)
         db.close()
-
 
 
 def test_failed_submit_persistence_releases_client_ack_reservation(monkeypatch, tmp_path):
@@ -171,8 +170,7 @@ def test_failed_submit_persistence_releases_client_ack_reservation(monkeypatch, 
             session["running"] = True
             server._start_inflight_turn(
                 session, "retry after disk full", client_message_id=client_message_id)
-            ready = server._reserve_client_message_admission_locked(session, client_message_id)
-            session["inflight_turn"]["_submit_ack_ready"] = ready
+            admission = server._reserve_client_message_admission_locked(session, client_message_id)
 
         response = server._persist_session_row_for_submit(
             "failed", session, "retry after disk full", None,
@@ -182,7 +180,7 @@ def test_failed_submit_persistence_releases_client_ack_reservation(monkeypatch, 
         assert response["error"]["data"]["code"] == "disk_full"
         assert client_message_id not in session.get("_client_message_admissions", {})
         # A concurrent duplicate that was waiting on this admission learns the real cause.
-        duplicate = server._await_client_message_ack("duplicate", session, client_message_id, ready)
+        duplicate = server._await_client_message_ack("duplicate", session, client_message_id, admission)
         assert duplicate["id"] == "duplicate"
         assert duplicate["error"] == response["error"]
     finally:

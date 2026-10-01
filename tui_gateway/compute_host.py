@@ -238,6 +238,7 @@ class ComputeHost:
             server._install_borrowed_lease(sid, session, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
+            turn_kwargs = _frame_turn_kwargs(frame)
             with session["history_lock"]:
                 queued_gen = frame.get("queued_prompt_generation")
                 current_gen = int(session.get("_queued_prompt_generation", 0))
@@ -248,17 +249,7 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
-                server._start_inflight_turn(
-                    session, inflight,
-                    display_kind=frame.get("display_kind") or None,
-                    display_metadata=(frame.get("display_metadata")
-                                      if isinstance(frame.get("display_metadata"), dict) else None),
-                    user_timestamp=(float(frame["user_timestamp"])
-                                    if isinstance(frame.get("user_timestamp"), (int, float))
-                                    and not isinstance(frame.get("user_timestamp"), bool) else None),
-                    client_message_id=(frame.get("client_message_id")
-                                       if isinstance(frame.get("client_message_id"), str) else None),
-                    submit_ack=(frame.get("submit_ack") if isinstance(frame.get("submit_ack"), dict) else None))
+                server._start_inflight_turn(session, inflight, **turn_kwargs)
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
@@ -268,16 +259,7 @@ class ComputeHost:
                 hermes_undo.on_user_message_appended(session["session_key"])
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
-            server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
-                display_metadata=(frame.get("display_metadata")
-                                  if isinstance(frame.get("display_metadata"), dict) else None),
-                user_timestamp=(float(frame["user_timestamp"])
-                                if isinstance(frame.get("user_timestamp"), (int, float))
-                                and not isinstance(frame.get("user_timestamp"), bool) else None),
-                client_message_id=(frame.get("client_message_id")
-                                   if isinstance(frame.get("client_message_id"), str) else None),
-                submit_ack=(frame.get("submit_ack") if isinstance(frame.get("submit_ack"), dict) else None))
+            server._run_prompt_submit(request_id, sid, session, text, **turn_kwargs)
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -531,6 +513,20 @@ def _history_meta(session: dict) -> dict[str, Any]:
         "session_key": str(session.get("session_key") or ""),
         "history_version": int(session.get("history_version", 0)),
         "message_count": len(session.get("history") or [])}
+
+
+def _frame_turn_kwargs(frame: dict[str, Any]) -> dict[str, Any]:
+    """The send envelope a routed turn frame carries, coerced once for the in-flight record and the run."""
+    user_timestamp = frame.get("user_timestamp")
+    return {
+        "display_kind": frame.get("display_kind") or None,
+        "display_metadata": frame["display_metadata"] if isinstance(frame.get("display_metadata"), dict) else None,
+        "user_timestamp": (float(user_timestamp) if isinstance(user_timestamp, (int, float))
+                           and not isinstance(user_timestamp, bool) else None),
+        "client_message_id": (frame["client_message_id"]
+                              if isinstance(frame.get("client_message_id"), str) else None),
+        "submit_ack": frame["submit_ack"] if isinstance(frame.get("submit_ack"), dict) else None,
+    }
 
 
 def _rss_mb(pid: int) -> float:

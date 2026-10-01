@@ -1528,6 +1528,8 @@ def register(ctx):
 
 Applies to every tool. For terminal-only rewriting see `transform_terminal_output` below — it is narrower, runs before `transform_tool_result`, and its replacement is still subject to the terminal tool's final output limit.
 
+For `web_search`, Hermes logs a warning when this hook changes a successful JSON result or makes a failed/non-JSON result claim `success: true`. Formatting and object-key ordering alone do not trigger it. The warning contains no search arguments or result content, and the plugin's output is still used, including mandatory redaction. This is an operator diagnostic, not a guarantee that the transformed content is accurate.
+
 ---
 
 ### `transform_terminal_output`

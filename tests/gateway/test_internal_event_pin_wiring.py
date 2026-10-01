@@ -247,6 +247,7 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
     runner._refresh_agent_cache_message_count = AsyncMock()
 
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter.get_pending_message.return_value = None
     adapter._active_sessions = {}
     source = _human_thread_source()
@@ -295,6 +296,7 @@ async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypa
 
     source = _human_source()
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter._active_sessions = {}
     pending_event = MessageEvent(
         text="queued",

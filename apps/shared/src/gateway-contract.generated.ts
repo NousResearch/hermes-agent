@@ -1456,6 +1456,8 @@ export interface GroupsRetryParams {
   profile?: string | null
   room_id: string
   task_id: string
+  member_id?: string | null
+  execution_generation?: number | null
 }
 export interface GroupsRetryResult {
   retried?: boolean
@@ -1469,6 +1471,90 @@ export interface RoomTaskReceipt {
   status: string
   execution_generation: number
   cancel_generation: number
+}
+export interface GroupsDiscardParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  task_id: string
+  execution_generation: number
+}
+export interface GroupsDiscardResult {
+  discarded: boolean
+  task: RoomTaskReceipt
+}
+export interface GroupsAttachmentUploadParams {
+  profile?: string | null
+  room_id: string
+  upload_id: string
+  kind: string
+  name: string
+  mime: string
+  data_base64: string
+}
+export interface GroupsAttachmentResult {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+}
+export interface GroupsAttachmentDownloadParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  attachment_id: string
+}
+export interface GroupsAttachmentDownloadResult {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  data_base64: string
+}
+export interface GroupsAttachmentListParams {
+  profile?: string | null
+  room_id: string
+  cursor?: string | null
+  limit?: number | null
+  query?: string | null
+  producer_member_id?: string | null
+}
+export interface GroupsAttachmentListResult {
+  room_id: string
+  authority: RoomAuthority
+  snapshot_seq: number
+  items: RoomFileItem[]
+  next_cursor: string | null
+  has_more: boolean
+}
+export interface RoomFileItem {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  event_id: string
+  seq: number
+  manifest_index: number
+  producer: RoomFileProducer
+  shared_at: number
+}
+export interface RoomFileProducer {
+  kind: string
+  id: string
+  label: string
 }
 export interface GroupsReplicateParams {
   profile?: string | null
@@ -4814,6 +4900,12 @@ export interface RpcMethods {
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
+  /** Read bytes bound to a canonical room event, subject to current viewer authorization. */
+  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: GroupsAttachmentDownloadResult }
+  /** List authorized published room-file versions with stable paging, search and producer filtering. */
+  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
+  /** Upload owner-authorized bytes for a canonical room message. */
+  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: GroupsAttachmentResult }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
@@ -4822,6 +4914,8 @@ export interface RpcMethods {
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
   /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. */
   'groups.disband': { params: GroupsDisbandParams; result: GroupsDisbandResult }
+  /** Discard one exact canonically proven-unaccepted attempt; accepted or unknown work requires Stop. */
+  'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
   /** List rooms hosted by this gateway, most recently changed first. */
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
@@ -4840,7 +4934,7 @@ export interface RpcMethods {
   'groups.replica_state': { params: GroupsReplicaStateParams; result: GroupsReplicaStateResult }
   /** Persist one authority-stamped replay page into the local replica store; idempotent. */
   'groups.replicate': { params: GroupsReplicateParams; result: GroupsReplicateResult }
-  /** Retry one indeterminate room task after explicit user confirmation. */
+  /** Retry one eligible room task; canonical controls require exact proven nonadmission. */
   'groups.retry': { params: GroupsRetryParams; result: GroupsRetryResult }
   /** Append one inert message.user event idempotently; the actor is server-owned. */
   'groups.send': { params: GroupsSendParams; result: GroupsSendResult }
@@ -5234,10 +5328,14 @@ export const RPC_METHODS = [
   'free_tier.status',
   'gateway.capabilities',
   'groups.approve',
+  'groups.attachment.download',
+  'groups.attachment.list',
+  'groups.attachment.upload',
   'groups.capabilities',
   'groups.create',
   'groups.demote',
   'groups.disband',
+  'groups.discard',
   'groups.list',
   'groups.log',
   'groups.peer.invite',

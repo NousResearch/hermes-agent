@@ -2369,6 +2369,29 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_sta
     return sum(_estimate_message_tokens_cached(msg, image_cost) for msg in messages)
 
 
+def estimate_native_anthropic_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
+    """Estimate native Anthropic messages with replayed readable thinking charged exactly once."""
+    from agent.message_sanitization import native_anthropic_accounting_projection
+
+    projected, replayed_thinking = native_anthropic_accounting_projection(messages)
+    return estimate_messages_tokens_rough(projected) + sum(
+        estimate_tokens_rough(text) for text in replayed_thinking
+    )
+
+
+def estimate_native_anthropic_request_tokens_rough(
+    messages: List[Dict[str, Any]], *, system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Request estimate for native Anthropic; opaque replay bytes never enter text accounting."""
+    from agent.message_sanitization import native_anthropic_accounting_projection
+
+    projected, replayed_thinking = native_anthropic_accounting_projection(messages)
+    return estimate_request_tokens_rough(
+        projected, system_prompt=system_prompt, tools=tools
+    ) + sum(estimate_tokens_rough(text) for text in replayed_thinking)
+
+
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
 # in lockstep with ``context_compressor._NEWEST_TURN_ONLY_BUDGET_KEYS``.
 _STALE_THINKING_ESTIMATE_KEYS = ("reasoning", "reasoning_content")

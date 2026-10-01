@@ -11,7 +11,11 @@ from agent.message_sanitization import (
     native_anthropic_accounting_projection,
     stale_thinking_reaches_wire,
 )
-from agent.model_metadata import estimate_messages_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_native_anthropic_messages_tokens_rough,
+    estimate_native_anthropic_request_tokens_rough,
+)
 
 
 def _signed_turn(question: str, answer: str, sig: str, *, thinking: str | None = None):
@@ -430,7 +434,6 @@ def test_context_selection_canonical_clone_does_not_double_count_thinking(monkey
 
 
 def test_canonical_preflight_dedupes_ordered_thinking_carrier():
-    from agent.model_metadata import estimate_request_tokens_rough
     from agent.turn_context import _preflight_request_tokens
 
     agent = _assembly_agent()
@@ -456,9 +459,7 @@ def test_canonical_preflight_dedupes_ordered_thinking_carrier():
 
     request_copy = copy.deepcopy(canonical)
     request_copy[1].pop("reasoning", None)
-    expected = estimate_request_tokens_rough(
-        native_anthropic_accounting_projection(request_copy)
-    )
+    expected = estimate_native_anthropic_request_tokens_rough(request_copy)
     assert preflight == expected
 
 
@@ -476,16 +477,16 @@ def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes()
     ordered_only = copy.deepcopy(huge_opaque)
     ordered_only.pop("reasoning_details")
 
-    projected_huge = native_anthropic_accounting_projection([huge_opaque])
-    projected_ordered = native_anthropic_accounting_projection([ordered_only])
-    projected_small = native_anthropic_accounting_projection([base])
+    projected_huge, readable = native_anthropic_accounting_projection([huge_opaque])
 
-    assert estimate_messages_tokens_rough(projected_huge) == estimate_messages_tokens_rough(
-        projected_ordered
-    )
-    assert estimate_messages_tokens_rough(projected_huge) == estimate_messages_tokens_rough(
-        projected_small
-    )
+    assert "_anthropic_readable_thinking_estimate" not in repr(projected_huge)
+    assert readable == ("x" * 8000,)
+    assert estimate_native_anthropic_messages_tokens_rough(
+        [huge_opaque]
+    ) == estimate_native_anthropic_messages_tokens_rough([ordered_only])
+    assert estimate_native_anthropic_messages_tokens_rough(
+        [huge_opaque]
+    ) == estimate_native_anthropic_messages_tokens_rough([base])
 
 
 def test_context_selection_cannot_restore_rejected_thinking(monkeypatch):

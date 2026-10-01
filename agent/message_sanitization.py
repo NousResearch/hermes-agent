@@ -638,20 +638,20 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
 
 
-def native_anthropic_accounting_projection(messages: Any) -> Any:
-    """Project native Anthropic replay messages into the generic rough estimator.
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
+    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
 
-    Canonical history may retain storage-only reasoning alongside the signed replay
-    carriers. Native conversion prefers ordered anthropic_content_blocks over
-    reasoning_details and never sends reasoning itself, so charging all three
-    representations can double-count the same thinking. Keep normal content/tool
-    payloads, replace the active replay carrier with readable thinking text exactly
-    once, and never price opaque signature/data bytes as plaintext.
+    Canonical history may retain storage-only reasoning alongside signed replay carriers.
+    Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
+    never sends reasoning itself. The generic message estimator therefore receives only
+    ordinary wire-shaped fields, while readable thinking is returned separately for the
+    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
     """
     if not isinstance(messages, list):
-        return messages
+        return messages, ()
 
     projected = []
+    replayed_thinking: list[str] = []
     replayable_ordered_types = {"thinking", "redacted_thinking", "text", "tool_use", "image"}
     thinking_types = {"thinking", "redacted_thinking"}
     for message in messages:
@@ -697,11 +697,9 @@ def native_anthropic_accounting_projection(messages: Any) -> Any:
                     and block.get("thinking")
                 ):
                     readable.append(block["thinking"])
-        if readable:
-            shadow["_anthropic_readable_thinking_estimate"] = "\n".join(readable)
-
+        replayed_thinking.extend(readable)
         projected.append(shadow)
-    return projected
+    return projected, tuple(replayed_thinking)
 
 
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:

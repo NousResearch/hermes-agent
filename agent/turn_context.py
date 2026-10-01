@@ -23,7 +23,11 @@ from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
-from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_native_anthropic_request_tokens_rough,
+    estimate_request_tokens_rough,
+)
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
@@ -69,17 +73,18 @@ def _preflight_request_tokens(
             getattr(agent, "base_url", ""), getattr(agent, "model", "")
         ):
             from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
-            from agent.message_sanitization import native_anthropic_accounting_projection
 
             # Preflight runs on canonical history, while the eventual request is a
             # filtered copy. Mirror suppression onto shallow message copies before
-            # projection so already-rejected blocks cannot trigger phantom compression.
+            # pricing the exact native replay carriers.
             estimate_messages = [
                 dict(message) if isinstance(message, dict) else message
                 for message in messages
             ]
             apply_rejected_thinking_suppression(agent, estimate_messages)
-            estimate_messages = native_anthropic_accounting_projection(estimate_messages)
+            return estimate_native_anthropic_request_tokens_rough(
+                estimate_messages, system_prompt=system_prompt or "", tools=tools
+            )
     return estimate_request_tokens_rough(
         estimate_messages, system_prompt=system_prompt or "", tools=tools,
         charge_stale_thinking=charge_stale_thinking,

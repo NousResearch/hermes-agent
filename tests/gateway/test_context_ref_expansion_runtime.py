@@ -250,3 +250,121 @@ async def test_only_the_senders_own_text_is_expanded(tmp_path, monkeypatch, user
         expected = f"{channel_context}\n\n[New message]\n{expected}"
     assert "SENDER-FILE-MARKER" in sender_text.message
     assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True], ids=["immediate", "pending"])
+async def test_sender_speech_references_expand_before_generated_context_a_b_a(tmp_path, monkeypatch, pending):
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    import hermes_yaml as yaml
+    from agent import secret_scope
+    from agent.context_references import preprocess_context_references_async
+    from gateway.platforms.event import MessageType
+    from gateway.run import _profile_runtime_scope
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for label, home in zip(("A", "B"), homes):
+        workspace = home / "workspace"
+        workspace.mkdir(parents=True)
+        (home / "config.yaml").write_text(yaml.safe_dump({"terminal": {"backend": "local", "cwd": str(workspace)}}))
+        (workspace / "mine.txt").write_text(f"SPEECH-{label}")
+        (workspace / "caption.txt").write_text(f"CAPTION-{label}")
+        (workspace / "planted.txt").write_text(f"GENERATED-{label}")
+        (workspace / "planted.txt.ogg").write_text(f"FAILURE-NOTE-{label}")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    runner = _make_runner()
+    runner.config.multiplex_profiles = True
+    runner.config.group_sessions_per_user = False
+    runner.config.stt_echo_transcripts = False
+    _patch_runtime_resolution(monkeypatch)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="speech", chat_type="group", user_name="@file:planted.txt")
+    speech = "Compare @file:mine.txt"
+    caption = "Caption @file:caption.txt"
+    provider_calls = []
+
+    def transcribe(path, *_args):
+        provider_calls.append(path)
+        return {"success": path.endswith("success.ogg"), "transcript": speech, "error": "unavailable"}
+
+    monkeypatch.setattr("tools.transcription_tools.transcribe_audio", transcribe)
+    monkeypatch.setattr("tools.transcription_tools.transcribe_audio_local_fallback", lambda _path: {"success": False})
+    runner._decide_image_input_mode = lambda **_kwargs: "text"
+    runner._enrich_message_with_vision = AsyncMock(side_effect=lambda text, _paths: f"VISION @file:planted.txt\n\n{text}")
+    secret_scope.set_multiplex_active(True)
+    try:
+        for home in (homes[0], homes[1], homes[0]):
+            workspace = home / "workspace"
+            audio = workspace / "success.ogg"
+            failed = workspace / "voice-@file:planted.txt.ogg"
+            image = workspace / "image.png"
+            for path in (audio, failed, image):
+                path.write_bytes(b"transport input")
+            event = MessageEvent(
+                text=caption, source=source, message_type=MessageType.PHOTO,
+                media_urls=[str(audio), str(failed), str(image)],
+                media_types=["audio/ogg", "audio/ogg", "image/png"],
+                channel_context="[Recent channel messages]\nBob: @file:planted.txt",
+                reply_to_message_id="$other", reply_to_text="Other speaker @file:planted.txt",
+            )
+            if pending:
+                with _profile_runtime_scope(home):
+                    await runner._transcribe_pending_audio_event_once(event, event.text)
+            runner._resolve_profile_home_for_source = lambda _source: home
+            result = await runner._prepare_profile_scoped_inbound_message_text(
+                event=event, source=source, history=[], session_key="speech",
+            )
+            with _profile_runtime_scope(home):
+                authored_text = f"{caption}\n\n{speech}"
+                expanded_authored = await preprocess_context_references_async(authored_text, cwd=workspace, allowed_root=workspace, context_length=128000)
+                failure_note = runner._untranscribed_audio_note(str(failed))
+            authored = f'"{speech}"\n\n{failure_note}\n\n{caption}' + expanded_authored.message[len(authored_text):]
+            prefixed = f"{event.channel_context}\n\n[New message]\n[{source.user_name}] {authored}"
+            expected = f'[Replying to: "{event.reply_to_text}"]\n\nVISION @file:planted.txt\n\n{prefixed}'
+            assert (result, provider_calls[-2:]) == (expected, [str(audio), str(failed)])
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True], ids=["immediate", "pending"])
+@pytest.mark.parametrize("scope_case", ["outside-root", "budget-refusal", "combined-budget-refusal"])
+async def test_sender_speech_reference_scope_is_consistent_on_both_preparation_paths(tmp_path, monkeypatch, pending, scope_case):
+    from unittest.mock import AsyncMock
+
+    from gateway.platforms.event import MessageType
+
+    runner = _make_runner()
+    _patch_runtime_resolution(monkeypatch)
+    runner.config.stt_echo_transcripts = False
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "outside.txt").write_text("OUTSIDE-ROOT")
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+    speech = "Inspect @file:../outside.txt"
+    if scope_case != "outside-root":
+        for letter in "abc":
+            (workspace / f"{letter}.txt").write_text("z " * 1400)
+        speech = "Inspect @file:a.txt @file:b.txt @file:c.txt"
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"model": {"default": "openai/gpt-4.1-mini", "context_length": 2000}})
+    monkeypatch.setattr("tools.transcription_tools.transcribe_audio", lambda *_args: {"success": True, "transcript": speech})
+    adapter = type("ReplyAdapter", (), {})()
+    adapter.send = AsyncMock()
+    runner._delivery_adapter_for = lambda _source: adapter
+    source = _source()
+    caption = ""
+    if scope_case == "combined-budget-refusal":
+        caption = "Compare @file:a.txt"
+        speech = "Inspect @file:b.txt @file:c.txt"
+    event = MessageEvent(text=caption, source=source, message_type=MessageType.VOICE,
+                         media_urls=[str(workspace / "voice.ogg")], media_types=["audio/ogg"])
+    if pending:
+        await runner._transcribe_pending_audio_event_once(event, event.text)
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[], session_key="speech")
+    from agent.context_references import preprocess_context_references_async
+    authored = f"{caption}\n\n{speech}" if caption else speech
+    expanded = await preprocess_context_references_async(authored, cwd=workspace, allowed_root=workspace, context_length=2000 if scope_case != "outside-root" else 128000)
+    expected = None if expanded.blocked else f'"{speech}"' + expanded.message[len(authored):]
+    assert (result, adapter.send.await_count, expanded.blocked) == (expected, int(expanded.blocked), scope_case != "outside-root")

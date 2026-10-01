@@ -9,7 +9,8 @@ model (multimodal tool-result envelope) or are described by the auxiliary vision
 import base64
 import asyncio
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from io import BytesIO
 import logging
 import os
@@ -547,13 +548,40 @@ async def _prepare_image(
         resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
     except ImageResolutionError as exc:
         raise _ImagePrepError(str(exc)) from exc
+    # Keep ownership in one worker until every file-producing operation finishes.
+    # A concurrent-future callback still runs if the caller's event loop is closed
+    # by model_tools' timeout bridge before the worker completes.
+    context = copy_context()
+    work = _vision_cpu_executor.submit(lambda: context.run(
+        _prepare_image_bytes, resolved.data, resolved.mime, region,
+        validate_decode=validate_decode))
+    try:
+        return await asyncio.wrap_future(work)
+    except asyncio.CancelledError:
+        work.add_done_callback(_discard_prepared_image)
+        raise
+
+
+def _discard_prepared_image(work: Future) -> None:
+    try:
+        prepared = work.result()
+    except BaseException:
+        # Failed workers clean their owned path; queued cancellation creates none.
+        return
+    _unlink_quietly(prepared.path)
+
+
+def _prepare_image_bytes(
+    data: bytes, detected_mime: str, region: Optional[list], *, validate_decode: bool,
+) -> _PreparedImage:
+    """Own all preparation files until returning the final image to the caller."""
     temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
     temp_dir.mkdir(parents=True, exist_ok=True)
     path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-    await asyncio.to_thread(path.write_bytes, resolved.data)
-    mime, size_bytes, crop_offset = resolved.mime, len(resolved.data), {}
+    size_bytes, crop_offset = len(data), {}
     try:
-        normalized_path, mime, norm_err = await asyncio.to_thread(_normalize_to_supported_image, path, mime)
+        path.write_bytes(data)
+        normalized_path, mime, norm_err = _normalize_to_supported_image(path, detected_mime)
         if norm_err or normalized_path is None:
             raise _ImagePrepError(norm_err or "Image normalization failed.")
         if normalized_path != path:
@@ -561,14 +589,14 @@ async def _prepare_image(
             path = normalized_path
             size_bytes = path.stat().st_size
         if validate_decode:
-            decode_error = await _run_encode_on_cpu_executor(
-                _validate_raster_image_decodable, path,
+            decode_error = _validate_raster_image_decodable(
+                path,
                 _VISION_MAX_VALIDATED_FRAME_COUNT, _VISION_MAX_VALIDATED_AGGREGATE_PIXELS)
             if decode_error:
                 raise _ImagePrepError(decode_error)
         if region is not None:
-            cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
-                _crop_image_region, path, region, offset_out=crop_offset)
+            cropped_path, cropped_mime, crop_err = _crop_image_region(
+                path, region, offset_out=crop_offset)
             if crop_err or cropped_path is None:
                 raise _ImagePrepError(crop_err or "Region crop failed.")
             _unlink_quietly(path)

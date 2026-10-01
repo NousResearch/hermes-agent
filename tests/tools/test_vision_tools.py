@@ -1111,3 +1111,101 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+@pytest.mark.parametrize("stage", ["write", "write_error", "normalize", "crop"])
+def test_cancelled_image_preparation_reclaims_worker_outputs(tmp_path, monkeypatch, stage):
+    """Cancellation must not orphan files created by a worker that finishes later."""
+    import io
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
+    from tools import vision_tools as vt
+    from hermes_constants import get_hermes_dir
+
+    image = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(image, format="BMP" if stage == "normalize" else "PNG")
+    source = "data:image/{};base64,{}".format(
+        "bmp" if stage == "normalize" else "png", base64.b64encode(image.getvalue()).decode())
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    original_write, original_save = Path.write_bytes, Image.Image.save
+
+    def delayed_write(path, data):
+        if stage.startswith("write") and path.name.startswith("temp_image_"):
+            entered.set()
+            try:
+                assert release.wait(5), "test did not release the file worker"
+                result = original_write(path, data)
+                if stage == "write_error":
+                    raise OSError("injected write failure after partial output")
+                return result
+            finally:
+                finished.set()
+        return original_write(path, data)
+
+    def delayed_save(self, path, *args, **kwargs):
+        result = original_save(self, path, *args, **kwargs)
+        if stage in ("normalize", "crop"):
+            entered.set()
+            try:
+                assert release.wait(5), "test did not release the image worker"
+            finally:
+                finished.set()
+        return result
+
+    monkeypatch.setattr(Path, "write_bytes", delayed_write)
+    monkeypatch.setattr(Image.Image, "save", delayed_save)
+    executor = ThreadPoolExecutor(max_workers=2)
+    monkeypatch.setattr(vt, "_vision_cpu_executor", executor)
+    async def cancel_preparation():
+        task = asyncio.create_task(vt.vision_analyze_tool(
+            source, "Describe this image", region=[0, 0, 2, 2] if stage == "crop" else None))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not finished.is_set(), "cancellation waited for the blocked worker"
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    loop = asyncio.new_event_loop()
+    loop.set_default_executor(executor)
+    try:
+        loop.run_until_complete(cancel_preparation())
+    finally:
+        # model_tools' timeout bridge can close its loop before file workers finish.
+        loop.close()
+        release.set()
+        executor.shutdown(wait=True)
+    assert finished.is_set()
+    cache = get_hermes_dir("cache/vision", "temp_vision_images")
+    assert list(cache.iterdir()) == [], "cancelled image preparation left worker output behind"
+
+
+@pytest.mark.asyncio
+async def test_prepared_image_profile_roundtrip_keeps_conversion_and_crop_scoped(tmp_path):
+    """A→B→A exercises real resolver/Pillow I/O and the caller's ownership on success."""
+    import io
+    from PIL import Image
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools import vision_tools as vt
+
+    image = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(image, format="BMP")
+    source = "data:image/bmp;base64," + base64.b64encode(image.getvalue()).decode()
+    for name in ("a", "b", "a"):
+        home = tmp_path / name
+        token = set_hermes_home_override(str(home))
+        try:
+            prepared = await vt._prepare_image(source, None, [1, 1, 3, 3], validate_decode=True)
+            assert prepared.path.is_relative_to(home)
+            assert prepared.mime == "image/png"
+            assert prepared.crop_offset == {"x": 1, "y": 1, "width": 2, "height": 2}
+            with Image.open(prepared.path) as cropped:
+                assert cropped.size == (2, 2)
+            assert list(prepared.path.parent.iterdir()) == [prepared.path]
+            prepared.path.unlink()
+        finally:
+            reset_hermes_home_override(token)

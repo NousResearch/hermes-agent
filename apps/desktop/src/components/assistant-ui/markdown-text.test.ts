@@ -575,6 +575,15 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown(input)).toBe('$$\r\n\\begin{aligned}\r\na &= b\r\n\\end{aligned}\r\n$$')
   })
 
+  it('does not treat HDL system functions as math (#129491)', () => {
+    const input = 'if ($bits(a) <= $bits(b)) ok = 1;'
+    const output = preprocessMarkdown(input)
+    // Should escape the $ in $bits to prevent math interpretation
+    expect(output).toContain('\\$bits(a) <= \\$bits(b)')
+    // Should not contain unescaped $bits
+    expect(output).not.toContain('$bits(a) <= $bits(b)')
+  })
+
   it('leaves single-line display math alone', () => {
     expect(preprocessMarkdown('$$x^2 + y^2 = r^2$$')).toBe('$$x^2 + y^2 = r^2$$')
   })

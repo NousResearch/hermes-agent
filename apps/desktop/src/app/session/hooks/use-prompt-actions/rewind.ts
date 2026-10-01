@@ -18,7 +18,7 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
-  completeOpenTimelineParts,
+  finalizeInterruptedMessages,
   textPart
 } from '@/lib/chat-messages'
 
@@ -392,33 +392,6 @@ export async function runRewindSubmit(
   }
 }
 
-/** Cancel/stop finalize: drop empty pending/stream placeholders, un-pend the rest. */
-export function finalizeInterruptedMessages(
-  messages: ChatMessage[],
-  streamId?: null | string,
-  occurredAt = Date.now() / 1000
-): ChatMessage[] {
-  return messages
-    .filter(
-      message =>
-        !(
-          (message.pending || message.id === streamId) &&
-          message.parts.length === 0 &&
-          !chatMessageText(message).trim()
-        )
-    )
-    .map(message =>
-      message.pending || message.id === streamId
-        ? {
-            ...message,
-            completedAt: occurredAt,
-            parts: completeOpenTimelineParts(message.parts, occurredAt),
-            pending: false
-          }
-        : message
-    )
-}
-
 const markInterruptedToolCall = (part: ChatMessagePart): ChatMessagePart =>
   part.type === 'tool-call' && part.completedAt === undefined && part.result === undefined
     ? { ...part, interrupted: true }
@@ -442,6 +415,21 @@ export function finalizeUserInterruptedMessages(
   )
 
   return finalizeInterruptedMessages(marked, streamId, occurredAt)
+}
+
+/** Stop finalize: the live reply is also flagged `interrupted` so it reads as cut short. */
+export function finalizeStoppedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  const flagged = messages.map(message =>
+    message.role === 'assistant' && (message.pending || message.id === streamId)
+      ? { ...message, interrupted: true }
+      : message
+  )
+
+  return finalizeUserInterruptedMessages(flagged, streamId, occurredAt)
 }
 
 /**

@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { queryClient } from '@/lib/query-client'
+import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
 import { setShowModelPricing } from '@/store/model-pricing'
@@ -29,7 +30,7 @@ import {
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -39,6 +40,7 @@ beforeAll(() => {
 })
 
 const getGlobalModelOptions = vi.fn()
+const closeMenu = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
@@ -62,7 +64,9 @@ vi.mock('@/hermes', () => ({
 beforeEach((): void => {
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
+  window.localStorage.clear()
   $visibleModels.set(null)
+  $favoriteModels.set([])
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
@@ -162,11 +166,13 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
 
   render(
     <QueryClientProvider client={client}>
-      <DropdownMenu open>
-        <DropdownMenuContent>
-          <ModelCatalogMenu controller={controller} />
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ModelMenuCloseContext.Provider value={closeMenu}>
+        <DropdownMenu open>
+          <DropdownMenuContent>
+            <ModelCatalogMenu controller={controller} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </ModelMenuCloseContext.Provider>
     </QueryClientProvider>
   )
 
@@ -211,6 +217,109 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+})
+
+// A star is a promise about the LIST: "keep this one where I can always reach
+// it". That promise is what decides where a favorite paints — its own section
+// at the top, and nowhere twice.
+describe('the catalog owns favorite models', () => {
+  it('lifts a favorite into the Favorites section above the provider groups', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    const rows = (await screen.findAllByText(/Gemini 2\.5/i)).map(node => node.closest('[role="menuitem"]')!)
+
+    // The section label comes before the provider group heading (the LAST
+    // 'Google' text — the favorite row's provider chip paints one first).
+    const label = screen.getByText('Favorites')
+    const googleTexts = screen.getAllByText('Google')
+    const googleHeading = googleTexts[googleTexts.length - 1]
+
+    expect(label.compareDocumentPosition(googleHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // The provider chip names the row's provider, so two labs sharing a model
+    // id stay apart in the mixed section.
+    expect(rows.some(row => row.textContent?.includes('Google'))).toBe(true)
+  })
+
+  it('does not also list a favorite under its provider', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+
+    // Listed once, under Favorites — not also down in Google's group.
+    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+  })
+
+  it('keeps a favorite whose provider is not connected without painting an empty section', async () => {
+    $favoriteModels.set([favoriteModelKey('anthropic', 'claude-sonnet-4.6')])
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryByText('Favorites')).toBeNull()
+  })
+
+  // Curation and favorites are different questions: "which models do I
+  // usually want listed" vs "which one do I want first". A star wins.
+  it('shows a favorite the Edit Models shortlist hides', async () => {
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-3.1-pro')]))
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+  })
+
+  it('folds the section away while searching and lists the match in its provider place', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+    await screen.findByText('Favorites')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini-2.5' } })
+
+    // A query means "show me every match": the section folds and the match
+    // paints in its provider's place. Still exactly once, still starred.
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Favorites')).toBeNull()
+    })
+
+    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Remove from favorites' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  // Starring is never a pick: the star, a shift-click on the row (the
+  // sidebar's pin gesture) and Shift+Enter all toggle in place, the menu stays
+  // open, and the same gesture on the moved row undoes it.
+  it('the star, shift-click and Shift+Enter toggle a favorite without selecting or closing', async () => {
+    const select = renderMenu()
+    const key = favoriteModelKey('google', 'gemini-2.5-flash')
+    const row = () => screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+    const star = () => row().querySelector('button[aria-pressed]')!
+
+    await screen.findByText('Gemini 2.5')
+    fireEvent.click(star())
+    expect($favoriteModels.get()).toEqual([key])
+    await screen.findByText('Favorites')
+
+    fireEvent.click(row(), { shiftKey: true })
+    expect($favoriteModels.get()).toEqual([])
+
+    const search = screen.getByRole('textbox', { name: 'Search models' })
+
+    fireEvent.change(search, { target: { value: 'gemini-2.5' } })
+    await vi.waitFor(() => expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1))
+    fireEvent.keyDown(search, { key: 'Enter', shiftKey: true })
+    expect($favoriteModels.get()).toEqual([key])
+
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
   })
 })
 

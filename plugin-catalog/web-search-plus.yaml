@@ -1,12 +1,12 @@
 name: web-search-plus
 repo: https://github.com/robbyczgw-cla/hermes-web-search-plus
-sha: 648e1956f120312b1f94102da2da042c43998a33
+sha: c8a67fd7ed7fb649355d918053069ce785e0b341
 description: "Multi-provider web search, URL extraction, quality reports, and opt-in research mode. Disclosure — reads the operator's HERMES_HOME/config.yaml (read-only) for its own Desktop settings block (country, language, max_results, auto_routing, searxng_url); may spawn its own search.py and an operator-configured local donsetch CLI as subprocesses (argv, no shell)."
 maintainer: robbyczgw-cla
 tier: community
 category: web
 docs_url: https://github.com/robbyczgw-cla/hermes-web-search-plus#readme
-version: "4.3.2"
+version: "4.3.3"
 capabilities:
   provides_tools:
   - web_extract_plus

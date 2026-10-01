@@ -70,6 +70,11 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** True when the Desktop itself staged this file (composer-images paste/
+   * drop staging). Staged files are client-local by construction, so their
+   * bytes always upload — the owner-mode chain never ships the raw path
+   * (#125122). */
+  staged?: boolean
   /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
   titlePreview?: string
   attachedSessionId?: string

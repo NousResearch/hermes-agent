@@ -21,6 +21,7 @@ import {
   isTargetSessionBusy,
   markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
+  readImageForRemoteAttach,
   RECENT_INTERRUPT_COOLDOWN_MS,
   releaseSubmitInFlight,
   renderRpcResult,
@@ -386,6 +387,24 @@ describe('readFileDataUrlForAttach', () => {
 
     await expect(readFileDataUrlForAttach('/tmp/note.txt')).resolves.toBe('data:text/plain;base64,YQ==')
     expect(previewReader).toHaveBeenCalledWith('/tmp/note.txt')
+  })
+})
+
+describe('readImageForRemoteAttach', () => {
+  it('reads image bytes through the attach reader, not the preview-capped one', async () => {
+    const previewReader = vi.fn(async () => 'data:image/png;base64,cHJldmlldw==')
+    const attachReader = vi.fn(async () => 'data:image/png;base64,YXR0YWNo')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: previewReader, readFileDataUrlForAttach: attachReader }
+    })
+
+    await expect(readImageForRemoteAttach('/tmp/shot.png')).resolves.toEqual({
+      contentBase64: 'YXR0YWNo',
+      filename: 'shot.png'
+    })
+    expect(attachReader).toHaveBeenCalledWith('/tmp/shot.png')
+    expect(previewReader).not.toHaveBeenCalled()
   })
 })
 

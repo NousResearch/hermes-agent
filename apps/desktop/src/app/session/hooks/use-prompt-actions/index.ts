@@ -91,6 +91,18 @@ interface HandoffResult {
   error?: string
 }
 
+const IMAGE_NOT_FOUND_CODE = 4016
+
+/** A confirmed `image not found: <path>` from `image.attach`: the gateway
+ * cannot resolve the path on ITS filesystem (a stale owner-mode chain shipped
+ * a client-local path to a remote gateway — #125122, #120730). Other 4016s
+ * ("unsupported image") describe the file itself, so they are not retried. */
+function isImageNotFoundOnGateway(err: unknown): boolean {
+  return (
+    err instanceof JsonRpcGatewayError && err.code === IMAGE_NOT_FOUND_CODE && /^image not found:/i.test(err.message)
+  )
+}
+
 /**
  * Stage one file/image attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Attachments upload their
@@ -118,7 +130,16 @@ export async function uploadComposerAttachment(
   const { backendCwd, remote, requestGateway, storedSessionId, onRecovered, onSessionRecovered, terminalBackend } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
-  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
+
+  // A client-staged image (composer-images paste/drop staging) is client-local
+  // by construction: its bytes always upload. The owner-mode chain can
+  // misresolve a long-lived session as local (#125122), and `image.attach_bytes`
+  // works against local gateways too — so "when staged, send bytes" is safe in
+  // both modes and never costs a doomed path attach.
+  const uploadBytes =
+    remote ||
+    (attachment.kind === 'image' && attachment.staged === true) ||
+    attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session
@@ -147,16 +168,45 @@ export async function uploadComposerAttachment(
 
   const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
     if (attachment.kind === 'image') {
-      const result = imagePayload
-        ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-            session_id: liveSessionId,
-            content_base64: imagePayload.contentBase64,
-            filename: imagePayload.filename
-          })
-        : await requestGateway<ImageAttachResponse>('image.attach', {
+      const attachImageBytes = (payload: NonNullable<typeof imagePayload>) =>
+        requestGateway<ImageAttachResponse>('image.attach_bytes', {
+          session_id: liveSessionId,
+          content_base64: payload.contentBase64,
+          filename: payload.filename
+        })
+
+      // A restored owner's mode can be stale (#125122): the path attach can
+      // land on a gateway that cannot resolve this machine's path. Recover
+      // ONLY a confirmed `image not found` by re-reading the original client
+      // file and sending its bytes — on the same session/dispatcher, so a
+      // working gateway-native path keeps its direct attach. A bytes failure
+      // surfaces; it must not restart the path ladder. Unsupported images and
+      // other errors pass through unchanged.
+      const attachImageByPathOrBytes = async (): Promise<ImageAttachResponse> => {
+        try {
+          return await requestGateway<ImageAttachResponse>('image.attach', {
             path,
             session_id: liveSessionId
           })
+        } catch (err) {
+          if (!isImageNotFoundOnGateway(err)) {
+            throw err
+          }
+
+          // Read the original client file, never a possibly downscaled
+          // preview. Retain the payload: a session-not-found recovery replays
+          // this operation and must not re-read the file.
+          imagePayload = await readImageForRemoteAttach(path).catch(() => null)
+
+          if (!imagePayload) {
+            throw err
+          }
+
+          return attachImageBytes(imagePayload)
+        }
+      }
+
+      const result = imagePayload ? await attachImageBytes(imagePayload) : await attachImageByPathOrBytes()
 
       if (!result.attached) {
         throw new Error(result.message || `Could not attach ${label}`)

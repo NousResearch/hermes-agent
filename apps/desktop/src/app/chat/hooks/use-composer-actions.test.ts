@@ -448,13 +448,57 @@ describe('useComposerActions native image drops', () => {
     // The in-hand blob backs the chip preview (object URL — #63682), so the
     // durable path is never base64-read over IPC either.
     expect(readFileDataUrl).not.toHaveBeenCalled()
-    // The attachment is keyed to the DURABLE path, not the transient one.
+    // The attachment is keyed to the DURABLE path, not the transient one, and
+    // is marked client-staged (#125122): composer-images lives on THIS
+    // machine, so its bytes must always upload even when the session's owner
+    // mode resolves local.
     expect(add).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'image',
-        path: durablePath
+        path: durablePath,
+        staged: true
       })
     )
+  })
+
+  it('marks a pasted clipboard image as client-staged (#125122)', async () => {
+    const stagedPath = '/Users/test/Library/Application Support/Hermes/composer-images/composer_paste.png'
+
+    const saveClipboardImage = vi.fn(async () => stagedPath)
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:image/png;base64,cGFzdGU='),
+        saveClipboardImage
+      }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/Users/test/project',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test-composer',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    let pasted = false
+
+    await act(async () => {
+      pasted = await result.current.pasteClipboardImage()
+    })
+
+    expect(pasted).toBe(true)
+    expect(saveClipboardImage).toHaveBeenCalledOnce()
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ kind: 'image', path: stagedPath, staged: true }))
   })
 })
 

@@ -527,7 +527,7 @@ export function useComposerActions({
   )
 
   const attachImagePath = useCallback(
-    async (filePath: string, previewSource?: Blob | null) => {
+    async (filePath: string, previewSource?: Blob | null, options: { staged?: boolean } = {}) => {
       if (!filePath) {
         return false
       }
@@ -538,7 +538,8 @@ export function useComposerActions({
         kind: 'image',
         label: pathLabel(filePath),
         detail: filePath,
-        path: filePath
+        path: filePath,
+        ...(options.staged ? { staged: true } : {})
       }
 
       attachToMain(baseAttachment)
@@ -609,7 +610,7 @@ export function useComposerActions({
         // Reuse the in-hand blob for the chip preview — do not re-read the
         // just-written temp file as a data URL. A late component unmount must
         // not leak the attach: attach only while still current.
-        return isCurrent() ? attachImagePath(savedPath, blob) : false
+        return isCurrent() ? attachImagePath(savedPath, blob, { staged: true }) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -657,7 +658,7 @@ export function useComposerActions({
           return false
         }
 
-        await attachImagePath(path)
+        await attachImagePath(path, undefined, { staged: true })
 
         return true
       } catch (err) {

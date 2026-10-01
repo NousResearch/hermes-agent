@@ -429,7 +429,11 @@ export function imageFilenameFromPath(filePath: string): string {
 export async function readImageForRemoteAttach(
   filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
-  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+  // Prefer the attach-specific IPC (256 MiB) so a remote byte upload is not
+  // capped at the smaller preview/Settings default; fall back for older
+  // Electron shells.
+  const reader = window.hermesDesktop?.readFileDataUrlForAttach ?? window.hermesDesktop?.readFileDataUrl
+  const dataUrl = reader ? await reader(filePath) : ''
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
   return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null

@@ -6548,3 +6548,193 @@ describe('usePromptActions derives plans from the runtime slice ($sessionStates)
     )
   })
 })
+
+describe('uploadComposerAttachment fails safe toward bytes (#125122)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const stagedImage = {
+    id: 'image:shot.png',
+    kind: 'image' as const,
+    label: 'shot.png',
+    path: '/Users/kelvin/Library/Application Support/Hermes/composer-images/shot.png',
+    staged: true
+  }
+
+  it('uploads a composer-staged image as bytes even when the owner resolves as local', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,c3RhZ2Vk')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/gw/images/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(stagedImage, {
+      backendCwd: '/Users/kelvin',
+      remote: false,
+      requestGateway,
+      sessionId: RUNTIME_SESSION_ID
+    })
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'c3RhZ2Vk',
+      filename: 'shot.png',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(uploaded.path).toBe('/gw/images/shot.png')
+  })
+
+  it('retries once with bytes when image.attach answers 4016 image not found', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach') {
+        throw new JsonRpcGatewayError('image not found: /Users/kelvin/Pictures/shot.png', { code: 4016 })
+      }
+
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/gw/images/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      { id: 'image:shot.png', kind: 'image', label: 'shot.png', path: '/Users/kelvin/Pictures/shot.png' },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway.mock.calls.map(call => call[0])).toEqual(['image.attach', 'image.attach_bytes'])
+    expect(requestGateway).toHaveBeenLastCalledWith('image.attach_bytes', {
+      content_base64: 'ZnJvbS1kaXNr',
+      filename: 'shot.png',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(uploaded.path).toBe('/gw/images/shot.png')
+    expect(uploaded.attachedSessionId).toBe(RUNTIME_SESSION_ID)
+  })
+
+  it('keeps the recovery bytes across a session-not-found retry without re-reading the file', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+    const methods: string[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      methods.push(method)
+
+      if (method === 'image.attach') {
+        throw new JsonRpcGatewayError('image not found: /Users/kelvin/Pictures/shot.png', { code: 4016 })
+      }
+
+      if (method === 'image.attach_bytes' && params?.session_id === RUNTIME_SESSION_ID) {
+        throw new JsonRpcGatewayError('session not found', { code: 4001 })
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-recovered' } as never
+      }
+
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/gw/images/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      { id: 'image:shot.png', kind: 'image', label: 'shot.png', path: '/Users/kelvin/Pictures/shot.png' },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID, storedSessionId: 'stored-1' }
+    )
+
+    expect(readFileDataUrl).toHaveBeenCalledTimes(1)
+    expect(methods.filter(method => method.startsWith('image.'))).toEqual([
+      'image.attach',
+      'image.attach_bytes',
+      'image.attach_bytes'
+    ])
+    expect(uploaded.attachedSessionId).toBe('runtime-recovered')
+  })
+
+  it('surfaces other image.attach failures unchanged', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach') {
+        // Also 4016, but the file exists on the gateway and is merely an
+        // unsupported image: a client-bytes retry would fail identically.
+        throw new JsonRpcGatewayError('unsupported image: shot.tiff', { code: 4016 })
+      }
+
+      return {} as never
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'image:shot.tiff', kind: 'image', label: 'shot.tiff', path: '/Users/kelvin/Pictures/shot.tiff' },
+        { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow(/unsupported image/)
+
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach_bytes', expect.anything())
+  })
+
+  it('preserves the 4016 when the client cannot read the file either', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => null) }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach') {
+        throw new JsonRpcGatewayError('image not found: /gone/shot.png', { code: 4016 })
+      }
+
+      return {} as never
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'image:shot.png', kind: 'image', label: 'shot.png', path: '/gone/shot.png' },
+        { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow(/image not found/)
+
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach_bytes', expect.anything())
+  })
+
+  it('surfaces a failed bytes upload without looping back to the path ladder', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/png;base64,aGVsbG8=') }
+    })
+
+    const uploadError = new Error('upload failed')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach') {
+        throw new JsonRpcGatewayError('image not found: /Users/kelvin/Pictures/shot.png', { code: 4016 })
+      }
+
+      throw uploadError
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'image:shot.png', kind: 'image', label: 'shot.png', path: '/Users/kelvin/Pictures/shot.png' },
+        { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toBe(uploadError)
+
+    expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+})

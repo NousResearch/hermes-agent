@@ -429,7 +429,9 @@ from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
-from gateway.platforms.base_pending import _can_join_pending_event, pending_dispatch_scope
+from gateway.platforms.base_pending import (
+    _can_join_pending_event, pending_dispatch_scope, release_pending_dispatch, reserve_pending_dispatch,
+)
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -3983,6 +3985,7 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
+        getattr(self, "_pending_dispatch_reservations", {}).pop(session_key, None)
         return True
 
     def _start_session_processing(self, event: MessageEvent, session_key: str, *,
@@ -4011,6 +4014,9 @@ class BasePlatformAdapter(ABC):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+            reserved = getattr(self, "_pending_dispatch_reservations", {}).get(session_key)
+            if reserved is not None:
+                task.add_done_callback(lambda _: release_pending_dispatch(self, session_key, reserved.event))
         return True
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
@@ -4019,6 +4025,8 @@ class BasePlatformAdapter(ABC):
         reset-like commands finish atomically; the await is bounded (5s) so a wedged finally can't
         stall."""
         self._requeue_counts.pop(session_key, None)
+        reservations = getattr(self, "_pending_dispatch_reservations", {})
+        reserved = reservations.get(session_key)
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
             logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
@@ -4035,6 +4043,12 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
+        if reserved is not None and (task is None or task.done()):
+            if not discard_pending and not reserved.claimed:
+                restore = getattr(self.gateway_runner, "_restore_pending_dispatch", None)
+                if callable(restore):
+                    restore(session_key, reserved.event, self)
+            release_pending_dispatch(self, session_key, reserved.event)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -4675,6 +4689,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            if asyncio.current_task() in self._expected_cancelled_tasks:
+                return
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4703,6 +4719,7 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            release_pending_dispatch(self, session_key, event)
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
@@ -4714,7 +4731,10 @@ class BasePlatformAdapter(ABC):
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            if asyncio.current_task() in self._expected_cancelled_tasks:
+                self._cleanup_finished_session_task(session_key, interrupt_event)
+            else:
+                self._finish_session_task(session_key, interrupt_event)
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
@@ -4783,6 +4803,7 @@ class BasePlatformAdapter(ABC):
         """Stage the next FIFO event before dispatching the removed pending head."""
         promote = getattr(self.gateway_runner, "_promote_queued_event", None)
         if callable(promote):
+            reserve_pending_dispatch(self, session_key, started)
             promote(session_key, self, started)
 
     def _clear_session_guard(self, session_key: str) -> None:
@@ -4842,7 +4863,7 @@ class BasePlatformAdapter(ABC):
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
                        self._pending_messages, self._active_sessions, self._requeue_counts,
-                       self._text_debounce_store()):
+                       self._text_debounce_store(), getattr(self, "_pending_dispatch_reservations", {})):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

@@ -1,17 +1,17 @@
 name: hermes-cron
 repo: https://github.com/itpartypattaya/hermes-cron
-sha: 5c6beeee34d5ac5153f8c243e7444b86c9d1a280
+sha: 412ba389fdd2616df8199d49c57849d30ce56e0b
 description: "Operating skill for Hermes cron: lifecycle rules (pause vs disable vs remove, `in 30m` vs `30m`), four ways to avoid needless LLM runs (no_agent, wakeAgent pre-check, monitor, [SILENT]), verify-after-change, a layered runbook and a read-only doctor that complements `hermes cron doctor`. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars. Disclosure — no network calls; the doctor reads ~/.hermes/cron/jobs.json, ticker stamps and executions.db (read-only), writes nothing, and runs the local `hermes cron doctor` as an argument list without a shell."
 maintainer: itpartypattaya
 tier: community
 category: automation
 requires_hermes: ">=0.21"
-docs_url: https://github.com/itpartypattaya/hermes-cron/blob/5c6beeee34d5ac5153f8c243e7444b86c9d1a280/README.md
-version: "1.1.1"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/5c6beeee34d5ac5153f8c243e7444b86c9d1a280/docs/banner.png"
+docs_url: https://github.com/itpartypattaya/hermes-cron/blob/412ba389fdd2616df8199d49c57849d30ce56e0b/README.md
+version: "1.1.2"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/412ba389fdd2616df8199d49c57849d30ce56e0b/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/5c6beeee34d5ac5153f8c243e7444b86c9d1a280/docs/modes.png"
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/5c6beeee34d5ac5153f8c243e7444b86c9d1a280/docs/doctor.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/412ba389fdd2616df8199d49c57849d30ce56e0b/docs/modes.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/412ba389fdd2616df8199d49c57849d30ce56e0b/docs/doctor.png"
 platforms: []
 capabilities:
   provides_tools: []

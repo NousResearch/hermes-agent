@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools import approval

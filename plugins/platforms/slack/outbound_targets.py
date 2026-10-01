@@ -18,7 +18,7 @@ class SlackOutboundTargetsMixin:
 
 
     async def _ensure_dm_conversation(self: SlackAdapter, chat_id: str, team_id: Optional[str] = None) -> str:
-        """Resolve a bare user ID (U/W...) to a DM conversation ID via ``conversations.open``
+        """Resolve a bare or ``user:``-prefixed U/W user ID via ``conversations.open``
         (``chat.postMessage``/``files_upload_v2`` reject user IDs); cached per (team, user). Returns
         ``chat_id`` unchanged when not applicable or on failure (downstream surfaces the error).
 
@@ -27,9 +27,6 @@ class SlackOutboundTargetsMixin:
         #17261, #19236.
         """
         cid = str(chat_id or "")
-        # ``user:U...`` is the internal form ``tools.send_message_targets`` emits for a ``slack:U...``
-        # reference (cron ``deliver``, send_message). The standalone transport opens it
-        # (``send_message_senders``); the live adapter is the other half of the same path.
         if cid.startswith("user:"):
             cid = cid[len("user:"):]
         if not cid or cid[0] not in ("U", "W"):

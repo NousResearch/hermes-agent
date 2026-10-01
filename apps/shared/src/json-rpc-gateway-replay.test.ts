@@ -150,6 +150,49 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it.each([true, false])(
+    'announces a replay the ring truncated after its retained tail (truncated=%s)',
+    async truncated => {
+      // The server reports `truncated` when it evicted part of the gap. The replayed events are
+      // then only the newest tail, and a consumer must learn that its transcript has a hole.
+      const client = makeClient()
+      const seen: string[] = []
+      client.onAny(event => seen.push(`${event.type}:${event.session_id ?? ''}`))
+
+      const first = client.connect('ws://x')
+      let sock = sockets[sockets.length - 1]
+      sock.open()
+      await first
+      sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
+
+      client.invalidate('drop')
+      const second = client.connect('ws://x')
+      sock = sockets[sockets.length - 1]
+      sock.open()
+      await second
+      seen.length = 0
+
+      await vi.waitFor(() => expect(sock.lastRequest().method).toBe('session.events.since'))
+      const req = sock.lastRequest()
+      sock.serverFrame({
+        jsonrpc: '2.0',
+        id: req.id,
+        result: {
+          events: [{ type: 'tool.complete', session_id: 's1', seq: 900 }],
+          latest_seq: 900,
+          truncated,
+          count: 1
+        }
+      })
+
+      await vi.waitFor(() => expect(client.sessionReplayBarrier('s1')).toBeUndefined())
+      expect(seen).toEqual(
+        truncated ? ['tool.complete:s1', 'gateway.replay_truncated:s1'] : ['tool.complete:s1']
+      )
+      client.close()
+    }
+  )
+
   it('does not attempt replay when nothing was ever observed', async () => {
     const client = makeClient()
     const p = client.connect('ws://x')

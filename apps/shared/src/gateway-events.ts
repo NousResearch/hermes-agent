@@ -18,12 +18,17 @@ export * from './gateway-contract.generated.js'
 
 /**
  * Client-local synthetic events. Never emitted by `tui_gateway`; the Ink TUI's `gatewayClient`
- * publishes them into the same handler stream to report transport state.
+ * and the WebSocket `JsonRpcGatewayClient` publish them into the same handler stream to report
+ * transport state.
  */
 export interface ClientLocalGatewayEventMap {
   'dashboard.new_session_requested': { reason?: string }
   'gateway.protocol_error': { preview?: string }
   'gateway.reconnecting': { attempt?: number; delay_ms?: number }
+  /** The reconnect replay for `session_id` came back `truncated`: the backend's ring had already
+   *  evicted part of the gap, so the replayed events are only its newest tail. Re-read the
+   *  session's history instead of trusting the replay as complete. */
+  'gateway.replay_truncated': Record<string, never>
   'gateway.start_timeout': { cwd?: string; python?: string; stderr_tail?: string }
   'gateway.stderr': { line: string }
 }

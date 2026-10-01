@@ -538,7 +538,7 @@ export class JsonRpcGatewayClient {
 
     try {
       // `open_requests` on the answer are re-delivered by the channel itself.
-      const result = await this.request<{ events?: GatewayEvent[]; epoch?: string }>(
+      const result = await this.request<{ events?: GatewayEvent[]; epoch?: string; truncated?: boolean }>(
         'session.events.since',
         { session_id: sid, last_seen: lastSeen },
         REPLAY_REQUEST_TIMEOUT_MS
@@ -577,6 +577,13 @@ export class JsonRpcGatewayClient {
         if (event?.type) {
           this.dispatchIfNewer({ ...event, replayed: true })
         }
+      }
+
+      // The ring had already evicted part of the gap, so the events above are only its newest
+      // tail. Say so after them: a consumer re-reads the session's history instead of trusting
+      // a transcript with a hole in it.
+      if (result.truncated === true && this.replayGeneration === replayGeneration) {
+        this.dispatchEvent({ payload: {}, replayed: true, session_id: sid, type: 'gateway.replay_truncated' })
       }
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.

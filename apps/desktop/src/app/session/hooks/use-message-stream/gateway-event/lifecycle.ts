@@ -23,9 +23,25 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
 
-/** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
+/** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed /
+ *  gateway.replay_truncated. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, fromActiveSource } = ctx
+  const { deps, event, payload, fromActiveSource, sessionId } = ctx
+
+  if (event.type === 'gateway.replay_truncated') {
+    // The reconnect replay lost events the backend had already evicted, so this session's
+    // transcript has a hole the replayed tail cannot fill. Re-read it from stored history (a
+    // still-live turn is left to its own stream; the read skips it). Nothing re-announces the
+    // hole once the watermark moved past it, so a read that races the reconnect (a respawning
+    // backend, a transient empty page) gets the post-turn hydrations' bounded retry.
+    const storedSessionId = sessionId ? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId : null
+
+    if (sessionId && storedSessionId) {
+      void deps.hydrateFromStoredSession(3, storedSessionId, sessionId)
+    }
+
+    return true
+  }
 
   if (event.type === 'gateway.ready') {
     const ready = (event as GatewayEvent<'gateway.ready'>).payload

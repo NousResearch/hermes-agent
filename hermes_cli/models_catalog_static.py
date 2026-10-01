@@ -228,6 +228,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-flash-lite-preview", "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",
     ],
+    "kosmik": [
+        "qwen/qwen3.8-27b",
+    ],
     # Synced against opencode.ai/docs/zen + live GET /zen/v1/models. Zen/Go are
     # _LIVE_FIRST_PICKER_PROVIDERS, so this is a discovery floor: live entries lead in the picker
     # and stale curated names never pollute the top. "x-preview-f-free" = "Ox Alpha" stealth model.
@@ -482,7 +485,7 @@ _PROVIDER_ALIASES = dict((
     ("gcp-vertex", "vertex"), ("vertexai", "vertex"), ("kimi", "kimi-coding"), ("moonshot", "kimi-coding"),
     ("kimi-cn", "kimi-coding-cn"), ("moonshot-cn", "kimi-coding-cn"), ("step", "stepfun"),
     ("stepfun-coding-plan", "stepfun"), ("arcee-ai", "arcee"), ("arceeai", "arcee"), ("gmi-cloud", "gmi"),
-    ("gmicloud", "gmi"), ("fireworks-ai", "fireworks"), ("fw", "fireworks"), ("actual-computer", "actual"),
+    ("gmicloud", "gmi"), ("koscompute", "kosmik"), ("kosmik-ai", "kosmik"), ("kos", "kosmik"), ("fireworks-ai", "fireworks"), ("fw", "fireworks"), ("actual-computer", "actual"),
     ("actualcomputer", "actual"), ("aci", "actual"), ("nebius", "nebius-token-factory"),
     ("nebius-tokenfactory", "nebius-token-factory"), ("nebius-tf", "nebius-token-factory"),
     ("token-factory", "nebius-token-factory"), ("tokenfactory", "nebius-token-factory"),

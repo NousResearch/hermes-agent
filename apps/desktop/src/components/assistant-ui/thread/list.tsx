@@ -1242,8 +1242,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (!loadSettledRef.current && restoreFromBottomRef.current != null) {
       cancelRestoreRef.current?.()
       restoreFromBottomRef.current = null
+      applyRestoreRef.current = null
+      // An unreachable reading position must not strand the view at the top of
+      // the mounted window — the top of a windowed long session is the middle
+      // of the conversation. Fall back to the live tail (the same landing as a
+      // session with no remembered position), and retire the stale offset
+      // target so later commits cannot re-pin the clamped top.
+      liveScrollStateRef.current = THREAD_SCROLL_BOTTOM
+      void scrollToBottomUnlessSelecting('instant')
     }
-  }, [])
+  }, [scrollToBottomUnlessSelecting])
 
   const growWindow = useCallback(async () => {
     if (!paneVisible || windowRequestRef.current || windowCommitRef.current != null) {

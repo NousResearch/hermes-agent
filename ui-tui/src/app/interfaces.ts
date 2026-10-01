@@ -391,8 +391,8 @@ export interface ComposerActions {
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
   clearIn: () => void
-  dequeue: () => string | undefined
-  enqueue: (text: string, display?: string) => void
+  dequeue: () => QueueItem | undefined
+  enqueue: (text: string, display?: string, expand?: (value: string) => string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem) => void
@@ -449,6 +449,7 @@ export interface InputHandlerActions {
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string, title?: string) => void
+  sendQueued: (item: QueueItem) => void
   sys: (text: string) => void
 }
 

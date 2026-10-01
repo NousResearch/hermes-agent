@@ -84,6 +84,16 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
+#: Local llama.cpp server (``agent.model_metadata.detect_local_server_type`` == "llamacpp").
+#: Many GGUF chat templates (Qwen3 family included) hard-reject any reasoning_effort value past
+#: their own ceiling via a Jinja ``raise_exception`` in the template itself — this surfaces as an
+#: HTTP 500 from the server, not a clean 400 with a supported-values list. Templates seen in the
+#: wild stop at ``xhigh`` (its own error names it as the max); Hermes' ``max``/``ultra`` tiers
+#: would otherwise pass through unclamped since llama.cpp speaks the generic OpenAI-compatible
+#: wire with no declared vocabulary of its own.
+LLAMACPP_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh")
+LLAMACPP_OVERRIDES: dict[str, str] = {"max": "xhigh", "ultra": "xhigh"}
+
 
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.

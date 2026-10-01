@@ -7,10 +7,12 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 import json
 from typing import Any
 from urllib.parse import urlparse
+import contextlib
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
-    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
+    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, LLAMACPP_EFFORTS, LLAMACPP_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort,
 )
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
@@ -523,6 +525,16 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body["reasoning"] = params["github_reasoning_extra"]
             else:
                 _effort = (reasoning_config.get("effort", "medium") or "medium") if reasoning_config and isinstance(reasoning_config, dict) else "medium"
+                # Local llama.cpp: many GGUF chat templates (Qwen3 family included) hard-reject
+                # any effort past their own ceiling via a Jinja raise_exception — an HTTP 500, not
+                # a clean 400. Clamp Hermes' extended tiers (max/ultra) down to the template's
+                # ceiling before they ever reach the wire (#reasoning_effort.py LLAMACPP_EFFORTS).
+                is_llamacpp = False
+                with contextlib.suppress(Exception):
+                    from agent.model_metadata import detect_local_server_type
+                    is_llamacpp = detect_local_server_type(base_url) == "llamacpp"
+                if is_llamacpp and _effort != "none":
+                    _effort = clamp_effort(_effort, LLAMACPP_EFFORTS, LLAMACPP_OVERRIDES) or _effort
                 # Honor explicit "thinking off" like the profile path — never re-enable it.
                 off = thinking_off or _effort == "none"
                 extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}

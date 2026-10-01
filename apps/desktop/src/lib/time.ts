@@ -92,7 +92,12 @@ export const DAY_ROLLOVER_HOUR = 4
 
 // Start of the *nominal* local day a timestamp belongs to, honoring the 4 AM
 // rollover: Saturday 1 AM → start of Friday.
-export const nominalDayStart = (ms: number): number => startOfLocalDay(ms - DAY_ROLLOVER_HOUR * HOUR)
+export const nominalDayStart = (ms: number): number => {
+  const d = new Date(ms)
+  const previousDay = d.getHours() < DAY_ROLLOVER_HOUR ? 1 : 0
+
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - previousDay).getTime()
+}
 
 // Locale-aware first day of week in JS getDay() convention (0=Sun … 6=Sat).
 // Intl.Locale weekInfo reports 1=Mon … 7=Sun; unsupported → Monday.

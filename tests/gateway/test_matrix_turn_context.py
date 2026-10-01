@@ -1231,12 +1231,14 @@ async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
     parent["content"].update(
         msgtype="m.image", url="mxc://example.org/image", info={"mimetype": "image/png"}
     )
+    from tests.gateway.matrix_helpers import FakeMediaDownload
+
     adapter._client = SimpleNamespace(
-        api=SimpleNamespace(request=AsyncMock(return_value=parent)),
-        download_media=AsyncMock(return_value=base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGNcAAAAASUVORK5CYII="
-        )),
+        api=SimpleNamespace(request=AsyncMock(return_value=parent), session=SimpleNamespace()),
     )
+    FakeMediaDownload(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGNcAAAAASUVORK5CYII="
+    )).install(adapter._client)
     source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()

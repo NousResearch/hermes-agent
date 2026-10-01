@@ -521,6 +521,17 @@ export function useVoiceConversation({
           return
         }
 
+        // Cut playback only after STT confirms a real utterance; false VAD
+        // trips then leave the reply and conversation untouched.
+        markVoicePlaybackInterrupted()
+        stopVoicePlayback()
+
+        if (busyRef.current) {
+          // Mid-generation: stop the in-flight turn so the captured utterance
+          // becomes the next one instead of queueing behind a stale reply.
+          void onInterruptRef.current?.()
+        }
+
         // A generation-phase barge interrupted the in-flight turn; the submit
         // path refuses while `busy`, so wait for the interrupt to settle.
         const deadline = Date.now() + INTERRUPT_SETTLE_TIMEOUT_MS
@@ -583,16 +594,11 @@ export function useVoiceConversation({
         // Snapshot before playback is cut: the reply may be consumed by the
         // time the capture is transcribed.
         bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
+        // VAD alone is only a capture hint. Speaker bleed can produce an
+        // empty or filler transcript, so keep playback alive until STT
+        // confirms a real, non-echo utterance.
         bargeCapturePendingRef.current = true
         bargedRef.current = true
-        markVoicePlaybackInterrupted()
-        stopVoicePlayback()
-
-        if (busyRef.current) {
-          // Mid-generation: stop the in-flight turn so the captured utterance
-          // becomes the next one instead of queueing behind a stale reply.
-          void onInterruptRef.current?.()
-        }
       },
       onUtterance: audio => {
         bargeCapturePendingRef.current = false

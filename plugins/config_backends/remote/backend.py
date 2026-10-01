@@ -72,6 +72,9 @@ class _ProfileState:
     provenance: Dict[str, str] = field(default_factory=dict)
     changed_ns: int = 0
     gen: int = 0
+    installed: int = 0         # bumped by every _install; a GET started before a newer install is stale
+    base: Optional[Dict[str, Any]] = None  # the migrated doc writes diff against (None = server_config)
+    migrating: Optional[int] = None  # the `installed` a running in-memory migration is for
     postprocessed: bool = False
     in_postprocess: bool = False
     fetched_at: float = 0.0
@@ -158,7 +161,13 @@ class RemoteBackend:
                     "(HERMES_CONFIG_BACKEND=remote has no local fallback).") from exc
 
     def _fetch_into(self, st: _ProfileState, *, conditional: bool) -> bool:
-        """GET ``/self`` into ``st``; True when the document changed. Raises :class:`_FetchFailed`."""
+        """GET ``/self`` into ``st``; True when the document changed. Raises :class:`_FetchFailed`.
+
+        The GET runs outside ``st.lock`` (a slow plane must not stall writers), so a write can
+        install a newer document while it is in flight. Its response is then stale, even when its
+        ``profileVersion`` matches (an upper level may have changed in between): it is dropped, and
+        the next poll fetches again."""
+        started = st.installed
         try:
             resp = client.request("GET", st.home, st.profile, etag=st.etag if conditional else None)
         except PlaneCredentialError as exc:
@@ -170,6 +179,9 @@ class RemoteBackend:
             return False
         if resp.status == 200 and _effective_ok(resp.body):
             with st.lock:
+                if st.installed != started:
+                    logger.debug("Remote Config: dropped a fetch for profile %r that a write overtook", st.profile)
+                    return False
                 self._install(st, resp.body, resp.etag)
             return True
         if resp.status == 200:
@@ -201,6 +213,8 @@ class RemoteBackend:
         st.provenance = dict(body.get("provenance") or {})
         st.changed_ns = time.time_ns()
         st.gen += 1
+        st.installed += 1
+        st.base = None
         st.postprocessed = False
         st.fetched_at, st.last_error = time.time(), None
         st.next_poll = time.monotonic() + poll_interval() * random.uniform(0.9, 1.1)
@@ -218,7 +232,7 @@ class RemoteBackend:
             if st.postprocessed or st.in_postprocess:
                 return
             st.in_postprocess = True
-        etag = st.etag
+        seen = st.installed
         try:
             try:
                 from hermes_cli.config import _known_top_level_keys
@@ -235,20 +249,31 @@ class RemoteBackend:
             elif current < SUPPORT_FLOOR_VERSION:
                 logger.warning("Remote Config: profile %r was written by config version %d, below the "
                                "migration floor %d; not migrated", st.profile, current, SUPPORT_FLOOR_VERSION)
-            st.postprocessed = st.etag == etag  # a poll that landed meanwhile needs its own pass
+            st.postprocessed = st.installed == seen  # a doc installed meanwhile needs its own pass
         finally:
             st.in_postprocess = False
 
     def _migrate_in_memory(self, st: _ProfileState, current: int, run_migrations) -> None:
+        """Migrate the installed doc in memory (D12). The migrated doc also becomes the base later
+        writes diff against: a reader was handed the migrated doc, so a write that leaves the
+        migration's changes in place must not send them (D12: never write the migration back)."""
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        started = st.migrating = st.installed
         token = set_hermes_home_override(st.home)
         try:
             run_migrations(current, {"env_added": [], "config_added": [], "warnings": []}, True)
         finally:
             reset_hermes_home_override(token)
-        doc = copy.deepcopy(st.doc)
-        doc["_config_version"] = _latest_config_version()
-        self.apply_in_memory(st.home, doc)
+        with st.lock:
+            st.migrating = None
+            if st.installed != started:
+                return  # a poll or write installed a newer doc mid-migration; its own pass migrates it
+            doc = copy.deepcopy(st.doc)
+            doc["_config_version"] = _latest_config_version()
+            self._apply_in_memory_locked(st, doc)
+            base = copy.deepcopy(doc)
+            base.pop("_config_version", None)
+            st.base = base
         logger.info("Remote Config: migrated profile %r in memory from config version %d", st.profile, current)
 
     # --- ConfigBackend: reads ---------------------------------------------------------------
@@ -288,8 +313,11 @@ class RemoteBackend:
 
     def write_changes(self, home: Path, changes: Changes) -> None:
         st = self._state(home)
-        with st.lock:
-            for attempt in (1, 2):
+        for attempt in (1, 2):
+            # Diff against the doc readers get, i.e. migrated in memory (D12) — also after the CAS
+            # re-read below. Outside st.lock: a migration reads through hermes_cli.config.
+            self._postprocess(st)
+            with st.lock:
                 built = self._build_patch(st, changes)
                 if built is None:
                     return
@@ -313,7 +341,7 @@ class RemoteBackend:
 
     def _build_patch(self, st: _ProfileState, changes: Changes) -> Optional[Tuple[Dict[str, Any], List[KeyPath]]]:
         """The PATCH body for ``changes`` against the last read (§15.2), or None for no change."""
-        base = copy.deepcopy(st.server_config)
+        base = copy.deepcopy(st.base if st.base is not None else st.server_config)
         if changes.document is not None:
             new = to_wire(copy.deepcopy(changes.document))
             if not isinstance(new, dict):
@@ -383,9 +411,15 @@ class RemoteBackend:
     def apply_in_memory(self, home: Path, doc: dict) -> None:
         st = self._state(home)
         with st.lock:
-            st.doc = copy.deepcopy(doc)
-            st.changed_ns = time.time_ns()
-            st.gen += 1
+            if st.migrating is not None and st.migrating != st.installed:
+                return  # a migration step of a doc a poll/write has since replaced: drop it
+            self._apply_in_memory_locked(st, doc)
+
+    @staticmethod
+    def _apply_in_memory_locked(st: _ProfileState, doc: dict) -> None:
+        st.doc = copy.deepcopy(doc)
+        st.changed_ns = time.time_ns()
+        st.gen += 1
 
     # --- ConfigBackend: capabilities and boot -----------------------------------------------
 

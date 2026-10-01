@@ -79,7 +79,7 @@ APPROVAL = {"command": "rm -rf /", "description": "danger", "pattern_key": "k"}
 
 
 def test_exec_approval_decline_does_not_send_the_text_fallback():
-    from gateway.run_turn_runner import _ExecApprovalDeclined
+    from gateway.run_turn_runner_approval_notify import _ExecApprovalDeclined
 
     adapter = _Adapter(
         SendResult(success=False, error="declined", raw_response=CODE_ONLY_DECLINE)

@@ -49,7 +49,7 @@ async def peer(tmp_path, monkeypatch):
     adapter._session_db = authority.db
     from gateway.config import Platform
     runner.adapters[Platform.API_SERVER] = adapter
-    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    runner._intake_adapter_for = runner._delivery_adapter_for = lambda source: runner.adapters.get(source.platform)
     executed = []
 
     async def execute(authority, ref, row):

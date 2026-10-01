@@ -16,7 +16,7 @@ def api(owner, tmp_path, monkeypatch):
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter.gateway_runner = owner.runner
     adapter._session_db = owner.db
-    owner.runner._adapter_for_source = lambda source: adapter
+    owner.runner._intake_adapter_for = owner.runner._delivery_adapter_for = lambda source: adapter
     yield adapter
     adapter._response_store.close()
     adapter._run_idempotency_store.close()

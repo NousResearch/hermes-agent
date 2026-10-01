@@ -74,7 +74,7 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
         runner, profile_id="default", instance_id="api-owner-1"
     )
     adapter = _adapter(runner, db)
-    runner._adapter_for_source = lambda source: adapter
+    runner._intake_adapter_for = runner._delivery_adapter_for = lambda source: adapter
 
     # Exercise the public admission handler so run ownership and the canonical
     # principal/request-id binding are the same ones the resolution route sees.
@@ -116,7 +116,7 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
         # A process restart constructs a new API adapter.  Keeping the original
         # adapter here would preserve _run_owners and conceal the recovery gap.
         fresh = _adapter(runner, db)
-        runner._adapter_for_source = lambda source: fresh
+        runner._intake_adapter_for = runner._delivery_adapter_for = lambda source: fresh
         client = _runs_client(fresh)
         await client.start_server()
         return client, (adapter, fresh), store, restarted, rows[0], rows[1], executed, tasks

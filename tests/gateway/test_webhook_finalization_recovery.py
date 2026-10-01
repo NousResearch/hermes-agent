@@ -140,7 +140,7 @@ async def test_restart_reauthorizes_compressed_route_but_finalizes_logical_webho
         async def forbid_send(*args, **kwargs):
             sent.append((args, kwargs))
 
-        adapter = runner._adapter_for_source(entry.origin)
+        adapter = runner._delivery_adapter_for(entry.origin)
         adapter.send = forbid_send
 
         results = await recover_webhook_finalizations(restarted)

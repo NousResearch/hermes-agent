@@ -438,6 +438,7 @@ def test_canonical_preflight_dedupes_ordered_thinking_carrier():
     )
     assert preflight == expected
 
+
 def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes():
     base = _carrier_message()
     base["reasoning_details"][0]["thinking"] = "x" * 8000

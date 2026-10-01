@@ -20,6 +20,13 @@ listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`
 The agent-thread approval notification implementation is in
 `run_turn_runner_approval_notify.py`. `TurnRunner._approval_notify_sync` forwards to it.
 
+The shared `send_exec_approval` implementation is in
+`platforms/base_approval_prompt.py`. Relay approval rendering and resolution
+are in `relay/approval.py`. Discord, Slack, Telegram and Feishu approval
+rendering and callbacks are in their platform plugin `approval.py` siblings.
+Discord's approval view is created there by `create_exec_approval_view`;
+its adapter keeps the existing public view registration and SDK patch seams.
+
 ## The gateway has TWO message guards — both must bypass approval/control commands
 
 While an agent is running, an inbound message passes two sequential guards: (1) the **base

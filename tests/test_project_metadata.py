@@ -68,15 +68,15 @@ def test_direct_overrides_preserve_the_declared_exact_version():
 
 
 def test_matrix_extra_not_in_all():
-    """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
-    which has Linux-only wheels and no native build path on Windows or
-    modern macOS (archived libolm, C++ errors with Clang 21+).
+    """The [matrix] extra is excluded from [all] and installs on first use.
 
-    With matrix in [all], `uv sync --locked` on Windows tried to build
-    python-olm from sdist and failed on `make`. As of 2026-05-12 the
-    [matrix] extra is excluded from [all] entirely and installs on first
-    use (pm.ensure_import("matrix")), where the user is expected to have
-    a toolchain.
+    Historically [matrix] pulled `mautrix[encryption]` -> `python-olm`, which has
+    Linux-only wheels and no native build path on Windows or modern macOS
+    (archived libolm, C++ errors with Clang 21+): with matrix in [all],
+    `uv sync --locked` on Windows tried to build python-olm from sdist and failed
+    on `make`. As of 2026-05-12 [matrix] is excluded from [all] entirely and
+    installs on first use (pm.ensure_import("matrix")). The encryption closure
+    has since moved to its own [matrix-e2ee] extra (see below).
     """
     optional_dependencies = _load_optional_dependencies()
 
@@ -91,6 +91,39 @@ def test_matrix_extra_not_in_all():
         "matrix must not appear in [all] — it installs on first use via "
         f"pm.ensure_import('matrix'). Found: {matrix_in_all}"
     )
+
+
+def test_matrix_encryption_deps_are_a_separate_config_gated_extra():
+    """E2EE deps live in [matrix-e2ee], not in [matrix].
+
+    The Matrix adapter connects as a plain client and E2EE is off by default
+    (MATRIX_E2EE_MODE), but the old [matrix] extra pinned `mautrix[encryption]`
+    on Linux unconditionally: every install downloaded the python-olm sdist and
+    needed a C++ toolchain to build it (or failed the update's dependency step
+    wherever no compiler existed) for a feature that was disabled. The
+    encryption closure is now opt-in and config-gated — [matrix] stays the plain
+    SDK, [matrix-e2ee] is installed only when E2EE is configured on.
+    """
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    optional_dependencies = metadata["project"]["optional-dependencies"]
+    gates = metadata["tool"]["hermes"]["extras-platforms"]
+    opt_in = metadata["tool"]["hermes"]["opt-in-extras"]
+
+    encryption_pins = [dep for dep in optional_dependencies["matrix"] if "[encryption]" in dep]
+    assert not encryption_pins, (
+        "[matrix] must stay the plain client — the encryption closure belongs to "
+        f"[matrix-e2ee]. Found: {encryption_pins}"
+    )
+    assert "matrix-e2ee" in optional_dependencies, "[matrix-e2ee] extra must exist for E2EE"
+    assert [dep.split(";", 1)[0].strip() for dep in optional_dependencies["matrix-e2ee"]] == [
+        "mautrix[encryption]==0.21.1"
+    ]
+    # python-olm (mautrix[encryption]) has no win/darwin build path: Linux only.
+    assert gates["matrix-e2ee"] == "sys_platform == 'linux'"
+    # Opt-in: an all-extras build must never resolve python-olm.
+    assert "matrix-e2ee" in opt_in
+    assert not [dep for dep in optional_dependencies["all"] if "matrix-e2ee" in dep]
 
 
 def test_lazy_installable_extras_excluded_from_all():
@@ -115,7 +148,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
         "stt-whisper",
         "modal", "daytona", "vercel",
-        "messaging", "slack", "matrix", "dingtalk", "feishu",
+        "messaging", "slack", "matrix", "matrix-e2ee", "dingtalk", "feishu",
         "telegram", "discord",
         "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",
         "google-chat",

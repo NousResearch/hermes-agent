@@ -279,3 +279,122 @@ def test_releasing_a_refused_automatic_turn_leaves_a_later_prompt_running(monkey
         "published": "user",
         "ran": ["user"],
     }
+
+
+@pytest.mark.parametrize("source", ["automatic", "submit"])
+@pytest.mark.parametrize("replace_claim", [False, True], ids=["cancelled", "replaced"])
+def test_stop_during_lease_admission_prevents_the_turn(monkeypatch, turn_env, source, replace_claim):
+    session = _idle_session()
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+
+    def ensure_slot(_sid, _session):
+        if threading.current_thread() is threading.main_thread():
+            return None
+        entered.set()
+        assert release.wait(5)
+        return None
+
+    def emit(event, _sid, payload=None, *_args, **_kwargs):
+        if event == "error":
+            errors.append(payload)
+
+    monkeypatch.setattr(server, "_ensure_active_session_slot", ensure_slot)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+    monkeypatch.setattr(server, "_emit", emit)
+    server._sessions[SID] = session
+    dispatch = None
+    successor = object()
+    try:
+        if source == "automatic":
+            with session["history_lock"]:
+                claim = server._claim_session_turn(session)
+            dispatch = threading.Thread(target=lambda: server._run_prompt_submit(
+                "automatic", SID, session, "automatic", turn_claim=claim))
+            dispatch.start()
+        else:
+            assert _user_submit() == {"status": "streaming"}
+            dispatch = session["_run_thread"]
+        assert entered.wait(5)
+        stopped = server.handle_request({"id": "stop", "method": "session.interrupt",
+            "params": {"session_id": SID}})
+        assert stopped["result"] == {"status": "interrupted"}
+        if replace_claim:
+            with session["history_lock"]:
+                session["running"] = False
+                server._claim_session_turn(session)
+                session["_turn_cancel_requested"] = False
+                session["inflight_turn"] = {"user": "successor"}
+                session["_submit_user_row"] = {"content": "successor"}
+                session["_run_thread"] = successor
+        release.set()
+        dispatch.join(5)
+        observed = {
+            "ran": turn_env.ran,
+            "running": session["running"],
+            "errors": errors,
+            "inflight": session.get("inflight_turn"),
+            "staged": session.get("_submit_user_row"),
+            "successor_published": session.get("_run_thread") is successor,
+        }
+    finally:
+        release.set()
+        turn_env.finish.set()
+        if dispatch is not None:
+            dispatch.join(5)
+        turn_env.join_all()
+        server._sessions.pop(SID, None)
+
+    expected = {
+        "ran": [], "running": False,
+        "errors": [{"message": "Turn cancelled before the agent started"}],
+        "inflight": None, "staged": None, "successor_published": False,
+    }
+    if replace_claim:
+        expected.update(
+            running=True, errors=[], inflight={"user": "successor"},
+            staged={"content": "successor"}, successor_published=True)
+    assert observed == expected
+
+
+def test_stale_auto_continue_does_not_stage_marker_inputs(monkeypatch, turn_env):
+    session = _idle_session()
+    entered, release = threading.Event(), threading.Event()
+    marker_inputs = []
+
+    def ensure_slot(_sid, _session):
+        if threading.current_thread() is threading.main_thread() or entered.is_set():
+            return None
+        entered.set()
+        assert release.wait(5)
+        return None
+
+    def record_marker(_session, text, **_kwargs):
+        marker_inputs.append((text, _session.pop("_auto_continue_prompt", None)))
+        _session.pop("_auto_continue_attempt", None)
+        return ""
+
+    monkeypatch.setattr(server, "_ensure_active_session_slot", ensure_slot)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+    monkeypatch.setattr(server, "_record_turn_marker", record_marker)
+    server._sessions[SID] = session
+    scheduler = _auto_continue(monkeypatch, session)
+    try:
+        scheduler.start()
+        assert entered.wait(5)
+        server.handle_request({"id": "stop", "method": "session.interrupt", "params": {"session_id": SID}})
+        assert _user_submit() == {"status": "streaming"}
+        assert turn_env.wait_started("user")
+        release.set()
+        scheduler.join(5)
+        for worker in turn_env.workers:
+            if worker.name.startswith("auto-continue"):
+                worker.join(5)
+        marker_state = {key: session[key] for key in ("_auto_continue_prompt", "_auto_continue_attempt") if key in session}
+    finally:
+        release.set()
+        turn_env.finish.set()
+        scheduler.join(5)
+        turn_env.join_all()
+        server._sessions.pop(SID, None)
+    assert {"markers": marker_inputs, "staged": marker_state} == {"markers": [("user", None)], "staged": {}}

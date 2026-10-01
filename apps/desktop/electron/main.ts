@@ -333,7 +333,9 @@ import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnosti
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import {
   decideNvidiaEglFallback,
+  NVIDIA_EGL_GPU_GRACE_MS,
   nvidiaEglFallbackMarker,
+  nvidiaEglMarkerAfterCleanExit,
   nvidiaEglMarkerAfterSuccessfulBoot,
   parseNvidiaDriverMajor,
   parseNvidiaDriverVersion,
@@ -874,6 +876,10 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
 
     nvidiaEglRelaunchAttempted = true
 
+    // The sticky fallback marker written below must survive the relaunch —
+    // a pending grace-timer write would clobber it back to `ok` mid-shutdown.
+    clearNvidiaEglGraceTimer()
+
     try {
       writeNvidiaEglMarker(
         app.getPath('userData'),
@@ -898,6 +904,83 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
     }
   })
 }
+
+// #129174: the `booting` witness must outlive first paint. Chromium's "GPU
+// process isn't usable" FATAL abort lands 1–2.5 minutes into the run — after
+// the window is already on screen — and kills the process before any
+// `child-process-gone` handler can run. Marking the probe healthy at reveal
+// erased the only trace that abort leaves, so every launch re-probed the
+// broken driver and died in a crash loop. The healthy-boot write is deferred
+// until the GPU has survived NVIDIA_EGL_GPU_GRACE_MS past first paint; a clean
+// exit resolves the witness earlier via nvidiaEglMarkerAfterCleanExit.
+let nvidiaEglGraceTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearNvidiaEglGraceTimer(): void {
+  if (nvidiaEglGraceTimer) {
+    clearTimeout(nvidiaEglGraceTimer)
+    nvidiaEglGraceTimer = null
+  }
+}
+
+function scheduleNvidiaEglHealthyBoot(): void {
+  if (NVIDIA_DRIVER_MAJOR === null || nvidiaEglGraceTimer) {
+    return
+  }
+
+  nvidiaEglGraceTimer = setTimeout(() => {
+    nvidiaEglGraceTimer = null
+
+    try {
+      writeNvidiaEglMarker(
+        app.getPath('userData'),
+        nvidiaEglMarkerAfterSuccessfulBoot({
+          fallbackActive: nvidiaEglFallbackActive,
+          appVersion: app.getVersion(),
+          driverVersion: NVIDIA_DRIVER_VERSION
+        })
+      )
+    } catch {
+      void 0
+    }
+  }, NVIDIA_EGL_GPU_GRACE_MS)
+
+  // The grace timer must never hold the app open.
+  nvidiaEglGraceTimer.unref()
+}
+
+function markNvidiaEglCleanExit(): void {
+  // A pending grace-timer write is moot once the run is ending — and must never
+  // race the marker write below.
+  clearNvidiaEglGraceTimer()
+
+  if (NVIDIA_DRIVER_MAJOR === null) {
+    return
+  }
+
+  try {
+    const marker = nvidiaEglMarkerAfterCleanExit({
+      marker: readNvidiaEglMarker(app.getPath('userData')),
+      fallbackActive: nvidiaEglFallbackActive,
+      appVersion: app.getVersion(),
+      driverVersion: NVIDIA_DRIVER_VERSION
+    })
+
+    if (marker) {
+      writeNvidiaEglMarker(app.getPath('userData'), marker)
+    }
+  } catch {
+    void 0
+  }
+}
+
+// A clean exit proves the run ended without a GPU abort, so the `booting`
+// witness can resolve before the grace timer fires. `exitAfterBackendShutdown`
+// is the only exit plumbing every in-app relaunch flows through (`app.exit()`
+// skips the quit events), so the witness resolves there too. The read-then-
+// write inside markNvidiaEglCleanExit keeps the SwiftShader relaunch's fresh
+// `fallback` marker untouched.
+app.on('before-quit', markNvidiaEglCleanExit)
+app.on('will-quit', markNvidiaEglCleanExit)
 
 // Linux: point Chromium at the session's keychain backend so safeStorage can
 // encrypt remote gateway tokens (hardening.ts refuses to persist them without
@@ -12842,6 +12925,11 @@ async function exitAfterBackendShutdown(code) {
 
   // app.exit() skips will-quit, and every in-app relaunch lands here.
   killTimedGitChildren()
+  // #129174: resolve the NVIDIA `booting` witness before the hard exit — this
+  // path skips the quit events that normally do it. A relaunch is a clean end
+  // of this run; the read-then-write keeps the SwiftShader relaunch's fresh
+  // `fallback` marker untouched.
+  markNvidiaEglCleanExit()
   app.exit(code)
 }
 
@@ -15317,23 +15405,12 @@ function createWindow() {
       // window is on screen (a STARTING gnome-shell app must not see its entry change).
       notifyLauncherWindowRevealed()
 
-      // #124255: the first revealed window means the GPU survived this boot.
-      // Keep a sticky SwiftShader marker when we launched with the fallback;
-      // otherwise mark the probe healthy so future launches trust hardware GL.
-      if (NVIDIA_DRIVER_MAJOR !== null) {
-        try {
-          writeNvidiaEglMarker(
-            app.getPath('userData'),
-            nvidiaEglMarkerAfterSuccessfulBoot({
-              fallbackActive: nvidiaEglFallbackActive,
-              appVersion: app.getVersion(),
-              driverVersion: NVIDIA_DRIVER_VERSION
-            })
-          )
-        } catch {
-          void 0
-        }
-      }
+      // #124255/#129174: the first revealed window starts the GPU health grace
+      // window — the probe is marked healthy only after it survives
+      // NVIDIA_EGL_GPU_GRACE_MS past first paint (the "GPU process isn't
+      // usable" FATAL abort lands 1–2.5 min into the run, well after this
+      // point). A clean exit resolves the witness earlier.
+      scheduleNvidiaEglHealthyBoot()
 
       // #38216: clear the mid-boot marker only after a window is actually usable.
       // Keep sticky `fallback` when we launched with --no-sandbox so the next

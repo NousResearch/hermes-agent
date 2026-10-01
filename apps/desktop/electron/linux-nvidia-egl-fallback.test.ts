@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   decideNvidiaEglFallback,
+  NVIDIA_EGL_GPU_GRACE_MS,
   NVIDIA_GPU_DEATH_REASONS,
   nvidiaEglFallbackMarker,
+  nvidiaEglMarkerAfterCleanExit,
   nvidiaEglMarkerAfterSuccessfulBoot,
   parseNvidiaDriverMajor,
   parseNvidiaDriverVersion,
@@ -224,5 +226,47 @@ describe('marker persistence', () => {
         driverVersion: '580.178.04'
       })
     ).toEqual(nvidiaEglFallbackMarker('0.21.5', '580.178.04'))
+  })
+})
+
+// ─── #129174: the clean-exit witness ─────────────────────────────────────────
+
+describe('nvidiaEglMarkerAfterCleanExit — #129174', () => {
+  it('resolves an unresolved booting witness to ok: the run ended without a GPU abort', () => {
+    expect(nvidiaEglMarkerAfterCleanExit({ marker: { state: 'booting' }, fallbackActive: false })).toEqual({
+      state: 'ok'
+    })
+  })
+
+  it('never rewrites an on-disk fallback marker (the SwiftShader relaunch exits through the same plumbing)', () => {
+    expect(
+      nvidiaEglMarkerAfterCleanExit({
+        marker: nvidiaEglFallbackMarker('0.21.5', '580.178.04'),
+        fallbackActive: false
+      })
+    ).toBeNull()
+  })
+
+  it('never rewrites an already-resolved ok marker', () => {
+    expect(nvidiaEglMarkerAfterCleanExit({ marker: { state: 'ok' }, fallbackActive: false })).toBeNull()
+  })
+
+  it('returns null with no marker on disk', () => {
+    expect(nvidiaEglMarkerAfterCleanExit({ marker: null, fallbackActive: false })).toBeNull()
+  })
+
+  it('a fallback launch exiting cleanly keeps its sticky marker', () => {
+    expect(
+      nvidiaEglMarkerAfterCleanExit({
+        marker: { state: 'booting' },
+        fallbackActive: true,
+        appVersion: '0.21.5',
+        driverVersion: '580.178.04'
+      })
+    ).toEqual(nvidiaEglFallbackMarker('0.21.5', '580.178.04'))
+  })
+
+  it('the grace window outlasts the observed FATAL aborts (1–2.5 min into the run)', () => {
+    expect(NVIDIA_EGL_GPU_GRACE_MS).toBeGreaterThanOrEqual(3 * 60 * 1000)
   })
 })

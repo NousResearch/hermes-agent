@@ -2441,7 +2441,8 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         skip_context_files=not bool(workdir),
         # Scope the offer-time skill index to the job's canonically-loaded
         # skills (bundle members expanded, paths/aliases normalized).
-        # Empty (no skills, or none resolved) -> None = full index.
+        # None (job lists no skills) = full index; [] (skills listed, none
+        # resolved) = empty index — see _resolve_bound_skills.
         bound_skills=bound_skills,
         load_soul_identity=True,
         skip_memory=False,

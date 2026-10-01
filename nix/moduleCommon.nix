@@ -676,12 +676,19 @@ let
     '';
 
   # ── Package resolution ──────────────────────────────────────────────────
+  # The module's lists extend the package's own, never replace them: the
+  # default package is itself `minimal.override { extraDependencyGroups =
+  # [ "anthropic" ... ]; }`, so a plain attrset override would drop every
+  # provider group the moment a plugin is added.
   effectivePackage =
     cfg:
     if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] then
       cfg.package
     else
-      cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      cfg.package.override (prev: {
+        extraPythonPackages = (prev.extraPythonPackages or [ ]) ++ cfg.extraPythonPackages;
+        extraDependencyGroups = lib.unique ((prev.extraDependencyGroups or [ ]) ++ cfg.extraDependencyGroups);
+      });
 
   # ── The rendered config.yaml ────────────────────────────────────────────
   # YAML contains JSON, so the output of toJSON is a correct config.yaml.

@@ -1292,6 +1292,36 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # The module's extraPythonPackages / extraDependencyGroups extend the
+        # selected package's own lists. The default package is `minimal` plus
+        # the provider groups (anthropic, ...); a replacing override silently
+        # rebuilt it as `minimal` the moment a plugin was added. Eval-only:
+        # the venv drvPath is the identity of the dependency set.
+        module-extras-extend-package = let
+          testPkg = pythonLock.interpreter.pkgs.pyfiglet;
+          venvOf = settings: builtins.unsafeDiscardStringContext
+            (evalHomeModule ({ enable = true; } // settings)).config.programs.hermes-agent.package.hermesVenv.drvPath;
+          defaultVenv = builtins.unsafeDiscardStringContext hermesVenv.drvPath;
+          withPlugin = venvOf { extraPythonPackages = [ testPkg ]; };
+          withGroup = venvOf { extraDependencyGroups = [ "anthropic" ]; };
+        in pkgs.runCommand "hermes-module-extras-extend-package" { } ''
+          set -e
+          echo "=== Checking module extras extend the package's own ==="
+          if [ "${withPlugin}" != "${defaultVenv}" ]; then
+            echo "FAIL: extraPythonPackages changed the sealed venv (default groups dropped)"
+            echo "  default: ${defaultVenv}"
+            echo "  module:  ${withPlugin}"
+            exit 1
+          fi
+          echo "PASS: extraPythonPackages keeps the default package's venv"
+          if [ "${withGroup}" != "${defaultVenv}" ]; then
+            echo "FAIL: a group already in the package rebuilt the venv"; exit 1
+          fi
+          echo "PASS: extraDependencyGroups merges with the package's groups"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Exercise the actual uv2nix environment, not only the selector.
         python-lock-derived = pkgs.runCommand "hermes-python-lock-derived" { } ''
           set -e

@@ -34,6 +34,7 @@ export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string):
   }
 
   delete env.HERMES_RUNTIME_DIR
+  delete env.HERMES_DESKTOP_IGNORE_EXISTING
 
   return env
 }

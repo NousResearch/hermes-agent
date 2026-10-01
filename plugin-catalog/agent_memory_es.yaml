@@ -1,0 +1,26 @@
+name: agent_memory_es
+repo: https://github.com/patrykkopycinski/hermes-plugin-agent-memory-es
+sha: e9469ee90396eae9db4a6b2526b5a0bc3d37dd62
+description: Self-owned long-term memory backed by the agent-memory-es service
+  (Elasticsearch). Three agent tools — recall, retain, reflect — over episodic/
+  semantic/procedural tiers with hybrid BM25+kNN recall and server-enforced
+  private/team/common visibility. Requires a running agent-memory-es instance.
+maintainer: patrykkopycinski
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+version: "0.1.0"
+docs_url: https://github.com/patrykkopycinski/hermes-plugin-agent-memory-es#readme
+homepage_url: https://patrykkopycinski.github.io/hermes-plugin-agent-memory-es/
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - agent_memory_recall
+    - agent_memory_retain
+    - agent_memory_reflect
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AMES_SERVICE_URL
+    - AMES_SERVICE_KEY

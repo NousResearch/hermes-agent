@@ -19,6 +19,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self.member_rpcs = {}
         # Serializes every peer route publication (registration, renewal) with Disband.
         self.peer_route_lock = threading.RLock()
+        self._peer_renewals, self._peer_renewal_scans = {}, {}  # session_group_peer_routes
         super().__init__(None, db_path=authority.db.db_path)
 
     def _make_rpc(self, server):
@@ -40,8 +41,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def _runtime_options(self):
         # A peer turn its gateway never received is deferred with that proof, so the room's
-        # next turn runs; Retry (HostedControls) requeues it.
-        return {'defer_not_admitted_members': True}
+        # next turn runs; Retry (HostedControls) requeues it. Peer grants renew in the room's cycle.
+        return {'defer_not_admitted_members': True, 'maintain_leased_room': self._maintain_peer_grants}
+
+    def _maintain_peer_grants(self, binding, lease):
+        from gateway.session_group_peer_routes import maintain_peer_grants
+        maintain_peer_grants(self, binding, lease)
 
     def profile_homes(self):
         from gateway.run import _load_gateway_config

@@ -113,11 +113,11 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
     target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=api_port)
     grants, routes = [], []
 
-    async def invite(target_ws, room):
+    async def invite(target_ws, room, **lifetimes):
         invited = await rpc(target_ws, 'groups.peer.invite', room_id='linked', member_id='reviewer',
                             home_install_id=room['authority_gateway_id'],
                             authority_gateway_id=room['authority_gateway_id'],
-                            authority_epoch=room['authority_epoch'])
+                            authority_epoch=room['authority_epoch'], **lifetimes)
         grants.append(invited['result']['grant'])
         return invited['result']
 
@@ -214,6 +214,21 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
             assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
             assert (await asyncio.to_thread(_grant_status, routes[0], grants[-1]))[0] == 200
 
+            # A one-minute grant under a one-hour horizon: the home renews it on its own before it
+            # expires, retires it, and keeps the member working on the renewal (checked below).
+            short = await invite(target_ws, room, ttl_seconds=60, status_ttl_seconds=3600)
+            registered = await rpc(home_ws, 'groups.peer.register', room_id='linked', member_id='reviewer',
+                                   target_url=routes[0], target_profile='default',
+                                   grant=short['grant'], catalog=catalog)
+            assert registered['result']['registered'], registered
+            async with asyncio.timeout(60):
+                while stored_route()[0][0] == short['grant']:
+                    await asyncio.sleep(.2)
+            assert stored_route()[0][1:] == (trace, cancel_scope)
+            status, body = await asyncio.to_thread(_grant_status, routes[0], short['grant'])
+            assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
+            assert (await asyncio.to_thread(_grant_status, routes[0], stored_route()[0][0]))[0] == 200
+
             held, _ = target_model.gates['HOLD_RESTART']
             await _send(home_ws, 'restart', '@reviewer HOLD_RESTART')
             assert await asyncio.to_thread(held.wait, 30)
@@ -226,8 +241,10 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
             replies = await _events(home_ws, 'message.member', count=2)
             assert [r['payload']['text'] for r in replies] == ['PEER_REPLY', 'PEER_REPLY'], replies
             assert sum('HOLD_RESTART' in _last_user_text(r) for r in target_model.requests) == 1
-            # The current grant still works; the one it replaced stayed retired.
-            assert [(await asyncio.to_thread(_grant_status, routes[0], grant))[0] for grant in grants] == [403, 200]
+            # Only the current (renewed) grant works; every grant it replaced stayed retired.
+            assert [(await asyncio.to_thread(_grant_status, routes[0], grant))[0] for grant in grants] == [403] * 3
+            assert (await asyncio.to_thread(_grant_status, routes[0], stored_route()[0][0]))[0] == 200
+            grants.append(stored_route()[0][0])
 
             disbanded = await rpc(home_ws, 'groups.disband', room_id='linked')
             assert 'tombstone' in disbanded['result'], disbanded

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -119,10 +120,6 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._auto_tts_disabled_chats = set()
     adapter._typing_paused = set()
     return adapter
-
-
-def _debounced_event(adapter: BasePlatformAdapter, session_key: str) -> MessageEvent:
-    return adapter._text_debounce[session_key].event
 
 
 @pytest.mark.asyncio
@@ -260,152 +257,158 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
 
 
 @pytest.mark.asyncio
-async def test_queue_debounce_preserves_same_reply_context():
-    adapter = _make_adapter()
-    first = _make_event(
-        "one",
-        reply_to_message_id="reply-1",
-        reply_to_text="quoted",
-        reply_to_author_id="author-1",
-        reply_to_author_name="Author One",
-        reply_to_is_own_message=True,
-    )
-    session_key = build_session_key(first.source)
-    adapter._active_sessions[session_key] = asyncio.Event()
-
-    await adapter.handle_message(first)
-    await adapter.handle_message(
-        _make_event(
-            "two",
-            reply_to_message_id="reply-1",
-            reply_to_text="quoted",
-            reply_to_author_id="author-1",
-            reply_to_author_name="Author One",
-            reply_to_is_own_message=True,
+@pytest.mark.parametrize(
+    "mode,reply_ids,attachments,expected_turns",
+    [
+        pytest.param(
+            "pending",
+            (None, "a"),
+            (None, None),
+            (("one\ntwo", 1, 0, (0, 1)),),
+            id="pending-incoming-quote",
+        ),
+        pytest.param(
+            "pending",
+            ("a", None),
+            (None, None),
+            (("one\ntwo", 0, 0, (0, 1)),),
+            id="pending-keeps-quote",
+        ),
+        pytest.param(
+            "pending",
+            ("a", "b"),
+            (None, None),
+            (("one\ntwo", 0, 0, (0, 1)),),
+            id="pending-single-slot-fallback",
+        ),
+        pytest.param(
+            "pending",
+            (None, "a"),
+            (None, "image"),
+            (("one\n\ntwo", 1, 0, (0, 1)),),
+            id="pending-quoted-image",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            (None, None),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-incoming-quote",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "a"),
+            (None, None),
+            (("one\ntwo", 0, 1, (0, 1)),),
+            id="debounce-same-quote",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "b"),
+            (None, None),
+            (("one", 0, 0, (0,)), ("two", 1, 1, (1,))),
+            id="debounce-distinct-quotes",
+        ),
+        pytest.param(
+            "debounce",
+            ("a", "b", "c"),
+            (None, None, None),
+            (("one", 0, 0, (0,)), ("two\nthree", 1, 2, (1, 2))),
+            id="debounce-runnerless-fallback",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            (None, "image"),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-quoted-image",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            (None, "document"),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-not-inlined-document",
+        ),
+        pytest.param(
+            "debounce",
+            (None, "a"),
+            ("legacy-image", "document"),
+            (("one\ntwo", 1, 1, (0, 1)),),
+            id="debounce-pads-legacy-inline-flags",
+        ),
+    ],
+)
+async def test_busy_merges_preserve_reply_context_and_attachments(
+    mode, reply_ids, attachments, expected_turns
+):
+    events = []
+    for word, reply_id, attachment in zip(
+        ("one", "two", "three"), reply_ids, attachments
+    ):
+        event = _make_event(
+            word,
+            reply_to_message_id=reply_id,
+            reply_to_text=f"quote {reply_id}" if reply_id else None,
+            reply_to_author_id=f"author-{reply_id}" if reply_id else None,
+            reply_to_author_name=f"Author {reply_id}" if reply_id else None,
+            reply_to_is_own_message=bool(reply_id),
         )
-    )
+        if attachment:
+            is_document = attachment == "document"
+            event.media_urls = [
+                f"/tmp/{word}.txt" if is_document else f"/tmp/{word}.png"
+            ]
+            event.media_types = ["text/plain" if is_document else "image/png"]
+            event.media_text_inlined = [] if attachment == "legacy-image" else [False]
+        events.append(event)
 
-    merged = _debounced_event(adapter, session_key)
-    assert merged.text == "one\ntwo"
-    assert merged.message_id == "msg-two"
-    assert (
-        merged.reply_to_message_id,
-        merged.reply_to_text,
-        merged.reply_to_author_id,
-        merged.reply_to_author_name,
-        merged.reply_to_is_own_message,
-    ) == ("reply-1", "quoted", "author-1", "Author One", True)
-    adapter._discard_text_debounce(session_key)
-
-
-@pytest.mark.asyncio
-async def test_queue_debounce_splits_incompatible_reply_contexts():
-    adapter = _make_adapter()
-    first = _make_event(
-        "one",
-        reply_to_message_id="reply-1",
-        reply_to_text="first quote",
-        reply_to_author_id="author-1",
-        reply_to_author_name="Author One",
-    )
-    session_key = build_session_key(first.source)
-    adapter._active_sessions[session_key] = asyncio.Event()
-
-    await adapter.handle_message(first)
-    await adapter.handle_message(
-        _make_event(
-            "two",
-            reply_to_message_id="reply-2",
-            reply_to_text="second quote",
-            reply_to_author_id="author-2",
-            reply_to_author_name="Author Two",
+    expected = []
+    for text, quote_index, anchor_index, members in expected_turns:
+        quote = events[quote_index]
+        expected.append(
+            replace(
+                events[members[0]],
+                text=text,
+                message_id=events[anchor_index].message_id,
+                reply_to_message_id=quote.reply_to_message_id,
+                reply_to_text=quote.reply_to_text,
+                reply_to_author_id=quote.reply_to_author_id,
+                reply_to_author_name=quote.reply_to_author_name,
+                reply_to_is_own_message=quote.reply_to_is_own_message,
+                media_urls=[
+                    path for index in members for path in events[index].media_urls
+                ],
+                media_types=[
+                    kind for index in members for kind in events[index].media_types
+                ],
+                media_text_inlined=[
+                    flag
+                    for index in members
+                    for flag in (
+                        events[index].media_text_inlined
+                        or [None] * len(events[index].media_urls)
+                    )
+                ],
+            )
         )
-    )
 
-    pending = adapter._pending_messages[session_key]
-    queued = _debounced_event(adapter, session_key)
-    assert pending.text == "one"
-    assert (
-        pending.reply_to_message_id,
-        pending.reply_to_text,
-        pending.reply_to_author_id,
-        pending.reply_to_author_name,
-    ) == ("reply-1", "first quote", "author-1", "Author One")
-    assert queued.text == "two"
-    assert (
-        queued.reply_to_message_id,
-        queued.reply_to_text,
-        queued.reply_to_author_id,
-        queued.reply_to_author_name,
-    ) == ("reply-2", "second quote", "author-2", "Author Two")
-    adapter._discard_text_debounce(session_key)
+    if mode == "pending":
+        pending = {"session": events[0]}
+        for event in events[1:]:
+            merge_pending_message_event(pending, "session", event, merge_text=True)
+        assert list(pending.values()) == expected
+        return
 
-
-_QUOTED_IMAGE_CASES = pytest.mark.parametrize("media_urls,media_types", [
-    ([], []),
-    (["/tmp/q.png"], ["image/png"]),
-])
-
-
-def _reply_to_earlier(event: MessageEvent, media_urls: list[str], media_types: list[str]) -> MessageEvent:
-    event.media_urls, event.media_types = list(media_urls), list(media_types)
-    event.reply_to_message_id, event.reply_to_text = "$earlier", "earlier answer"
-    event.reply_to_author_id, event.reply_to_author_name = "u2", "Alice"
-    return event
-
-
-def _merged_view(event: MessageEvent) -> tuple:
-    return (
-        event.text, event.media_urls, event.reply_to_message_id, event.reply_to_text,
-        event.reply_to_author_id, event.reply_to_author_name, event.reply_to_is_own_message,
-    )
-
-
-@pytest.mark.parametrize("media_urls,media_types,merged_text", [
-    ([], [], "one\ntwo"),
-    (["/tmp/q.png"], ["image/png"], "one\n\ntwo"),
-])
-def test_pending_message_merge_keeps_incoming_reply_context(media_urls, media_types, merged_text):
-    pending = {"session": _make_event("one")}
-
-    merge_pending_message_event(
-        pending, "session", _reply_to_earlier(_make_event("two"), media_urls, media_types), merge_text=True,
-    )
-
-    assert _merged_view(pending["session"]) == (
-        merged_text, media_urls, "$earlier", "earlier answer", "u2", "Alice", False,
-    )
-
-
-@_QUOTED_IMAGE_CASES
-@pytest.mark.asyncio
-async def test_busy_text_debounce_keeps_incoming_reply_context(media_urls, media_types):
     adapter = _make_adapter()
-    first = _make_event("one")
-    session_key = build_session_key(first.source)
-    adapter._active_sessions[session_key] = asyncio.Event()
-
-    await adapter.handle_message(first)
-    await adapter.handle_message(_reply_to_earlier(_make_event("two"), media_urls, media_types))
-    await adapter._flush_text_debounce_now(session_key)
-
-    pending = adapter._pending_messages[session_key]
-    assert (pending.message_id, *_merged_view(pending)) == (
-        "msg-two", "one\ntwo", media_urls, "$earlier", "earlier answer", "u2", "Alice", False,
-    )
-
-
-@pytest.mark.asyncio
-async def test_queue_debounce_does_not_drop_a_reply_to_a_third_message():
-    adapter = _make_adapter()
-    events = [_make_event(text, reply_to_message_id=f"reply-{text}") for text in ("one", "two", "three")]
     session_key = build_session_key(events[0].source)
     adapter._active_sessions[session_key] = asyncio.Event()
-
     for event in events:
         await adapter.handle_message(event)
-        await adapter._flush_text_debounce_now(session_key)
-
-    queued = (adapter._pending_messages[session_key].text, _debounced_event(adapter, session_key).text)
+    await adapter._flush_text_debounce_now(session_key)
+    actual = [adapter._pending_messages[session_key]]
+    buffered = adapter._text_debounce.get(session_key)
+    if buffered is not None:
+        actual.append(buffered.event)
     adapter._discard_text_debounce(session_key)
-    assert queued == ("one", "two\nthree")
+    assert actual == expected

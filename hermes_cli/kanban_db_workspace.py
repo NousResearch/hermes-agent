@@ -38,11 +38,14 @@ def _path_key(path: Path | str | None) -> str:
     """
     return unicodedata.normalize("NFC", str(path)) if path is not None else ""
 
-# Statuses after which a child no longer needs its parent's workspace artifacts.
+# Statuses after which a task no longer needs a workspace: a child stops
+# needing its parent's handoff artifacts, and a sharer stops holding a dir.
+_TERMINAL_STATUSES_SQL = "('done', 'archived', 'failed', 'cancelled')"
+
 _ACTIVE_CHILDREN_SQL = (
     "SELECT 1 FROM task_links l "
     "JOIN tasks t ON t.id = l.child_id "
-    "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled') "
+    f"WHERE l.parent_id = ? AND t.status NOT IN {_TERMINAL_STATUSES_SQL} "
     "LIMIT 1"
 )
 
@@ -77,14 +80,14 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
 _OTHER_LIVE_PATHS_SQL = (
     "SELECT workspace_path FROM tasks "
     "WHERE id != ? AND workspace_path IS NOT NULL "
-    "AND status NOT IN ('done', 'archived', 'failed', 'cancelled')"
+    f"AND status NOT IN {_TERMINAL_STATUSES_SQL}"
 )
 # Sibling boards mint their own ids, so the id being cleaned up here can
 # name a different live task there. Do not exclude it.
 _ANY_LIVE_PATHS_SQL = (
     "SELECT workspace_path FROM tasks "
     "WHERE workspace_path IS NOT NULL "
-    "AND status NOT IN ('done', 'archived', 'failed', 'cancelled')"
+    f"AND status NOT IN {_TERMINAL_STATUSES_SQL}"
 )
 
 
@@ -108,16 +111,6 @@ def _conn_uses_path(
     return False
 
 
-def _connection_db_file(conn: sqlite3.Connection) -> Optional[Path]:
-    row = conn.execute("PRAGMA database_list").fetchone()
-    if row is None:
-        return None
-    file = row[2]
-    if not file:
-        return None
-    return Path(file).resolve()
-
-
 def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
     """Every other board's ``kanban.db``. Raises ``OSError`` when the set is unknown.
 
@@ -126,10 +119,12 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
     default board at ``<home>/kanban.db`` and named boards at
     ``<home>/kanban/boards/<slug>/kanban.db``.
     """
-    current = _connection_db_file(conn)
-    home = _kb.kanban_home()
-    candidates = [home / "kanban.db"]
-    root = home / "kanban" / "boards"
+    from hermes_cli.kanban_db_connect import _main_db_file  # late: import cycle
+
+    current_file = _main_db_file(conn)
+    current = Path(current_file).resolve() if current_file else None
+    candidates = [_kb.kanban_home() / "kanban.db"]
+    root = _kb.boards_root()
     if root.is_dir():
         for child in root.iterdir():
             if child.is_dir():
@@ -150,7 +145,7 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
 
 
 def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
-    uri = db_file.resolve().as_uri() + "?mode=ro"
+    uri = db_file.as_uri() + "?mode=ro"
     other = sqlite3.connect(uri, uri=True, timeout=1.0)
     try:
         other.row_factory = sqlite3.Row
@@ -161,8 +156,8 @@ def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
 
 def _workspace_in_use_by_other(
     conn: sqlite3.Connection, task_id: str, path: Path | str
-) -> bool:
-    """True when another non-terminal task still points at the same scratch dir.
+) -> Optional[str]:
+    """Why *path* must be kept: ``"shared"``, ``"unknown"``, or None when free.
 
     ``gc``, completion and deferred parent cleanup used to ``rmtree`` a shared
     ``workspace_path`` as soon as one of its tasks went terminal. Compare the
@@ -170,51 +165,72 @@ def _workspace_in_use_by_other(
 
     The connection covers one board. A ready task on a named board can point
     at the same directory. If that set of databases cannot be read, refuse
-    the delete.
+    the delete (``"unknown"``) and log the board DB that failed, so one broken
+    sibling DB is not reported as a live sharer.
     """
     try:
         key = _path_key(Path(path).expanduser().resolve(strict=False))
-    except OSError:
-        return True
+    except OSError as exc:
+        _kb._log.warning("Cannot resolve workspace %s for task %s: %s", path, task_id, exc)
+        return "unknown"
     if not key:
-        return False
+        return None
     try:
         if _conn_uses_path(conn, task_id, key):
-            return True
-    except sqlite3.Error:
-        return True
+            return "shared"
+    except sqlite3.Error as exc:
+        _kb._log.warning("Cannot read live workspaces for task %s: %s", task_id, exc)
+        return "unknown"
     try:
         siblings = _sibling_board_db_files(conn)
-    except OSError:
-        return True
+    except OSError as exc:
+        _kb._log.warning("Cannot list kanban boards for task %s: %s", task_id, exc)
+        return "unknown"
     for db_file in siblings:
         try:
             if _other_board_uses_path(db_file, task_id, key):
-                return True
-        except (OSError, sqlite3.Error):
-            return True
-    return False
+                return "shared"
+        except (OSError, sqlite3.Error) as exc:
+            _kb._log.warning(
+                "Cannot read board db %s for task %s: %s", db_file, task_id, exc,
+            )
+            return "unknown"
+    return None
 
 
 def _defer_shared_workspace_cleanup(
     conn: sqlite3.Connection, task_id: str, path: Path | str
 ) -> bool:
-    """Skip removal and record why, when another live task still uses *path*."""
-    if not _workspace_in_use_by_other(conn, task_id, path):
+    """Skip removal and record why, when *path* may still be used by a live task."""
+    reason = _workspace_in_use_by_other(conn, task_id, path)
+    if reason is None:
         return False
-    _kb._log.warning(
-        "Deferring workspace cleanup for task %s: %s is still used by "
-        "another non-terminal task",
-        task_id, path,
-    )
+    if reason == "shared":
+        _kb._log.warning(
+            "Deferring workspace cleanup for task %s: %s is still used by "
+            "another non-terminal task",
+            task_id, path,
+        )
+    else:
+        _kb._log.warning(
+            "Deferring workspace cleanup for task %s: cannot tell whether "
+            "another task still uses %s",
+            task_id, path,
+        )
     try:
         _kb._append_event(
             conn, task_id, "workspace_cleanup_deferred_shared",
-            {"path": str(path)},
+            {"path": str(path), "reason": reason},
         )
-    except Exception:
+    except sqlite3.Error:
         pass
     return True
+
+
+def _worktree_guard_applies(path: Path | str) -> bool:
+    """Only a real linked worktree is ever removed; check sharing just for those."""
+    wt = Path(path).expanduser()
+    return wt.is_dir() and _is_linked_worktree_checkout(wt)
 
 
 def _lexical_path(path: Path | str) -> Path:
@@ -355,20 +371,25 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # lingering worker never has its cwd deleted from under it.
         if kind == "worktree":
             _cleanup_worker_tmux(conn, task_id)
-            if not _defer_shared_workspace_cleanup(conn, task_id, path):
+            if not (
+                _worktree_guard_applies(path)
+                and _defer_shared_workspace_cleanup(conn, task_id, path)
+            ):
                 _cleanup_worktree_workspace(task_id, path, row["branch_name"])
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         wp = Path(path)
-        if wp.is_dir() and not _defer_shared_workspace_cleanup(conn, task_id, path):
+        if wp.is_dir():
             # Containment guard: a board's ``default_workdir`` can pair
             # ``workspace_kind='scratch'`` with a user path pointing at a real
             # source tree; without this, completion would rmtree the user's data.
-            # See #28818.
+            # See #28818. Containment runs first so an unmanaged dir that is
+            # never removed does not pay for (or log) the shared-use scan.
             if _is_managed_scratch_path(wp):
-                release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
-                _kb._log.debug("Removed scratch workspace: %s", wp)
+                if not _defer_shared_workspace_cleanup(conn, task_id, path):
+                    release_lsp_clients(str(wp))
+                    shutil.rmtree(wp, ignore_errors=True)
+                    _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
                     "Refusing to remove out-of-scratch workspace for task %s: %s "
@@ -480,13 +501,20 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 or _has_active_children(conn, parent_id)
             ):
                 continue
-            if _defer_shared_workspace_cleanup(conn, parent_id, row["workspace_path"]):
-                continue
+            ws_path = row["workspace_path"]
             if row["workspace_kind"] == "worktree":
-                _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])
+                if _worktree_guard_applies(ws_path) and _defer_shared_workspace_cleanup(
+                    conn, parent_id, ws_path
+                ):
+                    continue
+                _cleanup_worktree_workspace(parent_id, ws_path, row["branch_name"])
                 continue
-            wp = Path(row["workspace_path"])
-            if wp.is_dir() and _is_managed_scratch_path(wp):
+            wp = Path(ws_path)
+            if not wp.is_dir():
+                continue
+            if _is_managed_scratch_path(wp):
+                if _defer_shared_workspace_cleanup(conn, parent_id, ws_path):
+                    continue
                 release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)

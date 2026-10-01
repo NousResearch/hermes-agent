@@ -322,7 +322,9 @@ def _cmd_gc(args: argparse.Namespace) -> int:
                 # Same safety predicate: only clean, fully-pushed worktrees go.
                 wt_path = row["workspace_path"]
                 if wt_path and Path(wt_path).is_dir():
-                    if kbw._defer_shared_workspace_cleanup(conn, row["id"], wt_path):
+                    if kbw._worktree_guard_applies(wt_path) and kbw._defer_shared_workspace_cleanup(
+                        conn, row["id"], wt_path
+                    ):
                         continue
                     kbw._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
                     if not Path(wt_path).is_dir():

@@ -88,14 +88,17 @@ def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:
 def config_refusal_http(exc: ConfigWriteError) -> Optional[HTTPException]:
     """The HTTP error for an EXPECTED config-backend refusal, or None for an unexpected failure.
 
-    A lock (403), a value the backend cannot store (400) and a lost CAS race (409) are the
+    A lock (403), a value the backend cannot store (400, or 413 when too large; ours or the
+    plane's ``config_value_invalid``/``config_path_*``/``config_secret_literal``) and a lost CAS
+    race (409) are the
     caller's to fix, and their messages are ours or the config plane's own refusal text (a path
     and the level that locks it; never a value or a credential), so they pass through (design
     §4.3: v1 shows the server's 403 message). Anything else stays opaque."""
     if isinstance(exc, ConfigLockedError):
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, ConfigValueError):
-        return HTTPException(status_code=400, detail=str(exc))
+        status = 413 if exc.code in ("config_level_too_large", "config_body_too_large") else 400
+        return HTTPException(status_code=status, detail=str(exc))
     if exc.code == "config_version_conflict":
         return HTTPException(status_code=409, detail=str(exc))
     return None

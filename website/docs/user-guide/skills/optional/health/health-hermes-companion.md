@@ -22,6 +22,14 @@ Requires the Companion iPhone app for place and health.
 | Platforms | macos |
 | Tags | `Location`, `Health`, `iPhone`, `iCloud`, `Apple` |
 
+## The iPhone app
+
+The skill reads files written by Hermes Companion. The app and the skill are at [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev).
+
+<img alt="Daily context" src="/img/hermes-companion/01-daily-context.png" width="280" />
+<img alt="Private archive" src="/img/hermes-companion/02-private-archive.png" width="280" />
+<img alt="Tracking control" src="/img/hermes-companion/03-tracking-control.png" width="280" />
+
 ## Reference: full SKILL.md
 
 :::info

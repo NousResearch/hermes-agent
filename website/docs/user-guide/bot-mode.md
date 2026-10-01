@@ -305,9 +305,18 @@ gateway already holds.
 {"jsonrpc":"2.0","id":1,"error":{"code":4118,"message":"Group Chat takeover is disabled until Hermes can select one globally exclusive authority.","data":{"reason":"authority_takeover_disabled"}}}
 ```
 
-The rest of this section describes how the methods work once exclusive-authority recovery
-enables them.
+The procedure below describes how the methods work once exclusive-authority recovery enables
+them.
 :::
+
+A Group Chat whose history already records a promotion or demotion (made before these methods were
+disabled, or by an older gateway sharing the same store) is kept **read-only**: without an
+exclusive authority, Hermes cannot tell whether two gateways both kept writing. `groups.list` marks
+such a room with `safety_status: "authority_quarantined"` and a `safety_reason`, and `groups.log`
+still returns its full history, but `groups.state`, sends, renames and disband are refused with
+reason `room_authority_quarantined`. A stored copy whose history fails validation is likewise
+reported as `safety_status: "quarantined"` by `groups.replica_state`. Quarantined history is never
+pruned.
 
 Authority takeover is an **operator recovery procedure**, not an atomic handover.
 Use the existing JSON-RPC methods `groups.promote` and `groups.demote` on the

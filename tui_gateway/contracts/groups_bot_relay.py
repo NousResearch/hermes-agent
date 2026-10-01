@@ -66,6 +66,10 @@ class Room(Result):
     claim_event: RoomEvent | None = None
     authority_claim: RoomEvent | None = None
     event: RoomEvent | None = None
+    #: ``authority_quarantined`` (``groups.list`` only) when the room's history records an unproven
+    #: takeover; ``safety_reason`` names it. Such a room stays readable and refuses new events.
+    safety_status: str | None = None
+    safety_reason: str | None = None
 
 
 class RoomAuthority(Result):
@@ -390,6 +394,11 @@ class GroupsReplicaStateResult(Result):
     event_bytes: int
     created_at: float
     updated_at: float
+    disbanded_at: float | None = None
+    #: ``passive``, or ``quarantined`` when the stored lineage failed the replica audit
+    #: (``safety_reason`` names the first defect).
+    safety_status: str | None = None
+    safety_reason: str | None = None
 
 
 method("groups.replica_state", params=GroupsReplicaStateParams, result=GroupsReplicaStateResult,

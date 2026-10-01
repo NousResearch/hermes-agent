@@ -1306,6 +1306,8 @@ export interface Room {
   claim_event?: RoomEvent | null
   authority_claim?: RoomEvent | null
   event?: RoomEvent | null
+  safety_status?: string | null
+  safety_reason?: string | null
 }
 /** One roster row (``hosted_room_discussion.validate_roster``); legacy rooms may carry pre-normalisation rows, so the set stays open. */
 export interface RoomMember {
@@ -1498,6 +1500,9 @@ export interface GroupsReplicaStateResult {
   event_bytes: number
   created_at: number
   updated_at: number
+  disbanded_at?: number | null
+  safety_status?: string | null
+  safety_reason?: string | null
 }
 export interface GroupsPromoteParams {
   profile?: string | null

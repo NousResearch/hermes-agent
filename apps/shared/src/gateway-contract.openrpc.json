@@ -14701,6 +14701,42 @@
           "updated_at": {
             "title": "Updated At",
             "type": "number"
+          },
+          "disbanded_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disbanded At"
+          },
+          "safety_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Status"
+          },
+          "safety_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Reason"
           }
         },
         "required": [
@@ -26704,6 +26740,30 @@
               }
             ],
             "default": null
+          },
+          "safety_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Status"
+          },
+          "safety_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safety Reason"
           }
         },
         "required": [

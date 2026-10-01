@@ -200,8 +200,10 @@ hermes peer stop spark run_abc123
 {"jsonrpc":"2.0","id":1,"error":{"code":4118,"message":"Group Chat takeover is disabled until Hermes can select one globally exclusive authority.","data":{"reason":"authority_takeover_disabled"}}}
 ```
 
-本节其余部分描述的是独占权威恢复启用这些方法之后它们的工作方式。
+下面的流程描述的是独占权威恢复启用这些方法之后它们的工作方式。
 :::
+
+如果一个群聊的历史中已经记录了提升或降级（发生在这些方法被停用之前，或由共享同一存储的旧版 gateway 执行），它会被保持为**只读**：在没有独占权威的情况下，Hermes 无法判断是否有两个 gateway 都在继续写入。`groups.list` 会用 `safety_status: "authority_quarantined"` 和 `safety_reason` 标记这样的房间，`groups.log` 仍会返回完整历史，但 `groups.state`、发送、重命名和解散都会以原因 `room_authority_quarantined` 被拒绝。历史未通过校验的已存储副本同样会由 `groups.replica_state` 报告为 `safety_status: "quarantined"`。被隔离的历史永远不会被清理。
 
 权威接管是一项**运维恢复流程**，而不是原子化的交接。请在相应的 gateway 上使用现有的 JSON-RPC 方法 `groups.promote` 和 `groups.demote`。不存在 `groups.peer.promote` 或 `groups.peer.demote` 方法；`groups.capabilities` 会列出你的 gateway 支持的方法。
 

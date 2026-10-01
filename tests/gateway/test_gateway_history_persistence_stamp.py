@@ -23,3 +23,16 @@ def test_db_flush_collect_does_not_recollect_gateway_history_rows():
     rows, msgs = _db_flush_collect(agent, list(history) + [new], None)
 
     assert msgs == [new]
+
+
+def test_compaction_summary_replays_without_timestamp():
+    summary = {"role": "user", "content": "[CONTEXT COMPACTION] prior turns", "timestamp": 1.0, "_compressed_summary": True}
+    history, _ = _build_gateway_agent_history([summary], inject_timestamps=True)
+    assert history[0]["content"] == summary["content"]
+
+
+def test_regular_user_message_still_replays_with_timestamp():
+    message = {"role": "user", "content": "what is next?", "timestamp": 1.0}
+    history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
+    assert history[0]["content"].endswith(message["content"])
+    assert history[0]["content"] != message["content"]

@@ -1,0 +1,23 @@
+name: quality-loop
+title: Quality Loop
+repo: https://github.com/janamis/hermes-quality-loop
+sha: 03d1cdf0d739e91a70316da3f736613065a420c0
+version: "0.1.0"
+description: >-
+  Durable Kanban code-quality campaigns that coordinate separate examination,
+  implementation and validation models, run user-configured shell build/test
+  gates in the selected workspace, and optionally commit and push the selected
+  branch after a target score and final validation pass.
+maintainer: janamis
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/janamis/hermes-quality-loop#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_kanban_dispatch_tick
+  provides_middleware: []
+  requires_env: []

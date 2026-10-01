@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,13 @@ def parses(tmp_path, monkeypatch) -> list[tuple[str, bool]]:
     i18n.reset_language_cache()
 
 
+@pytest.fixture
+def short_home(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="lc-") as home:
+        monkeypatch.setenv("HERMES_HOME", home)
+        yield Path(home)
+
+
 class _RecordingAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
@@ -75,7 +83,7 @@ class _RecordingAdapter(BasePlatformAdapter):
 
 @pytest.mark.asyncio
 async def test_shutdown_notice_after_a_locale_pack_registers_does_not_parse_on_the_loop(
-    tmp_path, monkeypatch, parses
+    tmp_path, short_home, monkeypatch, parses
 ):
     """A plugin that provides a locale pack can load after startup (a served profile's discovery, a
     plugin enabled at runtime). Its registration resets the language caches, and the next ``t()`` on
@@ -105,3 +113,50 @@ async def test_shutdown_notice_after_a_locale_pack_registers_does_not_parse_on_t
 
     notice = i18n.t("gateway.shutdown.notice_shutdown", lang="de")
     assert (sent, parsed) == ([("chat-1", notice)], [("de.yaml", False), ("en.yaml", False)])
+
+
+@pytest.mark.asyncio
+async def test_secondary_locale_warmup_uses_each_profiles_scope(tmp_path, monkeypatch):
+    from agent import secret_scope
+    from hermes_constants import get_hermes_home, get_hermes_home_override
+    from hermes_cli import plugins
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home, lang in zip(homes, ["en", "de"]):
+        home.mkdir()
+        (home / "config.yaml").write_text(f"display:\n  language: {lang}\n")
+        (home / ".env").write_text(f"HERMES_LANGUAGE={lang}\n")
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions", multiplex_profiles=True))
+    monkeypatch.setattr(runner, "_subscribe_plugin_rewire", lambda *args: None)
+    monkeypatch.setattr(runner, "_register_config_hooks", lambda *args, **kwargs: None)
+    seen = []
+    warm = i18n.warm_catalog
+    key = "gateway.shutdown.notice_shutdown"
+
+    def recording_warm():
+        warm()
+        seen.append({
+            "home": get_hermes_home(), "language": i18n.get_language(),
+            "on_loop": _on_event_loop(), "notice": i18n.t(key),
+        })
+
+    monkeypatch.setattr(i18n, "warm_catalog", recording_warm)
+    secret_scope.set_multiplex_active(True)
+    try:
+        for home in [homes[0], homes[1], homes[0]]:
+            await runner._load_secondary_profile_config(home.name, home)
+        expected = [
+            {"home": home, "language": lang, "on_loop": False,
+             "notice": i18n_layers.parse_locale_file(REPO_LOCALES / f"{lang}.yaml")[key]}
+            for home, lang in [(homes[0], "en"), (homes[1], "de"), (homes[0], "en")]
+        ]
+        assert {"warmups": seen, "scope_after": secret_scope._SECRET_SCOPE.get(),
+                "home_override_after": get_hermes_home_override()} == {
+            "warmups": expected, "scope_after": None, "home_override_after": None,
+        }
+    finally:
+        secret_scope.set_multiplex_active(False)
+        i18n.reset_language_cache()

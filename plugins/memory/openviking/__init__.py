@@ -1576,6 +1576,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                               context_type: str | List[str], deadline: float, request_timeout: float) -> dict:
         """Session-aware search first, falling back to search/find (budget errors propagate)."""
         base_payload = {"query": query, "limit": limit, "score_threshold": 0, "context_type": context_type}
+        # Memory-only recall does not need session planning.  The planner can
+        # reinterpret the requested context type, so keep this path scoped to
+        # memories even when a live session id is available.
+        if context_type == "memory":
+            return client.post("/api/v1/search/find", base_payload,
+                               timeout=cls._remaining_recall_timeout(deadline, request_timeout))
         if session_id:
             try:
                 return client.post("/api/v1/search/search", {**base_payload, "session_id": session_id},

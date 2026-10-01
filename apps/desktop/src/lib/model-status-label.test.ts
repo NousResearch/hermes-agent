@@ -5,6 +5,7 @@ import {
   displayModelName,
   formatModelPillLabel,
   modelDisplayParts,
+  compactQuantizationLabel,
   modelVariantTag
 } from './model-status-label'
 
@@ -31,6 +32,12 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
     // Cloud ids keep their existing behavior.
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
+  })
+
+  it('uses inventory quantization when a model id has no local suffix', () => {
+    expect(compactQuantizationLabel('Q4_K_M')).toBe('Q4')
+    expect(modelDisplayParts('qwen3.5:9b', { quantization: 'Q4_K_M' }).tag).toBe('Q4')
+    expect(modelDisplayParts('claude-opus-4.8-fast', { quantization: 'Q4_K_M' }).tag).toBe('Fast')
   })
 
   it('keeps the vendor casing the model id does not carry (#85849)', () => {

@@ -975,7 +975,7 @@ function ModelFamilyRow({
       : null
 
   const isCurrent = activeId !== null
-  const { name, tag } = modelDisplayParts(family.id)
+  const { name, tag } = modelDisplayParts(family.id, { quantization: provider.quantization?.[family.id] })
   const caps = provider.capabilities?.[family.id]
 
   // Live per-model $/Mtok pricing (Nous Portal and other providers that ship

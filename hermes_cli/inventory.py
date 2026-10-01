@@ -158,6 +158,7 @@ def build_models_payload(
     if featured:
         _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
+    _apply_quantization(rows)
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(rows)
@@ -422,6 +423,30 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
                 custom_provider_aliases(str(row.get("name", "")), str(row.get("slug", ""))))
         except Exception:
             continue
+
+
+def _apply_quantization(rows: list[dict]) -> None:
+    """Expose cached native-Ollama quantization metadata for local model rows."""
+    from hermes_cli.models_local import _get_ollama_base_url, _get_ollama_native_headers, ollama_local_quantization_map
+    for row in rows:
+        slug = str(row.get("slug") or "").lower()
+        base = str(row.get("api_url") or "").strip() or _get_ollama_base_url()
+        accepts = slug == "ollama" or slug.endswith("-ollama")
+        if not accepts and row.get("is_user_defined") and row.get("api_url"):
+            try:
+                from hermes_cli.models_local import should_use_ollama_native_catalog
+                accepts = should_use_ollama_native_catalog(slug, base)
+            except Exception:
+                accepts = False
+            accepts = accepts or base.startswith(("http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost"))
+        if not accepts:
+            continue
+        try:
+            quant = ollama_local_quantization_map(base, headers=_get_ollama_native_headers(base) or None)
+        except Exception:
+            continue
+        if quant:
+            row["quantization"] = quant
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────

@@ -627,9 +627,17 @@ class GatewaySessionCommandsMixin:
         archive; an unchanged id without in-place means rotation FAILED."""
         new_session_id = tmp_agent.session_id
         if new_session_id != session_entry.session_id:
-            if not await self.async_session_store.rewrite_transcript(new_session_id, compressed):
-                raise RuntimeError(
-                    f"failed to persist compressed transcript for session {new_session_id}")
+            # Rotation path: _publish_rotated_compaction() already wrote the compressed handoff
+            # (plus any foreign-tail rows cloned during the same transaction) into the NEW session
+            # durably. A second rewrite is redundant and destructive — `compressed` lacks those
+            # cloned rows — and its failure used to surface as a false "failed to persist
+            # compressed transcript" even though the compression had committed. Skip the rewrite
+            # when the durable child is verified; fail-open keeps the original guard.
+            if not await self.async_session_store.is_published_compression_child(
+                    session_entry.session_id, new_session_id):
+                if not await self.async_session_store.rewrite_transcript(new_session_id, compressed):
+                    raise RuntimeError(
+                        f"failed to persist compressed transcript for session {new_session_id}")
             session_entry.session_id = new_session_id
             await self.async_session_store._save()
             await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry,

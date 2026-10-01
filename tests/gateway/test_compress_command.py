@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -517,3 +518,101 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
         "event loop was blocked during manual /compress cleanup: only "
         f"{observed.get('ticks_during_block')} ticks while agent.close() was running"
     )
+
+
+@pytest.mark.parametrize("profile", ["main", "sean"])
+def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, profile, monkeypatch):
+    """A rotated /compress must NOT rewrite the atomically-published child.
+
+    publish_compression_child() writes handoff + cloned foreign tail in one transaction;
+    the second rewrite_transcript(active_only=False) would DELETE the cloned tail (it is not
+    in the in-memory handoff) and its failure surfaced as a false "failed to persist
+    compressed transcript" even though the compression had already committed.
+    """
+    import hermes_state
+    from gateway.slash_commands_session import GatewaySessionCommandsMixin
+    from gateway.session import AsyncSessionStore, SessionStore
+    from gateway.config import GatewayConfig
+
+    db_path = tmp_path / profile / "state.db"
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+    store = SessionStore(sessions_dir=tmp_path / profile, config=GatewayConfig())
+    db = store._db
+    parent, child = "parent", "child"
+    db.create_session(parent, "discord")
+    db.append_message(parent, "assistant", "old turn")
+    watermark = db.get_active_message_watermark(parent)
+    db.append_message(parent, "assistant", "concurrent foreign turn")
+    ceiling = db.get_active_message_watermark(parent)
+    handoff = [{"role": "assistant", "content": "compressed summary"}]
+    db.publish_compression_child(
+        parent_session_id=parent, child_session_id=child, source="discord",
+        messages=handoff, watermark=watermark, watermark_ceiling=ceiling,
+        require_compression_lease=False,
+    )
+
+    def _destructive_rewrite(*_args, **_kwargs):
+        raise AssertionError("published child must not be rewritten")
+    store.rewrite_transcript = _destructive_rewrite
+
+    entry = SessionEntry(
+        session_key=f"agent:{profile}:discord:thread:123:123", session_id=parent,
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.DISCORD, chat_type="thread",
+    )
+    runner = SimpleNamespace(
+        async_session_store=AsyncSessionStore(store),
+        _sync_telegram_topic_binding=MagicMock(),
+    )
+    agent = SimpleNamespace(session_id=child)
+    try:
+        asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
+            runner, agent, entry, _make_source(), handoff))
+        assert entry.session_id == child
+        assert [m["content"] for m in db.get_messages(child)] == [
+            "compressed summary", "concurrent foreign turn",
+        ]
+    finally:
+        store.close_all_db_handles()
+
+
+def test_compress_falls_back_to_rewrite_for_unpublished_child(tmp_path, monkeypatch):
+    """Fail-open contract: when the child is NOT a durably-published compression continuation
+    (probe False), the original rewrite-then-repoint guard must still run unchanged."""
+    import hermes_state
+    from gateway.slash_commands_session import GatewaySessionCommandsMixin
+    from gateway.session import AsyncSessionStore, SessionStore
+    from gateway.config import GatewayConfig
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    db = store._db
+    parent, child = "parent2", "child2"
+    db.create_session(parent, "discord")
+    db.create_session(child, "discord")  # no compression lineage at all
+    entry = SessionEntry(
+        session_key="agent:fallback:discord:thread:9:9", session_id=parent,
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.DISCORD, chat_type="thread",
+    )
+    rewrite_calls = []
+
+    def _fake_rewrite(session_id, messages, **kwargs):
+        rewrite_calls.append((session_id, messages))
+        return True
+    store.rewrite_transcript = _fake_rewrite
+
+    runner = SimpleNamespace(
+        async_session_store=AsyncSessionStore(store),
+        _sync_telegram_topic_binding=MagicMock(),
+    )
+    agent = SimpleNamespace(session_id=child)
+    compressed = [{"role": "assistant", "content": "summary"}]
+    try:
+        asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
+            runner, agent, entry, _make_source(), compressed))
+        assert entry.session_id == child
+        assert rewrite_calls == [(child, compressed)]
+    finally:
+        store.close_all_db_handles()

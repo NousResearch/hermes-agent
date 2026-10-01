@@ -7799,7 +7799,9 @@ function openOauthLoginWindow(
     // login, which is a valid authenticated page that sets the cookies. We
     // only care that the cookie jar is populated.
     const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
-    const loginUrl = `${normalizedBase}/login`
+    // Silent recovery loads a protected page so a single-provider gateway can
+    // auto-redirect through SSO; `/login` always renders the chooser.
+    const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
     const loginHeaders = headersForRemoteRequest(loginUrl)
     rememberLog(
       `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
@@ -8072,9 +8074,20 @@ function isHermesCloudAgentRequestUrl(url: string): boolean {
   }
 
   try {
-    const origin = new URL(url).origin
+    // A dashboard URL may carry a path prefix, so test every base from the
+    // full path down to the origin, not the origin alone.
+    const parsed = new URL(url)
+    const segments = parsed.pathname.split('/').filter(Boolean)
 
-    return cloudAgentRegistry.agentIdFor(origin) !== null || isSavedCloudConnectionUrl(origin)
+    for (let depth = segments.length; depth >= 0; depth--) {
+      const base = `${parsed.origin}${depth ? `/${segments.slice(0, depth).join('/')}` : ''}`
+
+      if (cloudAgentRegistry.agentIdFor(base) !== null || isSavedCloudConnectionUrl(base)) {
+        return true
+      }
+    }
+
+    return false
   } catch {
     return false
   }

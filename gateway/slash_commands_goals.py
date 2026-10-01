@@ -89,11 +89,77 @@ class GatewayGoalCommandsMixin:
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)
 
+    def _heartbeat_status_text(self, mgr) -> str:
+        """Session status, tagged when the heartbeat is still the profile's rather than the session's own."""
+        if not getattr(mgr, "is_inherited", False):
+            return mgr.status_line()
+        from hermes_cli.heartbeat import format_interval
+        return t("gateway.heartbeat.inherited", every=format_interval(mgr.state.interval_seconds),
+                 prompt=mgr.state.prompt)
+
+    def _handle_profile_heartbeat_command(self, rest: str, session_id: str, watch) -> str:
+        """``/heartbeat profile …`` — manage the profile-wide heartbeat that new sessions inherit."""
+        from hermes_cli.heartbeat import (
+            MIN_INTERVAL_SECONDS,
+            HeartbeatManager,
+            format_interval,
+            parse_interval,
+        )
+        lower = rest.lower()
+        try:
+            mgr = HeartbeatManager(session_id=session_id, scope="profile")
+        except ValueError as exc:
+            return t("gateway.heartbeat.profile_error", error=str(exc))
+        if not rest or lower == "status":
+            if mgr.state is None:
+                return t("gateway.heartbeat.profile_none")
+            return t("gateway.heartbeat.profile_status",
+                     every=format_interval(mgr.state.interval_seconds), prompt=mgr.state.prompt)
+        if lower == "pause":
+            state = mgr.pause()
+            return t("gateway.heartbeat.paused", prompt=state.prompt) if state else t("gateway.heartbeat.profile_none")
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                return t("gateway.heartbeat.no_resume")
+            watch()
+            return t("gateway.heartbeat.resumed", interval=format_interval(state.interval_seconds),
+                     prompt=state.prompt)
+        if lower in {"clear", "stop", "off"}:
+            return t("gateway.heartbeat.cleared") if mgr.clear() else t("gateway.heartbeat.profile_none")
+
+        # Set: `/heartbeat profile every 10m <prompt>`.
+        tokens = rest.split(None, 2)
+        interval, prompt = None, ""
+        if tokens[0].lower() == "every" and len(tokens) >= 2:
+            interval = parse_interval(f"every {tokens[1]}")
+            prompt = tokens[2] if len(tokens) > 2 else ""
+        else:
+            interval = parse_interval(tokens[0])
+            prompt = rest[len(tokens[0]):].strip() if interval and interval > 0 else ""
+        if interval is None:
+            return t("gateway.heartbeat.usage")
+        if interval < 0:
+            return t("gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS)
+        if not prompt.strip():
+            return t("gateway.heartbeat.prompt_required")
+        state, err = _mgr_call(t("gateway.heartbeat.invalid_prefix"), mgr.set, prompt, interval,
+                               errors=(ValueError,))
+        if err:
+            return err
+        return t("gateway.heartbeat.profile_set", interval=format_interval(state.interval_seconds),
+                 prompt=state.prompt)
+
     async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
         prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
         ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
+        from hermes_cli.heartbeat import (
+            format_interval,
+            parse_interval,
+            promote_session_heartbeat_to_profile,
+            MIN_INTERVAL_SECONDS,
+        )
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
         mgr, _session_entry = await self._get_heartbeat_manager_for_event(event)
@@ -106,7 +172,7 @@ class GatewayGoalCommandsMixin:
                 self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
 
         if not args or lower == "status":
-            return mgr.status_line()
+            return self._heartbeat_status_text(mgr)
         if lower == "pause":
             state = mgr.pause()
             return t("gateway.heartbeat.paused", prompt=state.prompt) if state else t("gateway.heartbeat.none_set")
@@ -121,6 +187,14 @@ class GatewayGoalCommandsMixin:
             if quick_key:
                 self._unregister_heartbeat_watch(quick_key)
             return t("gateway.heartbeat.cleared") if had else t("gateway.heartbeat.none_set")
+        if lower == "promote":
+            state = promote_session_heartbeat_to_profile(mgr.session_id)
+            if state is None:
+                return t("gateway.heartbeat.promote_none")
+            return t("gateway.heartbeat.promoted", interval=format_interval(state.interval_seconds),
+                     prompt=state.prompt)
+        if lower == "profile" or lower.startswith("profile "):
+            return self._handle_profile_heartbeat_command(args[len("profile"):].strip(), mgr.session_id, _watch)
 
         # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
         tokens = args.split(None, 2)

@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 MIN_INTERVAL_SECONDS = 60  # floor: re-entering more often than once a minute is a busy-loop, not a heartbeat
 POLL_SECONDS = 5.0  # how often drivers poll for due heartbeats; not user-facing
 
+# Reserved meta-key id for the profile-wide heartbeat. Session keys are opaque ids, so a collision is
+# possible in principle; the sentinel is rejected as a session id so it can never be shadowed.
+PROFILE_SCOPE_KEY = "__profile__"
+
+# Outcomes of taking the profile's shared tick. Distinct sentinels, not booleans: "someone else fired this
+# tick" must silence the session, while "the profile heartbeat is gone" must let it carry on alone.
+_PROFILE_TICK_CLAIMED = "claimed"
+_PROFILE_TICK_LOST = "lost"
+_PROFILE_TICK_DETACHED = "detached"
+
 HEARTBEAT_PROMPT_TEMPLATE = (
     "[Heartbeat — recurring instruction, fires every {interval}]\n{prompt}\n\n"
     "If there is nothing meaningful to do or report for this instruction "
@@ -39,6 +49,10 @@ _UNIT_SECONDS = {
 _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
+    # Provenance: this row was adopted from the profile heartbeat, so it still fires on the profile's
+    # cadence. Persisted because drivers rebuild the manager on every poll and cannot rely on instance
+    # state. Cleared the moment the user sets, pauses, resumes or clears the session's own heartbeat.
+    "from_profile": (bool, False),
 }
 
 
@@ -71,6 +85,7 @@ class HeartbeatState:
     created_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
+    from_profile: bool = False      # adopted from the profile heartbeat; still on the profile's cadence
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -132,18 +147,44 @@ def store_has_active_heartbeat(db: Any) -> bool:
     return False
 
 
-def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
-    if not session_id:
+def _write_scope(key: str, state: HeartbeatState) -> None:
+    """Persist under a raw scope key: a session id, or :data:`PROFILE_SCOPE_KEY` for the profile-wide row."""
+    if not key:
         return
     db = _get_session_db()
     if db is None:
         from hermes_cli.goals import _warn_dropped_write
-        _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
+        _warn_dropped_write("HeartbeatManager", "heartbeat", key)
         return
     try:
-        db.set_meta(_META_PREFIX + session_id, state.to_json())
+        db.set_meta(_META_PREFIX + key, state.to_json())
     except Exception as exc:
         logger.debug("HeartbeatManager: set_meta failed: %s", exc)
+
+
+def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
+    """Session-scoped write. The profile sentinel is not a session id, so it is refused here rather than
+    letting a session that happens to carry that id shadow the profile-wide heartbeat."""
+    if not session_id or session_id == PROFILE_SCOPE_KEY:
+        return
+    _write_scope(session_id, state)
+
+
+def promote_session_heartbeat_to_profile(session_id: str) -> Optional[HeartbeatState]:
+    """Copy *session_id*'s heartbeat to the profile scope, leaving the session's own row untouched.
+
+    The profile row starts a fresh clock, so sessions that pick it up later wait a full interval instead of
+    inheriting this session's fire history. Returns None when the session has no heartbeat to promote.
+    """
+    if not session_id or session_id == PROFILE_SCOPE_KEY:
+        return None
+    state = load_heartbeat(session_id)
+    if state is None or not state.prompt:
+        return None
+    promoted = HeartbeatState(prompt=state.prompt, interval_seconds=state.interval_seconds,
+                              status="active", created_at=time.time())
+    _write_scope(PROFILE_SCOPE_KEY, promoted)
+    return promoted
 
 
 class HeartbeatManager:
@@ -151,12 +192,52 @@ class HeartbeatManager:
 
     Drivers (CLI thread / gateway task) call :meth:`due_prompt` on a poll cadence while the session is
     idle; a non-None return is the user-role message to inject.
+
+    ``scope="session"`` (the default) is the long-standing behaviour. ``scope="profile"`` addresses the
+    profile-wide standing instruction instead of one conversation, so a new session starts with the
+    behaviour already armed.
+
+    A session manager opened in session scope *inherits* an active profile heartbeat: it reports one so
+    status reads honestly, and follows the profile's own clock rather than a private one. The profile row
+    stays the single cadence for the whole profile, so exactly one session fires per interval — the first
+    idle one to claim it. That firing session materialises the heartbeat under its own key, so from then on
+    it keeps its own history and the refund path works. Without that copy, two open sessions would share
+    one ``last_fired_at`` and silently steal ticks from each other, and clearing a session heartbeat would
+    disarm the profile one as collateral.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, scope: str = "session"):
         self.session_id = session_id
-        self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
+        self.scope = "profile" if scope == "profile" else "session"
+        if self.scope == "session" and session_id == PROFILE_SCOPE_KEY:
+            # A caller passing the sentinel without asking for profile scope would silently read and write
+            # the shared row. Refuse it instead of aliasing the two scopes onto one key.
+            raise ValueError(f"{PROFILE_SCOPE_KEY!r} is reserved for the profile heartbeat scope")
+        self._state: Optional[HeartbeatState] = load_heartbeat(self._key)
+        self._inherited = False
+        if self._state is None and self.scope == "session":
+            inherited = load_heartbeat(PROFILE_SCOPE_KEY)
+            if inherited is not None and inherited.status == "active":
+                # Adopt the profile's own anchor, not "now": gateway and TUI pollers build a fresh manager
+                # every few seconds, so a per-instance anchor would reset forever and never come due.
+                self._state = HeartbeatState(
+                    prompt=inherited.prompt, interval_seconds=inherited.interval_seconds,
+                    status="active", created_at=inherited.last_fired_at or inherited.created_at,
+                    from_profile=True,
+                )
+                self._inherited = True
         self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
+        self._profile_claim: Optional[tuple[float, int]] = None  # same, for a tick claimed off the profile row
+
+    @property
+    def _key(self) -> str:
+        """The meta-key id this manager reads and writes."""
+        return PROFILE_SCOPE_KEY if self.scope == "profile" else self.session_id
+
+    @property
+    def is_inherited(self) -> bool:
+        """True while the state is a profile heartbeat this session has not fired yet."""
+        return self._inherited
 
     @property
     def state(self) -> Optional[HeartbeatState]:
@@ -188,8 +269,9 @@ class HeartbeatManager:
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
         self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
-                                     created_at=time.time())
-        save_heartbeat(self.session_id, self._state)
+                                     created_at=time.time(), from_profile=False)
+        self._inherited = False  # an explicit set supersedes the inherited profile default
+        _write_scope(self._key, self._state)
         return self._state
 
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
@@ -198,7 +280,10 @@ class HeartbeatManager:
         self._state.status = status
         if reanchor:
             self._state.last_fired_at = time.time()
-        save_heartbeat(self.session_id, self._state)
+        # Taking manual control of the session heartbeat detaches it from the profile's cadence.
+        self._state.from_profile = False
+        self._inherited = False
+        _write_scope(self._key, self._state)
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
@@ -218,16 +303,59 @@ class HeartbeatManager:
 
         The fire is recorded immediately (before the turn runs) so overlapping polls or a long turn can never
         double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
-        schedule.
+        schedule. A profile heartbeat being inherited is written under this session here, which is the point
+        where it stops being a shared default and becomes this session's own standing instruction.
         """
         s = self._state
         if s is None or not s.is_due(now):
             return None
+        if s.from_profile:
+            claim = self._claim_profile_tick(now)
+            if claim is _PROFILE_TICK_LOST:
+                return None  # another session in this profile took this tick; stay quiet until the next one
+            if claim is _PROFILE_TICK_DETACHED:
+                s = self._state  # the profile heartbeat is gone; this session carries on alone
         self._last_claim = (s.last_fired_at, s.fire_count)
         s.last_fired_at = now if now is not None else time.time()
         s.fire_count += 1
-        save_heartbeat(self.session_id, s)
+        self._inherited = False
+        _write_scope(self._key, s)
         return s.render_prompt()
+
+    def _claim_profile_tick(self, now: Optional[float]) -> str:
+        """Take the profile's tick for this session, so exactly one session fires per interval.
+
+        The profile row is the cadence for every session still following it, so a session that joins late
+        fires on the profile's schedule instead of replaying a backlog, and two idle sessions never both
+        fire the same tick. Returns :data:`_PROFILE_TICK_CLAIMED` on success, :data:`_PROFILE_TICK_LOST`
+        when another session already took this tick, or :data:`_PROFILE_TICK_DETACHED` when the profile
+        heartbeat is gone — the caller then fires on the session's own clock instead of going silent.
+        """
+        current = load_heartbeat(PROFILE_SCOPE_KEY)
+        s = self._state
+        if s is None:
+            return _PROFILE_TICK_LOST
+        if current is None or current.status != "active":
+            # The profile heartbeat was cleared or paused: this session keeps the copy it already has and
+            # becomes self-governing, rather than being stranded on a cadence that no longer exists.
+            s.from_profile = False
+            _write_scope(self._key, s)
+            self._inherited = False
+            return _PROFILE_TICK_DETACHED
+        if (current.prompt, current.interval_seconds) != (s.prompt, s.interval_seconds):
+            # The profile was re-set: follow the new instruction instead of firing stale text, and re-anchor
+            # onto its clock so the change takes effect on the next tick rather than replaying this one.
+            s.prompt, s.interval_seconds = current.prompt, current.interval_seconds
+            s.created_at = current.last_fired_at or current.created_at
+            s.last_fired_at = 0.0
+            _write_scope(self._key, s)
+        if not current.is_due(now):
+            return _PROFILE_TICK_LOST  # another session already fired this tick
+        self._profile_claim = (current.last_fired_at, current.fire_count)
+        current.last_fired_at = now if now is not None else time.time()
+        current.fire_count += 1
+        _write_scope(PROFILE_SCOPE_KEY, current)
+        return _PROFILE_TICK_CLAIMED
 
     def abandon_fire(self) -> bool:
         """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
@@ -236,14 +364,27 @@ class HeartbeatManager:
         claim, s = self._last_claim, self._state
         if claim is None or s is None:
             return False
-        current = load_heartbeat(self.session_id)
+        current = load_heartbeat(self._key)
         if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
                 s.last_fired_at, s.fire_count):
             return False
         s.last_fired_at, s.fire_count = claim
         self._last_claim = None
-        save_heartbeat(self.session_id, s)
+        _write_scope(self._key, s)
+        self._refund_profile_tick()
         return True
+
+    def _refund_profile_tick(self) -> None:
+        """Hand the profile tick back too: it was one shared tick, so an unstarted turn must not consume it."""
+        claim = self._profile_claim
+        if claim is None:
+            return
+        self._profile_claim = None
+        current = load_heartbeat(PROFILE_SCOPE_KEY)
+        if current is None or current.status != "active":
+            return
+        current.last_fired_at, current.fire_count = claim
+        _write_scope(PROFILE_SCOPE_KEY, current)
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:
@@ -253,6 +394,8 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
     """
     if not old_session_id or not new_session_id or old_session_id == new_session_id:
         return False
+    if PROFILE_SCOPE_KEY in (old_session_id, new_session_id):
+        return False  # the profile row is not a session; rotating a conversation never moves it
     try:
         state = load_heartbeat(old_session_id)
         if state is None or load_heartbeat(new_session_id) is not None:
@@ -268,5 +411,6 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 __all__ = [
     "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
-    "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
+    "migrate_heartbeat_to_session", "promote_session_heartbeat_to_profile", "HEARTBEAT_PROMPT_TEMPLATE",
+    "MIN_INTERVAL_SECONDS", "POLL_SECONDS", "PROFILE_SCOPE_KEY",
 ]

@@ -2181,17 +2181,22 @@ class CLICommandsMixin:
         return mgr
 
     def _handle_heartbeat_command(self, cmd: str) -> None:
-        """Dispatch /heartbeat: set / status / pause / resume / clear. ``/heartbeat every 10m <prompt>``
-        sets the session's one recurring instruction, injected as a normal user turn when due.
+        """Dispatch /heartbeat: set / status / pause / resume / clear / promote, plus the ``profile``
+        sub-tree for the profile-wide standing instruction. ``/heartbeat every 10m <prompt>`` sets the
+        session's one recurring instruction, injected as a normal user turn when due.
         Session-scoped and in-process — use `hermes cron` for durable schedules."""
         from hermes_cli.heartbeat import format_interval
         arg = _command_arg(cmd)
         lower = arg.lower()
+        if lower == "promote":
+            return self._heartbeat_promote()
+        if lower == "profile" or lower.startswith("profile "):
+            return self._heartbeat_profile_command(arg)
         mgr = self._session_manager(self._get_heartbeat_manager, _t("heartbeat.label"))
         if mgr is None:
             return
         if not arg or lower == "status":
-            _cp(f"  {mgr.status_line()}")
+            self._heartbeat_status_line(mgr)
         elif lower == "pause":
             state = mgr.pause()
             _cp(f"  {_t('heartbeat.paused', prompt=state.prompt)}" if state
@@ -2208,7 +2213,63 @@ class CLICommandsMixin:
         else:
             self._heartbeat_set(mgr, arg)
 
-    def _heartbeat_set(self, mgr, arg: str) -> None:
+    def _heartbeat_status_line(self, mgr) -> None:
+        """Session status, tagged when the heartbeat is still the profile's rather than the session's own."""
+        from hermes_cli.heartbeat import format_interval
+        line = mgr.status_line()
+        if getattr(mgr, "is_inherited", False):
+            s = mgr.state
+            every = format_interval(s.interval_seconds)
+            _cp(f"  ♥ {_t('heartbeat.inherited_label', every=every)}: {s.prompt}",
+                _dim_line(_t("heartbeat.inherited_note")))
+        else:
+            _cp(f"  {line}")
+
+    def _heartbeat_profile_command(self, arg: str) -> None:
+        """``/heartbeat profile …`` — manage the profile-wide heartbeat that new sessions inherit."""
+        from hermes_cli.heartbeat import HeartbeatManager, format_interval
+        rest = _command_arg("heartbeat " + arg[len("profile"):])
+        rest_lower = rest.lower()
+        try:
+            mgr = HeartbeatManager(session_id=self.session_id, scope="profile")
+        except ValueError as exc:
+            return _cp(f"  {_t('heartbeat.profile_error', error=exc)}")
+        if not rest or rest_lower == "status":
+            if mgr.state is None:
+                return _cp(f"  {_dim_line(_t('heartbeat.profile_none'))}")
+            every = format_interval(mgr.state.interval_seconds)
+            _cp(f"  {_t('heartbeat.profile_status', every=every, prompt=mgr.state.prompt)}",
+                _dim_line(_t("heartbeat.profile_status_note")))
+        elif rest_lower == "pause":
+            state = mgr.pause()
+            _cp(f"  {_t('heartbeat.paused', prompt=state.prompt)}" if state
+                else _dim_line(_t("heartbeat.profile_none")))
+        elif rest_lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                _cp(_dim_line(_t("heartbeat.none_to_resume")))
+            else:
+                self._start_heartbeat_watchdog()
+                _cp(f"  {_t('heartbeat.resumed', interval=format_interval(state.interval_seconds), prompt=state.prompt)}")
+        elif rest_lower in {"clear", "stop", "off"}:
+            _cp(f"  {_t('heartbeat.cleared')}" if mgr.clear() else _dim_line(_t("heartbeat.profile_none")))
+        else:
+            self._heartbeat_set(mgr, rest, scope_note="profile")
+
+    def _heartbeat_promote(self) -> None:
+        """``/heartbeat promote`` — lift this session's heartbeat to the profile scope."""
+        from hermes_cli.heartbeat import format_interval, promote_session_heartbeat_to_profile
+        mgr = self._session_manager(self._get_heartbeat_manager, _t("heartbeat.label"))
+        if mgr is None:
+            return
+        state = promote_session_heartbeat_to_profile(self.session_id)
+        if state is None:
+            return _cp(f"  {_dim_line(_t('heartbeat.promote_none'))}")
+        every = format_interval(state.interval_seconds)
+        _cp(f"  {_t('heartbeat.promoted', interval=every, prompt=state.prompt)}",
+            _dim_line(_t("heartbeat.promote_note")))
+
+    def _heartbeat_set(self, mgr, arg: str, scope_note: str = "") -> None:
         """Set: ``/heartbeat every 10m <prompt>`` (also accepts ``10m <prompt>``)."""
         from hermes_cli.heartbeat import parse_interval, format_interval
         tokens = arg.split(None, 2)
@@ -2232,7 +2293,7 @@ class CLICommandsMixin:
             return
         self._start_heartbeat_watchdog()
         _cp(f"  {_t('heartbeat.set', interval=format_interval(state.interval_seconds), prompt=state.prompt)}",
-            _dim_line(_t("heartbeat.set_note")))
+            _dim_line(_t("heartbeat.set_note_profile" if scope_note == "profile" else "heartbeat.set_note")))
 
     def _handle_refine_command(self, cmd: str) -> None:
         """Dispatch /refine — run the memory/skill review fork on demand (same machinery as the

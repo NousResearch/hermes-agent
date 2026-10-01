@@ -36,8 +36,33 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 | `/heartbeat pause` | Stop firing without clearing. |
 | `/heartbeat resume` | Resume (re-anchors the timer — no instant stale fire). |
 | `/heartbeat clear` | Remove the heartbeat. |
+| `/heartbeat promote` | Lift this session's heartbeat to the profile, so new sessions start with it too. |
+| `/heartbeat profile every <interval> <prompt>` | Set the **profile-wide** heartbeat that every new session in this profile inherits. |
+| `/heartbeat profile status \| pause \| resume \| clear` | Manage the profile-wide heartbeat from any session. |
 
 `/hb` is an alias. Works on the CLI, the TUI / Desktop app, and gateway platforms (on Slack, use `/hermes heartbeat …`).
+
+## Profile heartbeats
+
+A session heartbeat dies with its conversation: start a new session and you re-arm it by hand. A **profile heartbeat** is the standing version — it belongs to the profile, so any session of that profile picks it up already armed, and it carries that session's context when it fires (which `hermes cron` cannot, since each tick gets a fresh isolated session).
+
+```
+/heartbeat profile every 30m Check the staging deploy and report meaningful changes
+```
+
+What to expect:
+
+- **One tick per interval, for the profile.** The profile heartbeat keeps its own clock, so exactly one session fires per interval — the first idle one to reach it. Two open sessions never both get woken for the same tick.
+- **New sessions start armed.** A session with no heartbeat of its own adopts the profile one and follows its schedule, so a session that joins late waits for the next tick instead of firing a backlog on arrival. `/heartbeat status` marks it as inherited until it has fired once.
+- **It keeps its own history once it fires.** The firing session records the heartbeat under its own key, so `/heartbeat status`, pause, resume and clear all work there — and an unstarted turn is still refunded, the profile tick included.
+- **The profile stays in charge.** While a session's heartbeat is still the profile's, re-setting the profile heartbeat reaches it: it follows the new instruction and cadence rather than firing stale text. Setting, pausing, resuming or clearing a session heartbeat takes that session off the profile and onto its own clock.
+- **`/heartbeat profile clear` is not a kill switch.** It stops the standing instruction for future sessions; a session already firing keeps its copy and carries on. Clear that session's own heartbeat to stop it.
+- **A session heartbeat always wins.** Setting one in a session overrides the inherited default for that session only.
+- **`promote` copies, it does not move.** `/heartbeat promote` gives the profile a copy and leaves the current session firing as before; the promoted copy starts its own clock.
+
+State lives under the same per-profile store as session heartbeats, under a reserved `heartbeat:__profile__` key rather than a session id, so a profile switch picks the right one and `multiplex_profiles` routing is unaffected.
+
+Not covered here yet: a `config.yaml` `heartbeat:` block, active/quiet hours, a dedicated model or provider for heartbeat turns, and notification targets. Those are tracked separately; this is the storage and inheritance primitive they build on.
 
 ## Behavior details
 

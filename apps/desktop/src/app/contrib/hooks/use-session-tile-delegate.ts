@@ -8,6 +8,7 @@ import {
 import {
   fetchStoredTranscriptAcrossBackends,
   getLatestSessionMessages,
+  getSession,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
@@ -18,6 +19,7 @@ import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
+  isStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
@@ -32,6 +34,7 @@ import {
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
+import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
@@ -483,16 +486,26 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
+        const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        // A cron run's write gate is re-evaluated against its authoritative
+        // row before the send (#88443) — the same gate as the primary chat's
+        // `submit`, so a verdict never latches and a restored tile is gated.
+        if (storedSessionId && !isReadOnlyRuntimeId(runtimeId)) {
+          await refreshCronRunWriteGate(storedSessionId, id =>
+            ownerForStoredSession(id).then(owner => getSession(id, profileScopeForSessionOwner(owner)))
+          )
+        }
+
         // A read-only stored-transcript tile has no live runtime to submit
-        // into (#94724). Refuse with the explanation instead of minting a
-        // misrouted prompt on a backend that never owned the session.
-        if (isReadOnlyRuntimeId(runtimeId)) {
+        // into (#94724), and a never-closed cron run the scheduler no longer
+        // owns (#88443) stays closed to writes when it is opened as a tile.
+        // Refuse with the explanation instead of minting a misrouted prompt.
+        if (isReadOnlyRuntimeId(runtimeId) || isStoredTranscriptReadOnly(storedSessionId)) {
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
           return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
-
-        const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
         if (storedSessionId) {
           const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)

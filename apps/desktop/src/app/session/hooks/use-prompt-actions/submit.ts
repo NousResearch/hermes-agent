@@ -2,13 +2,13 @@ import type { PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
+import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -29,7 +29,7 @@ import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { resolveNewChatBackendOwner } from '@/store/profile'
-import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { isCronRunReadOnly, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionId,
   $sessions,
@@ -48,10 +48,11 @@ import {
   profileScopeForTranscriptSession,
   resolveActiveTranscriptSession
 } from '../../../contrib/hooks/use-background-sync'
+import { isCronRunSessionId, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
 import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
-import { resolveSessionProfile } from '../use-session-actions/utils'
+import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import {
@@ -298,10 +299,29 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // to another chat.
       let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
 
+      // A cron run's write gate is re-evaluated against its authoritative row
+      // right here (#88443): a verdict recorded when the run looked idle
+      // must not outlive the run ticking or closing, and a tab restored
+      // after a restart (no verdict yet) is gated too. No-op for non-cron
+      // sessions. If the user moved to another chat meanwhile, drop the send
+      // rather than route it on a stale target — the draft stays.
+      if (isCronRunSessionId(targetStoredSessionId) || isCronRunReadOnly(targetStoredSessionId)) {
+        const viewBeforeGate = selectedStoredSessionIdRef.current
+
+        await refreshCronRunWriteGate(targetStoredSessionId, id =>
+          resolveSessionOwner(id).then(owner => getSession(id, profileScopeForSessionOwner(owner)))
+        )
+
+        if (selectedStoredSessionIdRef.current !== viewBeforeGate) {
+          return false
+        }
+      }
+
       // A read-only stored-transcript open (#94724: owner unresolvable under
-      // registry topology) has no routable live runtime — refuse the send
-      // with the explanation rather than minting a prompt on a backend that
-      // never owned the session.
+      // registry topology, or a never-closed cron run the scheduler no longer
+      // owns) has no routable live runtime — refuse the send with the
+      // explanation rather than minting a prompt on a backend that never owned
+      // the session.
       if (isStoredTranscriptReadOnly(targetStoredSessionId)) {
         notify({ kind: 'info', message: copy.readOnlyTranscriptSendBlocked })
 

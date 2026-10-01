@@ -7,6 +7,7 @@ import type * as HermesModule from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications } from '@/store/notifications'
+import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -15,7 +16,8 @@ import { useSessionTileDelegate } from './use-session-tile-delegate'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
-  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
+  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
+  getSession: vi.fn()
 }))
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
@@ -23,7 +25,7 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: vi.fn()
 }))
 
-const { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
+const { getLatestSessionMessages, getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
@@ -893,5 +895,77 @@ describe('useSessionTileDelegate submitToSession', () => {
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
       undefined
     )
+  })
+})
+
+describe('useSessionTileDelegate read-only cron run (#88443)', () => {
+  const storedId = 'cron_job-1_20260929_120000'
+  const runtimeId = 'rt-cron-run'
+
+  beforeEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+    vi.mocked(requestGatewayForProfile).mockClear()
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: storedId }))
+    vi.mocked(getSession).mockReset()
+  })
+
+  afterEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+  })
+
+  const submitIntoRun = async (text: string) => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, createClientSessionState(storedId, [])]]) }
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, text)
+
+    return requestGateway
+  }
+
+  const promptSubmitted = (text: string) =>
+    vi
+      .mocked(requestGatewayForProfile)
+      .mock.calls.some(call => call[1] === 'prompt.submit' && (call[2] as { text?: string })?.text === text)
+
+  // A tile holding a run the scheduler no longer owns (never closed) must
+  // honour the same gate as the primary chat's `submit` — including a tile
+  // restored after a restart, which no Cron surface ever evaluated.
+  it('refuses a send into a never-closed run the scheduler does not own', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps', source: 'cron' })])
+    vi.mocked(getSession).mockResolvedValue(
+      row({ ended_at: null, id: storedId, scheduler_owned: false, source: 'cron' })
+    )
+
+    const requestGateway = await submitIntoRun('into the dead cron session')
+
+    expect(getSession).toHaveBeenCalledWith(storedId, expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect(promptSubmitted('into the dead cron session')).toBe(false)
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(true)
+  })
+
+  // The review's blocker: a run marked read-only while it looked idle (a long
+  // tool call) must not stay locked once the authoritative row says the
+  // scheduler still owns it.
+  it('re-evaluates a stale read-only verdict and sends once the run is owned', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps', source: 'cron' })])
+    recordCronRunVerdict(storedId, true)
+    vi.mocked(getSession).mockResolvedValue(
+      row({ ended_at: null, id: storedId, scheduler_owned: true, source: 'cron' })
+    )
+
+    await submitIntoRun('still running, send it')
+
+    expect(promptSubmitted('still running, send it')).toBe(true)
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(false)
   })
 })

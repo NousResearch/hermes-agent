@@ -6186,6 +6186,7 @@ def _get_auxiliary_task_config(
     # A cycle here means a hand-edited or otherwise malformed registry; fall back to this task's
     # own defaults instead of recursing until the stack blows.
     cyclic = task in seen
+    # Only when we actually inherit does the user layer need pruning below.
     if cyclic:
         logger.warning("Auxiliary task %r has a circular inherit_from chain — ignoring inheritance",
                        task)
@@ -6199,11 +6200,27 @@ def _get_auxiliary_task_config(
                     if cyclic or not _inherit:
                         return {**_defaults, **task_config}
                     base = _get_auxiliary_task_config(_inherit, seen | {task})
-                    return {**base, **_defaults, **task_config}
+                    return {**base, **_defaults, **_explicit_user_config(task_config)}
                 break
     except Exception:
         pass  # plugin discovery failure must not break aux task config reads
     return task_config
+
+
+def _explicit_user_config(task_config: Dict[str, Any]) -> Dict[str, Any]:
+    """User config with unset values dropped, so an inherited base is not shadowed by write-only
+    placeholders.
+
+    The aux picker and "reset to auto" persist ``model``, ``base_url``, ``api_key`` and
+    ``reasoning_effort`` as empty strings when the operator expresses no preference for them, and
+    plugin-registered tasks are included in both writers. Merging those empties over the inherited
+    base would discard it for exactly the keys the UI touches, which inverts the whole point of
+    ``inherit_from``.
+
+    Only ``""`` is dropped, never any falsy value: ``provider: "auto"`` is a deliberate choice, and
+    ``reasoning_effort: false`` is an explicit request for no reasoning rather than an unset value.
+    """
+    return {k: v for k, v in task_config.items() if v != ""}
 
 
 class CompressionFastLane(NamedTuple):

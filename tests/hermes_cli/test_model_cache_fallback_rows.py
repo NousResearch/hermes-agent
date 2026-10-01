@@ -80,3 +80,46 @@ def test_copilot_catalog_marks_the_static_list_as_fallback_on_a_failed_live_fetc
             rows = mod.provider_model_ids(slug)
             assert isinstance(rows, mod.CuratedFallbackModels), slug
             assert rows == list(mod._PROVIDER_MODELS["copilot"])
+
+
+def test_codex_failed_discovery_retains_cache_without_advertising_stale_astra(monkeypatch, tmp_path):
+    from hermes_cli import auth, codex_models
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: {"api_key": "test-token"})
+    monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *_: False)
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda *_args, **_kw: [])
+    stale_at = time.time() - 7200
+    cache = {"openai-codex": {"fp": "fp", "at": stale_at, "models": ["gpt-6-astra"]}}
+    with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+         patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+         patch.object(mod, "_save_provider_models_cache") as save:
+        rows = mod.provider_model_ids("openai-codex", force_refresh=True)
+        assert isinstance(rows, mod.CuratedFallbackModels)
+        assert "gpt-6-astra" not in rows
+        # Retain the verified row for later recovery without advertising account-gated
+        # models after failed discovery or refreshing the row timestamp.
+        assert mod.cached_provider_model_ids("openai-codex", force_refresh=True) == []
+        assert cache["openai-codex"] == {"fp": "fp", "at": stale_at, "models": ["gpt-6-astra"]}
+    save.assert_not_called()
+
+
+def test_codex_cold_fallback_retries_after_short_ttl(monkeypatch, tmp_path):
+    from hermes_cli import auth, codex_models
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: {"api_key": "test-token"})
+    monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *_: False)
+    responses = iter([[], ["gpt-6-astra"]])
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda *_args, **_kw: next(responses))
+    cache = {}
+    with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+         patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+         patch.object(mod, "_save_provider_models_cache"), \
+         patch.object(mod, "_spawn_swr_refresh") as spawn:
+        mod.cached_provider_model_ids("openai-codex")
+        assert cache["openai-codex"]["fallback"] is True
+        cache["openai-codex"]["at"] = time.time() - mod._PROVIDER_MODELS_FALLBACK_TTL - 1
+        assert "gpt-6-astra" in mod.cached_provider_model_ids("openai-codex")
+        assert "fallback" not in cache["openai-codex"]
+    spawn.assert_not_called()

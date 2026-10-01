@@ -1320,7 +1320,7 @@ def _openai_discovery_base_url(provider: str) -> str:
 
 
 def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.codex_models import CodexFallbackModels, get_codex_model_ids
 
     # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
     # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
@@ -1338,7 +1338,10 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
             access_token = None
     except Exception:
         access_token = None
-    return get_codex_model_ids(access_token=access_token, base_url=base_url)
+    models = get_codex_model_ids(access_token=access_token, base_url=base_url)
+    # Account-gated rows such as Astra are absent from the offline hints. Do not
+    # cache those hints as a successful account fetch or replace a verified row.
+    return CuratedFallbackModels(models) if isinstance(models, CodexFallbackModels) else models
 
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest

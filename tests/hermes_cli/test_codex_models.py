@@ -76,6 +76,32 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
     assert "gpt-5.6-nova-900k" not in out
 
 
+def test_live_sol_minor_version_gets_adjacent_large_context_variant(monkeypatch):
+    from hermes_cli import codex_models
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda *_args, **_kw: ["gpt-6.1-sol"])
+    rows = codex_models.get_codex_model_ids(access_token="test-account")
+    assert rows.index("gpt-6.1-sol-900k") == rows.index("gpt-6.1-sol") + 1
+    assert strip_codex_context_variant_suffix("gpt-6.1-sol-900k") == "gpt-6.1-sol"
+
+
+def test_catalog_identity_stays_stable_for_rotation_but_changes_with_route(monkeypatch):
+    from hermes_cli import auth, codex_models
+    import agent.credential_pool as pool
+
+    credentials = {"api_key": "first-token", "base_url": "https://first.example/codex/"}
+    monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: dict(credentials))
+    monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *_: False)
+    monkeypatch.setattr(pool, "_codex_principal_identity", lambda _: ("account", "subject"))
+    first = codex_models.codex_catalog_credential_identity()
+    credentials["api_key"] = "rotated-token"
+    credentials["base_url"] = "https://first.example/codex"
+    assert codex_models.codex_catalog_credential_identity() == first
+    credentials["base_url"] = "https://second.example/codex"
+    assert codex_models.codex_catalog_credential_identity() != first
+
+
 
 
 

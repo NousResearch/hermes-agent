@@ -185,6 +185,28 @@ class TestWebSocketHostOriginGuard:
         ):
             pass
 
+    def test_authenticated_remote_websocket_accepts_loopback_renderer_origin(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+        import hermes_cli.web_server_chat as chat
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.64.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", True, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(chat, "_ws_auth_reason", lambda websocket: (None, "test"))
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "100.64.0.1:9119",
+                "Origin": "http://127.0.0.1:47891",
+            },
+        ):
+            pass
+
     def test_trusted_public_websocket_host_and_origin_are_accepted(self, monkeypatch):
         from fastapi.testclient import TestClient
 

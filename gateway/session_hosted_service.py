@@ -101,6 +101,15 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
+        if operation == 'output_scope':
+            from gateway.session_hosted_output_owner import attest_output_scope
+            result['scope'] = attest_output_scope(self, room_id, member, profile, params)
+            return result
+        from gateway.session_hosted_output_owner import OUTPUT_OPERATIONS
+        if operation in OUTPUT_OPERATIONS:
+            from gateway.session_hosted_output_owner import attest_output_action
+            result.update(attest_output_action(self, room_id, member, profile, operation, params))
+            return result
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')

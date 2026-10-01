@@ -85,6 +85,46 @@ def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+class _TransportedOutputSource:
+    """A named Bot's outbox, reached through the owner transport to its profile."""
+
+    def __init__(self, service, identity, scope: RoomArtifactScope, manifest, home: Path):
+        from gateway.session_hosted_transport import HostedRoomOwnerRPC
+
+        self.scope, self.manifest = scope, manifest
+        self.rpc = HostedRoomOwnerRPC(home=home, source_home=service.authority.profile_id,
+                                      room_id=scope.room_id, member_id=scope.member_id,
+                                      profile=scope.target_profile)
+        self.params = {"task": asdict(identity), "execution_generation": scope.execution_generation,
+                       "artifact_scope": scope.as_mapping(), "manifest_digest": manifest["manifest_digest"]}
+
+    def read(self, scope, artifact_id):
+        from gateway.session_hosted_output_owner import read_exported_item
+
+        if scope != self.scope:
+            raise RoomArtifactError("Group Chat output scope changed")
+        return read_exported_item(self.rpc, self.params, self.manifest, artifact_id)
+
+    def acknowledge(self, scope, artifact_ids, *, message_event_id):
+        if scope != self.scope:
+            raise RoomArtifactError("Group Chat output scope changed")
+        result = self.rpc.output_ack(**self.params, artifact_ids=list(artifact_ids),
+                                     message_event_id=message_event_id)
+        if (type(result) is not dict or set(result) != {"acknowledged", "changed"}
+                or result["acknowledged"] is not True or type(result["changed"]) is not int):
+            raise RoomArtifactError("Group Chat output acknowledgement was not confirmed")
+        return result["changed"]
+
+    def discard_durably(self, scope):
+        if scope != self.scope:
+            raise RoomArtifactError("Group Chat output scope changed")
+        result = self.rpc.output_discard(**self.params)
+        if (type(result) is not dict or set(result) != {"discarded", "removed"}
+                or result["discarded"] is not True or type(result["removed"]) is not int):
+            raise RoomArtifactError("Group Chat output discard was not confirmed")
+        return result["removed"]
+
+
 class CanonicalHostedOutput:
     """Output publication and retirement for the canonical hosted room service."""
 
@@ -251,9 +291,11 @@ class CanonicalHostedOutput:
         home = self.profile_homes().get(scope.target_profile)
         if home is None:
             raise RuntimeStoreError("permission_denied")
-        if Path(home).resolve() != Path(self.authority.profile_id).resolve():
-            raise RoomArtifactError("Group Chat output of another profile is unavailable")
-        return RoomArtifactOutbox(self.db_path)
+        if Path(home).resolve() == Path(self.authority.profile_id).resolve():
+            return RoomArtifactOutbox(self.db_path)
+        if manifest is None:
+            raise RoomArtifactError("Group Chat output manifest is unavailable")
+        return _TransportedOutputSource(self, identity, scope, manifest, Path(home))
 
     # ------------------------------------------------------------------ publication
     def _publish_terminal_tasks(self, room) -> bool:

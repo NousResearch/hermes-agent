@@ -404,7 +404,10 @@ _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds befor
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
-_E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  (requires libolm C library)"
+_E2EE_INSTALL_HINT = (
+    "Enable E2EE with: hermes pm install --extra matrix-e2ee  "
+    "(mautrix[encryption]; linux-only, needs the libolm C library)"
+)
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
@@ -707,12 +710,18 @@ def matrix_deps_present() -> bool:
     Registry ``check_fn`` — called from status displays and config loading, so it must never install
     anything. The ACTIVE lazy-installer (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
     and runs from ``create_adapter()`` when this returns False (#79812).
+
+    Encryption is config-gated: with ``MATRIX_E2EE_MODE=required`` the closure in ``[matrix-e2ee]`` is
+    part of "deps are present", otherwise the update's configured-features pass sees a ready platform
+    and never installs it (the adapter would then fail closed at connect).
     """
     try:
         from pm import available as is_available
-        return is_available("matrix")
+        if not is_available("matrix"):
+            return False
     except Exception:  # pragma: no cover — defensive
         return False
+    return _resolve_e2ee_mode() != "required" or _check_e2ee_deps()
 
 
 def check_matrix_requirements() -> bool:
@@ -727,6 +736,33 @@ def check_matrix_requirements() -> bool:
         logger.warning("Matrix: MATRIX_HOMESERVER not set")
         return False
     return ensure_matrix_deps()
+
+
+def _ensure_e2ee_deps() -> bool:
+    """Install the ``[matrix-e2ee]`` closure (mautrix[encryption] → python-olm).
+
+    Best-effort: a failed install must never stop the adapter from coming up — the
+    caller's mode checks decide whether the outcome is fatal (``required``) or a
+    warning (``optional``). Never called when encryption is off: the plain client
+    does not need python-olm, and installing it would demand a C++ toolchain.
+    """
+    from pm import extras
+
+    try:
+        extras.ensure_import("matrix-e2ee")
+    except Exception as exc:  # noqa: BLE001 — report, let the mode check decide
+        logger.warning("Matrix: could not install E2EE deps (%s). %s", exc, _E2EE_INSTALL_HINT)
+        return False
+    return _check_e2ee_deps()
+
+
+def _extra_names() -> list[str]:
+    """Extras a configured Matrix platform needs (``extra_names_fn``).
+
+    ``[matrix]`` always; ``[matrix-e2ee]`` only when encryption is configured on, so
+    an E2EE-off deployment never resolves python-olm on update.
+    """
+    return ["matrix", "matrix-e2ee"] if _resolve_e2ee_mode() != "off" else ["matrix"]
 
 
 def ensure_matrix_deps() -> bool:
@@ -767,6 +803,10 @@ def ensure_matrix_deps() -> bool:
         )
         return False
     e2ee_mode = _resolve_e2ee_mode()
+    # Encryption lives in its own extra: install it only when the mode asks for it,
+    # so the default (off) deployment never resolves python-olm.
+    if e2ee_mode != "off" and not _check_e2ee_deps():
+        _ensure_e2ee_deps()
     if e2ee_mode == "required" and not _check_e2ee_deps():
         logger.error(
             "Matrix: E2EE is required but dependencies are missing. %s. Without this, encrypted "
@@ -3161,8 +3201,11 @@ def interactive_setup() -> None:
         try:
             from pm import sync_venv
 
+            # Same set _extra_names() gives the updater: the encryption closure is a
+            # separate extra, so a setup that just enabled E2EE must ask for it too.
+            preparing = ["matrix", "matrix-e2ee"] if want_e2ee else ["matrix"]
             print_info("Preparing Matrix dependencies...")
-            sync_venv(["matrix"], explicit=True)
+            sync_venv(preparing, explicit=True)
             print_success("Matrix dependencies prepared. Restart Hermes to use them.")
         except Exception as exc:
             print_warning(f"Matrix dependencies could not be prepared: {exc}")
@@ -3220,7 +3263,8 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
-        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
+        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
+        install_hint="hermes pm install --extra matrix", extra_names_fn=_extra_names,
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
         allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",

@@ -215,6 +215,10 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
 # --- Public: RFC 8252 native-app authorization (system browser + loopback + PKCE)
 
+# RFC 8252 loopback IP literals -> their canonical URL authority spelling.
+_LOOPBACK_NETLOC_HOSTS = {"127.0.0.1": "127.0.0.1", "::1": "[::1]"}
+
+
 def _validate_loopback_redirect_uri(raw: str) -> str:
     """Return a canonical RFC 8252 loopback URI or reject it.
 
@@ -242,23 +246,14 @@ def _validate_loopback_redirect_uri(raw: str) -> str:
         raise _http(400, "native redirect_uri must not contain a fragment")
     if parsed.username is not None or parsed.password is not None:
         raise _http(400, "native redirect_uri must not contain userinfo")
-    if hostname == "127.0.0.1":
-        canonical_host = "127.0.0.1"
-    elif hostname == "::1":
-        canonical_host = "[::1]"
-    else:
+    canonical_host = _LOOPBACK_NETLOC_HOSTS.get(hostname)
+    if canonical_host is None:
         raise _http(400, "native redirect_uri host must be a loopback IP literal (127.0.0.1 / ::1)")
     canonical_netloc = canonical_host + (f":{port}" if port is not None else "")
     if parsed.netloc != canonical_netloc:
         raise _http(400, "native redirect_uri must use a canonical loopback authority")
-    return urlunparse(
-        parsed._replace(
-            scheme="http",
-            netloc=canonical_netloc,
-            path=parsed.path or "/",
-            fragment="",
-        )
-    )
+    # scheme/netloc are already canonical and fragments rejected; only an empty path needs "/".
+    return urlunparse(parsed._replace(path=parsed.path or "/"))
 
 
 def _select_native_provider(provider: str):

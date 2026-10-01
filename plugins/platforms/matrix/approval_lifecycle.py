@@ -86,7 +86,10 @@ class _MatrixApprovalPrompt:
     def notice_metadata(self) -> dict[str, str] | None:
         """Send metadata that keeps a notice about this card in the card's thread."""
         thread_id = str(self.metadata.get("thread_id") or "")
-        return {"thread_id": thread_id} if thread_id else None
+        return {
+            "thread_id": thread_id,
+            "matrix_thread_fallback_event_id": self.message_id,
+        } if thread_id else None
 
 
 class MatrixApprovalMixin:

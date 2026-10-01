@@ -12,6 +12,7 @@ from pm.artifact_mirror import object_key
 from pm.downloader import HashError
 from scripts.ci import archive_inputs as inputs
 from scripts.releases import r2
+from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 from tests.scripts.test_termux_runtime_libs import _Server, _build_deb
 
@@ -40,7 +41,7 @@ def test_target_selection_preserves_multi_archive_and_any_fallback(tmp_path):
     packages = {
         "engine": {"version": "1", "artifacts": {
             "win32-x64": [row("engine"), row("cudart")], "linux-x64": row("linux"),
-        }},
+        }, "prepared": {"win32-x64": {"sha256": row("prepared")["sha256"]}}},
         "portable": {"version": "1", "artifacts": {"any": row("portable")}},
         "container": {"version": "1", "artifacts": {"linux-arm64-bionic": {
             "url": "docker://termux/termux-docker@sha256:" + "a" * 64,
@@ -49,11 +50,12 @@ def test_target_selection_preserves_multi_archive_and_any_fallback(tmp_path):
     lib = row("lib")
     write_pins(tmp_path, packages, {"libs": {"lib": lib}, "licenses": row("license")})
     win = inputs.pinned_inputs(tmp_path, target="win32-x64")
-    assert {p.sha256 for p in win} == {row(n)["sha256"] for n in ("engine", "cudart", "portable")}
+    assert {p.sha256 for p in win} == {row(n)["sha256"] for n in ("engine", "cudart", "portable", "prepared")}
+    assert next(p for p in win if p.kind == "prepared").url == inputs.github_asset_url(row("prepared")["sha256"])
     bionic = inputs.pinned_inputs(tmp_path, target="linux-arm64-bionic")
     assert {p.sha256 for p in bionic} == {row(n)["sha256"] for n in ("portable", "lib", "license")}
     all_pins = inputs.pinned_inputs(tmp_path)
-    assert {p.sha256 for p in all_pins} == {row(n)["sha256"] for n in ("engine", "cudart", "portable", "linux", "lib", "license")}
+    assert {p.sha256 for p in all_pins} == {row(n)["sha256"] for n in ("engine", "cudart", "portable", "linux", "lib", "license", "prepared")}
 
 
 @pytest.mark.parametrize("bad", [{}, {"url": "https://u/file.zip"}, {"url": "http://u/file.zip", "sha256": "a" * 64}, {"url": "https://u/file.zip", "sha256": " A "}])
@@ -128,7 +130,7 @@ def test_corrupt_or_denied_archive_never_publishes_a_destination(tmp_path, upstr
     dest = tmp_path / "preserved"
     dest.write_bytes(b"old")
     with pytest.raises((HashError, ValueError, r2.R2RequestError)):
-        inputs.Archive(*r2.credentials()).fetch(pin, dest)
+        inputs.Archive((inputs.R2Mirror(*r2.credentials()),)).fetch(pin, dest)
     assert dest.read_bytes() == b"old"
     assert any(r[0] == "PUT" for r in r2_server.requests) == (failure == "readback")
 
@@ -147,14 +149,14 @@ def test_racing_misses_verify_the_immutable_winner(tmp_path, upstream, r2_server
                 barrier.wait(timeout=10)
             raise
     monkeypatch.setattr(r2, "signed_request", race)
-    archive = inputs.Archive(*r2.credentials())
+    archive = inputs.Archive((inputs.R2Mirror(*r2.credentials()),))
     paths = [tmp_path / f"race-{i}" for i in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert list(pool.map(lambda p: archive.fetch(pin, p), paths)) == ["upstream", "upstream"]
     assert all(p.read_bytes() == body for p in paths)
 
 
-def test_all_digests_start_together_and_seed_every_reference(tmp_path, upstream, r2_server, monkeypatch):
+def test_bounded_digests_seed_every_reference(tmp_path, upstream, r2_server, monkeypatch):
     from collections import Counter
     from pm.store import Store
     from scripts.termux.stage_runtime_libs import download_path
@@ -165,21 +167,41 @@ def test_all_digests_start_together_and_seed_every_reference(tmp_path, upstream,
     for name, body in bodies.items():
         (root / f"{name}.deb").write_bytes(body)
         digest = hashlib.sha256(body).hexdigest()
-        for kind, label in (("tool", name), ("library", name), ("library", f"{name}-alias")):
+        for kind, label in (("tool", name), ("library", name), ("library", f"{name}-alias"),
+                            ("prepared", f"{name}-prepared")):
             pins.append(inputs.InputPin(label, f"{server.url}/{name}.deb", digest, kind))
 
-    # Every unique input must reach the real HTTP path before any can finish.
-    barrier = threading.Barrier(len(bodies))
+    # Hold the first two mirror requests and prove a third cannot reach the
+    # network until one finishes; unbounded readbacks overload release edges.
+    second = threading.Event()
+    third = threading.Event()
+    release = threading.Event()
+    seen = 0
+    lock = threading.Lock()
     original = r2.signed_request
-    def together(method, url, **kwargs):
+    def measured(method, url, **kwargs):
+        nonlocal seen
         if method == "HEAD":
-            barrier.wait(timeout=10)
+            with lock:
+                seen += 1
+                if seen == 2:
+                    second.set()
+                if seen == 3:
+                    third.set()
+            assert release.wait(timeout=10)
         return original(method, url, **kwargs)
-    monkeypatch.setattr(r2, "signed_request", together)
+    monkeypatch.setattr(r2, "signed_request", measured)
     store = Store(tmp_path / "tools")
     payload = tmp_path / "payload"
-    assert inputs.stage_inputs(pins, archive=inputs.Archive(*r2.credentials()),
-                               store=store, payload=payload) == len(bodies)
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        future = caller.submit(inputs.stage_inputs, pins, archive=inputs.Archive((inputs.R2Mirror(*r2.credentials()),)),
+                               store=store, payload=payload)
+        try:
+            assert second.wait(timeout=10)
+            assert not third.wait(timeout=2)
+        finally:
+            release.set()
+        assert future.result(timeout=120) == len(bodies)
     puts = Counter(path for method, path, _ in r2_server.requests if method == "PUT")
     assert len(puts) == len(bodies) and set(puts.values()) == {1}
     for name, body in bodies.items():
@@ -188,6 +210,7 @@ def test_all_digests_start_together_and_seed_every_reference(tmp_path, upstream,
         assert (store.entry(f"fetch-{digest}") / f"{name}.deb").read_bytes() == body
         for label in (name, f"{name}-alias"):
             assert download_path(payload, label).read_bytes() == body
+        assert not download_path(payload, f"{name}-prepared").exists()
 
 
 def test_parallel_readback_failure_reaches_cli_and_preserves_destination(tmp_path, upstream, r2_server, monkeypatch, capsys):
@@ -231,8 +254,32 @@ def test_historical_recovery_keeps_the_original_digest(tmp_path, upstream, r2_se
     pin = inputs.InputPin("lib", server.url + "/gone.deb", hashlib.sha256(body).hexdigest(), "library")
     monkeypatch.setattr(inputs, "historical_url", lambda _: server.url + "/lib.deb")
     dest = tmp_path / "recovered"
-    assert inputs.Archive(*r2.credentials()).fetch(pin, dest) == "historical archive"
+    assert inputs.Archive((inputs.R2Mirror(*r2.credentials()),)).fetch(pin, dest) == "historical archive"
     assert dest.read_bytes() == body
+
+
+def test_r2_publisher_rechecks_public_bytes_not_only_signed_storage(tmp_path, r2_server, dl_server):
+    body = b"reviewed mirror input"
+    sha = hashlib.sha256(body).hexdigest()
+    r2_server.store[object_key(sha)] = (body, '"etag"')
+    public_path = "/" + object_key(sha)
+    RangeHandler.payloads[public_path] = b"wrong public bytes"
+    mirror = inputs.R2Mirror(*r2.credentials(), public_base=url(dl_server, ""))
+    destination = tmp_path / "read-back"
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        mirror.read_back(sha, destination, len(body))
+    assert not destination.exists()
+    RangeHandler.payloads[public_path] = body
+    mirror.read_back(sha, destination, len(body))
+    assert destination.read_bytes() == body
+
+
+def test_archive_from_env_never_grants_release_write_access(monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_R2_ACCOUNT_ID", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "NousResearch/hermes-agent")
+    with pytest.raises(ValueError, match="R2 credentials required"):
+        inputs.archive_from_env()
 
 
 def test_committed_inventory_matches_every_http_pin():
@@ -244,6 +291,7 @@ def test_committed_inventory_matches_every_http_pin():
             for row in artifact if isinstance(artifact, list) else [artifact]:
                 if row["url"].startswith("https://"):
                     expected.add(row["sha256"])
+        expected.update(row["sha256"] for row in package.get("prepared", {}).values())
     table = json.loads((repo / "pm/termux_runtime_libs.json").read_text(encoding="utf-8"))
     expected.update(row["sha256"] for row in table["libs"].values())
     expected.add(table["licenses"]["sha256"])

@@ -148,6 +148,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
     assert isinstance(pipe, io.TextIOWrapper)  # Popen was given stdout=PIPE and text=True.
     tail = ""
     conflict = ""
+    build = ""
     try:
         # A descendant can keep stdout open after proc exits. Nonblocking reads
         # bound that drain without leaving a thread stuck in readline()/close().
@@ -167,11 +168,14 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                 continue
             text = decoder.decode(data, final=not data)
             if text:
-                # Preserve an observed resolver marker even after verbose output
-                # evicts it. Scan across read boundaries, never retain the full log.
-                if not conflict:
+                # Keep observed classifier markers even when verbose output
+                # evicts them. Scan across read boundaries, not the full log.
+                if not conflict or not build:
                     lowered = (tail + text).lower()
-                    conflict = next((marker for marker in _RESOLVER_MARKERS if marker in lowered), "")
+                    if not conflict:
+                        conflict = next((marker for marker in _RESOLVER_MARKERS if marker in lowered), "")
+                    if not build:
+                        build = next((marker for marker in _BUILD_MARKERS if marker in lowered), "")
                 tail = (tail + text)[-2000:]
                 output.write(text)
                 output.flush()
@@ -188,8 +192,10 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
         raise
     finally:
         pipe.close()
-    if conflict and conflict not in tail.lower():
-        tail = conflict + "\n" + tail[-(2000 - len(conflict) - 1):]
+    markers = [marker for marker in (conflict, build) if marker and marker not in tail.lower()]
+    if markers:
+        prefix = "\n".join(markers) + "\n"
+        tail = prefix + tail[-(2000 - len(prefix)):]
     return subprocess.CompletedProcess(command, code, "", tail)
 
 
@@ -334,10 +340,15 @@ class PythonEnvironment:
         if result.returncode:
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
 
-    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
+    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800,
+             find_links: Path | None = None, upgrade_packages: Mapping[str, str] | None = None) -> None:
         command = ["lock", "--python", str(self.python)]
         if upgrade:
             command.append("--upgrade")
+        for name, version in sorted((upgrade_packages or {}).items()):
+            command += ["--upgrade-package", f"{name}=={version}"]
+        if find_links is not None:
+            command += ["--find-links", str(find_links)]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)

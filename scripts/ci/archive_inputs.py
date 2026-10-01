@@ -1,22 +1,25 @@
-"""Archive pinned binary inputs in R2 and seed existing CI consumers."""
+"""Preserve pinned binary inputs in the hash-addressed R2 mirror for CI consumers."""
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
 import tempfile
+from typing import Protocol
 from urllib.parse import quote, urlsplit
 
 # The runner invokes this before setup-pm has installed the checkout.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pm.artifact_mirror import object_key
+from pm.artifact_mirror import KEY_PREFIX, PUBLIC_PREFIX, github_asset_url, object_key
 from pm.downloader import Download, DownloadError, DownloadTransportError, Source
 from pm.lock import SCHEMA
 from pm.store import ALL_TARGETS, Store
@@ -40,7 +43,7 @@ class InputPin:
         loopback = parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1")
         if (parsed.scheme != "https" and not loopback) or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError(f"{self.name}: pinned input needs an HTTPS URL")
-        if self.kind not in ("library", "license", "tool"):
+        if self.kind not in ("library", "license", "tool", "prepared"):
             raise ValueError(f"Invalid input kind: {self.kind}")
 
 
@@ -85,6 +88,12 @@ def pinned_inputs(repo: Path, *, target: str | None = None, packages: set[str] |
                 if isinstance(row, dict) and isinstance(row.get("url"), str) and row["url"].startswith("docker://"):
                     continue  # OCI digests belong to the container registry, not HTTP archives.
                 pins.append(_pin(label, row, "tool"))
+        for row_target, prepared in package.get("prepared", {}).items():
+            if target is not None and target != row_target:
+                continue
+            sha256 = prepared["sha256"]
+            pins.append(_pin(f"{name}@{row_target}.prepared",
+                             {"url": github_asset_url(sha256), "sha256": sha256}, "prepared"))
     if packages is None and target in (None, TERMUX_TARGET):
         table = json.loads((repo / "pm" / "termux_runtime_libs.json").read_text(encoding="utf-8-sig"))
         pins.extend(_pin(name, row, "library") for name, row in table["libs"].items())
@@ -95,42 +104,99 @@ def pinned_inputs(repo: Path, *, target: str | None = None, packages: set[str] |
     return pins
 
 
+class Mirror(Protocol):
+    """One place the pinned bytes are preserved. Objects are named by sha256, so an
+    existing object is never rewritten."""
+
+    @property
+    def name(self) -> str: ...
+
+    def size(self, sha256: str) -> int | None:
+        """Bytes of the complete object, or None on a definite miss. Anything else raises."""
+
+    def put(self, sha256: str, local: Path) -> None:
+        """Create the object if absent. Losing a creation race is not an error."""
+
+    def read_back(self, sha256: str, destination: Path, size: int) -> None:
+        """Download the way consumers do and verify both size and sha256."""
+
+
 @dataclass(frozen=True)
-class Archive:
+class R2Mirror:
     creds: dict[str, str]
     base: str
     bucket: str
+    name: str = "R2"
+    public_base: str | None = None
 
-    def fetch(self, pin: InputPin, destination: Path) -> str:
-        """Only R2 404 permits upstream download; every result is read back."""
-        key = object_key(pin.sha256)
+    def size(self, sha256: str) -> int | None:
+        key = object_key(sha256)
         url = f"{self.base}/{self.bucket}/{r2.encode_key_path(key)}"
         try:
             head = r2.signed_request("HEAD", url, creds=self.creds, now=r2.amz_timestamp())
         except r2.R2RequestError as exc:
             if exc.status != 404:
                 raise
-            head = None
+            return None
+        length = head.header("content-length")
+        if length is None:
+            raise ValueError(f"R2 did not report the input size: {url}")
+        return int(length)
+
+    def put(self, sha256: str, local: Path) -> None:
+        r2.put_object(self.creds, self.base, self.bucket, object_key(sha256), str(local), r2.amz_timestamp(),
+                      "application/octet-stream", conditions={"If-None-Match": "*"})
+
+    def read_back(self, sha256: str, destination: Path, size: int) -> None:
+        # A signed S3 GET can succeed while the public consumer URL is stale.
+        # Local R2 fixtures use the same loopback endpoint for both surfaces.
+        base = self.public_base
+        if base is None:
+            base = (f"{self.base.rstrip('/')}/{self.bucket}"
+                    if urlsplit(self.base).hostname in ("127.0.0.1", "localhost", "::1")
+                    else PUBLIC_PREFIX.removesuffix(KEY_PREFIX).rstrip("/"))
+        r2.download_public_object(base, object_key(sha256), destination,
+                                  expected_size=size, expected_sha256=sha256)
+
+
+@dataclass(frozen=True)
+class Archive:
+    mirrors: tuple[Mirror, ...]
+
+    def fetch(self, pin: InputPin, destination: Path) -> str:
+        """Only a miss on every mirror permits an upstream download. Every mirror ends up
+        holding the bytes, and every copy is read back the way consumers read it."""
+        sha = pin.sha256
+        object_key(sha)
+        sizes = [mirror.size(sha) for mirror in self.mirrors]
+        source = next((i for i, size in enumerate(sizes) if size is not None), None)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".input-archive-", dir=destination.parent) as temporary:
             work = Path(temporary)
             local = work / "input"
-            origin = "R2"
-            if head is None:
+            if source is None:
                 origin = _download_upstream(pin, local)
-                size = local.stat().st_size
-                r2.put_object(self.creds, self.base, self.bucket, key, str(local), r2.amz_timestamp(),
-                              "application/octet-stream", conditions={"If-None-Match": "*"})
             else:
-                length = head.header("content-length")
-                if length is None:
-                    raise ValueError(f"R2 did not report the input size: {url}")
-                size = int(length)
-            verified = work / "verified"
-            r2.download_object(self.creds, self.base, self.bucket, key, verified, r2.amz_timestamp(),
-                               expected_size=size, expected_sha256=pin.sha256)
-            verified.replace(destination)
+                held = sizes[source]
+                assert held is not None
+                origin = self.mirrors[source].name
+                self.mirrors[source].read_back(sha, local, held)
+            size = local.stat().st_size
+            for mirror, existing in zip(self.mirrors, sizes):
+                if existing is None:
+                    mirror.put(sha, local)
+            for i, (mirror, existing) in enumerate(zip(self.mirrors, sizes)):
+                if i != source:
+                    mirror.read_back(sha, work / f"verified-{i}", size if existing is None else existing)
+            local.replace(destination)
         return origin
+
+
+def archive_from_env(env: Mapping[str, str] = os.environ) -> Archive:
+    """Preserve reviewed inputs only in the existing R2 mirror."""
+    if not env.get("CLOUDFLARE_R2_ACCOUNT_ID"):
+        raise ValueError("R2 credentials required to preserve pinned inputs")
+    return Archive((R2Mirror(*r2.credentials()),))
 
 
 def _download_upstream(pin: InputPin, local: Path) -> str:
@@ -164,7 +230,7 @@ def stage_inputs(pins: list[InputPin], *, archive: Archive, store: Store | None 
             local = Path(temporary) / "input"
             origin = archive.fetch(references[0], local)
             for pin in references:
-                if pin.kind != "tool" and payload is not None:
+                if pin.kind in ("library", "license") and payload is not None:
                     dest = download_path(payload, pin.name)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(local, dest)
@@ -183,7 +249,9 @@ def stage_inputs(pins: list[InputPin], *, archive: Archive, store: Store | None 
                     store.publish(staged, entry.name)
             print(f"  {references[0].name}: {origin} -> {object_key(digest)}", flush=True)
 
-    with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+    # A release upload may not be readable from every CDN edge immediately.
+    # Unbounded workers flood public readback with transient 500s.
+    with ThreadPoolExecutor(max_workers=min(2, len(groups))) as pool:
         futures = [pool.submit(stage_digest, digest, references) for digest, references in groups.items()]
         for future in as_completed(futures):
             future.result()
@@ -199,10 +267,11 @@ def main(argv=None) -> int:
     parser.add_argument("--store", type=Path, help="seed this PM store's disposable input cache")
     args = parser.parse_args(argv)
     pins = pinned_inputs(paths.repo_root(), target=args.target)
-    count = stage_inputs(pins, archive=Archive(*r2.credentials()),
+    archive = archive_from_env()
+    count = stage_inputs(pins, archive=archive,
                          store=Store(args.store.resolve()) if args.store else None,
                          payload=args.payload.resolve() if args.payload else None)
-    print(f"Verified {count} unique pinned inputs in R2.", flush=True)
+    print(f"Verified {count} unique pinned inputs in {', '.join(m.name for m in archive.mirrors)}.", flush=True)
     return 0
 
 

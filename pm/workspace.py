@@ -379,4 +379,42 @@ def lock_and_sync(
         shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
         frozen = True
 
-    environment.sync(root, extras=extras, frozen=frozen)
+    from pm.environment import BuildFailure
+    from pm.store import current_target
+    from pm.wheel_sources import relocate_wheels, stage_wheels, verify_selected_wheels
+
+    target = current_target()
+    selection = None
+    missing: tuple[str, ...] = ()
+    if replay is not None:
+        missing = relocate_wheels(root, replay, target=target)
+    elif target == "win32-arm64":
+        from pm.artifact_mirror import wheel_source
+
+        selection = stage_wheels(root, source / "uv.lock", root / "wheels", wheel_source, target=target)
+        missing = selection.missing
+
+    def sync(engine: PythonEnvironment) -> None:
+        if selection is not None and selection.versions:
+            wheels_dir = root / "wheels"
+            engine.lock(root, upgrade_packages=selection.versions,
+                        find_links=wheels_dir if selection.available else None)
+            verify_selected_wheels(source / "uv.lock", root / "uv.lock", wheels_dir, selection)
+            engine.sync(root, extras=extras, frozen=True)
+        else:
+            engine.sync(root, extras=extras, frozen=frozen)
+
+    try:
+        sync(environment)
+    except BuildFailure:
+        if target != "win32-arm64" or not missing or plugin_dirs:
+            raise
+        from dataclasses import replace
+        from pm.native_build import plugin_build_environment
+
+        prepared = plugin_build_environment(source)
+        if prepared is None:
+            raise
+        # This generation is not published. A failed backend can be retried
+        # without changing the source lock or a live environment.
+        sync(replace(environment, env={**environment.env, **prepared}))

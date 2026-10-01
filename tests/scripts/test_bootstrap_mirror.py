@@ -77,6 +77,40 @@ def test_windows_download_uses_only_verified_candidates(tmp_path, server, mode):
 
 
 @pytest.mark.platforms("windows")
+@pytest.mark.parametrize("available", ["github", "r2", "upstream", "corrupt", "all-missing"])
+def test_windows_bootstrap_prefers_release_then_r2_then_upstream(tmp_path, server, available):
+    http, base = server
+    body = b"verified bootstrap input"
+    digest = hashlib.sha256(body).hexdigest()
+    candidates = ["github", "r2", "upstream"]
+    if available in candidates:
+        for name in candidates[candidates.index(available):]:
+            http.files["/" + name] = body
+    elif available == "corrupt":
+        http.files["/github"] = b"wrong bytes"
+        http.files["/upstream"] = body
+    script = tmp_path / "driver.ps1"
+    destination = tmp_path / "out.zip"
+    script.write_text(
+        f". '{ROOT / 'scripts/install.ps1'}' -HermesHome '{tmp_path / 'home'}' -InstallDir '{tmp_path / 'repo'}'\n"
+        f"Invoke-VerifiedDownload -GitHubUrl '{base}/github' -Url '{base}/upstream' -MirrorUrl '{base}/r2' -Sha256 '{digest}' -OutFile '{destination}'\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                            capture_output=True, text=True, timeout=60)
+    if available in candidates:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert destination.read_bytes() == body
+        expected = candidates[:candidates.index(available) + 1]
+    else:
+        assert result.returncode != 0
+        if available == "corrupt":
+            assert "digest mismatch" in result.stdout + result.stderr
+        expected = ["github"] if available == "corrupt" else candidates
+    assert http.requests == ["/" + name for name in expected]
+
+
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("name", ["uv", "git"])
 def test_windows_bootstrap_rejects_corrupt_bytes_before_extract(tmp_path, server, name):
     primary, mirror, digest = fixture_bytes(server, "corrupt", b"expected archive")
@@ -109,30 +143,44 @@ def uv_archive():
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("mode", ["primary", "missing", "corrupt", "both-missing"])
-def test_posix_download_keeps_the_pinned_hash(tmp_path, server, mode):
-    primary, mirror, digest = fixture_bytes(server, mode, uv_archive())
-    if mode == "both-missing":
-        server[0].files.clear()
+@pytest.mark.parametrize("available", ["github", "r2", "upstream", "corrupt", "all-missing", "no-release-corrupt"])
+def test_posix_bootstrap_prefers_release_then_r2_then_upstream(tmp_path, server, available):
+    http, base = server
+    body = uv_archive()
+    digest = hashlib.sha256(body).hexdigest()
+    candidates = ["github", "r2", "upstream"]
+    if available in candidates:
+        for name in candidates[candidates.index(available):]:
+            http.files["/" + name] = body
+    elif available == "corrupt":
+        http.files["/github"] = b"wrong bytes"
+        http.files["/upstream"] = body
+    elif available == "no-release-corrupt":
+        http.files["/upstream"] = b"wrong bytes"
+        http.files["/r2"] = body
+    github = "" if available == "no-release-corrupt" else base + "/github"
     script = f"""
 source '{ROOT / 'scripts/install.sh'}'
-command() {{ if [ "$*" = '-v uv' ]; then return 1; fi; builtin command "$@"; }}
-uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_URL='{primary}'; UV_PIN_MIRROR='{mirror}'; UV_PIN_SHA256='{digest}'; }}
+uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_GITHUB='{github}'; UV_PIN_URL='{base}/upstream'; UV_PIN_MIRROR='{base}/r2'; UV_PIN_SHA256='{digest}'; }}
 ensure_uv
 """
     env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"), "HOME": str(tmp_path / "home"), "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
     result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
-    assert (result.returncode == 0) == (mode in ("primary", "missing")), result.stdout + result.stderr
-    if mode == "corrupt":
-        assert "digest mismatch" in result.stderr
-    if mode == "both-missing":
-        assert primary in result.stderr and mirror in result.stderr
-    assert server[0].requests == (["/primary", "/mirror"] if mode in ("missing", "both-missing") else ["/primary"])
+    if available in candidates:
+        assert result.returncode == 0, result.stdout + result.stderr
+        expected = candidates[:candidates.index(available) + 1]
+    else:
+        assert result.returncode != 0
+        if available in ("corrupt", "no-release-corrupt"):
+            assert "digest mismatch" in result.stderr
+        expected = (["github"] if available == "corrupt" else
+                    ["upstream"] if available == "no-release-corrupt" else candidates)
+    assert http.requests == ["/" + name for name in expected]
 
 
 @pytest.mark.platforms("windows")
 def test_generated_windows_pins_match_the_shared_authority(tmp_path):
-    from pm.artifact_mirror import mirror_url
+    from pm.artifact_mirror import github_asset_url, mirror_url
     script = tmp_path / "pins.ps1"
     script.write_text(
         f". '{ROOT / 'scripts/install.ps1'}' -HermesHome '{tmp_path / 'home'}'\n"
@@ -147,7 +195,10 @@ def test_generated_windows_pins_match_the_shared_authority(tmp_path):
         assert targets
         for target, pin in targets.items():
             authority = lock[name]["artifacts"][target]
-            assert (pin["Url"], pin["Sha256"], pin["MirrorUrl"]) == (authority["url"], authority["sha256"], mirror_url(authority["sha256"]))
+            assert (pin["GitHubUrl"], pin["Url"], pin["MirrorUrl"], pin["Sha256"]) == (
+                github_asset_url(authority["sha256"]), authority["url"],
+                mirror_url(authority["sha256"]), authority["sha256"],
+            )
 
 
 @pytest.mark.platforms("posix")

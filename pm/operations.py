@@ -39,8 +39,7 @@ def build_environment(
     Failure removes only the destination exclusively created by this invocation.
     Sealed builds prune only the .pth files that refer to build-time state.
     """
-    from pm.environment import _fresh_build, managed_environment
-    from pm.native_build import source_build_environment
+    from pm.environment import BuildFailure, _fresh_build, managed_environment
 
     source, out = Path(source).absolute(), Path(out).absolute()
     if not (source / "pyproject.toml").is_file():
@@ -50,18 +49,36 @@ def build_environment(
     if out.exists() or out.is_symlink():
         raise FileExistsError(f"environment destination already exists: {out}")
     _require_install_allowed(explicit)
-    # A caller-supplied env is already the build environment (bundle staging
-    # prepares its own, shared with its Node builds).
-    if env is None:
-        env = source_build_environment(source)
+    # Bundle staging may supply its own native product build environment.
     environment = managed_environment(
         out, python=Path(python) if python is not None else None,
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    with _fresh_build(environment, sealed=sealed):
-        environment.sync(source, extras=extras, groups=groups, all_extras=all_extras,
-                         no_install_project=no_install_project, frozen=frozen, timeout=timeout)
+    def sync(candidate) -> None:
+        with _fresh_build(candidate, sealed=sealed):
+            candidate.sync(source, extras=extras, groups=groups, all_extras=all_extras,
+                           no_install_project=no_install_project, frozen=frozen, timeout=timeout)
+
+    try:
+        sync(environment)
+    except BuildFailure:
+        if sealed:
+            raise
+        from pm.native_build import plugin_build_environment
+
+        prepared = plugin_build_environment(source)
+        if prepared is None:
+            raise
+        # _fresh_build removed the unpublished destination; retry only after
+        # the backend proved this source checkout actually needs build tools.
+        environment = managed_environment(
+            out, python=Path(python) if python is not None else None,
+            cache=Path(cache) if cache is not None else None,
+            env={**environment.env, **prepared}, offline=offline,
+            explicit=explicit, output=sys.stderr,
+        )
+        sync(environment)
     return environment.executable
 
 

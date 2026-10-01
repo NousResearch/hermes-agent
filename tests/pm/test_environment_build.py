@@ -90,6 +90,152 @@ def locked_project(tmp_path):
     return source, Path(uv), env
 
 
+def test_exact_private_relock_selects_local_wheel_without_changing_source(locked_project, tmp_path):
+    from pm.environment import PythonEnvironment
+    import tomllib
+
+    source, uv, env = locked_project
+    original = (source / "uv.lock").read_bytes()
+    workspace = tmp_path / "private workspace"
+    shutil.copytree(source, workspace)
+    wheels = tmp_path / "verified wheels"
+    wheels.mkdir()
+    reviewed = next((source.parent / "wheels").glob("base_dep-1.0-*.whl"))
+    shutil.copy2(reviewed, wheels / "base_dep-1.0-1-py3-none-any.whl")
+    builder = PythonEnvironment(uv=uv, python=Path(sys.executable), destination=tmp_path / "venv",
+                                cache=tmp_path / "cache", env=env, offline=True)
+    builder.lock(workspace, find_links=wheels, upgrade_packages={"base-dep": "1.0"})
+    resolved = tomllib.loads((workspace / "uv.lock").read_text(encoding="utf-8"))["package"]
+    row = next(package for package in resolved if package["name"] == "base-dep")
+    assert row["version"] == "1.0"
+    assert row["source"]["registry"] == str(wheels)
+    assert (source / "uv.lock").read_bytes() == original
+
+
+def test_frozen_build_never_prepares_native_compilers(locked_project, tmp_path, monkeypatch):
+    from pm.operations import build_environment
+    import pm.native_build
+
+    source, _, env = locked_project
+    for name in ("HOME", "USERPROFILE", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS",
+                 "UV_CACHE_DIR", "UV_PYTHON", "UV_OFFLINE"):
+        monkeypatch.setenv(name, env[name])
+
+    def refuse_compiler(_source):
+        raise AssertionError("a locked wheel install must not prepare native compilers")
+
+    monkeypatch.setattr(pm.native_build, "plugin_build_environment", refuse_compiler)
+    executable = build_environment(
+        source=source, python=Path(sys.executable), out=tmp_path / "compiler-free-env",
+        cache=tmp_path / "cache", no_install_project=True, offline=True, explicit=True,
+    )
+    assert executable.is_file()
+
+
+def test_source_environment_retries_failed_backend_with_build_tools(tmp_path, monkeypatch):
+    from pm.environment import BuildFailure
+    from pm.operations import build_environment
+    import pm.environment
+    import pm.native_build
+
+    project = tmp_path / "checkout"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[project]\nname="example"\nversion="1"\n')
+    (project / "uv.lock").write_text("pinned source lock")
+    destination = tmp_path / "side-environment"
+    attempts = []
+
+    class Environment:
+        def __init__(self, env):
+            self.env = env or {}
+            self.destination = destination
+            self.executable = destination / "bin" / "python"
+
+        def create(self):
+            (destination / "bin").mkdir()
+            self.executable.write_text("fixture")
+
+        def sync(self, source, **kwargs):
+            attempts.append((dict(self.env), source))
+            if not self.env.get("READY"):
+                raise BuildFailure("venv", "the build backend returned an error")
+
+        def check(self):
+            assert self.executable.is_file()
+
+    monkeypatch.setattr(pm.environment, "managed_environment",
+                        lambda destination, **kwargs: Environment(kwargs.get("env")))
+    prepared = []
+    def compiler(source):
+        prepared.append(source)
+        return {"READY": "yes"}
+    monkeypatch.setattr(pm.native_build, "plugin_build_environment", compiler)
+    result = build_environment(source=project, out=destination, explicit=True)
+    assert result.is_file() and (project / "uv.lock").read_text() == "pinned source lock"
+    assert [bool(env.get("READY")) for env, _ in attempts] == [False, True]
+    assert prepared == [project]
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_plugin_build_retries_once_with_compiler_environment(tmp_path, monkeypatch, failures):
+    from pm.environment import BuildFailure
+    from pm.packages import Venv
+    import pm.environment
+    import pm.environments
+    import pm.native_build
+    import pm.plugins_state
+    import pm.workspace
+
+    project = tmp_path / "source"
+    project.mkdir()
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    state = tmp_path / "state"
+    monkeypatch.setattr(pm.environments, "install_state_dir", lambda _project: state)
+    monkeypatch.setattr(pm.environments, "runtime_facts_path", lambda _project: state / "facts.json")
+    monkeypatch.setattr(pm.plugins_state, "enabled_plugins_ordered", lambda **kwargs: None)
+
+    class Environment:
+        def __init__(self, destination, env):
+            self.env = env or {}
+            self.executable = destination / "bin" / "python"
+
+        def create(self):
+            pass
+
+        def check(self):
+            pass
+
+    monkeypatch.setattr(pm.environment, "managed_environment",
+                        lambda destination, **kwargs: Environment(destination, kwargs.get("env")))
+    roots = []
+
+    def sync(_members, _extras, *, root, environment, **kwargs):
+        roots.append((root, dict(environment.env)))
+        root.mkdir(parents=True)
+        (root / "uv.lock").write_text("locked")
+        if len(roots) <= failures:
+            raise BuildFailure("venv", "plugin native source needs a compiler")
+
+    monkeypatch.setattr(pm.workspace, "lock_and_sync", sync)
+    prepared = []
+
+    def compiler(_project):
+        prepared.append(True)
+        return {"CC": "native-compiler"}
+
+    monkeypatch.setattr(pm.native_build, "plugin_build_environment", compiler)
+    if failures == 2:
+        with pytest.raises(BuildFailure):
+            Venv(project).apply([], plugin_dirs=[plugin], explicit=True)
+    else:
+        result = Venv(project).apply([], plugin_dirs=[plugin], explicit=True)
+        assert result["resolved_lock"].is_file()
+    assert len(roots) == 2 and prepared == [True]
+    assert roots[0][1] == {} and roots[1][1] == {"CC": "native-compiler"}
+    assert not roots[0][0].parent.exists()
+
+
 @pytest.fixture
 def installable_project(locked_project, build_worker):
     source, uv, env = locked_project
@@ -377,7 +523,8 @@ build_editable = build_wheel
                 cwd=tmp_path, env=env) == "installed from the explicit source"
 
 
-@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel"])
+@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel",
+                                         "the build backend returned an error"])
 def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnostic):
     import tracemalloc
     from pm.environment import PythonEnvironment

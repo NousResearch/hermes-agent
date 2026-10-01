@@ -1,10 +1,8 @@
-"""Native compiler environment for dependency builds from a source checkout.
+"""Windows ARM64 compiler environment for product and dependency builds.
 
-Windows ARM64 has no wheel for parts of the locked closure (cryptography), so
-every sync there compiles from sdists and needs MSVC, Clang, Rust and static
-OpenSSL. PM owns the sync, so PM prepares that environment. Otherwise only
-callers that remembered to (source activation) could build, and
-install.ps1, `hermes update` and repair failed in openssl-sys.
+Source checkouts prefer verified wheels. A failed native dependency build may
+retry with compilers when a wheel is unavailable or plugins expand the graph;
+sealed payloads omit the provider script. Bundle builders prepare their tools.
 """
 from __future__ import annotations
 
@@ -44,13 +42,11 @@ def prepare_windows_environment(*, source: Path, state: Path, env: Mapping[str, 
     return prepared
 
 
-def source_build_environment(source: Path) -> dict[str, str] | None:
-    """The environment a dependency build of ``source`` needs on this host.
+def plugin_build_environment(source: Path) -> dict[str, str] | None:
+    """Prepare compilers after a checkout dependency build actually fails.
 
-    None means the ambient environment suffices. Only a checkout carries the
-    provider; a payload's dependencies are prebuilt, so it needs no compiler.
-    The state root is the store's parent, the one source setup has always
-    used, so an existing vcpkg/OpenSSL build is reused rather than repeated.
+    Bundle builders use prepare_windows_environment directly. Source installs
+    reach this only when a wheel is unavailable or plugins require a build.
     """
     from pm.paths import store_root
     from pm.store import current_target
@@ -60,7 +56,7 @@ def source_build_environment(source: Path) -> dict[str, str] | None:
     from pm.index_config import bridged_index_settings
 
     prepared = prepare_windows_environment(source=source, state=store_root().parent, env=os.environ)
-    # managed_environment translates pip's index knobs only for the ambient
-    # environment; this one replaces it, so mirrors must ride along.
+    # This environment replaces the ambient one; carry configured index
+    # bridges into the retried plugin resolution.
     prepared.update(bridged_index_settings(os.environ))
     return prepared

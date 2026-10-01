@@ -29,7 +29,7 @@ PINS_PATH = REPO_ROOT / "pm" / "lock.json"
 
 # Standalone installers cannot read the shared mirror layout before checkout.
 sys.path.insert(0, str(REPO_ROOT))
-from pm.artifact_mirror import mirror_url  # noqa: E402
+from pm.artifact_mirror import github_asset_url, mirror_url  # noqa: E402
 
 BEGIN_MARK = "# --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---"
 END_MARK = "# --- END GENERATED: bootstrap pins ---"
@@ -57,6 +57,12 @@ def _load_git_pin() -> dict:
     entry = _load_lock()["packages"]["git"]
     for target in _WINDOWS_TARGETS:
         _validate_artifact("git", entry, target)
+        prepared = entry.get("prepared", {}).get(target)
+        if prepared is not None:
+            from pm.lock import Lockfile
+            from pm.prepare import source_identity
+            if prepared["source"] != source_identity(Lockfile(PINS_PATH), "git", target):
+                raise ValueError(f"git prepared pin for {target} no longer matches the locked inputs")
     return entry
 
 
@@ -83,7 +89,7 @@ def _sh_fragment(uv: dict) -> str:
         "# run scripts/gen-bootstrap-pins.py after a pin bump.",
         f'UV_PIN_VERSION="{uv["version"]}"',
         "",
-        "# Sets UV_PIN_URL + UV_PIN_SHA256 for a <os>-<arch> target key.",
+        "# Sets GitHub, upstream, R2 URLs + SHA256 for a <os>-<arch> target key.",
         "uv_bootstrap_pin() {",
         '    case "$1" in',
     ]
@@ -91,6 +97,7 @@ def _sh_fragment(uv: dict) -> str:
         entry = uv["artifacts"][target]
         lines += [
             f"        {target})",
+            f'            UV_PIN_GITHUB="{github_asset_url(entry["sha256"])}"',
             f'            UV_PIN_URL="{entry["url"]}"',
             f'            UV_PIN_MIRROR="{mirror_url(entry["sha256"])}"',
             f'            UV_PIN_SHA256="{entry["sha256"]}"',
@@ -98,7 +105,9 @@ def _sh_fragment(uv: dict) -> str:
         ]
     lines += [
         "        *)",
+        '            UV_PIN_GITHUB=""',
         '            UV_PIN_URL=""',
+        '            UV_PIN_MIRROR=""',
         '            UV_PIN_SHA256=""',
         "            return 1",
         "            ;;",
@@ -121,6 +130,7 @@ def _ps1_fragment(uv: dict, git: dict) -> str:
         entry = uv["artifacts"][target]
         lines += [
             f'    "{target}" = @{{',
+            f'        GitHubUrl = "{github_asset_url(entry["sha256"])}"',
             f'        Url    = "{entry["url"]}"',
             f'        MirrorUrl = "{mirror_url(entry["sha256"])}"',
             f'        Sha256 = "{entry["sha256"]}"',
@@ -134,11 +144,19 @@ def _ps1_fragment(uv: dict, git: dict) -> str:
     ]
     for target in _WINDOWS_TARGETS:
         entry = git["artifacts"][target]
+        prepared = git.get("prepared", {}).get(target)
+        prepared_sha = prepared["sha256"] if prepared else ""
+        prepared_digest = prepared["digest"] if prepared else ""
         lines += [
             f'    "{target}" = @{{',
+            f'        GitHubUrl = "{github_asset_url(entry["sha256"])}"',
             f'        Url    = "{entry["url"]}"',
             f'        MirrorUrl = "{mirror_url(entry["sha256"])}"',
             f'        Sha256 = "{entry["sha256"]}"',
+            f'        PreparedUrl = "{github_asset_url(prepared_sha) if prepared else ""}"',
+            f'        PreparedMirrorUrl = "{mirror_url(prepared_sha) if prepared else ""}"',
+            f'        PreparedSha256 = "{prepared_sha}"',
+            f'        PreparedDigest = "{prepared_digest}"',
             "    }",
         ]
     lines += [

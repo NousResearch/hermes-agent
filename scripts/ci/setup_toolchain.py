@@ -116,11 +116,10 @@ def python3_alias(python: Path) -> None:
 def archive_inputs(args) -> None:
     from pm.paths import repo_root
     from pm.store import Store
-    from scripts.ci.archive_inputs import Archive, pinned_inputs, stage_inputs
-    from scripts.releases import r2
+    from scripts.ci.archive_inputs import archive_from_env, pinned_inputs, stage_inputs
 
     pins = pinned_inputs(repo_root(), target=current_target(), packages=set(packages(args.toolchain, args.packages)))
-    stage_inputs(pins, archive=Archive(*r2.credentials()), store=Store(args.home.resolve() / "tools"))
+    stage_inputs(pins, archive=archive_from_env(), store=Store(args.home.resolve() / "tools"))
 
 
 def install(args) -> None:

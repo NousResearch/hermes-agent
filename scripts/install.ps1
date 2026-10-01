@@ -79,11 +79,13 @@ $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://gi
 $script:UvPinVersion = "0.12.3"
 $script:UvPinFiles = @{
     "win32-x64" = @{
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
         Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
         Sha256 = "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e"
     }
     "win32-arm64" = @{
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
         Url    = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-pc-windows-msvc.zip"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
         Sha256 = "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb"
@@ -93,14 +95,24 @@ $script:UvPinFiles = @{
 $script:GitPinVersion = "2.53.0+3"
 $script:GitPinFiles = @{
     "win32-x64" = @{
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
         Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
+        PreparedUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedSha256 = "caee8e72a10f7e87f250145b5940df2bcf9fc99760983ad38af0b1ef25c13ce2"
+        PreparedDigest = "1b05d5a2897e92438f0bd4fcbf0fe6797e379c0e989aab55e8a7bf02137cf1aa"
     }
     "win32-arm64" = @{
+        GitHubUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
         MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
         Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
+        PreparedUrl = "https://github.com/NousResearch/hermes-agent/releases/download/v2026.9.24/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedMirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedSha256 = "934dd3161c2d33a91570bea7026ff6405ca40445592874ebd2683978a2ca7608"
+        PreparedDigest = "ce0003b888f0a7ea43f5442406a27675377ea139951f83f33d0120cf0ae58782"
     }
 }
 # --- END GENERATED: bootstrap pins ---
@@ -371,33 +383,51 @@ function Get-WindowsArch {
     return 'x64'
 }
 
-# Mirror bytes must match the same pin; corruption is never a cache miss.
+# All three sources must match the same pin; corruption is never a cache miss.
 function Invoke-VerifiedDownload {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$Sha256,
         [Parameter(Mandatory = $true)][string]$OutFile,
-        [string]$MirrorUrl = ""
+        [string]$MirrorUrl = "",
+        [string]$GitHubUrl = "",
+        [switch]$AllowMissing
     )
-    $urls = @($Url)
-    if ($MirrorUrl -and $MirrorUrl -ne $Url) { $urls += $MirrorUrl }
+    # Without a release candidate, preserve upstream-first routing so a bad
+    # upstream hash cannot be hidden by a healthy mirror.
+    if ($GitHubUrl) {
+        $candidates = @($GitHubUrl, $MirrorUrl, $Url)
+    } else {
+        $candidates = @($Url, $MirrorUrl)
+    }
+    $urls = $candidates | Where-Object { $_ } | Select-Object -Unique
     $httpFailure = ""
+    $fatalPreparedFailure = ""
     foreach ($candidate in $urls) {
         try {
             Invoke-DownloadWithProgress -Uri $candidate -OutFile $OutFile
         } catch {
             $errorType = $_.Exception.GetType().FullName
+            $statusCode = $null
             if ($_.Exception -is [System.Net.WebException]) {
                 # Windows PowerShell 5.1: DNS/connect/HTTP failures.
                 if ($_.Exception.Status -in @('TrustFailure', 'SecureChannelFailure')) { throw }
+                if ($_.Exception.Response) { $statusCode = [int]$_.Exception.Response.StatusCode }
             } elseif ($errorType -eq 'System.Net.Http.HttpRequestException') {
                 # pwsh 7: DNS/connect failures. A TLS trust failure arrives
                 # with an AuthenticationException inside and is never a routing
                 # problem. (Matched by name: 5.1 may not load System.Net.Http.)
                 $inner = $_.Exception.InnerException
                 if ($inner -and $inner.GetType().FullName -eq 'System.Security.Authentication.AuthenticationException') { throw }
-            } elseif ($errorType -ne 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            } elseif ($errorType -eq 'Microsoft.PowerShell.Commands.HttpResponseException') {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            } else {
                 throw
+            }
+            # Public release CDNs can refuse anonymous requests with 401/403;
+            # the hash-pinned raw source may still work. Bad requests stay fatal.
+            if ($AllowMissing -and $null -ne $statusCode -and $statusCode -notin @(401, 403, 404, 408, 410, 429, 500, 502, 503, 504)) {
+                $fatalPreparedFailure = "$candidate : $($_.Exception.Message)"
             }
             $httpFailure = $_.Exception.Message
             continue
@@ -407,6 +437,11 @@ function Invoke-VerifiedDownload {
         Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
         # Wrong bytes = tampering or a corrupt mirror, not a routing problem.
         Fail "download digest mismatch for $candidate (expected $Sha256, got $digest)"
+    }
+    if ($fatalPreparedFailure) { Fail "prepared download rejected: $fatalPreparedFailure" }
+    if ($AllowMissing) {
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        return
     }
     $tried = $urls -join " or "
     if ($httpFailure) {
@@ -491,6 +526,40 @@ function Invoke-DownloadWithProgress {
     if ($streamError) { throw $streamError }
 }
 
+# Match pm.store.tree_digest over the extracted prepared Git tree. The ZIP
+# pin protects transport bytes; this second pin protects the staged layout.
+function Get-PinnedTreeDigest {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    [string[]]$relativePaths = @(foreach ($file in [IO.Directory]::EnumerateFiles($rootPath, '*', [IO.SearchOption]::AllDirectories)) {
+        $relative = $file.Substring($rootPath.Length).TrimStart([IO.Path]::DirectorySeparatorChar).Replace([IO.Path]::DirectorySeparatorChar, '/')
+        if ($relative.Split('/') -contains '__pycache__') { continue }
+        $relative
+    })
+    [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $buffer = New-Object byte[] (1024 * 1024)
+        foreach ($relative in $relativePaths) {
+            $prefix = [Text.Encoding]::UTF8.GetBytes($relative + [char]0)
+            [void]$sha.TransformBlock($prefix, 0, $prefix.Length, $prefix, 0)
+            $path = [IO.Path]::Combine($rootPath, $relative.Replace('/', [string][IO.Path]::DirectorySeparatorChar))
+            $stream = [IO.File]::OpenRead($path)
+            try {
+                while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    [void]$sha.TransformBlock($buffer, 0, $count, $buffer, 0)
+                }
+            } finally {
+                $stream.Dispose()
+            }
+        }
+        [void]$sha.TransformFinalBlock([byte[]]@(), 0, 0)
+        return [BitConverter]::ToString($sha.Hash).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
@@ -515,7 +584,7 @@ function Get-Uv {
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
         $zipPath = Join-Path $tmpDir "uv.zip"
-        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $zipPath
+        Invoke-VerifiedDownload -GitHubUrl $pin.GitHubUrl -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $zipPath
         $extractDir = Join-Path $tmpDir "unpacked"
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
         # The zip carries uv.exe (+ uvx.exe) at the root or under one
@@ -547,25 +616,38 @@ function Get-PinnedGit {
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-        $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
-        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
         $extractDir = Join-Path $tmpDir "unpacked"
-        New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-        # PortableGit's self-extracting 7z carries its own extractor: stock
-        # Windows 10 tar.exe has no bzip2 ("unable to run program bzip2 -d").
-        Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
-        # A GUI-subsystem exe: `&` would not wait for it. Under -y it reports
-        # nothing, so the exit code is all there is. Bound the wait like pm's
-        # timeout; kill the whole tree, since the stub's post-install children
-        # would otherwise keep $tmpDir held past the cleanup below.
-        $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
-        if (-not $sfx.WaitForExit(600000)) {
-            Invoke-Native { taskkill.exe /T /F /PID $sfx.Id 2>&1 | Out-Null }
-            $sfx.WaitForExit()
-            Fail "pinned git self-extractor timed out after 600s"
+        $preparedZip = Join-Path $tmpDir "prepared-git.zip"
+        if ($pin.PreparedSha256) {
+            # A missing prepared asset falls back to the pinned raw pipeline;
+            # a wrong hash is fatal, never an excuse to execute other bytes.
+            Invoke-VerifiedDownload -GitHubUrl $pin.PreparedUrl -Url $pin.PreparedUrl -MirrorUrl $pin.PreparedMirrorUrl -Sha256 $pin.PreparedSha256 -OutFile $preparedZip -AllowMissing
         }
-        if ($sfx.ExitCode) {
-            Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)"
+        if (Test-Path -LiteralPath $preparedZip) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($preparedZip, $extractDir)
+            if (-not $pin.PreparedDigest) { Fail "prepared git tree digest is not pinned" }
+            $treeHash = Get-PinnedTreeDigest -Root $extractDir
+            if ($treeHash -ne $pin.PreparedDigest.ToLowerInvariant()) {
+                Fail "prepared git tree digest mismatch (expected $($pin.PreparedDigest), got $treeHash)"
+            }
+        } else {
+            $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
+            Invoke-VerifiedDownload -GitHubUrl $pin.GitHubUrl -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
+            New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+            # The raw compatibility path uses PortableGit's own extractor;
+            # stock Windows tar.exe cannot extract the legacy bzip2 pin.
+            Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
+            # The GUI-subsystem executable must be waited for and bounded.
+            $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
+            if (-not $sfx.WaitForExit(600000)) {
+                Invoke-Native { taskkill.exe /T /F /PID $sfx.Id 2>&1 | Out-Null }
+                $sfx.WaitForExit()
+                Fail "pinned git self-extractor timed out after 600s"
+            }
+            if ($sfx.ExitCode) {
+                Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)"
+            }
         }
         if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
         if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
@@ -1254,8 +1336,7 @@ Initialize-ResolvedPaths
 # Keep uv from discovering uv.toml / pyproject.toml config from whatever
 # directory or user profile the installer runs under (mirrors install.sh).
 $env:UV_NO_CONFIG = "1"
-# Children that collapse their own output (windows-build-deps.ps1 under pm,
-# when its stdout is still the console) stream too once -Verbose asked for it.
+# PM runs in a child process and cannot read this PowerShell preference.
 if ($VerbosePreference -ne 'SilentlyContinue') { $env:HERMES_INSTALL_VERBOSE = "1" }
 
 if ($ProtocolVersion) { Write-Output 1; exit 0 }

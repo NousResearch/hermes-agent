@@ -1,4 +1,8 @@
 {
   "origin": "https://hermes-assets.nousresearch.com",
-  "prefix": "upstream/sha256/"
+  "prefix": "upstream/sha256/",
+  "github": {
+    "repository": "NousResearch/hermes-agent",
+    "release_tag": "v2026.9.24"
+  }
 }

@@ -18,6 +18,8 @@ import pytest
 
 class RangeHandler(BaseHTTPRequestHandler):
     payloads: dict = {}
+    status_codes: dict[str, int] = {}
+    requests_seen: list[str] = []
     ranges_seen: list = []           # (path, start, end) from real Range requests
     abort_after: int | None = None   # refuse bytes beyond this payload offset
     slow_per_chunk: float = 0.0      # sleep per served piece (pause tests)
@@ -35,6 +37,10 @@ class RangeHandler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):  # noqa: N802 - http.server API
+        self.requests_seen.append(self.path)
+        if self.path in self.status_codes:
+            self.send_error(self.status_codes[self.path])
+            return
         payload = self.payloads.get(self.path)
         if payload is None:
             self.send_error(404)
@@ -104,6 +110,8 @@ class RangeHandler(BaseHTTPRequestHandler):
 @pytest.fixture
 def dl_server():
     RangeHandler.payloads = {}
+    RangeHandler.status_codes = {}
+    RangeHandler.requests_seen = []
     RangeHandler.ranges_seen = []
     RangeHandler.abort_after = None
     RangeHandler.slow_per_chunk = 0.0

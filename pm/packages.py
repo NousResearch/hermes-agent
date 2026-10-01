@@ -398,16 +398,11 @@ class Venv(StatePackage):
         """
         import uuid
         from pm.environments import install_state_dir, runtime_facts_path
-        from pm.environment import managed_environment
+        from pm.environment import BuildFailure, managed_environment
         from pm.lock import Facts
-        from pm.native_build import source_build_environment
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
         project = self.project_root()
-        generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
-        candidate = generation / "venv"
-        environment = managed_environment(candidate, env=source_build_environment(project),
-                                          explicit=explicit or repair, output=sys.stderr)
         if not repair:
             # Inspection may skip a broken secondary profile, but publishing a replacement
             # graph must not silently evict its recorded members (including passed candidates).
@@ -415,37 +410,54 @@ class Venv(StatePackage):
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
-        try:
-            generation.mkdir(parents=True)
-            (generation / ".lease-managed").touch()
-            environment.create()
-            prior = Facts(runtime_facts_path(project), strict=repair).get("venv") or {}
-            replay = None
-            if repair and ("environment" in prior or "resolved_lock" in prior):
-                if not all(isinstance(prior.get(key), str) and prior[key] for key in ("environment", "resolved_lock")):
-                    raise InstallError(self.name, "recorded dependency paths are incomplete; refusing to drop plugins")
-                recorded = Path(prior["resolved_lock"]).resolve()
-                previous = Path(prior["environment"]).resolve().parent
-                generations = install_state_dir(project) / "environments"
-                if (previous.parent != generations.resolve() or recorded != previous / "workspace" / "uv.lock"
-                        or not recorded.is_file()):
-                    raise InstallError(self.name, "recorded dependency lock is missing; refusing to drop plugins")
-                replay = recorded.parent
-            seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
-                    else project / "uv.lock")
-            lock_and_sync(members, extras, root=generation / "workspace",
-                          seed_lock=seed, frozen=repair or not members, replay=replay,
-                          source=project, environment=environment)
-            resolved_lock = generation / "workspace" / "uv.lock"
-            environment.check()
-            if repair:
-                from pm.recovery import validate_environment
-                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
-        except BaseException:
-            shutil.rmtree(generation, ignore_errors=True)
-            raise
-        (generation / ".lease-managed").touch()
-        return {"environment": candidate, "resolved_lock": resolved_lock}
+        compiler_env = None
+        while True:
+            generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
+            candidate = generation / "venv"
+            environment = managed_environment(candidate, env=compiler_env,
+                                              explicit=explicit or repair, output=sys.stderr)
+            try:
+                generation.mkdir(parents=True)
+                (generation / ".lease-managed").touch()
+                environment.create()
+                prior = Facts(runtime_facts_path(project), strict=repair).get("venv") or {}
+                replay = None
+                if repair and ("environment" in prior or "resolved_lock" in prior):
+                    if not all(isinstance(prior.get(key), str) and prior[key] for key in ("environment", "resolved_lock")):
+                        raise InstallError(self.name, "recorded dependency paths are incomplete; refusing to drop plugins")
+                    recorded = Path(prior["resolved_lock"]).resolve()
+                    previous = Path(prior["environment"]).resolve().parent
+                    generations = install_state_dir(project) / "environments"
+                    if (previous.parent != generations.resolve() or recorded != previous / "workspace" / "uv.lock"
+                            or not recorded.is_file()):
+                        raise InstallError(self.name, "recorded dependency lock is missing; refusing to drop plugins")
+                    replay = recorded.parent
+                seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
+                        else project / "uv.lock")
+                lock_and_sync(members, extras, root=generation / "workspace",
+                              seed_lock=seed, frozen=repair or not members, replay=replay,
+                              source=project, environment=environment)
+                resolved_lock = generation / "workspace" / "uv.lock"
+                environment.check()
+                if repair:
+                    from pm.recovery import validate_environment
+                    validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
+            except BuildFailure:
+                shutil.rmtree(generation, ignore_errors=True)
+                if compiler_env is not None or not members:
+                    raise
+                from pm.native_build import plugin_build_environment
+                compiler_env = plugin_build_environment(project)
+                if compiler_env is None:
+                    raise
+                # Only a failed member build can justify compiler setup; the
+                # retried generation is fresh and uses the original lock seed.
+            except BaseException:
+                shutil.rmtree(generation, ignore_errors=True)
+                raise
+            else:
+                (generation / ".lease-managed").touch()
+                return {"environment": candidate, "resolved_lock": resolved_lock}
 
 
 @register

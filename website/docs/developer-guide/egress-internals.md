@@ -165,7 +165,7 @@ All write paths use `os.open(O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)` + `os.fsta
 
 ### Subprocess env minimisation
 
-`_build_proxy_subprocess_env` MUST NOT use `os.environ.copy()`.  The allowlist is `_PROXY_SUBPROCESS_ENV_ALLOWLIST` (PATH, HOME, locale, etc.) plus the env names referenced by `load_mappings()`.  Everything else stays on the host.
+`_build_proxy_subprocess_env` MUST NOT use `os.environ.copy()`. The infrastructure allowlist is `pm/proxy_env.py::_PROXY_SUBPROCESS_ENV_ALLOWLIST` (PATH, HOME, locale, etc.); PM's bare Python probe and the proxy daemon share it without importing application YAML into PM. The env names referenced by `load_mappings()` are added separately. Everything else stays on the host.
 
 Regression: `test_subprocess_env_strips_unrelated_secrets`, `test_subprocess_env_strips_proxy_recursion_vars`, `test_subprocess_env_keeps_infrastructure_vars`.
 

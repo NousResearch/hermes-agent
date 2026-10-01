@@ -217,19 +217,18 @@ interpreter or redirect an installed desktop app to this checkout.
 
 Use an ordinary terminal outside the packaged Hermes app. Leave any existing
 Python virtual environment first. On Windows, use native PowerShell with Git.
-On ARM64, PM prepares Visual Studio C++ tools, Clang, native Rust, and static
-OpenSSL development libraries before every dependency build from a checkout:
-setup, `activate.ps1`, `install.ps1`, `hermes update`, and repair alike. It
-reuses existing installations and installs missing prerequisites. Missing
-Visual Studio components need administrator rights: an interactive install
-asks through a UAC prompt, while CI, ssh and scheduled runs need an
-Administrator PowerShell. OpenSSL uses
-vcpkg's `arm64-windows-static-md` triplet. A damaged shared installation
-produces a repair error, not automatic deletion. Compiler and OpenSSL
-environment variables apply only to PM's dependency build, never to your shell.
-
-Other platforms still require the native compiler tools and libraries needed
-by dependencies without compatible wheels.
+On Windows ARM64, the native dependencies missing PyPI wheels are built on a
+native CI runner and pinned as marker-scoped release URLs in `pyproject.toml`
+and `uv.lock`. Checkout setup, `activate.ps1`, `install.ps1`, update and repair
+use those hash-verified wheels without provisioning Visual Studio, Clang, Rust
+or OpenSSL. Pure-Python sdists may still be packaged by uv. On a Windows ARM64
+source checkout, a failed build in a plugin-expanded dependency graph
+prepares the compiler environment and retries the unpublished generation
+once. Sealed payloads omit this build provider. Desktop and native bundle
+*builders* still prepare MSVC, Clang, Rust and static OpenSSL when building
+native product dependencies; their OpenSSL files use vcpkg's
+`arm64-windows-static-md` triplet. Other platforms likewise still need build
+tools for dependencies without compatible wheels.
 
 For the pinned macOS Python, PM defaults `AR` to `/usr/bin/ar`: the distributed
 interpreter's sysconfig still points at its supplier's temporary LLVM directory.
@@ -549,6 +548,66 @@ not substitutes for an installed application's update mechanism.
 The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read
 [Building the Desktop Installers](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
+
+## Pinned artifact sources
+
+PM tries the existing `NousResearch/hermes-agent` release configured in
+`pm/artifact-mirror.json` as a **read-only** candidate, then the Nous Research
+content-addressed R2 mirror, then the pinned upstream URL. The release asset
+name is the full SHA-256 digest; R2 stores the same bytes under
+`upstream/sha256/<digest>`. The archival workflows publish only to R2 and do
+not create GitHub releases or tags. A user-configured npm registry stays first
+for npm tarballs, ahead of the release, R2 and official registry. Every
+candidate must match the same locked SHA-256; a downloaded mismatch is fatal,
+not a reason to try another source. Loopback-pinned developer inputs stay local.
+
+The standalone shell and PowerShell installers embed the pinned uv (and Windows
+PortableGit) URLs because they run before a checkout exists. Their fragments
+come from `pm/lock.json` and `pm/artifact-mirror.json` via
+`python3 scripts/gen-bootstrap-pins.py` (`--check` detects drift). They also try
+the read-only release, R2, then the pinned upstream on absence or transport
+failure; they never fall back after a hash mismatch.
+
+Where `pm/lock.json` carries a `prepared` row for a package and target, PM first
+fetches a post-staging store tree from the release, then R2, checks its archive
+SHA-256 and extracted tree digest, and runs normal package verification. The
+row also binds the target, source closure and staging implementation. Changed
+staging code invalidates the old prepared row. An absent prepared archive falls
+back to the original pinned inputs; a wrong hash or tree digest fails closed.
+Prepared archives are ZIP on Windows and tar.gz on POSIX, with no installer
+executable needed on the consumer. The standalone PowerShell bootstrap uses the
+prepared Git ZIP when pinned, with raw PortableGit only as an availability fallback.
+
+The `prepare-tools` workflow builds every supported package-target tree on its
+native userland. Its trusted, default-branch publisher requires another
+repository writer's approval of the exact PR head before publishing executable
+bytes to R2; it bot-commits reviewed pins and regenerated installer fragments.
+The bootstrap generator must land before a pin-only PR can use that trusted job.
+
+### Windows ARM64 Python wheels
+
+Python dependency wheels are separate from prepared PM tool trees. The
+`[tool.hermes.win-arm64-wheels]` table in `pyproject.toml` records optional
+filename/SHA-256 pairs for native gaps in the locked Windows ARM64/Python 3.14
+graph. `uv.lock` keeps the normal registry versions and sdist hashes for every
+platform; it contains no direct wheel URL. On Windows ARM64, PM checks each
+wheel at the existing release and then R2, verifies the hash, and offers only
+verified local files to uv in a private generation. A missing wheel keeps the
+locked registry sdist at the same version and hash. A corrupt download stops.
+Other platforms use the committed registry lock without wheel requests.
+
+When a source checkout actually fails to build an unavailable native wheel's
+sdist, PM prepares Windows build tools and retries once before publishing a
+venv. The separate development/test environment still resolves against the
+registry lock, so its builder gets the same on-demand retry if it needs to
+compile a native sdist. Plugin-expanded builds retain their existing retry;
+sealed payloads have no compiler provider. Repair verifies copied wheels and
+rebinds only generation-local paths; it does not fetch current manifests or
+change the recorded versions. The `wheelhouse-build` workflow produces wheels
+from locked sdists on native Windows ARM64. Its protected publisher uploads
+immutable SHA-addressed objects to R2, checks metadata/tags, and reads back the public
+hash. No GitHub release is created. Until an object is present on R2, that
+wheel uses the source-build path rather than claiming a compiler-free install.
 
 ## Network retries
 

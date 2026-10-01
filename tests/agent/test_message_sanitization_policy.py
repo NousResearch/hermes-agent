@@ -435,3 +435,28 @@ def test_normalize_provider_ids_leaves_single_and_mixed_batches_unchanged():
         before = [c.copy() for c in calls]
         normalize_provider_tool_call_ids(calls)
         assert calls == before
+
+def test_normalize_provider_ids_preserves_each_field_suffix():
+    calls = [{"call_id": "chatcmpl-tool-alpha", "id": "chatcmpl-tool-alpha|item-a"}]
+    normalize_provider_tool_call_ids([calls[0], {"id": "chatcmpl-tool-beta"}])
+    assert calls[0]["call_id"].startswith("call_")
+    assert calls[0]["id"].endswith("|item-a")
+
+def test_sanitize_api_messages_normalizes_persisted_provider_pair():
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "chatcmpl-tool-alpha", "function": {"name": "one", "arguments": "{}"}},
+            {"id": "chatcmpl-tool-beta", "function": {"name": "two", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "chatcmpl-tool-alpha", "content": "1"},
+        {"role": "tool", "tool_call_id": "chatcmpl-tool-beta", "content": "2"},
+    ]
+    sanitized = sanitize_api_messages(messages)
+    calls = sanitized[1]["tool_calls"]
+    assert all(call["id"].startswith("call_") for call in calls)
+    assert [message["tool_call_id"] for message in sanitized[2:]] == [
+        call["id"] for call in calls
+    ]

@@ -580,18 +580,24 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
     """
     if len(tool_calls or []) < 2:
         return tool_calls
-    ids = [(_tc_field(tc, "call_id") or _tc_field(tc, "id") or "") for tc in tool_calls]
-    if not all(isinstance(raw, str) and raw.split("|", 1)[0].startswith(_PROVIDER_TOOL_ID_PREFIXES) for raw in ids):
+    effective_ids = [(_tc_field(tc, "call_id") or _tc_field(tc, "id") or "") for tc in tool_calls]
+    if not all(
+        isinstance(raw, str) and raw.split("|", 1)[0].startswith(_PROVIDER_TOOL_ID_PREFIXES)
+        for raw in effective_ids
+    ):
         return tool_calls
     logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
-    for tc, raw in zip(tool_calls, ids):
-        primary, *rest = raw.split("|", 1)
-        replacement = "call_" + hashlib.sha256(primary.encode("utf-8")).hexdigest()[:12]
-        value = replacement + ("|" + rest[0] if rest else "")
-        if _tc_field(tc, "id") is not None:
-            _tc_set(tc, "id", value)
-        if _tc_field(tc, "call_id") is not None:
-            _tc_set(tc, "call_id", value)
+    for tc in tool_calls:
+        for field in ("id", "call_id"):
+            raw = _tc_field(tc, field)
+            if not isinstance(raw, str):
+                continue
+            primary, *rest = raw.split("|", 1)
+            if not primary.startswith(_PROVIDER_TOOL_ID_PREFIXES):
+                continue
+            replacement = "call_" + hashlib.sha256(primary.encode("utf-8")).hexdigest()[:12]
+            value = replacement + ("|" + rest[0] if rest else "")
+            _tc_set(tc, field, value)
     return tool_calls
 
 

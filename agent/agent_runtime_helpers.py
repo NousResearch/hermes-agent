@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
-    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
+    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, normalize_provider_tool_call_ids,
+    tool_call_id_variants, tool_result_id_variants
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
@@ -3087,6 +3088,34 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     _repair_invalid_tool_call_names(messages)
     messages = _drop_results_without_ids(messages)
     messages = _pair_tool_calls_positionally(messages)
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or len(tool_calls) < 2:
+            continue
+        old_ids = [coalesce_tool_call_id(tool_call) for tool_call in tool_calls]
+        normalize_provider_tool_call_ids(tool_calls)
+        new_ids = [coalesce_tool_call_id(tool_call) for tool_call in tool_calls]
+        if old_ids == new_ids:
+            continue
+        result_index = index + 1
+        result_messages = []
+        while result_index < len(messages) and messages[result_index].get("role") == "tool":
+            result_messages.append(messages[result_index])
+            result_index += 1
+        for position, result in enumerate(result_messages):
+            old_id = result.get("tool_call_id")
+            target = None
+            if position < len(old_ids) and old_id in tool_result_id_variants(old_ids[position]):
+                target = new_ids[position]
+            else:
+                matches = [new_id for old, new_id in zip(old_ids, new_ids)
+                           if old_id in tool_result_id_variants(old)]
+                if len(matches) == 1:
+                    target = matches[0]
+            if target:
+                result["tool_call_id"] = target
     messages = _dedupe_tool_call_ids(messages)
     return _realign_tool_result_names(messages)
 

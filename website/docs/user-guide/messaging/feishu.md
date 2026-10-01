@@ -282,6 +282,36 @@ Peer bots do not need to be added to `FEISHU_ALLOWED_USERS` — that allowlist a
 
 Grant the `application:bot.basic_info:read` scope to display peer bot names; without it, peer bots still route correctly but appear as their `open_id`.
 
+### Reading peer-bot interactive cards
+
+Feishu degrades bot-sent interactive cards on the WebSocket delivery path. What arrives is a compatibility skeleton — a placeholder image plus the text `请升级至最新版本客户端，以查看内容` — instead of the Card 1.0/2.0 JSON the peer actually submitted. Left alone this surfaces to the agent as the literal string `[Interactive message]`, with no way for it to tell a card apart from an empty message.
+
+Hermes handles this automatically: when an inbound card matches the placeholder shape it re-fetches the same `message_id` over REST with `card_msg_content_type=user_card_content`, which returns the original payload, then re-runs the normal card walker on it. The re-fetch is attempted once per `message_id`; cards that arrive intact never trigger it.
+
+This uses the same `im/v1/messages/{message_id}` endpoint and app permission as reply-context lookup, so no extra scope is needed. Extra REST traffic is one call per degraded card, not one per inbound message.
+
+## Outbound Footer
+
+Hermes can append an `Agent | Model | Provider` line to messages it sends. Off by default; enable with a template:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      footer_template: "🤖 {agent} · {model} · {provider}"
+```
+
+| Setting | Config key | Default | Description |
+|---------|-----------|---------|-------------|
+| Template | `footer_template` | `""` (no footer) | The footer line. Empty disables the feature entirely. |
+| Agent label | `footer_agent_label` | `Hermes` | Substituted for `{agent}`. |
+| Model label | `footer_model_label` | _(current session)_ | Substituted for `{model}`. Empty resolves the model in use at send time. |
+| Provider label | `footer_provider_label` | _(current session)_ | Substituted for `{provider}`. Empty resolves the provider in use at send time. |
+
+An unresolved `{model}` or `{provider}` (no session model known, or `agent_runtime` unavailable) renders as `?` rather than disappearing, so a template never silently loses a field. A placeholder *name* that isn't `{agent}`/`{model}`/`{provider}` makes the raw template render verbatim, which surfaces the typo instead of dropping the footer.
+
+The footer is appended as its own row in the message's `post` body, so Feishu renders it as a separate dim line; plain-text sends get it after a blank line. When `footer_template` is empty the outbound payload is byte-identical to the pre-footer behaviour.
+
 ## Interactive Card Actions
 
 When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:

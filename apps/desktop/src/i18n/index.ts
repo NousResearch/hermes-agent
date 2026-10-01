@@ -41,4 +41,5 @@ export {
   unregisterAppLocaleSource
 } from './registry'
 export { runtimeTranslations, setRuntimeI18nLocale, translateNow } from './runtime'
-export type { BundledLocale, Locale, ToolTitleKey, Translations } from './types'
+export type { BundledLocale, Locale, Translations } from './types'
+export type { ToolTitleKey } from './types_assistant'

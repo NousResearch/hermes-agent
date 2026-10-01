@@ -874,6 +874,37 @@ class TestResizeImageForVision:
             )
             assert result.startswith("data:image/jpeg;base64,"), mode
 
+    def test_exif_orientation_applied_before_resize(self, tmp_path):
+        """Portrait phone photos (landscape grid + EXIF Orientation=6) must be
+        rotated to their displayed orientation before resize, so the model does
+        not receive the image sideways (#130364)."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import base64 as _b64
+        from io import BytesIO
+
+        # 200x100 landscape grid with Orientation=6 — every viewer shows 100x200.
+        img = Image.new("RGB", (200, 100), (255, 0, 0))
+        exif = img.getexif()
+        exif[0x0112] = 6  # Orientation = Rotate 90 CW
+        path = tmp_path / "portrait.jpg"
+        img.save(path, "JPEG", exif=exif, quality=95)
+
+        # Force a resize by setting a tiny byte budget.
+        result = _resize_image_for_vision(
+            path, mime_type="image/jpeg",
+            max_base64_bytes=256,  # tiny — forces resize
+            scale_out={},
+        )
+        assert result.startswith("data:image/jpeg;base64,")
+        with Image.open(BytesIO(_b64.b64decode(result.partition(",")[2]))) as out:
+            # After resize the image must still be portrait (height > width).
+            assert out.height > out.width, (
+                f"EXIF orientation lost: got {out.size}, expected portrait"
+            )
+
 
 # ---------------------------------------------------------------------------
 # _image_exceeds_dimension — proactive embed-time pixel-cap detector

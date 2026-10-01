@@ -86,6 +86,28 @@ class TestCropImageRegion:
             assert cropped_path is None
             assert err is not None
 
+    def test_exif_orientation_applied_before_crop(self, tmp_path):
+        """Region coordinates must refer to the displayed image, not the stored
+        pixel grid. A landscape grid with Orientation=6 is shown as portrait;
+        cropping [10,10,60,40] should refer to the transposed 100x200 image,
+        not the raw 200x100 grid (#130364)."""
+        from tools.vision_tools import _crop_image_region
+
+        # 200x100 landscape grid with Orientation=6 → displayed as 100x200.
+        img = Image.new("RGB", (200, 100), (0, 255, 0))
+        exif = img.getexif()
+        exif[0x0112] = 6  # Rotate 90 CW
+        src = tmp_path / "portrait.jpg"
+        img.save(src, "JPEG", exif=exif)
+
+        # Crop in displayed coordinates: [10,10,60,40] on the 100x200 displayed image.
+        cropped_path, mime, err = _crop_image_region(src, [10, 10, 60, 40])
+        assert err is None
+        assert cropped_path is not None and cropped_path.exists()
+        with Image.open(cropped_path) as cropped:
+            # 50x30 in displayed coordinates
+            assert cropped.size == (50, 30)
+
 
 # ─── native fast path with region ────────────────────────────────────────────
 

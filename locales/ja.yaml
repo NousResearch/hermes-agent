@@ -1094,6 +1094,7 @@ platform:
         description: "このセッションのトークン使用量を表示します"
       help:
         description: "利用可能なコマンドを表示します"
+        arg_query: "skills でスキル一覧を表示、またはテキストでコマンドを絞り込み"
       insights:
         arg_days: "分析する日数 (デフォルト: 7)"
       reload_skills:

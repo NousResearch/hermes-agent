@@ -1094,6 +1094,7 @@ platform:
         description: "顯示本工作階段的 token 用量"
       help:
         description: "顯示可用指令"
+        arg_query: "輸入 skills 列出技能，或輸入文字篩選命令"
       insights:
         arg_days: "要分析的天數（預設：7）"
       reload_skills:

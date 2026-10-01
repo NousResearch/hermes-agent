@@ -1144,6 +1144,7 @@ platform:
         description: "Show token usage for this session"
       help:
         description: "Show available commands"
+        arg_query: "Use skills to list skills, or text to filter commands"
       insights:
         arg_days: "Number of days to analyze (default: 7)"
       reload_skills:

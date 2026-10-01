@@ -1094,6 +1094,7 @@ platform:
         description: "Token-Verbrauch dieser Sitzung anzeigen"
       help:
         description: "Verfügbare Befehle anzeigen"
+        arg_query: "Mit skills die Skills auflisten oder mit Text die Befehle filtern"
       insights:
         arg_days: "Anzahl der zu analysierenden Tage (Standard: 7)"
       reload_skills:

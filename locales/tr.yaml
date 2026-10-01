@@ -1094,6 +1094,7 @@ platform:
         description: "Bu oturumun token kullanımını göster"
       help:
         description: "Kullanılabilir komutları göster"
+        arg_query: "Becerileri listelemek için skills, komutları filtrelemek için metin kullanın"
       insights:
         arg_days: "Analiz edilecek gün sayısı (varsayılan: 7)"
       reload_skills:

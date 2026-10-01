@@ -1094,6 +1094,7 @@ platform:
         description: "Wys tokengebruik vir hierdie sessie"
       help:
         description: "Wys beskikbare opdragte"
+        arg_query: "Gebruik skills om vaardighede te lys, of teks om opdragte te filter"
       insights:
         arg_days: "Aantal dae om te ontleed (verstek: 7)"
       reload_skills:

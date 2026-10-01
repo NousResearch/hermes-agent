@@ -154,4 +154,30 @@ describe('messagesIfTranscriptBehind', () => {
 
     expect(messagesIfTranscriptBehind(localWindow, latestPage)).toBeNull()
   })
+
+  it('correctly identifies identical durable rows despite missing synthetic row', () => {
+    const text = (rowId: number, body: string) => ({ sourceRowId: rowId, text: body, type: 'text' as const })
+    const tool = () => ({ toolCallId: 'call-1', toolName: 'shell', type: 'tool-call' as const })
+    
+    const localMessages: ChatMessage[] = [
+      { id: 'msg1', parts: [text(10, 'hello')], role: 'user', rowId: 10 },
+      {
+        id: 'msg2',
+        parts: [text(11, 'tool-call'), tool(), text(12, 'response')],
+        role: 'assistant',
+        rowId: 11
+      }
+    ]
+
+    const remoteChat: ChatMessage[] = [
+      { id: 'msg1', parts: [text(10, 'hello')], role: 'user', rowId: 10 },
+      {
+        id: 'synthetic',
+        parts: [text(11, 'tool-call'), tool(), text(12, 'response')],
+        role: 'assistant'
+      } as ChatMessage
+    ]
+
+    expect(messagesIfTranscriptBehind(localMessages, remoteChat)).toBeNull()
+  })
 })

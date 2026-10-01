@@ -83,6 +83,21 @@ function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined 
  * so the window that just finished the turn is not blocked when the counts
  * match.
  */
+function getDurableRowIds(messages: readonly ChatMessage[]): Set<number> {
+  const ids = new Set<number>()
+  for (const message of messages) {
+    if (typeof message.rowId === 'number') {
+      ids.add(message.rowId)
+    }
+    for (const part of message.parts) {
+      if (part.type === 'text' && typeof part.sourceRowId === 'number') {
+        ids.add(part.sourceRowId)
+      }
+    }
+  }
+  return ids
+}
+
 export function messagesIfTranscriptBehind(
   localMessages: ChatMessage[],
   remoteChat: ChatMessage[]
@@ -99,6 +114,21 @@ export function messagesIfTranscriptBehind(
   const remoteTip = lastDurableRowId(remoteChat)
 
   if (localTip !== undefined && localTip === remoteTip) {
+    return null
+  }
+
+  const localRows = getDurableRowIds(localMessages)
+  const remoteRows = getDurableRowIds(remoteChat)
+
+  let hasNewRemoteRows = false
+  for (const id of remoteRows) {
+    if (!localRows.has(id)) {
+      hasNewRemoteRows = true
+      break
+    }
+  }
+
+  if (!hasNewRemoteRows) {
     return null
   }
 
@@ -133,11 +163,18 @@ export async function refreshIfTranscriptStale(
 
   try {
     const remote = await getLatestSessionMessages(storedSessionId, profile)
-    const refreshed = messagesIfTranscriptBehind(baseline, toChatMessages(remote.messages))
+    const remoteMessages = toChatMessages(remote.messages)
+    const refreshed = messagesIfTranscriptBehind(baseline, remoteMessages)
 
     if (!refreshed) {
       return null
     }
+
+    console.error('[stale-transcript-guard] Refusing send: local view is behind', {
+      storedSessionId,
+      localCount: baseline.length,
+      remoteCount: remoteMessages.length
+    })
 
     return preserveLocalAssistantErrors(refreshed, baseline)
   } catch {

@@ -215,11 +215,19 @@ def _write_snapshot(runner: Any, session_key: str, events: list[MessageEvent]) -
 
 def flush_runner_pending(runner: Any) -> None:
     """Retry adapter snapshots and preserve orphaned tails under their source scope."""
-    for key, events in getattr(runner, "_queued_events", {}).items():
-        if not events:
-            continue
+    queued = getattr(runner, "_queued_events", {})
+    startup = getattr(runner, "_startup_restore_queue", [])
+    pending = {key: list(events) for key, events in queued.items() if events}
+    for event in startup:
+        key = runner._session_key_for_source(event.source)
+        pending.setdefault(key, []).append(event)
+    for key, events in pending.items():
         try:
-            _write_snapshot(runner, key, list(events))
-            events.clear()
+            _write_snapshot(runner, key, events)
         except Exception:
             logger.warning("Could not preserve remaining pending input for %s at shutdown", key, exc_info=True)
+            continue
+        if key in queued:
+            queued[key].clear()
+        identities = {id(event) for event in events}
+        startup[:] = [event for event in startup if id(event) not in identities]

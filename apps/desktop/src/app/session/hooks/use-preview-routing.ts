@@ -11,6 +11,7 @@ import {
   closeDockedPreviewMatching,
   closeRightRail,
   completePreviewServerRestart,
+  isPreviewDismissed,
   openPreview,
   progressPreviewServerRestart,
   renderedHtmlTarget,
@@ -85,10 +86,21 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         // session that is NOT visible anywhere still can't yank the pane
         // open (offer, don't hijack). Routes through the same normalizer as
         // the file browser so URLs, localhost, and file paths all resolve.
+        // A target the user closed stays closed — but only for REPLAYED
+        // events: the gateway tags recovered/held reconnect frames with a
+        // client-local `replayed: true` (#117288), and only those re-deliver
+        // an open the user already saw and dismissed. A fresh (non-replayed)
+        // `preview.open` is a new agent verdict on the user's current
+        // request and always opens, even for a recycled port or path
+        // (#92975).
         const { url, label } = asRecord(event.payload)
         const target = typeof url === 'string' ? url.trim() : ''
 
-        if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
+        if (
+          target &&
+          !(event.replayed === true && isPreviewDismissed(target)) &&
+          (!event.session_id || sessionIsOnScreen(event.session_id))
+        ) {
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
             async resolved => {
               if (!resolved) {

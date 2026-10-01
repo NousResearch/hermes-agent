@@ -317,6 +317,66 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   }
 }
 
+/** Targets the user closed this app run. `preview.open` replay re-runs on
+ * every session load (refresh, restart, reconnect), so without a marker a
+ * closed tab resurrects on every reload (#92975). Deliberately NOT
+ * persisted: a fresh, agent-driven `preview.open` (no `replayed` tag) is a
+ * new verdict from the user's current request, not history to suppress — a
+ * permanent localStorage marker would silently swallow preview opens for a
+ * recycled port or path forever. Dying with the app run bounds the marker
+ * to the "user just closed this" intent replay can actually violate; a
+ * restart is a fresh session. Any explicit open re-admits the target. */
+const dismissedPreviewTargets = new Set<string>()
+
+/** Bound the marker list; dismissals are consulted on every replayed open. */
+const DISMISSED_MAX = 100
+
+function recordDismissedTargets(targets: PreviewTarget[]): void {
+  const keys = targets
+    .flatMap(target => [target.source, target.url])
+    .map(key => key.trim())
+    .filter(key => key !== '')
+
+  for (const key of keys) {
+    dismissedPreviewTargets.add(key)
+  }
+
+  if (dismissedPreviewTargets.size > DISMISSED_MAX) {
+    for (const key of dismissedPreviewTargets) {
+      dismissedPreviewTargets.delete(key)
+
+      if (dismissedPreviewTargets.size <= DISMISSED_MAX) {
+        break
+      }
+    }
+  }
+}
+
+/** A REPLAYED open must never beat the user: a `preview.open` for a target
+ * the user closed stays closed until they open it again by hand. Only the
+ * replayed event path consults this — a fresh (non-replayed) open always
+ * shows. */
+export function isPreviewDismissed(target: string): boolean {
+  const key = target.trim()
+
+  return key !== '' && dismissedPreviewTargets.has(key)
+}
+
+/** Re-admit a dismissed target (any explicit open clears the marker). */
+export function clearPreviewDismissal(target: PreviewTarget): void {
+  for (const key of [target.source, target.url].map(k => k.trim())) {
+    if (key !== '') {
+      dismissedPreviewTargets.delete(key)
+    }
+  }
+}
+
+/** Forget every dismissal — used between isolated scenarios (a fresh app
+ * run starts with an empty set; nothing is persisted). */
+export function clearPreviewDismissals(): void {
+  dismissedPreviewTargets.clear()
+}
+
 if (typeof window !== 'undefined') {
   try {
     window.localStorage.removeItem(LEGACY_SESSION_REGISTRY_KEY)
@@ -603,6 +663,10 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
 export function openPreview(target: PreviewTarget) {
+  // An explicit open re-admits a dismissed target — the marker only guards
+  // replayed events, never a fresh user action.
+  clearPreviewDismissal(target)
+
   const current = $previewTabs.get()
   const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
   const index = current.findIndex(tab => tab.id === id)
@@ -655,7 +719,8 @@ export function newBrowserTab() {
   selectRightRailTab(id)
 }
 
-export function closeRightRailTab(tabId: string) {
+/** Remove one tab from the rail, no dismissal bookkeeping. */
+function removeTab(tabId: string) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)
 
@@ -682,6 +747,18 @@ export function closeRightRailTab(tabId: string) {
 
   if (next.length === 0) {
     selectRightRailTab(null)
+  }
+}
+
+/** Close a tab the user (or the agent on their behalf) dismissed. The target
+ * is remembered so a replayed `preview.open` cannot resurrect it. */
+export function closeRightRailTab(tabId: string) {
+  const tab = $previewTabs.get().find(item => item.id === tabId)
+
+  removeTab(tabId)
+
+  if (tab) {
+    recordDismissedTargets([tab.target])
   }
 }
 
@@ -784,17 +861,21 @@ export function closeDockedPreviewMatching(...candidates: string[]): boolean {
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it
- *  closes them. File and URL tabs re-read from their source and are left alone. */
+ * closes them. File and URL tabs re-read from their source and are left alone.
+ * Registry cleanup is a lifecycle event, not a user dismissal — nothing to
+ * replay against, so no marker is recorded. */
 export function closeArtifactPreviewTabs() {
   for (const tab of $previewTabs.get()) {
     if (tab.target.kind === 'artifact') {
-      closeRightRailTab(tab.id)
+      removeTab(tab.id)
     }
   }
 }
 
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
+  recordDismissedTargets($previewTabs.get().map(tab => tab.target))
+
   clearExplicitPreviewOpen()
   $previewTabs.set([])
   selectRightRailTab(null)

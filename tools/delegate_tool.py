@@ -603,7 +603,9 @@ def _build_tasks_param_description() -> str:
         f"The task(s), up to {max_children} in parallel for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "
         "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        "is a one-entry array. Required when spawning. This same limit also "
+        "caps separate delegate_task calls in one model response; excess calls "
+        "return an error without running."
     )
 
 def _build_dynamic_schema_overrides() -> dict:

@@ -398,7 +398,7 @@ class GatewayInboundMixin(GatewayInboundAdmissionMixin):
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
         """Coalesce compatible busy input or queue it behind earlier events."""
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
 
         adapter = self._delivery_adapter_for(source)

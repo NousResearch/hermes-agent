@@ -314,7 +314,7 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
         )
         event = await runner._hm_pre_gateway_dispatch_hook(event, source)
     elif transform in {"pending", "parked", "photo", "text-batch"}:
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         from gateway.platforms.event import MessageEvent, MessageType
 
         incoming = event
@@ -412,7 +412,7 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["text", "native"])
 async def test_merged_quotes_refresh_each_parent_without_dropping_other_media(tmp_path, monkeypatch, mode):
-    from gateway.platforms.base import merge_pending_message_event
+    from gateway.platforms.base_pending_merge import merge_pending_message_event
 
     adapter = _make_adapter()
     adapter._get_display_name = AsyncMock(return_value="Alice")

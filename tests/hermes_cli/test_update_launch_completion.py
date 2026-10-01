@@ -115,6 +115,27 @@ def test_pristine_home_provisions_dependencies_without_rebuild(tmp_path, monkeyp
     assert not venv_sync.completion_pending_path(root).exists()
 
 
+def test_adoption_stamp_never_discharges_an_owed_tail(tmp_path, monkeypatch, completion_tail):
+    """Boot-time adoption stamps HEAD but builds nothing: an unstamped blessed root with a
+    pending marker still owes its tail, on this launch and on every later one."""
+    import pm
+
+    root = _committed_checkout(tmp_path, monkeypatch)
+    blessed = tmp_path / "home/hermes-agent"
+    blessed.parent.mkdir(parents=True)
+    root.rename(blessed)
+    (blessed / "install-stamp.json").unlink()
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    pending = venv_sync.arm_completion(blessed)
+    completion_tail.exit_code = 1
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="completion failed"):
+            venv_sync.prepare_launch(blessed, [])
+    assert "adoptedAt" in json.loads((blessed / "install-stamp.json").read_text())
+    assert len(completion_tail) == 2
+    assert pending.exists()
+
+
 @pytest.mark.parametrize("argv", [["--version"], ["-V"], ["--help"], ["-p", "work", "-h"]])
 def test_metadata_query_never_waits_on_source_completion(tmp_path, monkeypatch, argv):
     """`hermes --version` offline must answer from the tree, not run a network-bound sync."""

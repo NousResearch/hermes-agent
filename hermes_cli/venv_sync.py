@@ -316,19 +316,17 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
     when that commit is HEAD, the products in the tree were built for this commit, so
     a stale venv only needs re-provisioning and a pending marker is a leftover from a
     previous home/install, never a rebuild of the same SHA (fresh Windows installs and
-    pristine HERMES_HOMEs hit exactly this: #123314). Unreadable state fails closed to
-    running the tail.
+    pristine HERMES_HOMEs hit exactly this: #123314). Boot-time adoption also stamps
+    HEAD but builds nothing, so its stamp (``adoptedAt``) is not evidence.
     """
-    try:
-        from hermes_cli.steward import read_install_stamp
-        from hermes_cli.version_info import _run_git
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.version_info import _run_git
 
-        commit = read_install_stamp(root).get("commit")
-        if not commit or not isinstance(commit, str):
-            return False
-        return _run_git(root, "rev-parse", "HEAD") == commit
-    except Exception:  # noqa: BLE001 — never strand a launch on a provenance read
+    stamp = read_install_stamp(root)
+    commit = stamp.get("commit")
+    if not isinstance(commit, str) or not commit or "adoptedAt" in stamp:
         return False
+    return _run_git(root, "rev-parse", "HEAD") == commit
 
 
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:

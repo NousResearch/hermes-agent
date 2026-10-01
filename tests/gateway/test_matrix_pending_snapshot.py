@@ -6,6 +6,7 @@ import json
 import pytest
 
 from gateway.shutdown_pending import PendingQueueSnapshot, _write_snapshot
+from gateway.input_owner import gateway_input_owner
 from plugins.platforms.matrix.followup_context import REPLY_EXCERPT_CHARS
 from tests.gateway.test_matrix_followup_reply_context import _split_followup
 
@@ -32,6 +33,9 @@ async def test_pending_logical_reply_is_serialisable_without_losing_live_revalid
         assert record == {
             "uid": event._pending_snapshot_uid, "event": public, "routing": None,
             "timestamp": event.timestamp.timestamp(),
+            "input_owner": {"namespace": [source.platform.value, source.profile, source.scope_id, source.chat_id, source.thread_id],
+                            "identifier": f"pending:{event._pending_snapshot_uid}", "pending_uid": event._pending_snapshot_uid,
+                            "owner": gateway_input_owner(event, source)},
             "context": {"quoted_media": [], "snapshots": [{
                 "room_id": source.chat_id, "reply_event_id": event.reply_to_message_id,
                 "logical_reply": {"excerpt": final[:REPLY_EXCERPT_CHARS], "delivery": dependency.logical_reply.delivery.to_json()},

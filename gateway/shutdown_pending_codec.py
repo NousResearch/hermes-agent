@@ -44,7 +44,9 @@ def _file_digest(path: str) -> str | None:
 def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
     from gateway.shutdown_pending import _capture_event
 
-    recorded: dict[str, Any] = {}
+    from gateway.input_owner import capture_gateway_input_owner
+
+    recorded: dict[str, Any] = {"input_owner": capture_gateway_input_owner(event)}
     if event._merged_parts:
         recorded["attribution"] = [
             {"operation": _OPERATIONS[merge].value if merge is not None else None,
@@ -114,6 +116,9 @@ def decode_pending_event(record: dict[str, Any], *, adapter: Any = None) -> Mess
     event_body["source"] = source
     event = MessageEvent(**_decode_fields(event_body, MessageEvent))
     setattr(event, "_pending_snapshot_uid", uid)
+    if "input_owner" in record:
+        from gateway.input_owner import restore_gateway_input_owner
+        restore_gateway_input_owner(event, record["input_owner"])
     attribution = record.get("attribution")
     if attribution is not None:
         if not isinstance(attribution, list) or len(attribution) < 2:

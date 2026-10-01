@@ -553,7 +553,10 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int) -> str:
-    delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
+    # A Bot's own replies are never "new messages" for it, even past its watermark.
+    delta = [event for event in messages if watermark < event.seq <= seen_through_seq
+             and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
+             ][-MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
@@ -564,6 +567,8 @@ def _build_prompt(
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        *(["- To hand off a local file, call share_group_file; never paste a local path into chat."]
+          if _peer_id(member) is None else []),
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
@@ -824,11 +829,17 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
+    # Files shared during the turn ride on its one member message, even after "(pass)".
+    attachments = _message_manifest(result.get("attachments", [])) if isinstance(result, Mapping) else []
+    if attachments and (not text or is_pass_text(text)):
+        text = "Shared " + ", ".join(attachment["name"] for attachment in attachments) + "."
     if is_pass_text(text):
         return {"message_event_id": None, "passed": True}, []
+    files = ({"attachments": attachments, "recipient_member_ids": list(result["recipient_member_ids"])}
+             if attachments else {})
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
+        payload={**_turn_coordinates(task), "text": text, **files}, authority_gateway_id=room.gateway_id,
         authority_epoch=room.authority_epoch)]
 
 

@@ -24,7 +24,8 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history',
-                         'info', 'interrupt', 'discard', 'approve'})
+                         'info', 'interrupt', 'discard', 'approve',
+                         'output_export', 'output_ack', 'output_discard'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
 # gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
 # Windows pipe: 360 KiB raw -> 480 KiB base64, leaving 32 KiB for the envelope (owner
@@ -205,7 +206,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment', 'output_scope'}:
             raise RuntimeStoreError('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)
@@ -250,6 +251,10 @@ def install_hosted_transport(server, authority, loop, *, attest):
                 raise RuntimeStoreError('permission_denied')
             conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         authority.db._execute_write(persist)
+        if operation in {'output_export', 'output_ack', 'output_discard'}:
+            from gateway.session_hosted_output_owner import serve_output_operation
+            return serve_output_operation(authority, binding, rpc.ref.session_id, principal.subject,
+                                          operation, params, attested)
         if operation == 'submit':
             rpc.hosted_attachment_data = _attachment_data(binding, attested, params)
             params['attachments'] = attested['attachments'] or None
@@ -333,6 +338,15 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
         if operation == 'history':
             self._deliver(result)
         return result
+
+    def output_export(self, **params):
+        return self._call('output_export', **params)
+
+    def output_ack(self, **params):
+        return self._call('output_ack', **params)
+
+    def output_discard(self, **params):
+        return self._call('output_discard', **params)
 
     def _deliver(self, history):
         for row in history:

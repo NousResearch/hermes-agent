@@ -186,3 +186,26 @@ async def _assert_followup_order(withdrawn, late, expected_turns):
 )
 async def test_withdrawal_preserves_the_other_queued_input(check, args):
     await check(*args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("removed", ["first", "middle", "last", "all"])
+async def test_withdrawal_preserves_independent_debounce_events(removed):
+    from gateway.platforms.base_text_debounce import TextDebounceState
+
+    adapter = _Adapter()
+    events = [_event(adapter, name) for name in ("first", "middle", "last")]
+    timer = asyncio.create_task(asyncio.sleep(60))
+    state = TextDebounceState(events[-1], timer, 1.0, 2.0, events[:-1])
+    adapter._text_debounce_store()["key"] = state
+    ids = [event.message_id for event in events] if removed == "all" else [removed]
+    try:
+        found = [adapter.withdraw_pending_message(mid, chat_id=ROOM, sender_id=ALICE) for mid in ids]
+        remaining = [event for event in events if event.message_id not in ids]
+        current = adapter._text_debounce_store().get("key")
+        actual = (found, [*current.earlier_events, current.event] if current else [], current.task if current else None)
+        assert actual == ([True] * len(ids), remaining, timer if remaining else None)
+    finally:
+        timer.cancel()
+        await asyncio.gather(timer, return_exceptions=True)
+

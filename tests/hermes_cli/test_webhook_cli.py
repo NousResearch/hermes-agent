@@ -196,6 +196,8 @@ class TestSubscribe:
             ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns),
         )
         adapter._reload_dynamic_routes()
+        _subscriptions_path().write_text("{torn")  # unreadable file must keep the last good routes
+        adapter._reload_dynamic_routes()
         assert not reader.is_alive()
         assert new_state == ("compta", "rotated-profile-secret")
         assert new_record["secret"] != old_record["secret"]

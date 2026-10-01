@@ -1,11 +1,12 @@
+import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 
-import { assert, describe, test } from 'vitest'
+import { describe, test } from 'vitest'
 
-import { atomicWindowsSpawnCommand } from './windows-remote-lifecycle'
+import { atomicWindowsSpawnScript, probeWindowsRemote } from './windows-remote-lifecycle'
 
 function buildSpawnCommand() {
-  return atomicWindowsSpawnCommand(
+  return atomicWindowsSpawnScript(
     {
       // SANDBOX: temp HERMES_HOME resolved by the helper itself
       hermesHome: 'C:\\Users\\TestUser\\AppData\\Local\\Temp\\ssh-probe-home',
@@ -21,14 +22,6 @@ function buildSpawnCommand() {
       startedAt: '2026-08-27T14:00:00.000Z'
     }
   )
-}
-
-function decodeSpawnScript(command: string) {
-  // Extract the EncodedCommand payload and decode it back to the script text
-  const encoded = command.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)\s*$/)?.[1]
-  assert.ok(encoded, 'command must carry an EncodedCommand payload')
-
-  return Buffer.from(encoded, 'base64').toString('utf16le')
 }
 
 // powershell.exe only exists on Windows; GitHub-hosted ubuntu runners ship
@@ -51,11 +44,11 @@ function hasPowershell() {
 }
 
 test('atomic spawn script: write-lock via stdin pipe (static shape)', () => {
-  const script = decodeSpawnScript(buildSpawnCommand())
+  const script = buildSpawnCommand()
 
   // The lock must be piped into the helper's stdin, not passed as argv
-  assert.match(script, /\$lock\|& [^|]+ 'write-lock' '0123456789abcdef0123456789abcdef'\|Out-Null/)
-  assert.notMatch(script, /'write-lock' '[0-9a-f]{32}' \$lock/)
+  assert.match(script, /\$lock\s*\|\s*& [^|]+ 'write-lock' '0123456789abcdef0123456789abcdef'\s*\|\s*Out-Null/)
+  assert.doesNotMatch(script, /'write-lock' '[0-9a-f]{32}' \$lock/)
 
   // The PowerShell 5.1 pipe must arrive as UTF-8, not the console code page
   assert.match(script, /\$OutputEncoding=\[Text\.UTF8Encoding\]::new\(\$false\)/)
@@ -66,19 +59,55 @@ test('atomic spawn script: write-lock via stdin pipe (static shape)', () => {
 
 describe.skipIf(!hasPowershell())('atomic spawn script: live PowerShell parse', () => {
   test('generated script parses without syntax errors', () => {
-    const script = decodeSpawnScript(buildSpawnCommand())
+    const script = buildSpawnCommand()
 
     const parseCheck = execFileSync(
       POWERSHELL_BIN,
       [
         '-NoProfile',
         '-NonInteractive',
-        '-Command',
-        `$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseInput(@'\n${script}\n'@\n,[ref]$t,[ref]$e) > $null; if($e.Count -gt 0){$e | ForEach-Object {$_.Message}; exit 1}; 'PARSE_OK'`
+        '-EncodedCommand',
+        Buffer.from(
+          '$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$t,[ref]$e)>$null;if($e.Count -gt 0){$e|ForEach-Object {$_.Message};exit 1};Write-Output PARSE_OK',
+          'utf16le'
+        ).toString('base64')
       ],
-      { encoding: 'utf8', timeout: 60000 }
+      { encoding: 'utf8', input: script, timeout: 60000, stdio: 'pipe' }
     )
 
     assert.match(parseCheck, /PARSE_OK/)
+  })
+})
+
+describe.skipIf(!hasPowershell())('buffered PowerShell transport: live execution', () => {
+  test('executes the complete script from ASCII stdin with UTF-8 output and exit status', async () => {
+    let command = ''
+    await probeWindowsRemote({
+      exec: async value => {
+        command = value
+
+        return '{"os":"Windows"}'
+      }
+    })
+    assert.ok(command.length < 8191)
+    const script = 'Write-Output "José"\n#' + 'long-script-padding'.repeat(500)
+
+    const output = execFileSync(POWERSHELL_BIN, command.split(' ').slice(1), {
+      input: Buffer.from(script, 'utf8').toString('base64'),
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: 'pipe'
+    })
+
+    assert.equal(output.trim(), 'José')
+    assert.throws(
+      () =>
+        execFileSync(POWERSHELL_BIN, command.split(' ').slice(1), {
+          input: Buffer.from('exit 23', 'utf8').toString('base64'),
+          timeout: 30000,
+          stdio: 'pipe'
+        }),
+      (error: any) => error.status === 23
+    )
   })
 })

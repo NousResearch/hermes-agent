@@ -1,13 +1,24 @@
 import { assert, test } from 'vitest'
 
-import { atomicWindowsSpawnCommand } from './windows-remote-lifecycle'
+import { atomicWindowsSpawn } from './windows-remote-lifecycle'
 
-test('atomic spawn command stays under the cmd.exe length budget', () => {
-  const command = atomicWindowsSpawnCommand(
+test('atomic spawn command stays under the cmd.exe length budget', async () => {
+  let command = ''
+  let stdinData = ''
+  await atomicWindowsSpawn(
     {
-      hermesHome: 'C:\\Users\\TestUser\\AppData\\Local\\Temp\\ssh-probe-home',
+      exec: async (value: string, options: { stdinData: string }) => {
+        command = value
+        stdinData = options.stdinData
+
+        return '{"pid":1}'
+      }
+    },
+    {
+      hermesHome: `C:\\Users\\${'long-name'.repeat(25)}\\AppData\\Local\\hermes`,
       python: 'C:\\Users\\TestUser\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe'
     },
+    JSON.stringify({ token: 'test-session-token' }),
     {
       ownershipId: '0123456789abcdef0123456789abcdef',
       spawnNonce: '0123456789abcdef',
@@ -22,5 +33,8 @@ test('atomic spawn command stays under the cmd.exe length budget', () => {
   // cmd.exe rejects commands at 8191 chars — the atomic spawn command carries
   // the full lock record and helper paths, so it is the tightest budget.
   assert.ok(command.length > 0)
+  const script = Buffer.from(stdinData, 'base64').toString('utf8')
+  assert.ok(script.includes('test-session-token'))
+  assert.ok(script.includes('long-name'.repeat(25)))
   assert.ok(command.length < 8191, `atomic spawn command is too long: ${command.length}`)
 })

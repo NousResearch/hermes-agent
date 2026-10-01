@@ -15,13 +15,13 @@ Plan multi-platform social campaigns: briefs to posting.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/social-media-content-calendar` |
-| Path | `optional-skills/creative\social-media-content-calendar` |
+| Path | `optional-skills/creative/social-media-content-calendar` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Social-Media`, `Content-Calendar`, `Campaigns`, `Publishing` |
-| Related skills | [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl), [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) |
+| Related skills | [`xurl`](../../bundled/social-media/social-media-xurl.md), [`humanizer`](../../bundled/creative/creative-humanizer.md) |
 
 ## Reference: full SKILL.md
 

@@ -3,15 +3,77 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
+  hasPinnedRegistrySessionSource,
+  isAllProfilesSessionListRequest,
   mergeProfileSessionWindow,
+  pathWithRemoteOwnerScope,
+  remoteProfileQueryScope,
+  shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
-  tagRegistrySessionResponse
+  tagRegistrySessionResponse,
+  tagRemoteSessionRows
 } from './profile-session-routing'
+
+test('all-profiles session routing is limited to read-only list endpoints', () => {
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=all'), true)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions/sidebar?recents_profile=all'), true)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=default'), false)
+  assert.equal(isAllProfilesSessionListRequest('POST', '/api/profiles/sessions?profile=all'), false)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/sessions?profile=all'), false)
+})
+
+test('pinned registry aggregation requires the selected gateway to be pooled', () => {
+  const sources = [{ connectionId: 'gateway-remote' }, { connectionId: 'gateway-ssh' }]
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'default', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-missing', 'default', sources), false)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'default', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'default', sources, false), false)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'default', [{ connectionId: 'local' }], false), true)
+  assert.equal(hasPinnedRegistrySessionSource(null, 'default', sources), true)
+})
+
+test('pinned registry aggregation requires the selected profile backend for per-profile sources', () => {
+  const sources = [
+    {
+      connectionId: 'gateway-ssh',
+      kind: 'ssh',
+      backends: [{ descriptor: 'research-desc', profileLabel: 'research' }]
+    },
+    {
+      connectionId: 'local',
+      kind: 'local',
+      backends: [
+        { descriptor: 'default-desc', profileLabel: 'default' },
+        { descriptor: 'work-desc', profileLabel: 'work' }
+      ]
+    },
+    {
+      connectionId: 'gateway-remote',
+      kind: 'remote',
+      backends: [{ descriptor: 'remote-desc', profileLabel: null }]
+    }
+  ]
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'research', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'default', sources), false)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'work', sources, false), true)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'missing', sources, false), false)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'any-profile', sources), true)
+})
+
+test('unscoped aggregates include local rows when the primary is remote', () => {
+  assert.equal(shouldIncludeLocalRegistrySessionSource(null, false), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource('server', false), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource('local', true), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource(null, true), false)
+})
 
 test('remote sidebar slices all follow the selected profile', () => {
   const slices = buildSidebarSessionSliceParams(
@@ -42,7 +104,7 @@ test('remote sidebar slices preserve the explicit all-profiles scope', () => {
   )
 })
 
-test('remote sidebar slices fall back to the all-profiles scope and default limits', () => {
+test('remote sidebar slices fall back to the all-profiles scope', () => {
   for (const searchParams of [new URLSearchParams(), new URLSearchParams({ recents_profile: '   ' })]) {
     const slices = buildSidebarSessionSliceParams(searchParams)
 
@@ -50,9 +112,6 @@ test('remote sidebar slices fall back to the all-profiles scope and default limi
       Object.values(slices).map(params => params.get('profile')),
       ['all', 'all', 'all']
     )
-    assert.equal(slices.recents.get('limit'), '20')
-    assert.equal(slices.cron.get('limit'), '50')
-    assert.equal(slices.messaging.get('limit'), '100')
   }
 })
 
@@ -73,12 +132,44 @@ test('primary session reads use the profile-aware request path', async () => {
   assert.equal(result, expected)
 })
 
-test('primary session reads preserve the empty-list fallback', async () => {
-  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ profile: 'all' }), async () => {
+// A failed primary read is an empty page the renderer must NOT treat as the
+// profile's truth: without errors[] it replaced the sidebar with "No sessions"
+// and nothing said why (#67600). Report the failed scope the same way the
+// backend reports a failed profile scan.
+test('primary session reads report a failed read in errors', async () => {
+  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ profile: 'default' }), async () => {
     throw new Error('remote unavailable')
   })
 
-  assert.deepEqual(result, { sessions: [], total: 0, profile_totals: {} })
+  assert.deepEqual(result, {
+    sessions: [],
+    total: 0,
+    profile_totals: {},
+    errors: [{ profile: 'default', error: 'remote unavailable' }]
+  })
+})
+
+test('a failed unified primary read names the whole aggregate', async () => {
+  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ limit: '20' }), async () => {
+    throw new Error('timed out')
+  })
+
+  assert.deepEqual(result.errors, [{ profile: 'all', error: 'timed out' }])
+})
+
+test('reassembled sidebar slices keep each slice errors', () => {
+  const failed = [{ profile: 'default', error: 'timed out' }]
+
+  const result = assembleSidebarSessionSlices(
+    { sessions: [], total: 0, profile_totals: {}, errors: failed },
+    { sessions: [{ id: 'cron-1' }], total: 1 },
+    { sessions: [], total: 0, errors: failed }
+  )
+
+  assert.deepEqual(result.recents.errors, failed)
+  assert.equal(result.cron.errors, undefined)
+  assert.deepEqual(result.messaging.errors, failed)
+  assert.deepEqual(result.cron.sessions, [{ id: 'cron-1' }])
 })
 
 test('remote session reads split oversized sidebar windows into API-safe pages', async () => {
@@ -108,9 +199,9 @@ test('remote session reads split oversized sidebar windows into API-safe pages',
   )
 
   assert.deepEqual(calls, [
-    { profile: 'remote-work', path: '/api/sessions?limit=100&offset=0&order=updated' },
-    { profile: 'remote-work', path: '/api/sessions?limit=100&offset=100&order=updated' },
-    { profile: 'remote-work', path: '/api/sessions?limit=50&offset=200&order=updated' }
+    { profile: 'remote-work', path: '/api/sessions?limit=100&offset=0&order=updated&profile=remote-work' },
+    { profile: 'remote-work', path: '/api/sessions?limit=100&offset=100&order=updated&profile=remote-work' },
+    { profile: 'remote-work', path: '/api/sessions?limit=50&offset=200&order=updated&profile=remote-work' }
   ])
   assert.equal(result.sessions.length, 250)
   assert.equal(result.total, 250)
@@ -152,7 +243,10 @@ test('remote paging preserves offsets and deduplicates pinned backfill rows', as
     }
   )
 
-  assert.deepEqual(calls, ['/api/sessions?limit=100&offset=80', '/api/sessions?limit=50&offset=180'])
+  assert.deepEqual(calls, [
+    '/api/sessions?limit=100&offset=80&profile=remote-work',
+    '/api/sessions?limit=50&offset=180&profile=remote-work'
+  ])
   assert.deepEqual(
     result.sessions.map(row => (row as { id: string }).id),
     [...rows.slice(80, 230).map(row => row.id), 'session-20']
@@ -184,9 +278,9 @@ test('remote paging treats malformed totals as unknown instead of truncating the
     )
 
     assert.deepEqual(calls, [
-      '/api/sessions?limit=100&offset=0',
-      '/api/sessions?limit=100&offset=100',
-      '/api/sessions?limit=100&offset=200'
+      '/api/sessions?limit=100&offset=0&profile=remote-work',
+      '/api/sessions?limit=100&offset=100&profile=remote-work',
+      '/api/sessions?limit=100&offset=200&profile=remote-work'
     ])
     assert.equal(result.sessions.length, 250)
     assert.equal(result.total, 250)
@@ -220,7 +314,7 @@ test('remote session reads keep small requests on one call', async () => {
     }
   )
 
-  assert.deepEqual(calls, [{ profile: 'remote-work', path: '/api/sessions?limit=20&offset=0' }])
+  assert.deepEqual(calls, [{ profile: 'remote-work', path: '/api/sessions?limit=20&offset=0&profile=remote-work' }])
   assert.equal(result, expected)
 })
 
@@ -262,6 +356,38 @@ test('registry sources: ssh backends are read natively and rows tagged with conn
   assert.ok(rows.every(row => (row as any).is_default_profile === false))
 })
 
+test('registry sources: forced-local backends are read per profile', async () => {
+  const calls: string[] = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'local',
+        kind: 'local',
+        backends: [
+          { descriptor: 'default-desc', profileLabel: 'default' },
+          { descriptor: 'work-desc', profileLabel: 'work' }
+        ]
+      }
+    ],
+    new URLSearchParams({ profile: 'all', limit: '10' }),
+    async (descriptor, path) => {
+      calls.push(`${String(descriptor)} ${path}`)
+
+      return { sessions: [{ id: String(descriptor) }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(calls, ['default-desc /api/sessions?limit=10', 'work-desc /api/sessions?limit=10'])
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    [
+      ['default-desc', 'default', 'local'],
+      ['work-desc', 'work', 'local']
+    ]
+  )
+})
+
 test('registry sources: shared remote hosts read the cross-profile aggregate once', async () => {
   const calls: string[] = []
 
@@ -300,6 +426,39 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
       ['r-2', 'default', 'gw-cloud']
     ]
   )
+})
+
+test('registry sources: large aggregate reads stay within the backend page cap', async () => {
+  const calls: string[] = []
+  const rows = Array.from({ length: 250 }, (_, index) => ({ id: `r-${index}` }))
+
+  const result = await fetchRegistrySessionRows(
+    [{ connectionId: 'gw-cloud', kind: 'remote', backends: [{ descriptor: 'cloud-desc', profileLabel: null }] }],
+    new URLSearchParams({ limit: '250', offset: '0' }),
+    async (_descriptor, path) => {
+      calls.push(path)
+      const url = new URL(path, 'http://desktop.test')
+      const limit = Number(url.searchParams.get('limit'))
+      const offset = Number(url.searchParams.get('offset'))
+
+      assert.ok(limit <= 100)
+
+      return { sessions: rows.slice(offset, offset + limit), total: rows.length }
+    }
+  )
+
+  assert.deepEqual(
+    calls.map(path => [
+      Number(new URL(path, 'http://desktop.test').searchParams.get('limit')),
+      Number(new URL(path, 'http://desktop.test').searchParams.get('offset'))
+    ]),
+    [
+      [100, 0],
+      [100, 100],
+      [50, 200]
+    ]
+  )
+  assert.equal(result.length, rows.length)
 })
 
 test('registry-pinned session responses retain their owning connection', () => {
@@ -455,4 +614,224 @@ test('remote owner lookup returns null when no remote lists the id or remotes fa
   })
 
   assert.equal(noRemotes, null)
+})
+
+// #64999: two Desktop profile scopes can point at the SAME multi-profile
+// remote backend. The list read must name the requested profile scope so the
+// backend opens that profile's state.db — an unscoped read returns the
+// backend's launch-profile rows, and the old unconditional relabel stamped
+// them as whichever local scope happened to ask.
+test('remote session reads carry the profile scope against a multi-profile backend', async () => {
+  const calls: Array<{ profile: string | null; path: string }> = []
+
+  await fetchRemoteProfileSessions(
+    'wife',
+    new URLSearchParams({ profile: 'wife', limit: '20', offset: '0' }),
+    async (profile, path) => {
+      calls.push({ profile, path })
+
+      return { sessions: [{ id: 's-1', profile: 'wife' }], total: 1, limit: 20, offset: 0 }
+    }
+  )
+
+  assert.deepEqual(calls, [{ profile: 'wife', path: '/api/sessions?limit=20&offset=0&profile=wife' }])
+})
+
+// The same read for the OTHER scope sharing the backend names ITS scope — the
+// backend's launch profile (say `dad`) is never read for a `wife` request.
+test('two scopes sharing one multi-profile backend each read their own profile', async () => {
+  const seenProfiles: string[] = []
+
+  for (const scope of ['wife', 'dad']) {
+    const result = await fetchRemoteProfileSessions(
+      scope,
+      new URLSearchParams({ profile: scope, limit: '20', offset: '0' }),
+      async (_profile, path) => {
+        const url = new URL(path, 'http://desktop.test')
+        const servedProfile = url.searchParams.get('profile') || 'launch-profile'
+        seenProfiles.push(servedProfile)
+
+        return { sessions: [{ id: `s-${servedProfile}`, profile: servedProfile }], total: 1 }
+      }
+    )
+
+    assert.equal((result.sessions[0] as { profile: string }).profile, scope)
+  }
+
+  assert.deepEqual(seenProfiles, ['wife', 'dad'])
+})
+
+// A remote that rejects the scope (400/404: profile does not exist there) is
+// the legacy single-launch-profile shape — fall back to its own database.
+test('remote session reads fall back to the unscoped list when the remote rejects the profile scope', async () => {
+  const calls: string[] = []
+
+  const result = await fetchRemoteProfileSessions(
+    'wife',
+    new URLSearchParams({ profile: 'wife', limit: '20', offset: '0' }),
+    async (_profile, path) => {
+      calls.push(path)
+
+      if (path.includes('profile=wife')) {
+        const error: any = new Error("404: Profile 'wife' does not exist.")
+        error.statusCode = 404
+        throw error
+      }
+
+      return { sessions: [{ id: 's-1' }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(calls, ['/api/sessions?limit=20&offset=0&profile=wife', '/api/sessions?limit=20&offset=0'])
+  assert.equal((result.sessions[0] as { id: string }).id, 's-1')
+})
+
+// Auth/transport/5xx failures are real errors — the unscoped fallback must
+// not swallow them.
+test('remote session reads propagate non-scope errors without the fallback', async () => {
+  const calls: string[] = []
+
+  await assert.rejects(
+    fetchRemoteProfileSessions(
+      'wife',
+      new URLSearchParams({ profile: 'wife', limit: '20', offset: '0' }),
+      async (_profile, path) => {
+        calls.push(path)
+        const error: any = new Error('503: Service Unavailable')
+        error.statusCode = 503
+        throw error
+      }
+    ),
+    /503/
+  )
+
+  assert.deepEqual(calls, ['/api/sessions?limit=20&offset=0&profile=wife'])
+})
+
+// A managed-SSH override can map the Desktop label to the remote's own
+// profile name (remoteProfile); the scope sent on the wire is the alias.
+test('remote session reads use the managed-SSH remoteProfile alias as the scope', async () => {
+  const calls: string[] = []
+
+  await fetchRemoteProfileSessions(
+    'mara',
+    new URLSearchParams({ profile: 'mara', limit: '20', offset: '0' }),
+    async (_profile, path) => {
+      calls.push(path)
+
+      return { sessions: [], total: 0 }
+    },
+    { remoteProfileAlias: 'dixie' }
+  )
+
+  assert.deepEqual(calls, ['/api/sessions?limit=20&offset=0&profile=dixie'])
+})
+
+// Every concrete scope — `default` included — is named on the wire: a
+// multi-profile backend's launch profile is not necessarily `default`, so an
+// unscoped read could relaunch the bug for the default scope too.
+test('remote session reads for the default scope name it explicitly', async () => {
+  const calls: string[] = []
+
+  await fetchRemoteProfileSessions(
+    'default',
+    new URLSearchParams({ profile: 'default', limit: '20', offset: '0' }),
+    async (_profile, path) => {
+      calls.push(path)
+
+      return { sessions: [], total: 0 }
+    }
+  )
+
+  assert.deepEqual(calls, ['/api/sessions?limit=20&offset=0&profile=default'])
+})
+
+// The remote's own profile stamp is authoritative; the splice must only
+// backfill unowned rows instead of relabeling every one (#64999).
+test('remote list rows keep the remote profile stamp instead of the desktop scope label', () => {
+  const rows: Array<Record<string, unknown>> = [
+    { id: 'w-1', profile: 'wife' },
+    { id: 'd-1', profile: 'dad' },
+    { id: 'legacy-1' },
+    { id: 'legacy-2', profile: '' }
+  ]
+
+  tagRemoteSessionRows(rows as unknown[], 'wife')
+
+  assert.equal(rows[0].profile, 'wife')
+  assert.equal(rows[0].is_default_profile, false)
+  assert.equal(rows[1].profile, 'dad') // NOT relabeled to wife
+  assert.equal(rows[1].is_default_profile, undefined)
+  assert.equal(rows[2].profile, 'wife') // unowned row backfilled
+  assert.equal(rows[2].is_default_profile, false)
+  assert.equal(rows[3].profile, 'wife')
+})
+
+// A per-session read on a shared multi-profile backend must open the owning
+// profile's state.db — the same scope the list read sends.
+test('per-session remote reads carry the owner profile scope', () => {
+  assert.equal(
+    pathWithRemoteOwnerScope('/api/sessions/s-1?limit=50', 'wife'),
+    '/api/sessions/s-1?limit=50&profile=wife'
+  )
+  assert.equal(pathWithRemoteOwnerScope('/api/sessions/s-1', 'wife'), '/api/sessions/s-1?profile=wife')
+  // Existing pagination params survive the scope.
+  assert.equal(
+    pathWithRemoteOwnerScope('/api/sessions/s-1/messages?limit=100&offset=200', 'wife'),
+    '/api/sessions/s-1/messages?limit=100&offset=200&profile=wife'
+  )
+  // A legacy single-profile scope keeps the path bare.
+  assert.equal(pathWithRemoteOwnerScope('/api/sessions/s-1', ''), '/api/sessions/s-1')
+})
+
+// The scope helper itself: alias wins, every concrete scope is named.
+test('remoteProfileQueryScope resolves the wire scope for a profile override', () => {
+  assert.equal(remoteProfileQueryScope('wife'), 'wife')
+  assert.equal(remoteProfileQueryScope('mara', 'dixie'), 'dixie')
+  assert.equal(remoteProfileQueryScope('mara', 'default'), 'mara')
+  assert.equal(remoteProfileQueryScope('default'), 'default')
+  assert.equal(remoteProfileQueryScope('default', 'dixie'), 'dixie')
+  assert.equal(remoteProfileQueryScope(''), '')
+})
+
+test('remote owner sweep respects the backend page cap and finds a later lineage root', async () => {
+  const calls: number[][] = []
+
+  const owner = await findRemoteOwnerProfileForSession('wanted-root', ['remote'], async (_profile, params) => {
+    const limit = Number(params.get('limit'))
+    const offset = Number(params.get('offset'))
+    assert.ok(limit <= 100, 'the backend rejects larger pages with HTTP 422')
+    calls.push([limit, offset])
+
+    return {
+      total: 101,
+      sessions:
+        offset === 0
+          ? Array.from({ length: 100 }, (_, i) => ({ id: 'other-' + i }))
+          : [{ id: 'live-tip', _lineage_root_id: 'wanted-root' }]
+    }
+  })
+
+  assert.equal(owner, 'remote')
+  assert.deepEqual(calls, [
+    [100, 0],
+    [100, 100]
+  ])
+})
+
+test('remote owner sweep stops at exhaustion or a failed page', async () => {
+  const offsets: number[] = []
+
+  const owner = await findRemoteOwnerProfileForSession('wanted', ['dead', 'live'], async (profile, params) => {
+    if (profile === 'dead') {
+      throw new Error('unreachable')
+    }
+
+    offsets.push(Number(params.get('offset')))
+
+    return { sessions: [], total: 0 }
+  })
+
+  assert.equal(owner, null)
+  assert.deepEqual(offsets, [0])
 })

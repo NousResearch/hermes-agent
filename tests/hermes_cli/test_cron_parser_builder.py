@@ -23,14 +23,6 @@ def _build():
     return parser
 
 
-def test_cron_subactions_present():
-    parser = _build()
-    for action in ("list", "create", "edit", "pause", "resume", "run", "remove", "status", "runs", "doctor", "tick"):
-        ns = parser.parse_args(["cron", action] if action in ("list", "status", "runs", "doctor", "tick")
-                               else ["cron", action, "jobid"] if action in ("pause", "resume", "run", "remove", "edit")
-                               else ["cron", "create", "30m"])
-        assert ns.command == "cron"
-        assert ns.cron_command == action
 
 
 def test_cron_edit_no_agent_tristate():

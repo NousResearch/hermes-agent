@@ -1142,7 +1142,7 @@ def _configure_auth_gate(
 ) -> None:
     """Resolve the trusted public hosts + auth-gate flag onto ``app.state``.
 
-    Fails closed (``SystemExit`` with an actionable message) when the gate
+    Fails closed (exit 78 with an actionable message on stderr) when the gate
     engages but no dashboard auth provider is registered.
     """
     # dashboard.public_url is also the exact Host/Origin trust declaration for

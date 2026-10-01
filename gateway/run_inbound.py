@@ -485,7 +485,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
-        from gateway.run import _build_media_placeholder
+        from gateway.run_inbound_media import _build_media_placeholder
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         from gateway.platforms.base_pending import pending_dispatch_withdrawn, release_pending_dispatch

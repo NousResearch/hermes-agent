@@ -1,6 +1,6 @@
 name: hermes-session-reset-policy
 repo: https://github.com/fastfinge/hermes-session-reset-policy
-sha: a91a4cc2dbccbd7acaa266169d9e66ce7bc21832
+sha: 493df020496d2782d3fe15308cc3b6672c2224c4
 description: Opt-in idle/daily gateway conversation resets. Reads the existing session_reset block
   (mode idle | daily | both, idle_minutes, at_hour) and starts a fresh session on the first inbound
   message past the boundary. No timers, no background writes.

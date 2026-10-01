@@ -58,6 +58,12 @@ def can_join_pending_event(first: MessageEvent, second: MessageEvent) -> bool:
     )
 
 
+@dataclass
+class _PendingDispatchReservation:
+    event: MessageEvent
+    claimed: bool = False
+
+
 @dataclass(frozen=True)
 class _PendingDispatch:
     adapter: object
@@ -69,6 +75,37 @@ class _PendingDispatch:
 _dispatch: ContextVar[_PendingDispatch | None] = ContextVar(
     "pending_dispatch", default=None
 )
+
+
+def reserve_pending_dispatch(
+    adapter: object, session_key: str, event: MessageEvent
+) -> None:
+    reservations = getattr(adapter, "_pending_dispatch_reservations", None)
+    if reservations is None:
+        reservations = {}
+        setattr(adapter, "_pending_dispatch_reservations", reservations)
+    reservations[session_key] = _PendingDispatchReservation(event)
+
+
+def release_pending_dispatch(
+    adapter: object, session_key: str, event: MessageEvent, *, claimed: bool = False
+) -> None:
+    reservations = getattr(adapter, "_pending_dispatch_reservations", None)
+    if not isinstance(reservations, dict):
+        return
+    reserved = reservations.get(session_key)
+    dispatch = _dispatch.get()
+    if reserved is None:
+        return
+    if reserved.event is event or (
+        dispatch is not None
+        and reserved.event is dispatch.event
+        and dispatch.adapter is adapter
+        and dispatch.session_key == session_key
+        and dispatch.task is asyncio.current_task()
+    ):
+        reserved.claimed = claimed
+        reservations.pop(session_key, None)
 
 
 @contextmanager

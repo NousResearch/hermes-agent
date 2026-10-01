@@ -43,6 +43,11 @@ async def test_queued_tool_context_restores_outer_identity_and_profile(tmp_path,
         (homes[profile] / ".env").write_text(f"TEST_OWNER={profile}\n", encoding="utf-8")
         adapter = MatrixAdapter(PlatformConfig(enabled=True))
         adapter._reactions_enabled = False
+        adapter._joined_rooms.add("!room:test")
+        adapter._is_dm_room = AsyncMock(return_value=False)
+        adapter.set_authorization_check(
+            lambda user, _chat_type, _chat_id: user in {"@alice:test", "@bob:test"}
+        )
         adapter.add_reaction = AsyncMock(return_value={"success": True})
         adapters[profile] = adapter
         runner._profile_adapters[profile] = {Platform.MATRIX: adapter}

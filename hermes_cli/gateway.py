@@ -18,6 +18,7 @@ import sys
 import textwrap
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from hermes_cli import setup_platforms
 
@@ -4091,16 +4092,33 @@ def _spawn_deferred_launchd_reload(
     return True
 
 
-def refresh_launchd_plist_if_needed() -> bool:
+class LaunchdReload(Enum):
+    """Outcome of :func:`refresh_launchd_plist_if_needed`.
+
+    The distinction matters for ``launchd_start``: only ``REGISTERED`` proves a
+    supervising PID is up (the in-process path waited for
+    ``_retry_launchctl_bootstrap_until_registered``). ``DEFERRED`` means the
+    reload was only *spawned* into a transient helper — the helper may still fail
+    to register the label — so the caller must NOT claim the service started and
+    must still issue a kickstart.
+    """
+
+    NOT_NEEDED = "not_needed"   # plist already current / nothing rewritten
+    DEFERRED = "deferred"       # reload handed to a transient helper (spawn only)
+    REGISTERED = "registered"   # in-process bootstrap confirmed a supervising PID
+    FAILED = "failed"           # plist rewritten but launchd did not re-register
+
+
+def refresh_launchd_plist_if_needed() -> LaunchdReload:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
-        return False
+        return LaunchdReload.NOT_NEEDED
 
     new_plist = generate_launchd_plist()
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
-        return False
+        return LaunchdReload.FAILED
 
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
@@ -4127,7 +4145,9 @@ def refresh_launchd_plist_if_needed() -> bool:
             "↻ Updated gateway launchd service definition; reload deferred to "
             "a transient launchd job (survives the bootout of this process)"
         )
-        return True
+        # Spawn-only: the helper has NOT yet registered a supervising PID (it may
+        # even fail inside its own script). Caller must still kickstart.
+        return LaunchdReload.DEFERRED
 
     # Bootout/bootstrap so launchd reads the new definition; bootstrap can fail silently under load
     # during a drain, and KeepAlive can't revive an unregistered job.
@@ -4157,9 +4177,10 @@ def refresh_launchd_plist_if_needed() -> bool:
             "✗ Updated the launchd plist but the service did not re-register; "
             f"see {_launchd_reload_log_path()}"
         )
-        return False
+        return LaunchdReload.FAILED
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
-    return True
+    # In-process bootstrap confirmed a supervising PID — proof of start.
+    return LaunchdReload.REGISTERED
 
 
 def launchd_install(force: bool = False):
@@ -4168,7 +4189,7 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            if refresh_launchd_plist_if_needed():
+            if refresh_launchd_plist_if_needed() is not LaunchdReload.FAILED:
                 print("✓ Service definition updated")
             else:
                 # The plist was rewritten but launchd never registered it (or the write was refused):
@@ -4235,16 +4256,13 @@ def launchd_start():
             _launchd_ok("✓ Service started")
         return
 
-    refreshed = refresh_launchd_plist_if_needed()
-    if refreshed:
-        # refresh_launchd_plist_if_needed() bootstrapped the plist (either via
-        # a detached helper or in-process). The service config has RunAtLoad=true
-        # and KeepAlive=true, so launchd automatically starts the process when
-        # the label is registered. Issuing an immediate kickstart would race a
-        # second gateway instance into existence before the first one finishes
-        # booting.
+    reload_result = refresh_launchd_plist_if_needed()
+    if reload_result is LaunchdReload.REGISTERED:
+        # In-process bootstrap confirmed a supervising PID (RunAtLoad/KeepAlive).
+        # A second kickstart would race another gateway instance into existence (#5109).
         _launchd_ok("✓ Service started")
         return
+    # DEFERRED (spawn-only, no confirmed PID), NOT_NEEDED, or FAILED: proceed to kickstart.
     try:
         _launchctl_kickstart_current(label)
     except subprocess.CalledProcessError as e:

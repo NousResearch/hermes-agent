@@ -513,7 +513,7 @@ class TestLaunchdServiceRecovery:
 
         result = gateway_cli.refresh_launchd_plist_if_needed()
 
-        assert result is True
+        assert result is gateway_cli.LaunchdReload.DEFERRED
         # The new plist was written.
         assert "--replace" in plist_path.read_text(encoding="utf-8")
         # No DIRECT bootout/bootstrap ran (those would kill us mid-sequence).
@@ -586,7 +586,7 @@ class TestLaunchdServiceRecovery:
 
         result = gateway_cli.refresh_launchd_plist_if_needed()
 
-        assert result is True
+        assert result is gateway_cli.LaunchdReload.DEFERRED
         # Reload was delegated, NOT run in-process where bootout could kill it.
         assert len(popen_calls) == 1
         assert popen_calls[0][:2] == ["launchctl", "submit"]
@@ -631,7 +631,7 @@ class TestLaunchdServiceRecovery:
             lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
         )
 
-        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert gateway_cli.refresh_launchd_plist_if_needed() is gateway_cli.LaunchdReload.DEFERRED
 
         cmd = popen_calls[0]
         script = cmd[cmd.index("--") + 3]
@@ -697,7 +697,7 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert gateway_cli.refresh_launchd_plist_if_needed() is gateway_cli.LaunchdReload.REGISTERED
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()

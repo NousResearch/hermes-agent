@@ -82,6 +82,12 @@ def takeover_enabled() -> bool:
     room: today two gateways can both promote a copy, a demoted gateway cannot be proven to have
     stopped writing, and a page handed to ``groups.replicate`` is no proof of what the authority
     wrote. Exclusive-authority recovery opens this gate; it is the only switch.
+
+    Opening it is not enough on its own. The triggers in ``gateway/hosted_room_safety.py`` treat
+    every ``authority.claimed`` promoted from a copy, and every ``authority.lost``, as an unproven
+    takeover and quarantine the room. Recovery must also mark the takeovers it verifies, and teach
+    those triggers to accept that mark; until then a takeover through an open gate still leaves the
+    room read-only (``test_open_gate_promotion_still_ends_quarantined`` pins this).
     """
     return False
 

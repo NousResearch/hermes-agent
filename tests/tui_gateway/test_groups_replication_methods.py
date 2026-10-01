@@ -157,6 +157,24 @@ def test_open_gate_promote_requires_confirm_and_takes_over(home, tmp_path, gate_
     assert log["authority"]["epoch"] == 2
 
 
+def test_open_gate_promotion_still_ends_quarantined(home, tmp_path, gate_open):
+    """Opening the gate alone does not make a takeover trusted.
+
+    The store still records the promotion as unproven and quarantines the room. This changes when
+    exclusive-authority recovery adds its verified-takeover mark and the triggers in
+    ``gateway/hosted_room_safety.py`` accept it: a verified promotion should then leave a writable
+    room, and this test should assert that instead.
+    """
+    _result(srv._methods["groups.replicate"](1, _replicate_params(_authority_page(tmp_path))))
+    assert _result(srv._methods["groups.promote"](2, {"room_id": "room-1", "confirm": True}))["authority_epoch"] == 2
+
+    room, = _result(srv._methods["groups.list"](3, {}))["rooms"]
+    assert (room["safety_status"], room["safety_reason"]) == ("authority_quarantined", "unsafe_replica_promotion")
+    refused = _error(srv._methods["groups.send"](4, {
+        "room_id": "room-1", "event_id": "after-promotion", "payload": {"text": "continue", "thread_id": "thread-1"}}))
+    assert refused["data"] == {"reason": "room_authority_quarantined"}
+
+
 def test_open_gate_demote_fences_local_room_against_newer_epoch(home, gate_open):
     from gateway.hosted_rooms import local_authority_gateway_id
 

@@ -506,13 +506,38 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 )
 
 
-def execution_guidance_text() -> str:
-    """OPENAI_MODEL_EXECUTION_GUIDANCE as injected into the system prompt.
+# Each <mandatory_tool_use>/<act_dont_ask> line above named against the tool(s) it tells the model to reach
+# for. A line is dropped when none of its named tools are in the session's valid_tool_names, so a toolset
+# without terminal/execute_code/etc. isn't told to use them (#106506). The
+# guidance names no web tool (#39797), so there is no entry for one.
+_EXECUTION_GUIDANCE_LINE_TOOLS = {
+    "- Arithmetic, math, calculations → use terminal or execute_code\n": {"terminal", "execute_code"},
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n": {"terminal"},
+    "- Current time, date, timezone → use terminal (e.g. date)\n": {"terminal"},
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n": {"terminal"},
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n": {
+        "read_file",
+        "search_files",
+        "terminal",
+    },
+    "- Git history, branches, diffs → use terminal\n": {"terminal"},
+    "- 'What time is it?' → run `date` (don't guess)\n": {"terminal"},
+}
 
-    The guidance names no web tool (#39797: a hard "use web_search" overrode SOUL.md and dangled in Blank Slate),
-    so the text is toolset-neutral and needs no per-session filtering.
+
+def execution_guidance_text(valid_tool_names=None) -> str:
+    """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
+
+    Lines that tell the model to reach for a tool absent from the session's toolset would dangle, so they are
+    dropped.
     """
-    return OPENAI_MODEL_EXECUTION_GUIDANCE
+    text = OPENAI_MODEL_EXECUTION_GUIDANCE
+    if valid_tool_names is not None:
+        valid_tool_names = set(valid_tool_names)
+        for line, tools in _EXECUTION_GUIDANCE_LINE_TOOLS.items():
+            if not tools & valid_tool_names:
+                text = text.replace(line, "")
+    return text
 
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
@@ -596,14 +621,20 @@ STEER_CHANNEL_NOTE = (
 )
 
 
-def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
+def hud_surface_note(valid_tool_names: "set[str] | None" = None,
+                     deferred_tool_names: "frozenset[str] | set[str]" = frozenset()) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD ("this"/"here" = the app behind it).
 
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
     model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
     unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
+    ``deferred_tool_names`` are tools this session reaches only through the tool_call bridge (the default
+    tool_search defer list holds the desktop tools): they count as available, and the note says to invoke
+    them via tool_call, since a direct call to a deferred name is rejected as an unknown tool.
     """
-    names = valid_tool_names or set()
+    direct = valid_tool_names or set()
+    deferred = set(deferred_tool_names) - direct
+    names = direct | deferred
     if "read_window_below" not in names:
         return ""
     gated = (
@@ -622,9 +653,14 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         ("computer_use" in names and "browser_navigate" in names,
          "When the app underneath is a browser, that means driving the "
          "user's browser rather than opening yours with browser_navigate."),
-        (True, "This is a prior, not a rule: when the request names its own target, follow the request.]"),
+        (True, "This is a prior, not a rule: when the request names its own target, follow the request."),
     )
-    return " ".join(text for ok, text in gated if ok)
+    note = " ".join(text for ok, text in gated if ok)
+    named = ("read_window_below", "computer_use") if "computer_use" in names else ("read_window_below",)
+    bridged = [name for name in named if name in deferred]
+    if bridged:
+        note += f" Call {' and '.join(bridged)} through the tool_call bridge (deferred behind tool search)."
+    return note + "]"
 
 
 # Models whose system prompt is sent as the 'developer' role (stronger instruction-following weight);
@@ -1027,6 +1063,42 @@ def _local_host_hints() -> list[str]:
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
 
+def bot_screen_note(running: bool, display: "str | None", holder: str) -> str:
+    """The one-line Bot Screen status the model sees — the prompt's ``_bot_screen_hint`` body,
+    parameterised so the display watcher can stage the same sentence as a per-turn note when a
+    screen starts or stops mid-session (#125830; the byte-stable prompt only converges at
+    compaction). ``holder`` is ``lease.AGENT``/``lease.HUMAN``; "" when there is nothing to say
+    (a stop with no display known, or an unknown holder on a running screen)."""
+    if running:
+        if not display:
+            return ""
+        held = ("a human holds it — do not drive the screen; ask them or wait" if holder == "human"
+                else "you hold it" if holder == "agent" else "")
+        if not held:
+            return ""
+        return (f"Bot Screen: this profile's own headless desktop is RUNNING on display {display} "
+                f"({held}). 'screen N' / ':N' / 'the bot screen' / 'your screen' means THIS screen: "
+                f"GUI apps you launch from the terminal already open there (their DISPLAY is routed "
+                f"to it), and display introspection (xrandr/xdotool/wmctrl) targets it. It is NOT "
+                f"the user's own display.")
+    return ("Bot Screen: this profile's own headless desktop is no longer running. Do not refer to "
+            "'the bot screen' or route GUI launches at it; GUI apps from the terminal open on the "
+            "user's own display again.")
+
+
+def _bot_screen_hint() -> str:
+    """One line naming this profile's running Bot Screen (#125830): the display, and who holds it.
+
+    Pure reads (``published_env`` + the lease file); never raises — a missing/unimportable
+    bot_desktop module or an unreadable lease must not break prompt construction. ``""`` when
+    no screen is running, so the block simply drops out of the environment hints."""
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
+    except Exception:
+        return ""
+
+
 def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
@@ -1075,6 +1147,10 @@ def build_environment_hints() -> str:
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
     hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
+    # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
+    if not is_remote_backend:
+        hints.append(_bot_screen_hint())
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 

@@ -89,8 +89,7 @@ class TestScanSkillCommands:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
@@ -153,8 +152,7 @@ class TestScanSkillCommands:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
@@ -215,9 +213,7 @@ class TestScanSkillCommands:
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
-            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             token = set_hermes_home_override(profile_a)
             try:
@@ -254,9 +250,7 @@ class TestScanSkillCommands:
         (profile_b / "config.yaml").write_text("{}\n", encoding="utf-8")
 
         with (
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
-            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             token = set_hermes_home_override(profile_b)
             try:
@@ -293,8 +287,7 @@ class TestScanSkillCommands:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
@@ -308,7 +301,7 @@ class TestScanSkillCommands:
             bare_commands = dict(get_skill_commands())
 
             assert "/telegram-only" in bare_commands
-            assert sc_mod._skill_commands_platform is None
+            # Platform cache is multi-slot now — just verify rescans happened
 
 
     # -- core-command collision guard (#31204 / #53450) ---------------------
@@ -464,7 +457,14 @@ class TestScanSkillCommands:
         observed_sizes = []
 
         def observing_parse(content):
-            observed_sizes.append(len(skill_commands_module._skill_commands))
+            # Cache is now _skill_commands_by_key; count skill commands in the cached map (for this identity)
+            key = (
+                skill_commands_module._resolve_skill_commands_platform(),
+                skill_commands_module._resolve_skill_commands_home(),
+                skill_commands_module._resolve_skill_commands_project(),
+            )
+            cached_map = skill_commands_module._skill_commands_by_key.get(key, {})
+            observed_sizes.append(len(cached_map))
             return real_parse(content)
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(

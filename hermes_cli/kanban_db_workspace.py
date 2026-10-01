@@ -675,6 +675,90 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _primary_checkout(path: Path) -> Optional[Path]:
+    """The repo's one primary checkout — first block of ``git worktree list
+    --porcelain``, which git always lists before the linked ones.
+
+    ``None`` when *path* is not in a repo git can list worktrees for. Callers
+    use it to read the facts creation reads (the checkout's ``HEAD``, its
+    distance from the trunk) from the checkout, not from a workspace cut out of it.
+    """
+    porcelain = _kb._git_out(path, "worktree", "list", "--porcelain")
+    if not porcelain:
+        return None
+    first = porcelain.split("\n\n", 1)[0]  # first block = the main worktree
+    for line in first.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree "):].strip()).expanduser()
+    return None
+
+
+def _worktree_base_decision(
+    repo_root: Path, *, board: Optional[str] = None, quiet: bool = False
+) -> tuple[str, Optional[str], str]:
+    """``(ref, commit, why)`` for the base a fresh card worktree branches from.
+
+    Single source of truth: :func:`_worktree_base_ref` (worktree creation) takes
+    ``ref``, and the worker's opening context states the same base — a context
+    that compared every workspace against the repo trunk alone called a
+    correctly-based worktree stale and advised re-deriving from the trunk, i.e.
+    discarding the line's commits (t_d12942db). ``why`` is the short qualifier the
+    context renders next to the ref; ``commit`` is ``None`` only when the ref
+    cannot be resolved to a commit at all.
+
+    ``quiet`` silences the WARNING lines for read-only callers (the opening
+    context), which would otherwise re-log a creation-time notice on every
+    render — the qualifier in ``why`` already carries the reason.
+    """
+    pinned = ""
+    try:
+        pinned = (_kb.read_board_metadata(board or _kb.get_current_board()).get("worktree_base") or "").strip()
+    except Exception:
+        pinned = ""
+    if pinned:
+        resolved = _kb._git_out(
+            repo_root, "rev-parse", "--verify", "--quiet", f"{pinned}^{{commit}}"
+        )
+        if resolved:
+            return pinned, resolved, "board `worktree_base` pin"
+        if not quiet:
+            _kb._log.warning(
+                "kanban: board %s pins worktree_base=%r, which does not resolve in %s; "
+                "falling back to the repo trunk",
+                board, pinned, repo_root,
+            )
+    try:
+        from hermes_cli.worktree_ops import _worktree_local_trunk
+
+        trunk = _worktree_local_trunk(str(repo_root))
+    except Exception:
+        trunk = None
+    head = _kb._git_out(repo_root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    if not trunk:
+        return "HEAD", head, "this repo has no `main`/`master` trunk"
+    # Staleness, not branch identity, is the trigger: a checkout standing at or
+    # ahead of the trunk is an active line whose worktrees are meant to continue
+    # it, while a checkout that has fallen behind would stamp the missing trunk
+    # commits' absence onto the new branch.
+    behind = _kb._git_out(repo_root, "rev-list", "--count", f"HEAD..{trunk}")
+    if behind is None or not behind.isdigit() or int(behind) == 0:
+        return "HEAD", head, f"at or ahead of `{trunk}`"
+    if not quiet:
+        _kb._log.warning(
+            "kanban: primary checkout at %s is %s commit(s) behind the trunk %r; "
+            "basing the new worktree on %r instead of its incidental HEAD",
+            _git_current_branch(repo_root) or "(detached)",
+            behind, trunk, trunk,
+        )
+    trunk_commit = _kb._git_out(
+        repo_root, "rev-parse", "--verify", "--quiet", f"{trunk}^{{commit}}"
+    )
+    return (
+        trunk, trunk_commit,
+        f"repo trunk; the primary checkout is {behind} commit(s) behind it",
+    )
+
+
 def _worktree_base_ref(repo_root: Path, *, board: Optional[str] = None) -> str:
     """Ref a fresh card worktree should branch from — not blindly ``HEAD``.
 
@@ -686,7 +770,8 @@ def _worktree_base_ref(repo_root: Path, *, board: Optional[str] = None) -> str:
     double-counted and a worker's first ``git log -1`` reported a stale
     revision unless it named the trunk explicitly.
 
-    Precedence (the first ref that resolves wins):
+    Precedence (the first ref that resolves wins) — resolved by
+    :func:`_worktree_base_decision`, which the opening context shares:
 
     1. the board's ``worktree_base`` metadata — an explicit pin for boards that
        deliberately build on a non-trunk line;
@@ -699,44 +784,7 @@ def _worktree_base_ref(repo_root: Path, *, board: Optional[str] = None) -> str:
        the hermes-agent install itself is worked), for a repo with no trunk at
        all, and when the trunk ref cannot be read.
     """
-    pinned = ""
-    try:
-        pinned = (_kb.read_board_metadata(board or _kb.get_current_board()).get("worktree_base") or "").strip()
-    except Exception:
-        pinned = ""
-    if pinned:
-        resolved = _kb._git_out(
-            repo_root, "rev-parse", "--verify", "--quiet", f"{pinned}^{{commit}}"
-        )
-        if resolved:
-            return pinned
-        _kb._log.warning(
-            "kanban: board %s pins worktree_base=%r, which does not resolve in %s; "
-            "falling back to the repo trunk",
-            board, pinned, repo_root,
-        )
-    try:
-        from hermes_cli.worktree_ops import _worktree_local_trunk
-
-        trunk = _worktree_local_trunk(str(repo_root))
-    except Exception:
-        trunk = None
-    if not trunk:
-        return "HEAD"
-    # Staleness, not branch identity, is the trigger: a checkout standing at or
-    # ahead of the trunk is an active line whose worktrees are meant to continue
-    # it, while a checkout that has fallen behind would stamp the missing trunk
-    # commits' absence onto the new branch.
-    behind = _kb._git_out(repo_root, "rev-list", "--count", f"HEAD..{trunk}")
-    if behind is None or not behind.isdigit() or int(behind) == 0:
-        return "HEAD"
-    _kb._log.warning(
-        "kanban: primary checkout at %s is %s commit(s) behind the trunk %r; "
-        "basing the new worktree on %r instead of its incidental HEAD",
-        _git_current_branch(repo_root) or "(detached)",
-        behind, trunk, trunk,
-    )
-    return trunk
+    return _worktree_base_decision(repo_root, board=board)[0]
 
 
 def _ensure_git_worktree(

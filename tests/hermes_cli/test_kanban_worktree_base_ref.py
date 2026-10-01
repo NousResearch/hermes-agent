@@ -82,6 +82,14 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # The fixture means *this* home: an ambient kanban override (workers are
+    # spawned with HERMES_KANBAN_DB/BOARD/WORKSPACES_ROOT injected) resolves
+    # elsewhere and would write these tests' rows into the live board.
+    for var in (
+        "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_ATTACHMENTS_ROOT",
+    ):
+        monkeypatch.delenv(var, raising=False)
     kb.init_db()
     return home
 
@@ -285,4 +293,118 @@ def test_opening_context_flags_a_workspace_that_is_behind_the_trunk(
     behind, ahead = _divergence(stale, "main")
     assert behind and ahead, "fixture must have a diverged stale workspace"
     assert f"{behind} behind / {ahead} ahead" in context
+    assert "⚠" in context
+
+
+# ---------------------------------------------------------------------------
+# t_d12942db: the comparison ref is the base the dispatcher would actually use
+# (the board's ``worktree_base`` pin, else the trunk, else the checkout's HEAD)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ahead_repo(tmp_path: Path) -> Path:
+    """Shaped like the hermes-agent install: the primary checkout stands on a
+    local line 0 behind / 1 ahead of ``main``.
+
+    Card worktrees are deliberately cut from that line, so comparing them
+    against ``main`` alone reports a correctly-based workspace as stale.
+    """
+    repo = tmp_path / "ahead"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", str(repo))
+    _git("-C", str(repo), "config", "user.email", "t@example.com")
+    _git("-C", str(repo), "config", "user.name", "t")
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    _git("-C", str(repo), "add", "README.md")
+    _git("-C", str(repo), "commit", "-qm", "init")
+    _git("-C", str(repo), "checkout", "-qb", "local-work")
+    (repo / "local.txt").write_text("local work\n", encoding="utf-8")
+    _git("-C", str(repo), "add", "local.txt")
+    _git("-C", str(repo), "commit", "-qm", "local work")
+    return repo
+
+
+def _pin_board(repo: Path, base: str) -> None:
+    """Create board ``pinned`` anchored on *repo* with ``worktree_base``."""
+    kb.create_board("pinned", default_workdir=str(repo))
+    meta_path = kb.board_metadata_path("pinned")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["worktree_base"] = base
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+
+def test_opening_context_names_a_pinned_base_without_calling_the_card_stale(
+    kanban_home: Path, diverged_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A board that deliberately builds off another line is not stale.
+
+    The dispatcher cuts the worktree from the pin; the context compared against
+    ``main`` anyway and told the worker to re-derive from it — advice that
+    discards the pinned line's commits.
+    """
+    repo = diverged_repo
+    _pin_board(repo, "experimental")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "pinned")
+    assert _rev(repo, "experimental") != _rev(repo, "main")
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="card", assignee="default",
+            workspace_kind="worktree", workspace_path=str(repo),
+        )
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        workspace = kbw.resolve_workspace(task, board="pinned")
+        kbw.set_workspace_path(conn, task_id, str(workspace))
+        assert _rev(workspace) == _rev(repo, "experimental")
+        context = kb.build_worker_context(conn, task_id)
+
+    base_ref_line = next(
+        (line for line in context.splitlines() if line.startswith("Base ref")),
+        "<no `Base ref` line>",
+    )
+    assert "experimental" in base_ref_line, context
+    assert "worktree_base" in base_ref_line, context
+    assert "0 behind / 0 ahead" in context, context
+    assert "⚠" not in context, context
+    assert "cut before card worktrees" not in context, context
+
+
+def test_opening_context_accepts_a_worktree_cut_from_an_ahead_of_trunk_checkout(
+    kanban_home: Path, ahead_repo: Path
+) -> None:
+    """A live line above the trunk is the base, not a stale workspace."""
+    repo = ahead_repo
+    assert _divergence(repo, "main") == (0, 1)
+    task_id = _worktree_card(kanban_home, repo, "t_bbbb0002")
+    workspace = repo / ".worktrees" / task_id
+    assert _rev(workspace) == _rev(repo, "local-work")
+
+    with kbc.connect() as conn:
+        context = kb.build_worker_context(conn, task_id)
+
+    base_line = next(
+        line for line in context.splitlines() if line.startswith("Base commit")
+    )
+    assert _rev(repo, "local-work")[:12] in base_line
+    assert "0 behind / 0 ahead" in context
+    assert "⚠" not in context
+    assert "cut before card worktrees" not in context
+
+
+def test_opening_context_still_flags_a_worktree_the_advancing_line_left_behind(
+    kanban_home: Path, ahead_repo: Path
+) -> None:
+    """The ahead-of-trunk carve-out must not silence real drift."""
+    repo = ahead_repo
+    task_id = _worktree_card(kanban_home, repo, "t_bbbb0003")
+    (repo / "later.txt").write_text("later work\n", encoding="utf-8")
+    _git("-C", str(repo), "add", "later.txt")
+    _git("-C", str(repo), "commit", "-qm", "later line work")
+
+    with kbc.connect() as conn:
+        context = kb.build_worker_context(conn, task_id)
+
+    assert "1 behind / 0 ahead" in context
     assert "⚠" in context

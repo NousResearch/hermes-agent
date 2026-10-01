@@ -4120,19 +4120,63 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
 _CTX_GIT_TIMEOUT = 10
 
 
+def _ctx_base_selection(workspace: Path) -> Optional[tuple[str, Optional[str], str]]:
+    """The base a fresh card worktree in this repo would be cut from, as
+    ``(ref, commit, why)``.
+
+    Resolved by the dispatcher's own rule
+    (:func:`hermes_cli.kanban_db_workspace._worktree_base_decision`) from the
+    repo's **primary** checkout — never from the workspace's own HEAD, which is
+    the thing being judged. ``None`` when that cannot be established (not a
+    repo, or no primary worktree git will name), so the caller falls back to the
+    trunk comparison.
+    """
+    try:
+        from hermes_cli.kanban_db_workspace import _primary_checkout, _worktree_base_decision
+
+        primary = _primary_checkout(workspace)
+        if primary is None:
+            return None
+        ref, commit, why = _worktree_base_decision(primary, quiet=True)
+        # A ``HEAD`` base with no resolvable commit would silently degrade into
+        # comparing the workspace with itself; leave it to the trunk fallback.
+        return (ref, commit, why) if commit else None
+    except Exception:
+        return None
+
+
+def _ctx_trunk_fallback(workspace: Path) -> Optional[tuple[str, Optional[str], str]]:
+    """Trunk-only base, for when :func:`_ctx_base_selection` cannot decide."""
+    try:
+        from hermes_cli.worktree_ops import _worktree_local_trunk
+
+        trunk = _worktree_local_trunk(str(workspace))
+    except Exception:
+        trunk = None
+    if not trunk:
+        return None
+    commit = _git_out(
+        workspace, "rev-parse", "--verify", "--quiet", f"{trunk}^{{commit}}",
+        timeout=_CTX_GIT_TIMEOUT,
+    )
+    return trunk, commit, "repo trunk"
+
+
 def _ctx_workspace_base(lines: list[str], task: Task) -> None:
     """State the commit a ``worktree`` workspace was cut from, and its distance
-    from the repo trunk.
+    from the base the dispatcher would cut it from.
 
-    Card worktrees branch from the repo trunk (:func:`_worktree_base_ref`), but
-    a workspace created before that (or cut by hand) can sit on a stale branch —
-    t_46fcdf7c's workspaces inherited ``experimental/visual-stage-20260930``
-    while the trunk sat ~110 commits away, so every worker's first ``git log -1``
-    reported a revision that was not the one the board builds on. Reporting the
-    HEAD, the base commit (fork point) and the left/right divergence here makes
-    a stale workspace visible in the opening context, before any work happens.
+    Card worktrees branch from :func:`_worktree_base_ref` — the board's
+    ``worktree_base`` pin, else the repo trunk when the primary checkout has
+    fallen behind it, else that checkout's ``HEAD`` — so the comparison here
+    resolves the ref the same way (:func:`_ctx_base_selection`). Comparing every
+    workspace against the repo trunk alone reported a correctly-based worktree
+    as stale and told the worker to re-derive from the trunk, advice that
+    discards the line's commits (t_d12942db: a pinned board, and a checkout
+    standing ahead of the trunk, both carry it). Drift is still reported: a
+    workspace the base has moved past is flagged.
 
-    Best-effort: no workspace on disk / not a repo / no trunk renders what it
+    Best-effort: no workspace on disk / not a repo / no base renders what it
     can and never raises (the context is a diagnostic, not a gate).
     """
     if (task.workspace_kind or "") != "worktree" or not task.workspace_path:
@@ -4147,25 +4191,28 @@ def _ctx_workspace_base(lines: list[str], task: Task) -> None:
     if not head:
         return
     branch = _git_out(workspace, "rev-parse", "--abbrev-ref", "HEAD", timeout=_CTX_GIT_TIMEOUT) or "(detached)"
-    try:
-        from hermes_cli.worktree_ops import _worktree_local_trunk
-
-        trunk = _worktree_local_trunk(str(workspace))
-    except Exception:
-        trunk = None
+    base = _ctx_base_selection(workspace) or _ctx_trunk_fallback(workspace)
     lines.append("## Workspace base")
     lines.append(f"HEAD: `{head[:12]}` on `{branch}`")
-    if not trunk:
+    if base is None:
         lines.append("Base commit: unknown — this repo has no `main`/`master` trunk to compare against")
         lines.append("")
         return
-    fork = _git_out(workspace, "merge-base", trunk, head, timeout=_CTX_GIT_TIMEOUT)
+    base_ref, base_commit, why = base
+    # ``HEAD`` names the *primary checkout's* HEAD, not this workspace's — quote
+    # the commit so the borrow cannot be misread.
+    token = f"`{base_ref}`" if base_ref != "HEAD" else f"`{(base_commit or head)[:12]}`"
+    cmd_ref = base_ref if base_ref != "HEAD" else (base_commit or head)[:12]
+    lines.append(f"Base ref: the primary checkout's HEAD {token} ({why})" if base_ref == "HEAD"
+                 else f"Base ref: {token} ({why})")
+    fork_ref = base_commit or base_ref
+    fork = _git_out(workspace, "merge-base", fork_ref, head, timeout=_CTX_GIT_TIMEOUT)
     lines.append(
-        f"Base commit (fork point with `{trunk}`): `{fork[:12]}`" if fork else
-        f"Base commit (fork point with `{trunk}`): unknown"
+        f"Base commit (fork point with {token}): `{fork[:12]}`" if fork else
+        f"Base commit (fork point with {token}): unknown"
     )
     counts = _git_out(
-        workspace, "rev-list", "--left-right", "--count", f"{trunk}...HEAD",
+        workspace, "rev-list", "--left-right", "--count", f"{fork_ref}...HEAD",
         timeout=_CTX_GIT_TIMEOUT,
     )
     behind = ahead = None
@@ -4177,14 +4224,23 @@ def _ctx_workspace_base(lines: list[str], task: Task) -> None:
         lines.append("")
         return
     lines.append(
-        f"Divergence: `git rev-list --left-right --count {trunk}...HEAD` = "
+        f"Divergence: `git rev-list --left-right --count {cmd_ref}...HEAD` = "
         f"{behind} behind / {ahead} ahead"
     )
-    if behind or ahead:
+    if behind:
+        drift = (
+            f"it was cut from a line that is not level with {token}" if ahead else
+            f"{token} has moved past it"
+        )
         lines.append(
-            f"_⚠ this workspace is {behind} behind / {ahead} ahead of `{trunk}`: it was "
-            f"cut before card worktrees were based on the repo trunk, or `{trunk}` moved "
-            f"since. Re-derive from `{trunk}` before trusting its contents._"
+            f"_⚠ this workspace is {behind} behind / {ahead} ahead of {token}: it is missing "
+            f"{behind} commit(s) of the base the dispatcher cuts card worktrees from, and {drift}. "
+            f"Re-derive from {token} before trusting its contents._"
+        )
+    elif ahead:
+        lines.append(
+            f"_This workspace is {ahead} ahead of {token} and 0 behind: it contains that base "
+            f"and continues it — its own card commits, once a card has any._"
         )
     lines.append("")
 

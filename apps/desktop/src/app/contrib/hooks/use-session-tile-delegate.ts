@@ -13,7 +13,7 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -473,29 +473,39 @@ export function useSessionTileDelegate({
           const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
           const owner = await ownerForStoredSession(storedSessionId)
 
-          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
+          const refresh = await transcriptRefreshIfBehind(storedSessionId, cached?.messages ?? [], {
             profile: profileScopeForSessionOwner(owner)
           })
 
-          if (refreshed) {
+          if (refresh) {
             updateSessionState(
               runtimeId,
               state => ({
                 ...state,
                 awaitingResponse: false,
                 busy: false,
-                messages: refreshed,
+                messages: refresh.messages,
                 pendingBranchGroup: null
               }),
               storedSessionId
             )
-            notify({
-              kind: 'warning',
-              message: translateNow('desktop.staleSessionBody'),
-              title: translateNow('desktop.staleSessionTitle')
-            })
 
-            return
+            // Only another view's own user row means this send would fork the
+            // chat (#65047). Server-side residue of this window's previous turn
+            // is what a turn that died server-side leaves behind, and the
+            // authoritative page already carries it, so grafting it and sending
+            // is the same call the primary composer makes — refusing here drops
+            // the Quick Entry text on the floor and the user only sees
+            // "Chat out of date".
+            if (refresh.competingView) {
+              notify({
+                kind: 'warning',
+                message: translateNow('desktop.staleSessionBody'),
+                title: translateNow('desktop.staleSessionTitle')
+              })
+
+              return
+            }
           }
         }
 

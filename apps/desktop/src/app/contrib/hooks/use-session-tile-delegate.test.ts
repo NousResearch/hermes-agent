@@ -724,6 +724,58 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
   })
 
+  it('grafts same-session residue and still sends when no user row is unknown to the tile', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps' })])
+
+    // The authoritative page carries the tile's own durable user row (row 1)
+    // plus the assistant/tool rows the window never streamed. No second client
+    // is involved: this is what a turn that died server-side leaves behind.
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId,
+      messages: [
+        { content: 'a', id: 1, role: 'user', timestamp: 1_000 },
+        { content: 'b', id: 2, role: 'assistant', timestamp: 2_000 },
+        { content: 'tool output', id: 3, role: 'tool', timestamp: 3_000 }
+      ]
+    })
+
+    const behind = createClientSessionState(storedId, [
+      { id: '1000-0-user', rowId: 1, role: 'user', parts: [textPart('a')] }
+    ])
+
+    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, behind]]) }
+    const seeds: unknown[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
+      sessionStateByRuntimeIdRef,
+      updateSessionState: vi.fn((id, updater, stored) => {
+        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
+        const next = updater(prev)
+        sessionStateByRuntimeIdRef.current.set(id, next)
+        seeds.push(next)
+
+        return next
+      })
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'residue tile send')
+
+    // The cache takes the refreshed rows ...
+    expect(seeds.at(-1)).toEqual(expect.objectContaining({ busy: false, messages: expect.any(Array) }))
+    expect((seeds.at(-1) as { messages: unknown[] }).messages.length).toBeGreaterThan(1)
+    // ... without the stale warning, and the send goes out.
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'work-vps',
+      'prompt.submit',
+      { session_id: runtimeId, text: 'residue tile send' },
+      1_800_000,
+      undefined
+    )
+  })
+
   it('allows submitToSession when the authoritative transcript is not ahead', async () => {
     setSessions([row({ id: storedId, profile: 'work-vps' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({

@@ -495,6 +495,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Token-aware second pass (#80269): re-run the pattern on shell-tokenized segments where quotes/escapes
     # are resolved, closing splice bypasses like `kick"start"`. Runs after the profile-flag check so both
     # passes apply independently.
+    has_lifecycle_command = bool(
+        _SERVICE_MANAGER_LIFECYCLE_RE.search(normalized)
+        or _GATEWAY_LIFECYCLE_PATTERN.search(normalized)
+    )
     for segment in _iter_command_segments(normalized):
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
@@ -505,7 +509,9 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
         # Suffixed-label tier on tokenized text too (#124700): quote-splicing inside a suffixed
         # label (`ai.hermes."ga"teway-work`) defeats both the raw-text regexes above — the
         # resolved token carries the label this install owns, so judge it here, per segment.
-        if _contains_suffixed_gateway_label(joined):
+        # Keep the label check command-shaped as well: prose, status queries, and other text that
+        # merely mentions the service label must not trip the lifecycle guard.
+        if has_lifecycle_command and _contains_suffixed_gateway_label(joined):
             return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable

@@ -65,6 +65,24 @@ def test_suffixed_label_of_this_install_is_blocked(monkeypatch):
         assert contains_gateway_lifecycle_command(command), command
 
 
+def test_suffixed_label_requires_a_lifecycle_command(monkeypatch):
+    """Mentioning this install's label is harmless unless paired with a lifecycle verb."""
+    monkeypatch.setattr(
+        "cron.lifecycle_guard._install_gateway_label_suffixes", _suffixes({"work"})
+    )
+    for prose in (
+        "echo ai.hermes.gateway-work",
+        'git commit -m "fix ai.hermes.gateway-work handling"',
+        "systemctl status ai.hermes.gateway-work",
+    ):
+        assert not contains_gateway_lifecycle_command(prose), prose
+    for lifecycle_command in (
+        "launchctl bootout gui/501/ai.hermes.gateway-work",
+        "systemctl stop ai.hermes.gateway-work.service",
+    ):
+        assert contains_gateway_lifecycle_command(lifecycle_command), lifecycle_command
+
+
 def test_suffixed_label_of_another_service_is_allowed(monkeypatch):
     """Same spellings, but the suffix belongs to no profile of this install:
     a different service — allowed (the over-match this PR fixes)."""

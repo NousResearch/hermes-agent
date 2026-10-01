@@ -286,6 +286,48 @@ describe('transcribeAudioClientDirect', () => {
     expect((init.body as FormData).get('model_id')).toBe('scribe_v2')
   })
 
+  // ElevenLabs tags non-speech by default ("[clicking]", "[beeping]"); a mic-open pop
+  // then reaches the chat as a user message. The backend relay honors
+  // stt.elevenlabs.tag_audio_events (default false); client-direct must too.
+  it('asks elevenlabs not to tag audio events unless configured', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: { ...directStt, wire: 'elevenlabs-stt', provider: 'elevenlabs', base_url: 'https://api.elevenlabs.io/v1', model: 'scribe_v2' },
+      tts: relay
+    })
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: '' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await transcribeAudioClientDirect(new Blob(['x']))
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.body as FormData).get('tag_audio_events')).toBe('false')
+  })
+
+  it('passes tag_audio_events through when the gateway enables it', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        wire: 'elevenlabs-stt',
+        provider: 'elevenlabs',
+        base_url: 'https://api.elevenlabs.io/v1',
+        model: 'scribe_v2',
+        tag_audio_events: true
+      },
+      tts: relay
+    })
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: '[laughs] hi' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await transcribeAudioClientDirect(new Blob(['x']))
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.body as FormData).get('tag_audio_events')).toBe('true')
+  })
+
   /** A fetch that only settles when its AbortSignal fires — a wedged STT endpoint. */
   function hangingFetch() {
     return vi.fn(

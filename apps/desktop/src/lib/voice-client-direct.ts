@@ -32,6 +32,8 @@ export interface DirectSttConfig {
   /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
    *  absent on older backends — a matching transcript is still returned as-is then. */
   hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
+  /** ElevenLabs only: `stt.elevenlabs.tag_audio_events`. Absent (older backends) = false, the relay's default. */
+  tag_audio_events?: boolean
 }
 
 export interface DirectTtsConfig {
@@ -352,6 +354,10 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
     if (stt.language) {
       form.set('language_code', stt.language)
     }
+
+    // ElevenLabs defaults to tagging non-speech ("[clicking]", "[beeping]"), which
+    // turns a mic-open pop into a user message. Match the relay: off unless configured.
+    form.set('tag_audio_events', String(stt.tag_audio_events === true))
 
     const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/speech-to-text`, {
       method: 'POST',

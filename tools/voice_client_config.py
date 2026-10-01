@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,13 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         api_key = tt._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:
             return _relay("no credentials")
-        return direct(STT_WIRE_ELEVENLABS, env_base_url("ELEVENLABS_STT_BASE_URL", tc.ELEVENLABS_STT_BASE_URL),
-                      api_key, section.get("model") or tc.DEFAULT_ELEVENLABS_STT_MODEL)
+        # Same default as the relay (transcription_cloud): no audio-event tags, so a
+        # mic-open pop transcribes as "" instead of a "[clicking]" user message.
+        return _direct(STT_WIRE_ELEVENLABS, provider,
+                       env_base_url("ELEVENLABS_STT_BASE_URL", tc.ELEVENLABS_STT_BASE_URL),
+                       api_key, section.get("model") or tc.DEFAULT_ELEVENLABS_STT_MODEL,
+                       language=language, timeout_s=timeout_s,
+                       tag_audio_events=is_truthy_value(section.get("tag_audio_events", False)))
     if provider == "deepinfra":
         api_key = tt._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:

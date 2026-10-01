@@ -510,3 +510,9 @@ def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, 
         pass
     checks = {c["name"]: c for c in json.loads(capsys.readouterr().out)["checks"]}
     assert checks["capability probe"]["ok"], checks["capability probe"]["detail"]
+
+
+def test_calver_requires_hermes_floor_fails_admission(tmp_path: Path) -> None:
+    report = validate_plugin_dir(_make_plugin(tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=2026.9.24"}))
+    assert not report.ok
+    assert any("CalVer" in failure for failure in report.failures)

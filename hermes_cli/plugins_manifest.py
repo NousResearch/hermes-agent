@@ -483,6 +483,15 @@ def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     current = running_hermes_version()
     if version_satisfies(spec, current):
         return None
+    target_versions = []
+    for clause in spec.split(","):
+        match = _VERSION_COMPARATOR_RE.match(clause.strip())
+        target = match.group(2) if match else clause.strip()
+        parsed = _version_tuple(target)
+        if parsed is not None:
+            target_versions.append(parsed)
+    if _version_tuple(current) is not None and any(version[0] >= 1000 for version in target_versions):
+        return f"requires hermes {spec}, running {current}; the requirement uses CalVer, but Hermes plugin requirements use the semver base-version space"
     return f"requires hermes {spec}, running {current}"
 
 

@@ -125,6 +125,16 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
             errors.append(f"readme: true needs a repo on {list(README_REPO_HOSTS)} (the site fetches it from the pinned commit); omit it for other forges")
 
 
+def _requires_hermes_version_space_valid(spec: str) -> bool:
+    """Catalog requirements use Hermes's semver base-version space, not CalVer."""
+    for clause in spec.split(","):
+        match = _COMPARATOR_RE.match(clause.strip())
+        target = re.sub(r"^(>=|<=|==|!=|>|<)\s*", "", clause)
+        if int(target.lstrip("v").split(".", 1)[0]) >= 1000:
+            return False
+    return True
+
+
 def _check_requires_hermes(spec: object, errors: list[str]) -> None:
     if not isinstance(spec, str):
         errors.append(f"requires_hermes must be a string, got {type(spec).__name__}")
@@ -132,10 +142,16 @@ def _check_requires_hermes(spec: object, errors: list[str]) -> None:
     if spec.strip() == "":
         return  # empty = no constraint
     for clause in spec.split(","):
-        if not _COMPARATOR_RE.match(clause.strip()):
+        clause = clause.strip()
+        if not _COMPARATOR_RE.match(clause):
             errors.append(
-                f"requires_hermes clause {clause.strip()!r} is not a valid "
+                f"requires_hermes clause {clause!r} is not a valid "
                 "comparator spec (expected e.g. '>=0.19')"
+            )
+        elif not _requires_hermes_version_space_valid(clause):
+            errors.append(
+                f"requires_hermes clause {clause!r} uses CalVer; "
+                "Hermes requirements must use the semver base-version space"
             )
 
 

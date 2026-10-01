@@ -26,6 +26,8 @@ export interface BackendConnectionState<TProcess, TConnection> {
     claim: (current: TProcess) => Promise<unknown>
   ): Promise<BackendProcessOwner<TProcess> | null>
   clearForCurrentProcess(owner: BackendProcessOwner<TProcess>): boolean
+  markProcessReady(owner: BackendProcessOwner<TProcess>): boolean
+  isProcessReady(): boolean
   clearPromiseForAttempt(attempt: BackendConnectionAttempt<TConnection>): boolean
   getProcess(): TProcess | null
   getPromise(): Promise<TConnection> | null
@@ -40,11 +42,13 @@ export function createBackendConnectionState<TProcess, TConnection>(): BackendCo
   let promise: Promise<TConnection> | null = null
   let pendingPromise: Promise<TConnection> | null = null
   let stopping: PendingBackendStop<TProcess> | null = null
+  let processReady = false
 
   function invalidate(): TProcess | null {
     const currentProcess = process
     generation += 1
     process = null
+    processReady = false
     promise = null
     pendingPromise = null
 
@@ -104,6 +108,7 @@ export function createBackendConnectionState<TProcess, TConnection>(): BackendCo
       }
 
       process = nextProcess
+      processReady = false
 
       return { generation, process: nextProcess }
     },
@@ -130,6 +135,7 @@ export function createBackendConnectionState<TProcess, TConnection>(): BackendCo
       }
 
       process = null
+      processReady = false
       promise = null
       pendingPromise = null
 
@@ -145,6 +151,19 @@ export function createBackendConnectionState<TProcess, TConnection>(): BackendCo
       pendingPromise = null
 
       return true
+    },
+
+    markProcessReady(owner: BackendProcessOwner<TProcess>): boolean {
+      if (owner.generation !== generation || owner.process !== process) {
+        return false
+      }
+
+      processReady = true
+      return true
+    },
+
+    isProcessReady(): boolean {
+      return processReady
     },
 
     getProcess(): TProcess | null {

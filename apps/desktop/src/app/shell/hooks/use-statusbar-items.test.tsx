@@ -4,6 +4,8 @@ import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $connection,
@@ -25,10 +27,43 @@ const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<nul
 // The focused pane is derived from the layout tree; a settable atom stands in
 // so a test can focus a tile without building a pane tree.
 vi.mock('@/store/session-focus', async () => {
-  const { atom } = await import('nanostores')
+  const { atom, computed } = await import('nanostores')
+  const { $selectedStoredSessionId } = await import('@/store/session')
 
-  return { $focusedTreePaneId: atom<null | string>(null) }
+  // The focused pane is derived from the layout tree; a settable atom stands
+  // in so a test can focus a tile without building a pane tree.
+  const $focusedTreePaneId = atom<null | string>(null)
+
+  // The preview store (reached via session-states) derives $visiblePreviewTabs
+  // from $focusedStoredSessionId at import time, and the timer tests depend on
+  // the REAL derivation (tile focus overrides the primary selection), so the
+  // mock mirrors session-focus's shape instead of stubbing a static atom.
+  const TILE_PANE_PREFIX = 'session-tile:'
+
+  return {
+    $focusedTreePaneId,
+    $focusedStoredSessionId: computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+      active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
+    )
+  }
 })
+
+// $focusedStoredSessionId derives from the LAYOUT TREE ($activeTreeGroup +
+// $layoutTree), not from session-focus's pane atom: focusing a tile means the
+// main zone's active pane IS that tile. Drive the tree the same way.
+const MAIN_GROUP_ID = 'statusbar-test-main'
+
+function focusPane(storedId: null | string): void {
+  const tilePane = storedId ? `session-tile:${storedId}` : null
+
+  $layoutTree.set(
+    tilePane
+      ? group(['workspace', tilePane], { active: tilePane, id: MAIN_GROUP_ID })
+      : group(['workspace'], { active: 'workspace', id: MAIN_GROUP_ID })
+  )
+  noteActiveTreeGroup(MAIN_GROUP_ID)
+  $focusedTreePaneId.set(tilePane)
+}
 
 const wrapper = ({ children }: { children: ReactNode }) => <MemoryRouter>{children}</MemoryRouter>
 
@@ -62,7 +97,7 @@ afterEach(() => {
   $connection.set(null)
   $currentCwd.set('')
   $sessionTiles.set([])
-  $focusedTreePaneId.set(null)
+  focusPane(null)
   $selectedStoredSessionId.set(null)
   $sessions.set([])
   $sessionStartedAt.set(null)
@@ -91,7 +126,7 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
         storedSessionId: 'tile-remote'
       }
     ])
-    $focusedTreePaneId.set('session-tile:tile-remote')
+    focusPane('tile-remote')
     // A focused tile never inherits the primary's cwd; its stored row carries it.
     $sessions.set([{ cwd: '/srv/bot/workspace', id: 'tile-remote' }] as never)
 
@@ -133,7 +168,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     $selectedStoredSessionId.set('primary')
     $sessionStartedAt.set(4_000)
     $sessions.set([{ id: 'primary', started_at: dayOldRowSeconds }] as never)
-    $focusedTreePaneId.set(null)
+    focusPane(null)
 
     const item = sessionTimerItem()
 
@@ -148,7 +183,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     $selectedStoredSessionId.set('primary')
     $sessionStartedAt.set(4_000)
     $sessions.set([{ id: 'tile-old', started_at: dayOldRowSeconds }] as never)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
 
     const item = sessionTimerItem()
     const since = timerSince(item)
@@ -166,15 +201,15 @@ describe('statusbar session timer — focused since (#103123)', () => {
 
     $selectedStoredSessionId.set('primary')
     now.mockReturnValue(10_000)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
     expect($tileSessionFocusStartedAt.get()).toEqual({ since: 10_000, storedId: 'tile-old' })
 
     now.mockReturnValue(20_000)
-    $focusedTreePaneId.set(null)
+    focusPane(null)
     expect($tileSessionFocusStartedAt.get()?.since).toBe(10_000)
 
     now.mockReturnValue(30_000)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
     expect($tileSessionFocusStartedAt.get()).toEqual({ since: 30_000, storedId: 'tile-old' })
 
     now.mockRestore()
@@ -184,7 +219,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     $selectedStoredSessionId.set('primary')
     $sessionStartedAt.set(4_000)
     $sessions.set([{ id: 'tile-old', started_at: dayOldRowSeconds }] as never)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
     $tileSessionFocusStartedAt.set(null)
 
     const item = sessionTimerItem()
@@ -218,7 +253,7 @@ describe('useStatusbarItems session timer — runtime cache anchor', () => {
     $sessionStates.set({
       'branch-runtime': { ...createClientSessionState('branch-stored'), runtimeStartedAt: branchRuntimeStartedAt }
     } as never)
-    $focusedTreePaneId.set('session-tile:branch-stored')
+    focusPane('branch-stored')
 
     const item = sessionTimerItem()
     const since = timerSince(item)

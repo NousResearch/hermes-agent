@@ -77,19 +77,12 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/gateway.py", "node"): (
-        "Fallback rung of _append_node_dir_for_service(), after the managed "
-        "dirs from iter_hermes_node_dirs() are already appended."
-    ),
     ("hermes_cli/main_tui_launch.py", "node"): (
-        "_ensure_tui_node()'s idempotence gate: the question really is 'is "
-        "node already discoverable on PATH', before bootstrapping one."
+        "PM-composed launch context: `which(node)` runs against the PATH "
+        "pm.ensure('node'|'npm') just composed (store dirs first), not the ambient one."
     ),
     ("hermes_cli/main_tui_launch.py", "npm"): (
-        "Same _ensure_tui_node() gate as node."
-    ),
-    ("hermes_cli/main_install_repair.py", "npm"): (
-        "_resolve_node_runtime_npm()'s WSL re-scan: PATH minus /mnt/* IS the question."
+        "Same PM-composed launch context as the node lookup above."
     ),
     ("hermes_cli/source_build.py", "node"): (
         "PM-composed build context: `which(node)` runs against the PATH pm's "

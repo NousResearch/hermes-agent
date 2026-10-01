@@ -50,6 +50,21 @@ export interface AudioTtsLeaseResponse {
   error?: string
 }
 
+/** `POST /api/audio/stt-lease` — local STT pre-load driven by voice-input sessions. */
+export interface AudioSttLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
+  action?: string
+  /** Whether the configured engine was actually warmed (`noop` for cloud providers carries false). */
+  warmed?: boolean
+  provider?: string
+  error?: string
+}
+
 export interface ElevenLabsVoice {
   label: string
   name: string
@@ -149,7 +164,7 @@ export interface OAuthPollResponse {
 export interface FreeTierStatus {
   /** An identity exists AND the free tier is on: connectors ride on it, and so
    *  does inference when nothing else carries it. Whether inference actually
-   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier_route`). */
   available: boolean
   enabled: boolean
   has_guest: boolean
@@ -467,6 +482,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -486,6 +502,7 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    barge_in?: unknown
     barge_in_threshold_multiplier?: unknown
     silence_duration?: unknown
   }
@@ -566,6 +583,12 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
+   *  never-closed run — its in-flight execution is held by a live process.
+   *  Unlike {@link is_active} (a 300s activity window) it stays true through a
+   *  long tool call and is false for a zombie whose process died (#88443).
+   *  Undefined against older backends and for non-cron rows. */
+  scheduler_owned?: boolean
   last_active: number
   message_count: number
   model: null | string
@@ -579,6 +602,10 @@ export interface SessionInfo {
   _reset_from?: null | string
   /** Parent of a genuine /branch fork. The sidebar nests only these. */
   _branched_from?: null | string
+  /** True for an internal delegate_task child. Exact-id endpoints return these
+   *  rows for direct watch/resume, but ordinary session lists must not surface
+   *  them. Undefined against backends predating the projection. */
+  is_internal_child?: boolean
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the
@@ -637,6 +664,7 @@ export type TimelineDisplayMetadata =
   | { display_text: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
+  | { error?: string; error_surface?: unknown }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -713,7 +741,11 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Order the backend actually applied, echoed back from the request.
+     *  Absent on backends that predate the `order` param: they answered from
+     *  the OLDEST row while still returning this object, so a page may only be
+     *  read as a tail when this is `'latest'` (see `pageHonorsLatestOrder`). */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string
@@ -827,6 +859,8 @@ export interface UsageStats {
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number
+  /** Successful context compressions in the current live agent runtime. */
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_estimated?: boolean
@@ -1154,8 +1188,9 @@ export interface SkillInfo {
   name: string
   /** Total observed activity (use + view + patch). Absent on older backends. */
   usage?: number
-  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
-  provenance?: 'agent' | 'bundled' | 'hub'
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
+   * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
+  provenance?: 'agent' | 'bundled' | 'external' | 'hub'
 }
 
 /** One entry of the built-in optional-skills catalog (optional-skills/ in the
@@ -1621,6 +1656,11 @@ export interface ModelAssignmentRequest {
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
 export interface StaleAuxAssignment {
+  /** Endpoint the pin bills, when the source knows it (the auxiliary config
+   *  read carries it; the switch echo doesn't). Part of the desktop's
+   *  stale-aux dismissal fingerprint so a repointed endpoint re-arms the
+   *  warning. Optional: backend `stale_aux` responses predate the field. */
+  base_url?: string
   task: string
   provider: string
   model: string

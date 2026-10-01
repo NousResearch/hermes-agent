@@ -367,12 +367,14 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             continue
 
         if len(matches) > 1 and not replace_all:
+            _note_edit_match(None, "ambiguous")
             locations = _format_match_locations(content, matches)
             return content, 0, None, (
                 f"Found {len(matches)} matches for old_string. "
                 f"Provide more context to make it unique, or use replace_all=True. "
                 f"Matches:\n{locations}")
         if replace_all and len(matches) > 1 and strategy_name in SIMILARITY_STRATEGIES:
+            _note_edit_match(None, "ambiguous")
             return content, 0, None, (
                 f"Found {len(matches)} approximate matches via the "
                 f"'{strategy_name}' strategy; replace_all only applies to exact "
@@ -392,17 +394,63 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         new_content = _apply_replacements(
             content, matches, effective_new,
             old_string=old_string if strategy_name != "exact" else None)
+        _note_edit_match(strategy_name)
         return new_content, len(matches), strategy_name, None
 
+    _note_edit_match(None, "no_match")
     return content, 0, None, "Could not find a match for old_string in the file"
+
+
+def _note_edit_match(strategy: Optional[str], miss: Optional[str] = None) -> None:
+    """Report to shared metrics which strategy landed (or why none did); a no-op unless a
+    metered patch tool call is in progress."""
+    try:
+        from hermes_cli.observability.shared_metrics_harness import note_edit_match
+    except Exception:
+        return
+    note_edit_match(strategy, miss)
 
 
 # ── Escape-drift guards ──────────────────────────────────────────────────
 
+def _detect_newline_literal_drift(content: str, matches: list[Span],
+                                  old_string: str, new_string: str) -> Optional[str]:
+    """Error string when a literal two-character ``\\n`` in the arguments stands in
+    for a real line break in the file (arguments JSON-escaped one extra time), else None.
+
+    Fires when some matched region contains a real newline and old_string holds MORE
+    literal ``\\n`` than that region. old_string is copied from the file, so a genuine
+    edit has equal counts even when the code legitimately contains ``"\\n"``; only the
+    surplus is drift. Regions are compared one by one because joining them would
+    multiply the file-side count under replace_all. new_string must carry a literal
+    ``\\n`` too: that is what gets written in place of a line break, since
+    _maybe_unescape_new_string deliberately never rewrites ``\\n``. ``\\r`` needs no
+    guard here -- that helper converts it whenever the region has a real CR. Drift in
+    new_string alone is indistinguishable from an edit that adds a ``\\n`` literal.
+    """
+    if "\\n" not in new_string:
+        return None
+    old_literals = old_string.count("\\n")
+    for start, end in matches:
+        region = content[start:end]
+        if "\n" in region and old_literals > region.count("\\n"):
+            return (
+                "Escape-drift detected: old_string contains more literal "
+                "'\\\\n' sequences than the matched region of the file, which "
+                "has real line breaks there instead. This is almost always a "
+                "tool-call serialization artifact where a line break got escaped "
+                "one extra time; new_string would write it as backslash + n. "
+                "Re-read the file with read_file and pass old_string/new_string "
+                "with actual line breaks, keeping only the '\\\\n' sequences "
+                "that appear literally in the file.")
+    return None
+
+
 def _detect_escape_drift(content: str, matches: list[Span],
                          old_string: str, new_string: str) -> Optional[str]:
     """Error string when new_string carries tool-call escape artifacts, else None:
-    ``\\'``/``\\"`` in both strings but not the matched region, or doubled backslash runs."""
+    ``\\'``/``\\"`` in both strings but not the matched region, doubled backslash
+    runs, or a literal ``\\n`` standing in for a real line break."""
     has_quote_suspects = "\\'" in new_string or '\\"' in new_string
     if not has_quote_suspects and "\\" not in old_string:
         return None
@@ -420,6 +468,9 @@ def _detect_escape_drift(content: str, matches: list[Span],
                     f"prefixed with a spurious backslash. Re-read the file with "
                     f"read_file and pass old_string/new_string without "
                     f"backslash-escaping {plain!r} characters.")
+    newline_drift = _detect_newline_literal_drift(content, matches, old_string, new_string)
+    if newline_drift:
+        return newline_drift
     return _detect_backslash_doubling(matched_regions, old_string, new_string)
 
 
@@ -596,12 +647,3 @@ def format_no_match_hint(error: Optional[str], match_count: int,
         return ""
     hint = find_closest_lines(old_string, content)
     return "\n\nDid you mean one of these sections?\n" + hint if hint else ""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

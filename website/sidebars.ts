@@ -95,6 +95,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/mixture-of-agents',
             'user-guide/features/personality',
             'user-guide/features/skins',
+            'user-guide/features/language-packs',
             'user-guide/features/plugins',
             'user-guide/features/built-in-plugins',
             'user-guide/features/plugin-catalog',

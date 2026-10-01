@@ -22,6 +22,42 @@ def _cli_turn_route_key(session_id) -> str | None:
     return f"cli:{session_id}" if session_id else None
 
 
+def _compression_root(session_db, session_id):
+    """Walk parent links created by compression rotation back to the conversation's first row.
+
+    Branches and other parent links are new conversations and stop the walk. Fails open."""
+    seen = {session_id}
+    try:
+        while True:
+            parent_id = (session_db.get_session(session_id) or {}).get("parent_session_id")
+            if not parent_id or parent_id in seen:
+                return session_id
+            if (session_db.get_session(parent_id) or {}).get("end_reason") != "compression":
+                return session_id
+            seen.add(parent_id)
+            session_id = parent_id
+    except Exception:
+        return session_id
+
+
+def _cli_route_key(cli) -> str | None:
+    """Durable routing key of the logical CLI conversation, shared by commands and turns.
+
+    The identity is captured once and kept when compression rotation moves ``session_id`` to a
+    child row; ``_reset_cli_route_identity`` starts a new one (/new, /resume, /branch)."""
+    identity = getattr(cli, "_route_conversation_id", None)
+    if not identity:
+        session_id = getattr(cli, "session_id", None)
+        identity = _compression_root(getattr(cli, "_session_db", None), session_id) if session_id else None
+        cli._route_conversation_id = identity
+    return _cli_turn_route_key(identity)
+
+
+def _reset_cli_route_identity(cli) -> None:
+    """Forget the logical conversation identity; the next use derives it from ``session_id``."""
+    cli._route_conversation_id = None
+
+
 def _single_query_clarify_callback(questions: list) -> dict:
     """Headless clarify answer for ``hermes chat -q``.
 
@@ -582,7 +618,7 @@ class CLIAgentSetupMixin:
                     # Derive a distinct durable route key for CLI middleware. This keeps the
                     # physical/session identity fields separate while preserving CLI route state
                     # across turns without pretending it is a gateway session key.
-                    session_key=_cli_turn_route_key(cli_session_id),
+                    session_key=_cli_route_key(self),
                     source="cli",
                     is_user_turn=True,
                     is_first_turn=not bool(getattr(self, "conversation_history", None)),

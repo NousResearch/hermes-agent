@@ -9,7 +9,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { clampRectToWorkArea, petOverlayClickThrough, resolvePetOverlayBounds, shouldPopInOnOverlayClosed } from './pet-overlay'
+import {
+  clampRectToWorkArea,
+  petOverlayClickThrough,
+  resolvePetOverlayBounds,
+  shouldPopInOnOverlayClosed
+} from './pet-overlay'
 
 test('petOverlayClickThrough is off on Linux, where forward:true never re-arms the sprite', () => {
   assert.equal(petOverlayClickThrough('darwin'), true)

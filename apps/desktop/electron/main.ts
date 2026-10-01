@@ -14391,7 +14391,9 @@ function spawnPetOverlayWindow(bounds) {
     // pop the pet back in so it doesn't stay hidden. Never during a quit:
     // popInPet() persists $petOverlayActive=false, which would wipe the
     // popped-out state the next boot's restorePetOverlay() needs (#55920).
-    if (shouldPopInOnOverlayClosed({ appQuitting, mainWindowAlive: Boolean(mainWindow && !mainWindow.isDestroyed()) })) {
+    if (
+      shouldPopInOnOverlayClosed({ appQuitting, mainWindowAlive: Boolean(mainWindow && !mainWindow.isDestroyed()) })
+    ) {
       mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'pop-in' })
     }
   })
@@ -15399,6 +15401,7 @@ function createWindow() {
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => {
     schedulePersistWindowState.flush()
+
     // On Windows/Linux, closing the primary window IS quitting (the
     // window-all-closed handler calls app.quit()). Latch the quit flag here,
     // before 'closed' fires closePetOverlay() — otherwise the overlay's

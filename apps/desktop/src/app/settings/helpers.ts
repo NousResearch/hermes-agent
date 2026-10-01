@@ -305,6 +305,7 @@ const BUILTIN_TTS_PROVIDERS = new Set([
   'gemini',
   'neutts',
   'kittentts',
+  'kokoro',
   'piper',
   'deepinfra'
 ])

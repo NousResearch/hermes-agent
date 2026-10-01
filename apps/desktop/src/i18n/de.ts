@@ -1437,6 +1437,9 @@ export const deOverrides = {
           model: 'KittenTTS-Modell',
           voice: 'KittenTTS-Stimme'
         },
+        kokoro: {
+          voice: 'Kokoro-Stimme'
+        },
         piper: {
           voice: 'Piper-Stimme'
         },

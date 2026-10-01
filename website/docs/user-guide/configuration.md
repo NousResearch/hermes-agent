@@ -2128,7 +2128,7 @@ Legitimately slow work is not penalized: streaming responses, tool heartbeats (e
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "deepinfra"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "kokoro" | "piper" | "deepinfra"
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
   keep_warm_seconds: 60         # Keep a local engine loaded this long after the last speech toggle turns off (0 = unload at once)
   edge:

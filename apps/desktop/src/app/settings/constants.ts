@@ -343,6 +343,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   ],
   'tts.kittentts.voice': ['Jasper'],
   'tts.piper.voice': ['en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],
+  'tts.kokoro.voice': ['af_heart', 'af_bella', 'am_michael', 'bf_emma', 'bm_george'],
   'tts.neutts.model': ['neuphonic/neutts-air-q4-gguf', 'neuphonic/neutts-air-q8-gguf', 'neuphonic/neutts-air'],
   // Text-to-speech backends — kept in sync with the built-in source of truth
   // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
@@ -357,6 +358,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'gemini',
     'neutts',
     'kittentts',
+    'kokoro',
     'piper'
   ],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
@@ -400,6 +402,7 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.model',
   'tts.kittentts.voice',
   'tts.piper.voice',
+  'tts.kokoro.voice',
   'tts.deepinfra.model',
   'tts.deepinfra.voice'
 ])
@@ -539,6 +542,9 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     kittentts: {
       model: 'KittenTTS Model',
       voice: 'KittenTTS Voice'
+    },
+    kokoro: {
+      voice: 'Kokoro Voice'
     },
     piper: {
       voice: 'Piper Voice'
@@ -794,6 +800,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.kittentts.model',
       'tts.kittentts.voice',
       'tts.piper.voice',
+      'tts.kokoro.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
       'stt.local.model',

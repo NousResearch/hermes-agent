@@ -1006,6 +1006,9 @@ export const ru = defineLocale({
           model: 'Модель KittenTTS',
           voice: 'Голос KittenTTS'
         },
+        kokoro: {
+          voice: 'Голос Kokoro'
+        },
         piper: {
           voice: 'Голос Piper'
         },

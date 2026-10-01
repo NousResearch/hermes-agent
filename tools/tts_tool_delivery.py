@@ -54,6 +54,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
+    "kokoro": 3000,       # local 82M model; phonemizer pass is the practical constraint
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
 }
 

@@ -131,6 +131,11 @@ _PYTHON_POST_SETUP_HOOKS: dict = {
         always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",
                 "Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md",
                 "Switch voices by setting tts.piper.voice in config.yaml")),
+    "kokoro": _python_hook(
+        "kokoro_onnx", "kokoro", "kokoro", "Installing kokoro-onnx (~350MB model downloads on first use, CPU-only)...",
+        always=("Default voice: af_heart — full list: "
+                "https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md",
+                "Switch voices by setting tts.kokoro.voice in config.yaml")),
     "ddgs": _python_hook(
         "ddgs", "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...",
         always=("No API key required. DuckDuckGo enforces server-side rate limits.",

@@ -256,6 +256,13 @@ kittentts = [
 piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
 ]
+# Same platform shape as piper: onnxruntime (no Intel macOS wheel, no win_arm64) plus
+# soundfile. kokoro-onnx's upstream requires-python caps below 3.14 (same ceiling as
+# neutts). Kokoro-82M v1.0 ONNX weights (~350MB) download on first use, not at install.
+kokoro = [
+  "kokoro-onnx==0.6.1; python_version < '3.14' and (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+  "soundfile==0.14.0; python_version < '3.14' and (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+]
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
@@ -607,6 +614,9 @@ neutts = "python_version < '3.14'"
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
 piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
+# Kokoro: same onnxruntime shape as KittenTTS/Piper (no Intel macOS wheel, no win_arm64);
+# kokoro-onnx's upstream requires-python caps below 3.14 (same ceiling as neutts).
+kokoro = "python_version < '3.14' and (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
 
 [tool.uv]
 # uv otherwise enables the dev group by default, including in payload builds.
@@ -755,6 +765,9 @@ parallel-web = false
 pathspec = false
 pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
+# kokoro-onnx==0.6.1 uploaded 2026-08-19T00:40:35.746Z — the cutoff must land after
+# the fractional second or uv filters the exact pinned release out of the resolve.
+kokoro-onnx = "2026-08-19T00:41:00Z"
 prompt-toolkit = false
 psutil = false
 pvporcupine = false

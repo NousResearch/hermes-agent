@@ -537,6 +537,9 @@ export const zhHantSettings = {
           model: 'KittenTTS 模型',
           voice: 'KittenTTS 語音'
         },
+        kokoro: {
+          voice: 'Kokoro 語音'
+        },
         piper: {
           voice: 'Piper 語音'
         }

@@ -2459,6 +2459,8 @@ DEFAULT_CONFIG = {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
+        # Exact origin -> helper command that prints an emailed/SMS one-time code (browser_vault_enter_code).
+        "otp_commands": {},
     },
     "secrets": {
         # Optional ordering of enabled sources (e.g. [onepassword, bitwarden]); default registration

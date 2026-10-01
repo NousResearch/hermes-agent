@@ -45,7 +45,8 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
+                    "pending_controls", "execution_generation")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -259,12 +260,13 @@ class PeerRunsHTTPClient:
 
     def __init__(
         self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
-        receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
+        receipt_db_path: Path | str | None = None, proof_install_id: str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
+        self.proof_install_id = proof_install_id
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
         if poll_min_seconds <= 0 or poll_max_seconds < poll_min_seconds:
@@ -336,12 +338,21 @@ class PeerRunsHTTPClient:
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
         # A renewal never follows a redirect: it would restart the request outside its budget.
-        reject_redirects = _ROOM_GRANT_REQUEST_BUDGET.get() is not None
+        reject_redirects = self.proof_install_id is not None or _ROOM_GRANT_REQUEST_BUDGET.get() is not None
         timeout = self.timeout_seconds
         deadline, ambiguous = time.monotonic() + timeout, method == "POST"
+        body_bytes = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
+        proof_state = None
+        if self.proof_install_id is not None and room_grant:
+            from gateway.hosted_room_proof import request_proof
+            authorization, proof_key, proof_mac = request_proof(
+                room_grant, installation_id=self.proof_install_id, method=method, path=path, body=body_bytes or b'',
+                headers={"Content-Type": "application/json", **(headers or {})})
+            proof_state = proof_key, proof_mac
+            headers = {**(headers or {}), 'Authorization': authorization}
         request = urllib.request.Request(
             f"{self.base_url}{path}", method=method,
-            data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
+            data=body_bytes,
             headers={
                 "Authorization": (
                     f"HermesRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
@@ -356,11 +367,19 @@ class PeerRunsHTTPClient:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
                     ambiguous=ambiguous)
+                self._verify_proof_response(proof_state, response, raw, ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
             try:
                 if reject_redirects and exc.code in {301, 302, 303, 307, 308}:
                     raise PeerRunsHTTPError(
                         "peer renewal request refused an HTTP redirect", status_code=exc.code) from exc
+                if proof_state is not None:
+                    import io
+                    raw_error = _read_body(exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES,
+                                           deadline=deadline, kind=" error", ambiguous=ambiguous)
+                    self._verify_proof_response(proof_state, exc, raw_error, ambiguous=ambiguous)
+                    exc = urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers,
+                                                 io.BytesIO(raw_error.encode('utf-8')))
                 self._raise_http_error(exc, method=method, path=path, deadline=deadline)
             except PeerRunsHTTPError as failure:
                 if probe_key is not None and exc.code in {401, 403}:
@@ -379,6 +398,17 @@ class PeerRunsHTTPClient:
         if not isinstance(payload, dict):
             raise PeerRunsHTTPError("peer returned a non-object response")
         return payload
+
+    @staticmethod
+    def _verify_proof_response(state, response, body, *, ambiguous):
+        if state is None:
+            return
+        from gateway.hosted_room_proof import verify_response, RESPONSE_HEADER
+        try:
+            verify_response(*state, response.status, body.encode('utf-8'), response.headers.get(RESPONSE_HEADER))
+        except ValueError as exc:
+            # An unverified endpoint's 4xx is no evidence that the intended target rejected admission.
+            raise PeerRunsHTTPError('peer installation response proof failed', ambiguous=ambiguous) from exc
 
     @staticmethod
     def _raise_http_error(
@@ -583,11 +613,14 @@ class PeerRunsHTTPClient:
         if receipt is None:
             return {"active": False, "task_id": None}
         status = self._poll_receipt(receipt, grant=grant)
+        approval = next((p for p in status.get("pending_controls", []) if p.get("kind") == "approval"), None)
+        if approval is not None:
+            approval = {**approval, "request_id": approval["prompt_id"]}
         return {
             "active": status.get("status") in _ACTIVE_RUN_STATES, "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
             "status": status.get("status"), "run_id": status.get("run_id"),
-            "approval": status.get("approval")}
+            "approval": approval or status.get("approval")}
 
     def approve_receipt(
         self, *, task_id: str, execution_generation: int, request_id: str, choice: str, grant: str
@@ -600,8 +633,15 @@ class PeerRunsHTTPClient:
         if not request_id:
             raise PeerRunsHTTPError("an exact approval request_id is required")
         self._require_room_grant(grant)
-        return self._post_run_action(
-            record, "approval", body={"choice": choice, "request_id": request_id}, grant=grant)
+        body = {"choice": choice, "request_id": request_id}
+        if self.proof_install_id is not None:
+            status = self._poll_receipt(record, grant=grant)
+            prompt = next((p for p in status.get("pending_controls", [])
+                           if p.get("kind") == "approval" and p.get("prompt_id") == request_id), None)
+            if prompt is None:
+                raise PeerRunsHTTPError("the exact peer approval is no longer pending")
+            body["execution_generation"] = prompt["execution_generation"]
+        return self._post_run_action(record, "approval", body=body, grant=grant)
 
     def _post_run_action(
         self, record: Mapping[str, Any], action: str, *, body: dict[str, Any], grant: str

@@ -218,6 +218,7 @@ class RoomDriverStatus(Result):
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
+    peer_cleanup: list[dict[str, JsonValue]] | None = None
 
 
 class GroupsStateResult(Result):

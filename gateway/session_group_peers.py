@@ -81,8 +81,9 @@ def _revoke(authority, params):
     if (claims['target_profile'], claims['target_install_id']) != (
             served_profile_name(Path(authority.profile_id)), hosted_rooms.local_authority_gateway_id()):
         raise RuntimeStoreError('permission_denied')
+    from gateway.platforms.api_server_room_grants import _grant_db
     hosted_rooms.revoke_room_grant_scope(
-        hosted_rooms.default_db_path(), claims=claims,
+        _grant_db(_api_server(authority)), claims=claims,
         expires_at=float(claims.get('status_expires_at', claims['expires_at'])))
     return {'revoked': True}
 
@@ -127,10 +128,8 @@ def register(service, params):
     if (profile != 'default' or not catalog.text or catalog.attachments
             or PROTOCOL_VERSION not in catalog.protocol_versions or 'direct' not in catalog.link_modes):
         raise RuntimeStoreError('peer_target_unsupported')
-    client = PeerRunsHTTPClient(base_url=target_url, api_key='', receipt_db_path=service.db_path)
-    probe_route(client, grant, catalog, {
-        'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
-        'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile})
+    client = PeerRunsHTTPClient(base_url=target_url, api_key='', receipt_db_path=service.db_path,
+                                proof_install_id=catalog.installation_id)
     # Route identity is derived, never random: a re-registered grant must replay an accepted
     # dispatch byte for byte, or the target's idempotency check reads the replay as a new run.
     seed = '\0'.join((gateway_id, room_id, member_id)).encode()
@@ -141,6 +140,19 @@ def register(service, params):
         cancellation_scope_id='cancel-' + room_id,
         trace_id='trace-' + hashlib.sha256(seed).hexdigest()[:32], grant=grant)
     with service.peer_route_lock:
+        from gateway import hosted_room_links as links
+        from gateway import session_group_peer_cleanup as cleanup
+        previous = links.load_room_link(service.db_path, room_id=room_id, member_id=member_id)
+        if previous is None or previous.grant != grant:
+            # If setup fails or the process dies, the returned invitation remains an exact
+            # cleanup obligation. Successful route publication removes it atomically.
+            cleanup.retain(service.db_path, links.make_stored_link(
+                room_id=room_id, member_id=member_id, target_url=target_url, target_profile=profile,
+                grant=grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
+                trace_id=route.trace_id))
+        probe_route(client, grant, catalog, {
+            'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
+            'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile})
         # The probe took time: publish only while the room is still the one it was checked against.
         if service._owned_authority(room_id) != (gateway_id, epoch):
             raise RuntimeStoreError('peer_target_mismatch')

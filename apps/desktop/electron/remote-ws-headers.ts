@@ -78,10 +78,10 @@ export function resolveRemoteRequestHeaders(
   requestUrl: string,
   options: { exactHeaders?: Record<string, string>; sources?: RemoteHeaderSource[] } = {}
 ): Record<string, string> {
-  const exact = options.exactHeaders || {}
+  const { Origin, ...exact } = options.exactHeaders || {}
 
   if (Object.keys(exact).length > 0) {
-    return exact
+    return Origin ? { ...exact, Origin } : exact
   }
 
   for (const source of options.sources || []) {
@@ -90,11 +90,11 @@ export function resolveRemoteRequestHeaders(
     }
 
     if (Object.keys(source.headers).length > 0 && remoteRequestMatchesBaseUrl(requestUrl, source.url)) {
-      return source.headers
+      return Origin ? { ...source.headers, Origin } : source.headers
     }
   }
 
-  return {}
+  return Origin ? { Origin } : {}
 }
 
 export function formatLoadUrlExtraHeaders(headers: Record<string, string> = {}): string {
@@ -127,11 +127,22 @@ export function createRemoteWsHeaderStore(limit = 100) {
   const headersByUrl = new Map<string, Record<string, string>>()
 
   const remember = (wsUrl: string, headers: Record<string, string> = {}) => {
-    if (!wsUrl || Object.keys(headers).length === 0) {
+    let url: URL
+
+    try {
+      url = new URL(wsUrl)
+    } catch {
       return
     }
 
-    headersByUrl.set(String(wsUrl), headers)
+    if (!['ws:', 'wss:'].includes(url.protocol)) {
+      return
+    }
+
+    // Main vouches only for exact authenticated gateway URLs. Native renderers
+    // use loopback HTTP in both dev and packaged builds; a non-web Origin avoids
+    // depending on a reverse proxy's public Host or Host rewriting policy.
+    headersByUrl.set(String(wsUrl), { ...headers, Origin: 'null' })
 
     while (headersByUrl.size > limit) {
       const oldest = headersByUrl.keys().next().value
@@ -174,7 +185,40 @@ export function applyRemoteRequestHeaders(
     return
   }
 
-  callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+  const requestHeaders = { ...details.requestHeaders, ...headers }
+
+  if (/^wss?:/.test(details.url) && headers.Origin) {
+    const originalOrigin = Object.entries(details.requestHeaders || {}).find(
+      ([name]) => name.toLowerCase() === 'origin'
+    )?.[1]
+
+    let nativeOrigin = !originalOrigin || originalOrigin === 'null'
+
+    try {
+      const source = new URL(originalOrigin || '')
+      nativeOrigin ||=
+        ['file:', 'app:'].includes(source.protocol) ||
+        (['http:', 'https:'].includes(source.protocol) && ['localhost', '127.0.0.1', '[::1]'].includes(source.hostname))
+    } catch {
+      // Malformed origins are not vouched for as desktop renderer origins.
+    }
+
+    for (const name of Object.keys(requestHeaders)) {
+      if (name.toLowerCase() === 'origin') {
+        delete requestHeaders[name]
+      }
+    }
+
+    // Don't let an untrusted web frame borrow the native Origin stamp. Its
+    // original origin must still pass the remote dashboard's unchanged guard.
+    if (nativeOrigin) {
+      requestHeaders.Origin = headers.Origin
+    } else if (originalOrigin) {
+      requestHeaders.Origin = originalOrigin
+    }
+  }
+
+  callback({ requestHeaders })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {

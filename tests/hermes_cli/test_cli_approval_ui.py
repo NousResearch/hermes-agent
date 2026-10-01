@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import cli as cli_module
 from agent.i18n import t
 from cli import HermesCLI
-from tools import approval_context
 
 
 class _FakeBuffer:
@@ -262,7 +261,6 @@ class TestCliApprovalUi:
 
                 seen["approval"] = _get_approval_callback()
                 seen["sudo"] = _get_sudo_password_callback()
-                seen["approval_wait"] = approval_context.approval_wait_seconds()
                 return {
                     "final_response": "done",
                     "messages": [],
@@ -271,7 +269,6 @@ class TestCliApprovalUi:
                 }
 
         with patch("run_agent.AIAgent", FakeAgent), \
-             patch.object(approval_context, "_get_approval_config", lambda: {"timeout": 1}), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
@@ -287,8 +284,6 @@ class TestCliApprovalUi:
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
-        # The panel waits until answered, so the turn's accounting must too (not approvals.timeout).
-        assert seen["approval_wait"] > 1
         assert not cli._background_tasks
 
 

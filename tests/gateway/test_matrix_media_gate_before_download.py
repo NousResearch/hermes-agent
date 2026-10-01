@@ -60,9 +60,9 @@ async def test_unmentioned_group_media_is_not_downloaded(monkeypatch, body, down
     ("declared-cap", "m.file", True, "text", "caption\n[matrix file attachment too large: report.txt]", None),
     ("stream-cap", "m.file", True, "text", "caption\n[matrix file attachment too large: report.txt]", None),
     ("empty", "m.file", True, "document", "caption", b""),
-    ("empty", "m.audio", True, "audio", "caption", b""),
-    ("no-url", "m.file", True, "document", "caption", None),
-    ("no-url", "m.audio", True, "audio", "caption", None),
+    ("empty", "m.audio", True, "text", "caption\n[matrix audio attachment could not be downloaded: report.txt]", None),
+    ("no-url", "m.file", True, "text", "caption\n[matrix file attachment could not be downloaded: report.txt]", None),
+    ("no-url", "m.audio", True, "text", "caption\n[matrix audio attachment could not be downloaded: report.txt]", None),
 ])
 async def test_media_failure_preserves_admission_and_retained_reply_context(
     monkeypatch, scenario, msgtype, consumed, expected_type, expected_text, expected_bytes,

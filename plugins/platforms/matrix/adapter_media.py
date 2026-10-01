@@ -146,7 +146,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
                 media_size_limit_exceeded = True
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
-        if media_size_limit_exceeded or url and not cached_path:
+        if media_size_limit_exceeded or not cached_path:
             problem = "too large" if media_size_limit_exceeded else "could not be downloaded"
             msg_event = await self._build_inbound_event(
                 room_id, sender, event_id, body, source_content, relates_to, ctx=ctx,
@@ -165,8 +165,6 @@ class MatrixMediaMixin(BasePlatformAdapter):
             media_urls=media_urls, media_types=[media_type] if media_urls else [], media_msgtype=msgtype,
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
-            if msgtype == "m.sticker" and not cached_path:
-                msg_event.text += "\n[matrix sticker image unavailable]"
             return await self._admit(msg_event)
 
 
@@ -247,6 +245,8 @@ class MatrixMediaMixin(BasePlatformAdapter):
             return cached_path
         mimetype_ext = ext_for_mime(media_type) or ""
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:
+            if not file_bytes:
+                return None
             ext = Path(transport_filename).suffix or mimetype_ext or ".ogg"
             return await cache_audio_from_bytes_async(file_bytes, ext=ext)
         stem = "video" if msg_type == MessageType.VIDEO else "document"

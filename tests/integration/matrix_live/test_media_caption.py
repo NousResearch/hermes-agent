@@ -176,6 +176,8 @@ def test_oversized_media_exposes_caption_and_filename_without_caching(
 
 @pytest.mark.parametrize("failure, msgtype, mimetype, filename", [
     pytest.param("missing", "m.file", "text/plain", "missing.txt", id="homeserver-404"),
+    pytest.param("no-url", "m.file", "text/plain", "unavailable.txt", id="missing-url"),
+    pytest.param("empty-audio", "m.audio", "audio/ogg", "empty.ogg", id="empty-audio"),
     pytest.param("invalid-image", "m.image", "image/png", "invalid.png", id="image-cache-rejection"),
     pytest.param("missing-key-metadata", "m.audio", "audio/ogg", "encrypted.ogg", id="encrypted-missing-hash"),
 ])
@@ -196,8 +198,8 @@ def test_failed_media_reaches_model_without_download_url_or_cache(
         try:
             await client.sync(timeout=0)
             url = "mxc://matrix.test/missing-media-contract"
-            if failure != "missing":
-                payload = b"This payload is not an image or an audio container"
+            if failure not in {"missing", "no-url"}:
+                payload = b"" if failure == "empty-audio" else b"This payload is not an image or an audio container"
                 uploaded, decryption = await client.upload(
                     io.BytesIO(payload), content_type=mimetype, filename=filename, filesize=len(payload),
                 )
@@ -213,7 +215,7 @@ def test_failed_media_reaches_model_without_download_url_or_cache(
                     "url": url, "key": {"k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
                     "iv": "AAAAAAAAAAAAAAAAAAAAAA", "hashes": {}, "v": "v2",
                 }
-            else:
+            elif failure != "no-url":
                 content["url"] = url
             sent = await client.room_send(live_room.room_id, "m.room.message", content)
             assert isinstance(sent, RoomSendResponse), sent

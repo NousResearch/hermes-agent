@@ -489,8 +489,11 @@ class GatewaySlashCommandsMixin(
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — inspect and manually control failed/paused
         adapters (pause stops the reconnect watcher; resume re-queues for retry)."""
-        # Strip the leading "/platform" (or "/PLATFORM") token if present
-        parts = (getattr(event, "content", "") or "").strip().split(maxsplit=2)
+        # Strip the leading "/platform" (or "/PLATFORM") token if present.
+        # MessageEvent carries the message in ``text`` (no ``content`` attribute);
+        # a plain getattr previously always fell through to "" here, silently
+        # reducing every /platform invocation to the list action.
+        parts = (event.text or "").strip().split(maxsplit=2)
         if parts and parts[0].lower().lstrip("/").startswith("platform"):
             parts = parts[1:]
         action = (parts[0] if parts else "list").lower()

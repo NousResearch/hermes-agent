@@ -9,6 +9,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 
 
@@ -443,9 +444,10 @@ class TestPlatformSlashCommand:
     """Test the /platform list|pause|resume slash command handler."""
 
     def _make_event(self, content: str):
-        ev = MagicMock()
-        ev.content = content
-        return ev
+        # A real MessageEvent (not a bare MagicMock): a spec-less mock silently
+        # auto-creates ``.text`` and would have masked the event.content bug
+        # this class guards against (slash_commands.py read ``content``).
+        return MessageEvent(text=content)
 
     @pytest.mark.asyncio
     async def test_list_shows_connected_and_paused(self):
@@ -471,10 +473,41 @@ class TestPlatformSlashCommand:
             "attempts": 2,
             "next_retry": time.monotonic() + 30,
         }
-        await runner._handle_platform_command(
+        out = await runner._handle_platform_command(
             self._make_event("/platform pause whatsapp")
         )
         assert runner._failed_platforms[Platform.WHATSAPP]["paused"] is True
+        assert out.startswith("✓")
+
+    @pytest.mark.asyncio
+    async def test_pause_without_retry_queue_reports_not_queued(self):
+        """Regression: the handler used to read ``event.content`` (a field
+        MessageEvent doesn't have), so every pause/resume fell through to the
+        list action instead of erroring or acting."""
+        runner = _make_runner()
+        out = await runner._handle_platform_command(
+            self._make_event("/platform pause telegram")
+        )
+        assert "not in the retry queue" in out
+        assert not out.startswith("**Gateway platforms**")
+
+    @pytest.mark.asyncio
+    async def test_resume_command_resumes_paused_platform(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.WHATSAPP] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_reason": "auto-paused",
+        }
+        out = await runner._handle_platform_command(
+            self._make_event("/platform resume whatsapp")
+        )
+        info = runner._failed_platforms[Platform.WHATSAPP]
+        assert info["paused"] is False
+        assert info["attempts"] == 0
+        assert out.startswith("✓")
 
 
 # --- Supervised task wrapper (_spawn_supervised) ---

@@ -19365,12 +19365,45 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
+async function migrateLegacyRendererStorage(origin: string): Promise<void> {
+  const indexPath = resolveRendererIndex()
+  const legacy = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false } })
+  const target = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false } })
+
+  try {
+    await legacy.loadFile(indexPath)
+    const entries = await legacy.webContents.executeJavaScript(`(() => {
+      const result = []
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i)
+        if (key !== null) result.push([key, localStorage.getItem(key)])
+      }
+      return result
+    })()`)
+
+    if (!Array.isArray(entries) || entries.length === 0) return
+
+    await target.loadURL(origin)
+    await target.webContents.executeJavaScript(`(entries => {
+      for (const [key, value] of entries) {
+        if (localStorage.getItem(key) === null && typeof value === 'string') {
+          localStorage.setItem(key, value)
+        }
+      }
+    })(${JSON.stringify(entries)})`)
+  } finally {
+    legacy.destroy()
+    target.destroy()
+  }
+}
+
 app.whenReady().then(async () => {
   // Serve the packaged renderer over loopback HTTP (real origin for embeds —
   // see renderer-server.ts) before any window loads it. In dev the Vite dev
   // server already provides the origin.
   if (!DEV_SERVER) {
     packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
+    await migrateLegacyRendererStorage(packagedRendererServer.origin)
   }
 
   // Post-update relaunch detection (App Installer arm): when the previous

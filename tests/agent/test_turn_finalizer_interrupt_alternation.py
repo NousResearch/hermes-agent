@@ -42,6 +42,7 @@ class _StubAgent:
         self.platform = "cli"
         self._interrupt_requested = False
         self._interrupt_message = None
+        self._tool_interrupt_reason = None
         self._tool_guardrail_halt_decision = None
         self._response_was_previewed = False
         self._skill_nudge_interval = 0
@@ -166,6 +167,14 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
 
 
 
+def test_terminal_batch_timeout_closes_tail_without_user_stop_placeholder():
+    agent = _StubAgent()
+    agent._tool_interrupt_reason = "terminal_batch_timeout"
+    messages = _interrupted_tool_tail()
+    _finalize(agent, messages, interrupted=True, final_response=None)
+
+    assert messages[-1]["content"] == "Terminal batch timed out before completion."
+    assert "Operation interrupted." not in messages[-1]["content"]
 
 
 

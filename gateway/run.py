@@ -2776,7 +2776,9 @@ _CONTROL_INTERRUPT_MESSAGES = frozenset({
     _INTERRUPT_REASON_STOP.lower(), _INTERRUPT_REASON_RESET.lower(),
     _INTERRUPT_REASON_TIMEOUT.lower(), _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
     _INTERRUPT_REASON_EVICTED.lower(), _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
-    _INTERRUPT_REASON_GATEWAY_RESTART.lower()})
+    _INTERRUPT_REASON_GATEWAY_RESTART.lower(),
+    "terminal batch tool did not complete",
+})
 
 
 def _is_control_interrupt_message(message: Optional[str]) -> bool:

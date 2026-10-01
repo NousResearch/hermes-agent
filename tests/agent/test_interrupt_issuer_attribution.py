@@ -58,6 +58,16 @@ def test_human_stops_have_no_system_issuer():
         set_interrupt(False)
 
 
+def test_soft_system_reason_overrides_message_heuristic():
+    agent = _bare_agent()
+    try:
+        agent.interrupt("terminal batch tool did not complete", tool_reason="terminal_batch_timeout")
+        assert agent._interrupt_message == "terminal batch tool did not complete"
+        assert interrupt_issuer(agent) == "terminal_batch_timeout"
+    finally:
+        set_interrupt(False)
+
+
 def test_gateway_lifecycle_producers_name_a_system_issuer():
     """Gateway stop, session eviction and an abandoned SSE run are system stops: none of them may fall
     through to the reason-less default that books ``interrupted_by_user`` (#112647)."""

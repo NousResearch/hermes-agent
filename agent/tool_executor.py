@@ -975,7 +975,6 @@ def _run_sequential_tool_execution_middleware(
             # prepared command into overlapping execution.
             prepared.batch.close()
             agent.interrupt(
-                "terminal batch tool did not complete",
                 tool_reason="terminal_batch_timeout",
             )
         future.cancel()

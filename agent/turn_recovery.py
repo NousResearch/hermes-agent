@@ -490,21 +490,29 @@ def _recover_format_errors(
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
     the request was repaired and should be retried."""
-    # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
-    # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
+    # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
+    # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
+    # carriers and persist that suppression. Other transports keep their established one-request
+    # repair: drop reasoning_details only.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
-        _api_stripped = 0
-        for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
-                _m.pop("reasoning_details", None)
-                _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
+        from agent.anthropic_thinking_replay import remember_rejected_thinking, tracks_rejected_thinking
+
+        if tracks_rejected_thinking(agent):
+            removed = remember_rejected_thinking(agent, api_messages)
+            detail = "suppressed rejected Anthropic replay blocks"
+        else:
+            removed = 0
+            for message in api_messages:
+                if isinstance(message, dict) and "reasoning_details" in message:
+                    message.pop("reasoning_details", None)
+                    removed += 1
+            detail = "stripped reasoning_details"
+        _vlines(agent, f"⚠️  Thinking block signature invalid, {detail} and retrying...")
         logger.warning(
-            "%sThinking block signature recovery: stripped "
-            "reasoning_details from %d api_messages "
+            "%sThinking block signature recovery: %s from %d carrier/message(s) "
             "(canonical messages unchanged)",
-            agent.log_prefix, _api_stripped,
+            agent.log_prefix, detail, removed,
         )
         return True
 

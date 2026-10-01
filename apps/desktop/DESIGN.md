@@ -557,6 +557,9 @@ long transcript or a busy terminal.
   tone consistent across all of them. `fr`, `de`, and `es` are complete
   `Translations` objects, so a key missing there fails the type check; the
   `defineLocale()` overlays fall back to English instead.
+- **Sparse locales** (`ar`, `ru`) override the English base through
+  `defineLocale()`. Large catalogs are split by topic: the Arabic source lives
+  in `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
 
 ## State (TypeScript)
 

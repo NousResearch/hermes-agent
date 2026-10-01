@@ -30,7 +30,7 @@ every answering client attached to the session has declined; then the request re
 Capability: a client says once per connection that it answers server→client requests
 (``client.capabilities {server_requests: true}`` → :func:`advertise`). A WebSocket client that never
 did is a build older than this half of the protocol — it drops the frame silently and the agent
-would wait the full deadline (clarify's 300s) for nothing — so :func:`send` / :func:`send_async`
+would wait out the request (a clarify or approval with no deadline, forever) for nothing — so :func:`send` / :func:`send_async`
 return the same ``None`` an error response produces without writing the frame (#112548).
 """
 

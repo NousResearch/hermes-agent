@@ -71,7 +71,9 @@ meaningful:
 name: example-plugin        # [a-z0-9_-]{1,64}, the catalog key
 repo: https://github.com/owner/repo   # https:// only
 sha: <40-hex commit sha>    # mandatory exact pin
-subdir: ""                  # optional path within the repo
+subdir: ""                  # optional; plain relative path inside the repo
+                            # ([A-Za-z0-9._/-]+ only: no '..', '.', empty
+                            # segments, absolute, or backslash forms)
 description: One-line description.
 maintainer: OwnerName
 tier: official              # official | community (default community)

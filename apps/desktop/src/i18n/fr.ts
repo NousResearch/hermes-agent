@@ -1521,7 +1521,8 @@ export const frOverrides = {
       fileReadMaxChars: 'Nombre maximal de caractères que Hermes peut lire dans une demande de fichier.',
       approvals: {
         mode: 'Comment Hermes gère les commandes nécessitant une approbation explicite.',
-        timeout: "Durée d'attente des invites d'approbation avant expiration."
+        timeout:
+          "Durée d'attente des invites d'approbation sur les plateformes de messagerie avant expiration. L'app et le terminal attendent votre réponse."
       },
       security: {
         redactSecrets: "Masque les secrets détectés du contenu visible par le modèle lorsque c'est possible."
@@ -5482,6 +5483,7 @@ export const frOverrides = {
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
+      responseStopped: 'Réponse interrompue',
       errorLayers: {
         auth: "Erreur d'authentification",
         billing: 'Crédits épuisés',
@@ -5736,6 +5738,8 @@ export const frOverrides = {
       skipped: 'Ignoré',
       noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
+      singleSelectHint: 'Choisir une réponse',
+      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."

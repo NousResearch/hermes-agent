@@ -465,10 +465,12 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
 def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *, folded: bool) -> None:
     """Retire *dropped*'s row ids onto *survivor*; record its uid as a merge witness only when *folded* (its
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
-    absorbed nothing."""
+    absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
+    the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
+    own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
-    if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
+    if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0 and row_id != own_id:
         ids.append(row_id)
     for older in dropped.get("_absorbed_row_ids") or ():
         if isinstance(older, int) and not isinstance(older, bool) and older > 0 and older not in ids:
@@ -620,6 +622,31 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 prev[MERGED_TURN_PREFIX] = prev_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
+            # A display-marker row (e.g. a model-switch marker persisted as role=user on
+            # purpose, #48338) merging with a plain user row must not bury the plain row's
+            # addressable identity: keeping the marker's display_kind hides the merged pair
+            # from every user-turn index used for rewind/submit addressing (display rows are
+            # excluded), so the plain row's durable id becomes unresolvable and the client's
+            # next prompt.submit fails closed with the input silently dropped (#94486). Keep
+            # the pair addressable instead: drop the display classification and carry the
+            # plain row's id, retiring the marker's own id onto the absorbed list. display_kind
+            # never reaches providers (stripped from every outgoing copy), so the merged
+            # turn's wire payload is unchanged. Deliberate scope: when BOTH rows carry
+            # display_kind (two consecutive model-switch markers) the pair keeps the first
+            # marker's classification and id — no plain row is swallowed there, so no
+            # addressable turn is lost.
+            if prev.get("display_kind") and not msg.get("display_kind"):
+                marker_row_id = prev.get("_row_id")
+                prev.pop("display_kind", None)
+                if msg.get("_row_id") is not None:
+                    if isinstance(marker_row_id, int) and not isinstance(marker_row_id, bool):
+                        absorbed_ids = prev.setdefault("_absorbed_row_ids", [])
+                        if marker_row_id not in absorbed_ids:
+                            absorbed_ids.append(marker_row_id)
+                    prev["_row_id"] = msg["_row_id"]
+                # display_kind is part of the persisted row; reclassifying stales it even
+                # when the merged bytes reproduce the persisted content (empty absorb).
+                prev.pop(_DB_PERSISTED_MARKER, None)
             # Pop the persist marker only when the durable row actually changed: a merge that
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:
@@ -1261,22 +1288,51 @@ def _revert_credential_rotation(agent) -> None:
     agent._credential_pool_revert_id = None
 
 
+def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
+    """True when a Codex quota window that the primary pool still has benched has reopened.
+
+    A Codex 429 benches the entry, and arms ``_rate_limited_until``, until a ``resets_at`` that can be
+    days out (weekly window). The window can reopen sooner (redeemed reset, top-up, plan change); the
+    pool's throttled usage probe notices, but only on ``select()``, which a session pinned to its
+    fallback never reaches. Fails closed: any doubt leaves both cooldowns in force.
+
+    At most one check per probe interval per agent: the probe caches its verdict and nothing clears
+    it on the next 429, so a "restored" answer the endpoint got wrong would otherwise restore,
+    fail, and fall back again on every turn of the cached window. Checks in between could only
+    replay that cached verdict, so they return before loading the pool.
+    """
+    if primary_provider != "openai-codex":
+        return False
+    from hermes_cli.auth_codex import CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS
+    now = time.monotonic()
+    if now - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
+        return False
+    agent._codex_reopen_checked_at = now
+    try:
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is None or not matches_primary(pool):
+            pool = load_primary_pool()
+        if pool is None:
+            return False
+        model = primary_model or None
+        benched_until = pool.next_available_at(model=model)
+        if benched_until is None or benched_until <= time.time():
+            return False
+        return pool.lift_reopened_cooldowns(model=model)
+    except Exception:
+        logger.debug("Early quota-reopen check failed; keeping the cooldown", exc_info=True)
+        return False
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
-        # _fallback_index past the chain end and silently block future fallbacks.
+        # _fallback_index past the chain end and silently block future fallbacks (#20465).
         agent._fallback_index = 0
         _revert_credential_rotation(agent)
         return False
-    # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
-    # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
-    # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn
-    # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
-    # the session. Fixes #20465.
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
@@ -1300,6 +1356,10 @@ def restore_primary_runtime(agent) -> bool:
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
         loaded = load_pool(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
+    if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
+        agent._rate_limited_until = 0
+    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+        return False  # primary still in rate-limit cooldown, stay on fallback
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
     )

@@ -207,10 +207,12 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
     """Run ``python_path -c code``; None if missing, unspawnable, or past the 5s timeout."""
     try:
         from agent.delegation_context import delegated_child_subprocess_env
+        decode_kw = {"encoding": "utf-8", "errors": "replace"} if text else {}
         return subprocess.run(
-            [python_path, "-c", code], timeout=5, capture_output=True, text=text, encoding="utf-8", errors="replace",
+            [python_path, "-c", code], timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
+            **decode_kw,
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
         return None

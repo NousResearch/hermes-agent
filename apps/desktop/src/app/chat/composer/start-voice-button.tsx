@@ -33,7 +33,7 @@ export function StartVoiceButton({
   const engine = useVoiceEngineName()
 
   return (
-    <span className="flex items-center">
+    <span className="ml-2 inline-flex shrink-0 items-center">
       <Tip label={engine ? `${label} — ${engine}` : label} placement="control">
         <Button
           aria-label={label}
@@ -44,7 +44,7 @@ export function StartVoiceButton({
             recordAction('composer.voice', 'click')
             onStart()
           }}
-          size="icon"
+          size="inline"
           type="button"
         >
           <AudioLines className={iconSize.sm} />
@@ -56,9 +56,12 @@ export function StartVoiceButton({
             <DropdownMenuTrigger asChild>
               <Button
                 aria-label={t.composer.voiceEngine}
-                className={cn(GHOST_ICON_BTN, 'w-5 rounded-l-none p-0')}
+                className={cn(
+                  GHOST_ICON_BTN,
+                  'h-(--composer-control-primary-size) w-5 rounded-l-none p-0'
+                )}
                 disabled={disabled}
-                size="icon"
+                size="inline"
                 type="button"
                 variant="ghost"
               >

@@ -12,7 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { $titlebarMenuActive, TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
@@ -31,6 +31,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
@@ -273,6 +274,8 @@ export function TreeGroup({
   // Reload epochs: only an explicit tab-menu Reload writes here, so this
   // subscription costs nothing on a normal render.
   const paneEpochs = useStore($treePaneEpochs)
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
+  const titlebarMenu = useStore($titlebarMenuActive)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -284,7 +287,13 @@ export function TreeGroup({
   const paneShown = (id: string) =>
     Boolean(paneFor(id)) && (revealsHidden || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
-  const shown = node.panes.filter(paneShown)
+  const listed = node.panes.filter(paneShown)
+  // Simple mode is one chat list. The Sessions | Bots strip is developer chrome,
+  // so that zone rests on the sessions pane and drops the tab header.
+  const sideChromeZone =
+    !showsAdvancedChrome && listed.length > 0 && listed.every(id => paneChrome(paneFor(id)).hideOnly)
+  const sessionPane = listed.find(id => id === 'sessions')
+  const shown = sideChromeZone && sessionPane ? [sessionPane] : listed
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
 
   const activeId = shown.includes(node.active)
@@ -294,7 +303,10 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
-  const tabsBelowControls = topEdge && (sidebarGroup || measuredBelowControls)
+  // The menu row is the window's top band. Tabs stay on the next row so they
+  // are not drawn through File / Search, and so their drag region cannot take
+  // clicks meant for the menu.
+  const tabsBelowControls = topEdge && (sidebarGroup || measuredBelowControls || titlebarMenu)
   const tabsInTitlebar = topEdge && !tabsBelowControls
   const pageHeader = paneChrome(active).headerContent
 
@@ -372,13 +384,15 @@ export function TreeGroup({
   // it is the resolver's call, not this component's — see strip-visibility.ts
   // for the precedence. The same resolver answers for the toggle command, so
   // the keystroke and the screen always agree about which way "toggle" points.
-  const stripVisible = tabStripVisibleForZone({
-    active: activeId,
-    isCollapsePane,
-    mode: node.tabStrip,
-    paneFor,
-    shown
-  })
+  const stripVisible =
+    !sideChromeZone &&
+    tabStripVisibleForZone({
+      active: activeId,
+      isCollapsePane,
+      mode: node.tabStrip,
+      paneFor,
+      shown
+    })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
   // WIDTH collapses — a full-width horizontal header would strand a tall
@@ -749,7 +763,7 @@ export function TreeGroup({
               (#112964). Keep one fixed handle OUTSIDE the list. When the tabs
               drop below the controls the band above them is free — the handle
               stays flexible and the whole row moves the window. */}
-          {topEdge && (
+          {topEdge && !titlebarMenu && (
             <div
               aria-hidden="true"
               className={cn(

@@ -93,6 +93,7 @@ test('custom window controls read WSL env vars without touching the filesystem',
   assert.equal(customWindowControlsEnabled({ env: { WSL_INTEROP: '/run/WSL/1_interop' }, platform: 'linux' }), true)
   assert.equal(customWindowControlsEnabled({ env: {}, platform: 'linux' }), false)
   assert.equal(customWindowControlsEnabled({ env: { WSL_DISTRO_NAME: 'Ubuntu' }, platform: 'darwin' }), false)
+  assert.equal(customWindowControlsEnabled({ env: {}, platform: 'win32' }), true)
 })
 
 describe('registerWindowControlIpc', () => {

@@ -601,7 +601,7 @@
     --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 62%, #fff);
     --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 62%, #fff);
 
-    --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
+    --sidebar-edge-border: color-mix(in srgb, #ffffff6b 24%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
     /* Dark mode: a dark card needs a stronger black inset to show the recess. */
@@ -1641,18 +1641,9 @@ body.guest-pointer-lock :is(webview, iframe) {
   width: 100%;
 }
 
-/* Remove label pixels under the hover close button; translucent paint would
-   stack the glass tint and still let the label bleed through. */
+/* The close control sits in the tab row, so the title ends before it. */
 [data-slot='pane-tab'][data-closeable] {
-  --pane-tab-close-width: 1.5rem;
-}
-
-[data-slot='pane-tab'][data-closeable]:hover > .pane-tab-content {
-  mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - var(--pane-tab-close-width) - 1rem),
-    transparent calc(100% - var(--pane-tab-close-width))
-  );
+  --pane-tab-close-width: 1.75rem;
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md,
@@ -1987,11 +1978,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='composer-root'] > .pointer-events-none {
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    color-mix(in srgb, var(--ui-chat-surface-background) 88%, transparent)
-  ) !important;
+  background: transparent !important;
 }
 
 [data-slot='composer-surface'] {
@@ -2020,11 +2007,49 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 94%, var(--ui-bg-chrome));
+  background: transparent;
+}
+
+[data-slot='composer-root'][data-popped-out] {
+  background: transparent;
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--ui-bg-chrome));
+}
+
+/* Soft edge above the message box. Full dock width, so the fade meets the
+   field's left and right edges. A short overlap seals the seam without a
+   second color band. */
+:not([data-hud-shell]) [data-slot='composer-dock']:not([data-popped-out])::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: calc(100% - 4px);
+  left: 0;
+  height: 2.25rem;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--dt-card) 94%, var(--ui-bg-chrome)),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  -webkit-mask-image: linear-gradient(to top, #000 6%, transparent);
+  mask-image: linear-gradient(to top, #000 6%, transparent);
+}
+
+/* Session search sits on the dark sidebar. A dark stroke makes the field
+   readable without a bright outline. */
+[data-sidebar-session-search] > div {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, #fff 14%, var(--ui-bg-sidebar));
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, #000 28%, var(--ui-bg-sidebar));
+  opacity: 1;
+  padding-inline: 0.5rem;
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading

@@ -769,6 +769,18 @@ export const en: Translations = {
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
   },
 
+  menuBar: {
+    file: 'File',
+    edit: 'Edit',
+    selection: 'Selection',
+    view: 'View',
+    tools: 'Tools',
+    undo: 'Undo',
+    openFolder: 'Open folder',
+    showFiles: 'Show files',
+    hideFiles: 'Hide files'
+  },
+
   keybinds: {
     title: 'Keyboard shortcuts',
     subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,

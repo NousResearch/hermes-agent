@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 import type { HermesConnection } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
@@ -112,3 +114,6 @@ export function titlebarControlsPosition(
 
 /** Rebind panel measurements after titlebar nodes or their positions change. */
 export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'
+
+/** The app menu owns the top row. Chat tabs drop to the row under it. */
+export const $titlebarMenuActive = atom(false)

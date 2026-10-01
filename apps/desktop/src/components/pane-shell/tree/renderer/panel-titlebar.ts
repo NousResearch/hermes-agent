@@ -42,6 +42,16 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
       return
     }
 
+    // The menu bar owns the titlebar row. Chat tabs sit on the next row so
+    // they are not drawn through File / Search.
+    if (document.querySelector('[data-titlebar-menu]')) {
+      element.style.setProperty('--panel-titlebar-left', '0px')
+      element.style.setProperty('--panel-titlebar-right', '0px')
+      setBelowControls(true)
+
+      return
+    }
+
     const left = Math.min(rect.width, Math.max(0, leftControls.right + 12 - rect.left))
     const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + 24))
     element.style.setProperty('--panel-titlebar-left', `${left}px`)

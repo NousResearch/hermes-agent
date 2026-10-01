@@ -38,13 +38,30 @@ test('WSLg disables the undersized native overlay in favor of renderer controls'
   )
 })
 
-test('native Windows and Linux keep the same window-controls overlay', () => {
-  const input = { titlebarHeight: 34, color: 'transparent', foreground: '#ffffff', dark: false }
-  const expected = { color: 'transparent', height: 34, symbolColor: '#ffffff' }
+test('Windows leaves caption buttons to the renderer so the hover fits the navbar', () => {
+  assert.equal(
+    titleBarOverlayOptions({
+      platform: 'windows',
+      titlebarHeight: 34,
+      color: 'transparent',
+      foreground: '#ffffff',
+      dark: true
+    }),
+    false
+  )
+})
 
-  for (const platform of ['windows', 'linux'] as const) {
-    assert.deepEqual(titleBarOverlayOptions({ platform, ...input }), expected)
-  }
+test('plain Linux keeps the window-controls overlay', () => {
+  assert.deepEqual(
+    titleBarOverlayOptions({
+      platform: 'linux',
+      titlebarHeight: 34,
+      color: 'transparent',
+      foreground: '#ffffff',
+      dark: false
+    }),
+    { color: 'transparent', height: 34, symbolColor: '#ffffff' }
+  )
 })
 
 test('macOS keeps its height-only traffic-light overlay', () => {

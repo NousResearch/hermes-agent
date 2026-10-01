@@ -18,6 +18,12 @@ interface CustomWindowControlsOptions {
 export function customWindowControlsEnabled(options: CustomWindowControlsOptions = {}): boolean {
   const platform = options.platform ?? process.platform
 
+  // Windows paints caption buttons at the full overlay height. The renderer
+  // draws a shorter hover that stays inside the navbar.
+  if (platform === 'win32') {
+    return true
+  }
+
   if (platform !== 'linux') {
     return false
   }

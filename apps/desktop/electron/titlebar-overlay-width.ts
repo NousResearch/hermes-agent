@@ -33,9 +33,9 @@ export function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = f
 
 /**
  * Build Electron's Window Controls Overlay options for every desktop host.
- * With `titleBarStyle: hidden`, Windows and Linux show no window controls
- * unless an overlay object is provided. WSLg deliberately returns false so
- * the renderer can paint correctly scaled Windows-style controls instead.
+ * With `titleBarStyle: hidden`, Linux shows no window controls unless an
+ * overlay object is provided. Windows and WSLg return false so the renderer
+ * paints caption buttons whose hover stays inside the navbar.
  */
 export function titleBarOverlayOptions({
   platform = 'linux',
@@ -46,9 +46,11 @@ export function titleBarOverlayOptions({
   dark = false
 }: TitleBarOverlayOptionsInput = {}) {
   // Electron's Linux overlay keeps a narrow, unscaled three-button cluster
-  // under WSLg. The renderer owns larger Windows-shaped controls there while
-  // the host's RAIL local-move path continues to own edge dragging and Snap.
-  if (platform === 'wslg') {
+  // under WSLg. The renderer owns the controls there while the host's RAIL
+  // local-move path continues to own edge dragging and Snap.
+  // Windows uses the same renderer buttons so the hover stays inside the navbar
+  // instead of filling the native caption height.
+  if (platform === 'wslg' || platform === 'windows') {
     return false
   }
 

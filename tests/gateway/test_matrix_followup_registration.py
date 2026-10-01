@@ -644,7 +644,7 @@ async def test_replacement_transport_preserves_turn_queue_and_final_choice(
 async def test_pending_control_on_a_watched_reply_claims_the_reaction(
     delivery, monkeypatch, control, valid_choice
 ):
-    from plugins.platforms.matrix.adapter import _MatrixPickerPrompt
+    from plugins.platforms.matrix.reaction_controls import _MatrixPickerPrompt
     from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
     from tools import approval
 

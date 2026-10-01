@@ -120,6 +120,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",
         "google-chat",
         "honcho",
+        "holographic",
         "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }

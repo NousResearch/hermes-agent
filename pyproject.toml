@@ -324,6 +324,8 @@ wake = [
   "numpy==2.4.3",
 ]
 honcho = ["honcho-ai==2.2.0"]
+# Holographic memory: HRR vectors for fact_store search/probe/related/reason.
+holographic = ["numpy==2.4.3"]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
 # only real extras (contract: tests/pm/test_extras.py). Each is
 # lazy-installed at first use via pm.ensure_import(name) and therefore

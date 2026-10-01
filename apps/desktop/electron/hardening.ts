@@ -43,6 +43,10 @@ const SECRET_FILE_MODE = 0o600
 const SAFE_STORAGE_ENCODING = 'safeStorage'
 
 interface SecretFileFs {
+  openSync?: typeof fs.openSync
+  readFileSync?: typeof fs.readFileSync
+  fsyncSync?: typeof fs.fsyncSync
+  closeSync?: typeof fs.closeSync
   chmodSync: typeof fs.chmodSync
   lstatSync: typeof fs.lstatSync
   renameSync: typeof fs.renameSync
@@ -51,6 +55,10 @@ interface SecretFileFs {
 }
 
 interface SecretFileOptions {
+  /** Verify the bytes actually written before publishing, and flush before ACK.
+   * Windows supports file flushing; directory flushing follows the existing
+   * desktop-boot-preference POSIX boundary (Node cannot open Windows directories). */
+  durable?: { verify: (written: Buffer) => void }
   encoding?: BufferEncoding
   fs?: SecretFileFs
   platform?: string
@@ -134,10 +142,29 @@ function writeSecretFileAtomic(targetPath, data, options: SecretFileOptions = {}
   const fsImpl = options.fs || fs
   const tmp = targetPath + '.tmp'
 
-  fsImpl.rmSync(tmp, { force: true })
-  fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
-  tightenSecretFileMode(tmp, options)
-  fsImpl.renameSync(tmp, targetPath)
+  try {
+    fsImpl.rmSync(tmp, { force: true })
+    fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
+    tightenSecretFileMode(tmp, options)
+    if (options.durable) {
+      if (!fsImpl.openSync || !fsImpl.readFileSync || !fsImpl.fsyncSync || !fsImpl.closeSync) {
+        throw new Error('Durable secret writes require file flush support')
+      }
+      const handle = fsImpl.openSync(tmp, 'r+')
+      try {
+        options.durable.verify(fsImpl.readFileSync(handle))
+        fsImpl.fsyncSync(handle)
+      } finally {fsImpl.closeSync(handle)}
+    }
+    fsImpl.renameSync(tmp, targetPath)
+    if (options.durable && (options.platform || process.platform) !== 'win32') {
+      const directory = fsImpl.openSync!(path.dirname(targetPath), 'r')
+      try {fsImpl.fsyncSync!(directory)} finally {fsImpl.closeSync!(directory)}
+    }
+  } finally {
+    // A failed verification leaves the previous authoritative file intact.
+    if (options.durable) {try {fsImpl.rmSync(tmp, { force: true })} catch { /* preserve the original failure */ }}
+  }
 }
 
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {

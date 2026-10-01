@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -27,8 +28,11 @@ function encryption() {
 test('real journal writes fail closed and do not acknowledge a transformed first value', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'room-custody-'))
   const codec = encryption()
-  let enabled = false, calls = 0, transform = false
-  const store = roomSetupStore({ directory, decrypt: codec.decrypt,
+  let enabled = false, calls = 0, transform = false, readFault = false
+  const store = roomSetupStore({ directory, decrypt: value => {
+    if (readFault) {throw new Error('staged decrypt failed')}
+    return codec.decrypt(value)
+  },
     encrypt: value => {if (!enabled) {throw new RoomSetupError('secure_storage_required')}; calls++; return codec.encrypt(transform ? value.replace('private-grant', 'changed-grant') : value)} })
   const record: SetupRecord = { id: crypto.randomUUID(), setupId: crypto.randomUUID(), roomId: 'room', kind: 'peer',
     route: { connectionId: 'target', profile: 'default' }, installationId: 'original', grant: 'private-grant' }
@@ -41,12 +45,39 @@ test('real journal writes fail closed and do not acknowledge a transformed first
     const bad = { ...record, id: crypto.randomUUID() }
     await fs.writeFile(path.join(directory, bad.id + '.json'), 'corrupt')
     expect(await store.list()).toEqual({ records: [record], unreadable: [bad.id] })
+    const originalBytes = await fs.readFile(path.join(directory, record.id + '.json'))
+    const assertOriginal = async () => {
+      expect(await store.get(record.id)).toEqual(record)
+      expect(await fs.readFile(path.join(directory, record.id + '.json'))).toEqual(originalBytes)
+    }
     transform = true
-    await expect(store.put(record)).rejects.toMatchObject({ reason: 'setup_journal_write_failed' })
+    await expect(store.put({ ...record, grant: 'private-grant-v2' })).rejects.toMatchObject({ reason: 'setup_journal_write_failed' })
     transform = false
-    const blocked = { ...record, id: crypto.randomUUID() }
-    await fs.mkdir(path.join(directory, blocked.id + '.json'))
-    await expect(store.put(blocked)).rejects.toMatchObject({ reason: 'setup_journal_write_failed' })
+    await assertOriginal()
+    readFault = true
+    await expect(store.put({ ...record, grant: 'private-grant-v2' })).rejects.toMatchObject({ reason: 'setup_journal_write_failed' })
+    readFault = false
+    await assertOriginal()
+    // A real filesystem obstruction, not a mocked write or jsdom Storage spy.
+    const staged = path.join(directory, record.id + '.json.tmp')
+    await fs.mkdir(staged)
+    await expect(store.put({ ...record, grant: 'private-grant-v2' })).rejects.toMatchObject({ reason: 'setup_journal_write_failed' })
+    await fs.rmdir(staged)
+    await assertOriginal()
+    if (process.platform !== 'win32') {
+      await fs.chmod(directory, 0o755)
+      await expect(store.list()).rejects.toMatchObject({ reason: 'setup_journal_unreadable' })
+      await expect(store.put(record)).rejects.toMatchObject({ reason: 'setup_journal_unreadable' })
+      await fs.chmod(directory, 0o700)
+      const alias = directory + '-link'
+      await fs.symlink(directory, alias)
+      try {
+        const linked = roomSetupStore({ directory: alias, ...codec })
+        await expect(linked.list()).rejects.toMatchObject({ reason: 'setup_journal_unreadable' })
+        await expect(linked.put(record)).rejects.toMatchObject({ reason: 'setup_journal_unreadable' })
+      } finally {await fs.unlink(alias)}
+      await assertOriginal()
+    }
   } finally {await fs.rm(directory, { recursive: true, force: true })}
 })
 
@@ -90,4 +121,41 @@ test('a late issued grant is journaled and compensated only on the original sock
     expect(events).not.toContain('home:groups.peer.register')
     expect(await store.list()).toEqual({ records: [], unreadable: [] })
   } finally {await fs.rm(directory, { recursive: true, force: true })}
+})
+
+
+test('a real blocked first intent write prevents the corresponding remote setup effect', async () => {
+  for (const failedKind of ['home', 'peer']) {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'room-intent-fault-'))
+    const codec = encryption(), effects: string[] = []
+    const store = roomSetupStore({ directory, decrypt: codec.decrypt, encrypt: value => {
+      const record = JSON.parse(value)
+      if (record.kind === failedKind) {fsSync.mkdirSync(path.join(directory, record.id + '.json.tmp'))}
+      return codec.encrypt(value)
+    } })
+    const coordinator = roomSetupCoordinator({ store, connect: async route => ({
+      close() {}, async request(method, params): Promise<any> {
+        if (method === 'groups.capabilities') {return { driver: true, persistent_process: true,
+          methods: ['groups.discard'], authority_gateway_id: route.connectionId,
+          features: ['peer_setup_recovery'], server_time: Date.now() / 1000,
+          room_link: { enabled: true, authentication: 'proof-v2', endpoint: { available: true, url: 'https://peer.invalid' },
+            catalog: { installation_id: 'peer', persistent_process: true, text: true, attachments: false, catalog_digest: 'digest' } } }}
+        effects.push(method)
+        if (method === 'groups.create') {
+          expect((await store.list()).records.some(record => record.kind === 'home')).toBe(true)
+          return { room: { ...params, authority_gateway_id: 'home', authority_epoch: 1 } }
+        }
+        if (method === 'groups.disband') {return { tombstone: { disbanded_at: 1 } }}
+        throw new Error('No invitation may precede durable intent')
+      }
+    }) })
+    try {
+      await expect(coordinator.create({ home: { connectionId: 'home', profile: 'default' }, name: 'Room', members: [
+        { member_id: 'one', handle: 'one', profile: 'default', connectionId: 'home' },
+        { member_id: 'two', handle: 'two', profile: 'default', connectionId: 'peer' }
+      ] }, () => undefined)).rejects.toMatchObject({ reason: 'setup_journal_write_failed' })
+      expect(effects).not.toContain('groups.peer.invite')
+      expect(effects).toEqual(failedKind === 'home' ? [] : ['groups.create', 'groups.disband'])
+    } finally {await fs.rm(directory, { recursive: true, force: true })}
+  }
 })

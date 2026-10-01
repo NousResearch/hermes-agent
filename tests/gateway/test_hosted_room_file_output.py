@@ -527,6 +527,91 @@ async def test_disband_retires_a_blocked_output_and_then_deletes_the_room(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["bytes", "missing_blob", "source_metadata", "attachments_empty",
+                                    "attachments_missing", "wrong_event_kind", "missing_event"])
+async def test_disband_keeps_the_source_until_published_files_verify(tmp_path, monkeypatch, damage):
+    from types import SimpleNamespace
+    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from gateway.session_group_controls import dispatch_group_control
+
+    async with owner(tmp_path, monkeypatch) as (authority, service, runner):
+        path = write_file(tmp_path)
+        runner._handle_message = _sharing_handler(path, [], reply="Shared report.")
+        turn = await run_turn(authority, service, publish=False)
+        original_ack = RoomArtifactOutbox.acknowledge
+        monkeypatch.setattr(RoomArtifactOutbox, "acknowledge", lambda *a, **k: (_ for _ in ()).throw(
+            TimeoutError("source has not received the ACK")))
+        service.prepare_room(turn.binding)
+        message, = events(service, "message.member")
+        attachment_id = message["payload"]["attachments"][0]["attachment_id"]
+        source, = outbox_rows(service)
+        scope = RoomArtifactScope.from_mapping(json.loads(source["scope_json"]))
+        with authority.db._read_ctx() as conn:
+            attachment = dict(conn.execute("SELECT blob_id, upload_id FROM hosted_room_attachments "
+                                           "WHERE attachment_id=?", (attachment_id,)).fetchone())
+            original_event = dict(conn.execute("SELECT * FROM hosted_room_events WHERE room_id='room' "
+                                               "AND event_id=?", (message["event_id"],)).fetchone())
+        blob = HostedRoomAttachmentStore(service.db_path).blob_root / attachment["blob_id"]
+        published_bytes = blob.read_bytes()
+        if damage in {"bytes", "missing_blob"}:
+            if damage == "bytes":
+                blob.write_bytes(b"x" * len(published_bytes))
+            else:
+                blob.unlink()
+        elif damage == "source_metadata":
+            authority.db._execute_write(lambda conn: conn.execute(
+                "UPDATE hosted_room_attachments SET upload_id='other-source' WHERE attachment_id=?",
+                (attachment_id,)))
+        else:
+            payload = dict(message["payload"])
+            if damage == "attachments_empty":
+                payload["attachments"] = []
+            elif damage == "attachments_missing":
+                payload.pop("attachments")
+            if damage == "missing_event":
+                authority.db._execute_write(lambda conn: conn.execute(
+                    "DELETE FROM hosted_room_events WHERE room_id='room' AND event_id=?", (message["event_id"],)))
+            else:
+                authority.db._execute_write(lambda conn: conn.execute(
+                    "UPDATE hosted_room_events SET kind=?, payload_json=? WHERE room_id='room' AND event_id=?",
+                    ("message.user" if damage == "wrong_event_kind" else "message.member",
+                     json.dumps(payload), message["event_id"])))
+        monkeypatch.setattr(RoomArtifactOutbox, "acknowledge", original_ack)
+        monkeypatch.setattr(service, "_output_clock", lambda: obligations(service)[0]["next_attempt_at"] + 1)
+        service.prepare_room(turn.binding)
+        assert obligations(service)[0]["state"] == "blocked"
+        # The fixture owns admission and the room, without starting its background worker.
+        monkeypatch.setattr(service.runtime, "status", lambda: {"running": True, "stopping": False})
+        connection = SimpleNamespace(authority=authority, actor=Principal(
+            "alice", str(tmp_path), frozenset({"session:control"}), "viewer"))
+        with pytest.raises(RuntimeError, match="file cleanup is still pending"):
+            await dispatch_group_control(connection, "groups.disband", {"room_id": "room"})
+        remaining, = outbox_rows(service)
+        assert remaining["acknowledged_at"] is None and remaining["cleanup_required_at"] is None
+        assert RoomArtifactOutbox(service.db_path).read(scope, source["artifact_id"])[1] == path.read_bytes()
+        assert (obligations(service)[0]["operation"], obligations(service)[0]["state"]) == ("ack", "blocked")
+        assert rooms.room_state(service.db_path, room_id="room").get("disbanded_at") is None
+        if damage in {"bytes", "missing_blob"}:
+            blob.write_bytes(published_bytes)
+        elif damage == "source_metadata":
+            authority.db._execute_write(lambda conn: conn.execute(
+                "UPDATE hosted_room_attachments SET upload_id=? WHERE attachment_id=?",
+                (attachment["upload_id"], attachment_id)))
+        else:
+            if damage == "missing_event":
+                authority.db._execute_write(lambda conn: conn.execute(
+                    f"INSERT INTO hosted_room_events ({', '.join(original_event)}) "
+                    f"VALUES ({', '.join('?' for _ in original_event)})", tuple(original_event.values())))
+            else:
+                authority.db._execute_write(lambda conn: conn.execute(
+                    "UPDATE hosted_room_events SET kind=?, payload_json=? WHERE room_id='room' AND event_id=?",
+                    (original_event["kind"], original_event["payload_json"], message["event_id"])))
+        await dispatch_group_control(connection, "groups.disband", {"room_id": "room"})
+        assert outbox_rows(service)[0]["acknowledged_at"] is not None
+        assert obligations(service) == []
+
+
+@pytest.mark.asyncio
 async def test_a_terminal_whose_files_were_already_discarded_is_still_published(tmp_path, monkeypatch):
     async with owner(tmp_path, monkeypatch) as (authority, service, runner):
         results = []

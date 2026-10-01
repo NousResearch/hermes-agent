@@ -420,12 +420,19 @@ class CanonicalHostedOutput:
             event = conn.execute(
                 "SELECT kind, actor_json, payload_json, authority_epoch FROM hosted_room_events "
                 "WHERE room_id=? AND event_id=?", (scope.room_id, message_event_id(scope))).fetchone()
-            if event is None or event["kind"] != "message.member":
+            if event is None:
+                settled = conn.execute(
+                    "SELECT 1 FROM hosted_room_policy_publications WHERE room_id=? AND task_id=? "
+                    "AND kind='turn.settled'", (scope.room_id, scope.task_id)).fetchone()
+                if settled is not None:
+                    raise RoomArtifactError("published Group Chat output message is unavailable")
                 return None
+            if event["kind"] != "message.member":
+                raise RoomArtifactError("Group Chat output publication kind changed")
             payload, actor = json.loads(event["payload_json"]), json.loads(event["actor_json"])
-            attachments = payload.get("attachments") or []
-            if not attachments:
-                return None
+            attachments = payload.get("attachments")
+            if type(attachments) is not list or not attachments:
+                raise RoomArtifactError("Group Chat output publication attachments changed")
             items = validate_terminal_artifact_manifest(manifest)
             if (event["authority_epoch"] != scope.authority_epoch or actor.get("id") != scope.member_id
                     or actor.get("profile") != scope.target_profile or payload.get("task_id") != scope.task_id
@@ -594,11 +601,15 @@ class CanonicalHostedOutput:
                 try:
                     published = (self._published_files(scope, manifest)
                                  if manifest is not None and row["operation"] == "ack" else None)
-                except (RoomArtifactError, ValueError):
-                    published = None
+                except (RoomArtifactError, ValueError) as exc:
+                    # Damaged publication evidence cannot prove the files were unpublished.
+                    self._record_outcome(scope, error=exc)
+                    continue
                 if published is not None:
-                    self._force_obligation(identity, scope, manifest, "ack", lambda items=published[0]: (
-                        self._acknowledge_source(identity, scope, manifest, items)))
+                    def acknowledge():
+                        self._verify_published_bytes(scope, *published)
+                        self._acknowledge_source(identity, scope, manifest, published[0])
+                    self._force_obligation(identity, scope, manifest, "ack", acknowledge)
                 elif self.profile_homes().get(scope.target_profile) is None:
                     # No longer served here: that profile's own outbox expiry retires the bytes.
                     self._force_obligation(identity, scope, manifest, "discard", lambda: None,

@@ -6,6 +6,7 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 
 import logging
 import re
+import stat
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -92,9 +93,12 @@ def _large_untracked_files(git_cmd: list[str], cwd: Path) -> tuple[tuple[str, in
     large = []
     for path in paths:
         try:
-            size = (cwd / path).stat().st_size
+            entry = (cwd / path).lstat()
         except OSError:
             continue
+        if not stat.S_ISREG(entry.st_mode):
+            continue
+        size = entry.st_size
         if size >= _LARGE_UNTRACKED_FILE_BYTES:
             large.append((path, size))
     return tuple(sorted(large))

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import main as hermes_main, update_cmd
+from hermes_cli import main as hermes_main, update_cmd, update_cmd_stash
 from tests.hermes_cli.test_update_target_identity import git, update_tree  # noqa: F401
 
 
@@ -28,6 +28,21 @@ def test_update_refuses_to_autostash_huge_untracked_file(tmp_path, capsys):
     assert 'core.1234' in output
     assert 'too large to autostash safely' in output
     assert not git(tmp_path, 'stash', 'list')
+
+
+def test_update_ignores_symlink_to_huge_target(tmp_path):
+    """Git stashes the symlink payload, not the target file (#128784)."""
+    git(tmp_path, 'init', '-q', '-b', 'main')
+    git(tmp_path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'base')
+    target = tmp_path.parent / f'{tmp_path.name}-large-target'
+    with target.open('wb') as handle:
+        handle.truncate(update_cmd._LARGE_UNTRACKED_FILE_BYTES)
+    link = tmp_path / 'linked.bin'
+    link.symlink_to(target)
+
+    assert update_cmd_stash._large_untracked_files(['git'], tmp_path) == ()
+
 
 @pytest.mark.parametrize('history,failure,keep', [
     ('ordinary', None, False), ('ordinary', None, True),

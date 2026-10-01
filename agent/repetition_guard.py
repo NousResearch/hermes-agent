@@ -45,6 +45,21 @@ _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 # identical table rows, templated YAML) stay in the low KB and must be delivered.
 STOP_PATH_MIN_CHARS = 16_000
 
+# Live streaming guard. Every other checkpoint reads the streamed text when the turn ENDS, so a
+# loop that keeps producing tokens ran until a human sent /stop (78k visible chars in one
+# incident). ``_record_streamed_assistant_text`` runs :func:`is_runaway_repetition` each time the
+# accumulated visible text crosses a threshold, never per delta (the scan is O(n)): first at
+# 8k chars, then at every doubling. Asked-for repeats stay far below the first threshold.
+STREAM_GUARD_FIRST_CHECK_CHARS = 8_000
+STREAM_GUARD_GROWTH_FACTOR = 2
+# Trusted fixed interrupt category (safe for tool output / turn records) for a self-cut loop.
+STREAM_LOOP_INTERRUPT_REASON = "repetition_loop"
+
+
+def next_stream_guard_threshold(current: int) -> int:
+    """The accumulated length at which the streaming guard checks again after ``current``."""
+    return max(STREAM_GUARD_FIRST_CHECK_CHARS, current * STREAM_GUARD_GROWTH_FACTOR)
+
 
 def is_repetition_dominated(text: str) -> bool:
     """True when a contiguous run of at least five exact repetitions covers at least half

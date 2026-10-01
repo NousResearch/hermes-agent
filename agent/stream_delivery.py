@@ -10,6 +10,11 @@ from typing import Any, Dict, List
 
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
+from agent.repetition_guard import (
+    STREAM_LOOP_INTERRUPT_REASON,
+    is_runaway_repetition,
+    next_stream_guard_threshold,
+)
 from agent.history_commentary import visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -90,14 +95,40 @@ class StreamDeliveryMixin:
     @_current_streamed_assistant_text.setter
     def _current_streamed_assistant_text(self, value: str) -> None:
         self._streamed_assistant_text_parts = [value] if value else []
+        self._streamed_assistant_text_len = len(value) if value else 0
+        self._stream_guard_next_check = next_stream_guard_threshold(0)
 
     def _record_streamed_assistant_text(self, text: str) -> None:
-        """Accumulate visible assistant text emitted through stream callbacks (superseded writers excluded)."""
+        """Accumulate visible assistant text emitted through stream callbacks (superseded writers excluded).
+
+        Also the live repetition guard: at each length threshold (8k, 16k, 32k, ...) the accumulated
+        text is scanned once; a runaway loop interrupts the turn here instead of streaming until a
+        human sends /stop. The turn-end checkpoints then see the interrupt and drop the looped partial.
+        """
         if isinstance(text, str) and text and not self._stream_writer_superseded():
             parts = getattr(self, "_streamed_assistant_text_parts", None)
             if parts is None:
                 parts = self._streamed_assistant_text_parts = []
             parts.append(text)
+            total = getattr(self, "_streamed_assistant_text_len", 0) + len(text)
+            self._streamed_assistant_text_len = total
+            nxt = getattr(self, "_stream_guard_next_check", None) or next_stream_guard_threshold(0)
+            if total >= nxt:
+                self._stream_guard_next_check = next_stream_guard_threshold(total)
+                self._check_streamed_text_for_loop("".join(parts))
+
+    def _check_streamed_text_for_loop(self, visible: str) -> None:
+        if getattr(self, "_interrupt_requested", False) or not is_runaway_repetition(visible):
+            return
+        logger.warning(
+            "%sStreamed reply degenerated into a repetition loop at %d chars; interrupting the turn",
+            getattr(self, "log_prefix", ""), len(visible))
+        interrupt = getattr(self, "interrupt", None)
+        if callable(interrupt):
+            interrupt(hard_cancel=True, tool_reason=STREAM_LOOP_INTERRUPT_REASON)
+        else:  # legacy callers without the mixin
+            self._interrupt_requested = True
+            self._tool_interrupt_reason = STREAM_LOOP_INTERRUPT_REASON
 
     @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:

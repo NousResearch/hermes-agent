@@ -2628,7 +2628,8 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
         original_mode = stat.S_IMODE(env_path.stat().st_mode) if preserve_mode else None
     except OSError:
         pass
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
+    # Beside the resolved target so a symlinked .env still renames atomically (no EXDEV copy).
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(os.path.realpath(env_path)), suffix=".tmp", prefix=".env_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(lines)

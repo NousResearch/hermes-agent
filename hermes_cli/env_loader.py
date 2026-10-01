@@ -436,7 +436,8 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original or force_utf8_rewrite:
             import tempfile
-            fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".env_")
+            # Beside the resolved target so a symlinked .env still renames atomically (no EXDEV copy).
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.realpath(path)), suffix=".tmp", prefix=".env_")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.writelines(sanitized)

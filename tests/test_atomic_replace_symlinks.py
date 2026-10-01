@@ -109,6 +109,37 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
 
 
 @pytest.mark.require_symlinks
+def test_atomic_json_write_symlink_into_other_dir_renames_not_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link into another dir (treated as another filesystem) must still publish by rename:
+    staging the temp beside the link makes the rename EXDEV and the copy fallback tears."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real = elsewhere / "real.json"
+    real.write_text("{}", encoding="utf-8")
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    real_replace = os.replace
+
+    def replace_same_dir_only(src, dst):
+        if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        return real_replace(src, dst)
+
+    def no_copy(*a, **k):
+        raise AssertionError("in-place copy fallback used")
+
+    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("utils._copy_fallback", no_copy)
+
+    atomic_json_write(link, {"hello": "world"})
+
+    assert link.is_symlink()
+    assert json.loads(real.read_text(encoding="utf-8")) == {"hello": "world"}
+
+
+@pytest.mark.require_symlinks
 def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"

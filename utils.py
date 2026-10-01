@@ -286,7 +286,9 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    # Stage beside the RESOLVED target: a temp next to a symlink into another filesystem turns the
+    # rename into EXDEV and atomic_replace falls back to a tearable in-place copy.
+    fd, tmp_path = tempfile.mkstemp(dir=str(Path(os.path.realpath(path)).parent), prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):

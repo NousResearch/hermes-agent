@@ -344,9 +344,10 @@ def _extract_member_atomically(
         mode &= ~(stat.S_ISUID | stat.S_ISGID)
 
     # Truncate the stem: mkstemp adds ~16 characters, and a member already near
-    # NAME_MAX would otherwise fail here on a write that used to succeed.
+    # NAME_MAX would otherwise fail here on a write that used to succeed.  Stage beside the
+    # RESOLVED target so a symlinked member renames atomically instead of an EXDEV in-place copy.
     fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial"
+        dir=os.path.dirname(os.path.realpath(target)), prefix=f".{target.name[:80]}.", suffix=".partial"
     )
     try:
         with os.fdopen(fd, "wb") as dst:

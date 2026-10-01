@@ -1421,3 +1421,38 @@ async def test_resolution_watch_uses_prompt_deadline(monkeypatch):
     await asyncio.wait_for(finished.wait(), timeout=10)
     assert (prompt.resolved, prompt.terminal_choice) == (True, "expired")
     await prompt.lifecycle_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("room_id", "sender", "key"),
+    [("!room:example.org", "@owner:example.org", "👍"),
+     ("!other:example.org", "@other:example.org", "unrecognised")],
+)
+async def test_decided_registered_card_consumes_reaction_before_followups(
+    monkeypatch, room_id, sender, key
+):
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
+
+    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@owner:example.org")
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="test", extra={"homeserver": "https://matrix.example.org"}
+    ))
+    prompt = _MatrixApprovalPrompt(
+        session_key="s1", chat_id="!room:example.org", message_id="$card",
+        approval_id="a1", command="echo hi", description="test", resolved=True,
+    )
+    adapter._approval_prompts_by_event["$card"] = prompt
+    adapter._handle_model_picker_reaction = AsyncMock(return_value=False)
+    adapter._handle_choice_picker_reaction = AsyncMock(return_value=False)
+    adapter._handle_followup_reaction = AsyncMock(return_value=None)
+
+    await adapter._dispatch_reaction(room_id, "$card", key, sender, "$reaction")
+
+    assert {
+        "model_picker": adapter._handle_model_picker_reaction.await_args_list,
+        "choice_picker": adapter._handle_choice_picker_reaction.await_args_list,
+        "followup": adapter._handle_followup_reaction.await_args_list,
+        "registered": adapter._approval_prompts_by_event,
+    } == {"model_picker": [], "choice_picker": [], "followup": [], "registered": {"$card": prompt}}

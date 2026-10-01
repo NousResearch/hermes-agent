@@ -128,6 +128,9 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        # (binding, current task, attempt generation, receipt result): retires the files a
+        # late receipt reports for an attempt that can no longer publish them.
+        self.retire_stale_output: Callable[..., None] | None = None
         self.pending_action, self.clock = pending_action, clock
         # Upkeep for the leased room (peer grant renewal): after Stop and new work, and between
         # polls of an active turn.
@@ -712,6 +715,8 @@ class HostedRoomRuntime:
                         state.settle_stopping_task, binding, current, attempt.lease,
                         **asdict(terminal),
                         expected_execution_generation=attempt.execution_generation)
+                elif self.retire_stale_output is not None and terminal.result.get("artifacts"):
+                    self.retire_stale_output(binding, current, attempt.execution_generation, terminal.result)
         except state.StaleLeaseError:
             # Cancellation, disband, or authority transfer won the durable race: the model
             # result is discarded rather than turning a correct fence into a thread exception.
@@ -996,10 +1001,12 @@ def _truncate_utf8(value: Any, *, max_bytes: int) -> tuple[str, bool]:
 
 
 def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    from gateway.session_hosted_output import output_receipt_fields
     text, truncated = _truncate_utf8(receipt.get("text", ""), max_bytes=MAX_TERMINAL_TEXT_BYTES)
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
     return {
         "message_id": receipt.get("message_id"), "text": text,
+        **output_receipt_fields(dict(receipt)),
         **({"error": error} if error else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
 
@@ -1020,7 +1027,8 @@ def _find_terminal_receipt(
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+                {"message_id": receipt_id, "text": message.get("content", ""),
+                 **{key: message[key] for key in ("artifacts", "artifact_scope") if key in message}}))
     return None
 
 

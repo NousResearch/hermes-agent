@@ -1,4 +1,5 @@
 """Admission-scoped finite consumers, independent of viewer or daemon lifetime."""
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -45,6 +46,21 @@ def admit_finite(params):
 async def execute_finite_admission(authority, ref, row):
     from gateway.session_ingress import execute_admission
     from gateway.session_surface import surface_turn_scope
+    from gateway.session_hosted_output import (
+        capture_failed_output, capture_output_result, hosted_output_scope, output_binding,
+    )
+    binding = await output_binding(authority, ref, row)
     with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True), \
-            surface_turn_scope(row['payload'].get('surface_v1')):
-        return await execute_admission(authority, ref, row)
+            surface_turn_scope(row['payload'].get('surface_v1')), \
+            hosted_output_scope(binding) as output:
+        if output is None:
+            return await execute_admission(authority, ref, row)
+        try:
+            response = await execute_admission(authority, ref, row)
+            await asyncio.to_thread(capture_output_result, authority, row, output)
+            return response
+        except Exception as exc:
+            pending = await asyncio.to_thread(capture_failed_output, authority, row, output)
+            if pending is not None:
+                exc.add_note(f"Group Chat output cleanup remains pending ({pending})")
+            raise

@@ -1332,13 +1332,26 @@ def restore_primary_runtime(agent) -> bool:
     )
     if blocked:
         return False
-    agent._restore_wait_logged = False
+    try:
+        snapshot = _snapshot_switch_state(agent, fields=_PRIMARY_RESTORE_SNAPSHOT_FIELDS)
+        compressor = agent.context_compressor
+        # Memory only: plugin-owned external state is outside this rollback boundary.
+        compressor_state = {
+            name: value.copy() if isinstance(value, (dict, list, set)) else value
+            for name, value in vars(compressor).items()
+        }
+        transport_cache = getattr(agent, "_transport_cache", _MISSING)
+        cached_transports = dict(transport_cache) if isinstance(transport_cache, dict) else None
+    except Exception as exc:
+        logger.warning("Cannot snapshot live fallback for primary restore: %s", exc)
+        return False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
     if not (isinstance(fallback_route, (list, tuple)) and len(fallback_route) == 2):
         fallback_route = (getattr(agent, "model", ""), getattr(agent, "provider", ""))
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
+        agent._restore_wait_logged = False
         _apply_primary_runtime_fields(agent, rt)
         _restore_runtime_capabilities(agent, rt)
         agent._use_prompt_caching = rt["use_prompt_caching"]
@@ -1389,6 +1402,22 @@ def restore_primary_runtime(agent) -> bool:
                 )
         return True
     except Exception as e:
+        abandoned = [getattr(agent, name, None) for name in ("client", "_anthropic_client")]
+        _restore_switch_snapshot(agent, snapshot)
+        vars(compressor).clear()
+        vars(compressor).update(compressor_state)
+        if cached_transports is not None:
+            transport_cache.clear()
+            transport_cache.update(cached_transports)
+        retained = [snapshot.get(name) for name in ("client", "_anthropic_client")]
+        retired = set()
+        for client in abandoned:
+            if client is None or any(client is old for old in retained) or id(client) in retired:
+                continue
+            retired.add(id(client))
+            # Shared transports may still be borrowed: shutdown only, never hard-close here.
+            with contextlib.suppress(Exception):
+                agent._retire_shared_openai_client(client, reason="failed_primary_restore")
         logger.warning("Failed to restore primary runtime: %s", e)
         return False
 
@@ -2024,22 +2053,32 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_credential_pool", "_credential_pool_entry_id",
 )
 _MISSING = object()
+_PRIMARY_RESTORE_SNAPSHOT_FIELDS = (
+    "request_overrides", "_transport_cache", "_use_prompt_caching", "_use_native_cache_layout",
+    "reasoning_config", "_restore_wait_logged", "_fallback_activated", "_fallback_index",
+    "_rate_limit_backoff_count", "_consecutive_stale_streams", "_provider_fallback_active",
+    "_provider_fallback_route", "_cached_system_prompt", "_compression_feasibility_checked",
+    "_last_feasibility_notice", "_compression_warning", "_bedrock_region", "_bedrock_guardrail_config",
+)
 
 
-def _snapshot_switch_state(agent) -> Dict[str, Any]:
+def _snapshot_switch_state(agent, *, fields=()) -> Dict[str, Any]:
     """Snapshot every field the swap+rebuild mutates so a failed rebuild rolls back atomically
     (else a new model name + OLD client 400s next turn). The sentinel distinguishes unset from
     None: tests build bare agents via ``__new__`` without all fields."""
-    snapshot = {name: getattr(agent, name, _MISSING) for name in _SWITCH_SNAPSHOT_FIELDS}
+    snapshot = {name: getattr(agent, name, _MISSING) for name in (*_SWITCH_SNAPSHOT_FIELDS, *fields)}
     # Shallow-copy the dict so mutating the live one doesn't poison the rollback target.
-    snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    kwargs = getattr(agent, "_client_kwargs", _MISSING)
+    snapshot["_client_kwargs"] = dict(kwargs or {}) if kwargs is not _MISSING else _MISSING
     return snapshot
 
 
 def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
     for name, value in snapshot.items():
         if value is _MISSING:
-            continue  # attribute did not exist before the swap; don't fabricate it
+            with contextlib.suppress(AttributeError):
+                delattr(agent, name)  # remove fields introduced by an unsuccessful swap
+            continue
         with contextlib.suppress(Exception):
             setattr(agent, name, value)
 

@@ -353,7 +353,7 @@ class TestAgentBrowserCliCapture:
         # hang past the outer tool deadline on Windows.
         assert elapsed < 10, f"get cdp-url stalled {elapsed:.1f}s behind a grandchild"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_get_cdp_cleans_capture_files_despite_grandchild(self, tmp_path):
         """POSIX: the capture files are unlinked even while the daemon
         grandchild still holds them open. On Windows the inherited handles
@@ -410,7 +410,7 @@ class TestAgentBrowserCliCapture:
         # behind a daemon grandchild forever.
         assert elapsed < 10, f"timeout path stalled {elapsed:.1f}s"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_capture_cli_timeout_cleans_capture_files(self, tmp_path):
         """POSIX: the capture files are unlinked after the timeout kill. On
         Windows the killed CLI's handles can outlive the kill() return, so

@@ -428,7 +428,7 @@ def apply_retry_restarts(
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
     The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 

@@ -494,9 +494,19 @@ class MemoryManager:
         if result and result.strip():
             # Prefetch is stamped into the user turn's api_content and replayed every later turn;
             # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            # A provider that declares its own prefetch budget already size-controls the block:
+            # the threshold rises past that budget (never below the shared cap) instead of
+            # re-cutting a relevance-ranked block to a head/tail preview (#130974).
+            spill_config = self._external_prefetch_spill_config
+            try:
+                budget = int(provider.prefetch_spill_budget() or 0)
+            except Exception:
+                budget = 0
+            if spill_config is not None and budget > int(spill_config.get("max_chars") or 0):
+                spill_config = dict(spill_config, max_chars=budget)
             result = spill_if_oversized(
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
-                config=self._external_prefetch_spill_config,
+                config=spill_config,
             )
         return result
 

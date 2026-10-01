@@ -130,6 +130,15 @@ class MemoryProvider(ABC):
         only the LAST prefetch, never a stale prior count."""
         return None
 
+    def prefetch_spill_budget(self) -> Optional[int]:
+        """Max chars :meth:`prefetch` output may reach. ``None`` (default) = no declared
+        budget, so the shared ``hooks.output_spill.max_chars`` governs unchanged. A provider
+        that already size-controls its recall block (e.g. Honcho's ``contextTokens`` cap)
+        returns that char budget: the manager raises the spill threshold to at least this
+        value, so the generic head/tail preview never re-cuts a relevance-ranked block that
+        already fits the provider's own cap."""
+        return None
+
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
         session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,

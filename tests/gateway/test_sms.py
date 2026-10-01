@@ -311,3 +311,40 @@ class TestMultiplexProfileScope:
         finally:
             reset_secret_scope(token)
         assert "TWILIO_PHONE_NUMBER required" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():
+    """The router hands SMS the full cron payload and send() splits it under Twilio's 1600-char
+    cap (a larger Body is rejected with 21617, which used to fail the whole delivery)."""
+    from gateway.config import GatewayConfig
+    from gateway.delivery import DeliveryRouter
+    from plugins.platforms.sms.adapter import SmsAdapter
+
+    with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",
+                                 "TWILIO_PHONE_NUMBER": "+15550001111"}):
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+    bodies = []
+
+    class _Resp:
+        status = 201
+        async def json(self):
+            return {"sid": "SM1"}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def post(self, url, data, headers):
+            bodies.append(next(value for opts, _, value in data._fields if opts["name"] == "Body"))
+            return _Resp()
+
+    adapter._http_session = _Session()
+    content = "\n\n".join(f"line {i} " + "x" * 200 for i in range(40))
+    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
+    result = await adapter.send("+15550002222", payload)
+
+    assert result.success
+    assert len(bodies) > 1 and max(map(len, bodies)) <= 1600
+    assert "line 39 " in bodies[-1]

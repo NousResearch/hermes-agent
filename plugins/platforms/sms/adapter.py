@@ -88,6 +88,8 @@ class SmsAdapter(BasePlatformAdapter):
     serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
+    # send() splits at MAX_MESSAGE_LENGTH, so cron delivery hands over the full payload.
+    splits_long_messages = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
@@ -163,7 +165,7 @@ class SmsAdapter(BasePlatformAdapter):
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
         try:
-            for chunk in self.truncate_message(self.format_message(content)):
+            for chunk in self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH):
                 form_data = _twilio_form(self._from_number, chat_id, chunk)
                 try:
                     async with session.post(url, data=form_data, headers=headers) as resp:

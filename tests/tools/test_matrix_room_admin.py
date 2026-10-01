@@ -5,6 +5,7 @@ import importlib
 import json
 import threading
 import weakref
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import unquote
@@ -111,6 +112,10 @@ async def test_admin_rechecks_owner_after_permission_reads(action, change):
     resume = asyncio.Event()
     client = SimpleNamespace(crypto=object())
     adapter = object.__new__(MatrixAdapter)
+    adapter._room_identities = {}
+    adapter._room_identity_cached_at = {}
+    adapter._dm_rooms = {}
+    adapter._room_identity_ttl_seconds = 60.0
     adapter._pin_state_lock = asyncio.Lock()
     adapter._client = client
     adapter._user_id = "@bot:server"
@@ -284,6 +289,10 @@ async def _routed_admin_sequence(action, change):
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._primary_profile_name = "A"
     adapter = object.__new__(MatrixAdapter)
+    adapter._room_identities = {}
+    adapter._room_identity_cached_at = {}
+    adapter._dm_rooms = {}
+    adapter._room_identity_ttl_seconds = 60.0
     adapter._user_id = "@bot-A:server"
     adapter._owner_profile = "A"
     adapter.gateway_runner = runner
@@ -396,6 +405,10 @@ async def test_admin_uses_identity_bound_for_gateway_turn(multiplexed, resumed):
     runner._primary_profile_name = "default"
     runner._profile_adapters = {}
     adapter = object.__new__(MatrixAdapter)
+    adapter._room_identities = {}
+    adapter._room_identity_cached_at = {}
+    adapter._dm_rooms = {}
+    adapter._room_identity_ttl_seconds = 60.0
     adapter.platform = Platform.MATRIX
     adapter.gateway_runner = runner
     adapter._owner_profile = None
@@ -462,6 +475,7 @@ def _bind_admin_room(power, *, members=(ACTOR, BOT, "@bob:server"), bot_membersh
     adapter._dm_rooms = {}
     adapter._room_identities = {}
     adapter._room_identity_cached_at = {}
+    adapter._room_identity_ttl_seconds = 60.0
     adapter._is_dm_room = AsyncMock(return_value=len(members) == 2 and BOT in members)
     adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
     adapter._get_room_members = AsyncMock(return_value=set(members))
@@ -552,6 +566,12 @@ async def test_room_that_stops_being_a_dm_before_the_write_is_refused(action, re
     # allowlist and becomes a group room during the power-level read. Leave: the
     # DM exemption from the kick level is decided before a third member joins.
     pytest.importorskip("mautrix.types")
+    from time import monotonic
+
+    from mautrix.types import StateEvent
+
+    from plugins.platforms.matrix.adapter import MatrixRoomIdentity
+
     dm = {"dm": True}
     adapter, writes, tokens = _bind_admin_room(
         {"users": {ACTOR: 0 if action == "leave" else 100, BOT: 100}},
@@ -559,6 +579,13 @@ async def test_room_that_stops_being_a_dm_before_the_write_is_refused(action, re
     )
 
     async def is_dm(room_id, **_kwargs):
+        adapter._room_identities[room_id] = MatrixRoomIdentity(
+            room_id=room_id, room_name=None, room_topic=None, canonical_alias=None,
+            server_name="server", joined_member_count=2 if dm["dm"] else 3,
+            room_state=None, is_direct_account_data=False, display_name=room_id,
+            has_explicit_name=False, chat_type="dm" if dm["dm"] else "room",
+        )
+        adapter._room_identity_cached_at[room_id] = monotonic()
         return dm["dm"]
 
     adapter._is_dm_room = is_dm
@@ -569,9 +596,18 @@ async def test_room_that_stops_being_a_dm_before_the_write_is_refused(action, re
         adapter._allowed_room_ids = {"!other:server"}
         request = adapter._client.api.request
 
+        power_reads = 0
+
         async def reclassify_on_power_read(method, path, **kwargs):
-            if "m.room.power_levels" in unquote(path):
+            nonlocal power_reads
+            power_reads += int("m.room.power_levels" in unquote(path))
+            if "m.room.power_levels" in unquote(path) and power_reads == (1 if action == "pin" else 2):
                 dm["dm"] = False
+                await adapter._on_room_state(StateEvent.parse_json(json.dumps({
+                    "type": "m.room.member", "room_id": ROOM,
+                    "event_id": "$membership", "sender": ACTOR, "state_key": "@bob:server",
+                    "origin_server_ts": 0, "content": {"membership": "join"},
+                })))
             return await request(method, path, **kwargs)
 
         adapter._client.api.request = reclassify_on_power_read
@@ -726,18 +762,18 @@ async def test_profile_files_are_read_off_the_gateway_loop(action, monkeypatch):
 
     calls = []
     secret_reads = []
-    enabled = room_admin._enabled
+    capture_selection = room_admin.MatrixAdminSelection.capture
     build_secret_scope = agent.secret_scope.build_profile_secret_scope
 
     def counted(*args):
         calls.append(threading.get_ident())
-        return enabled(*args)
+        return capture_selection(*args)
 
     def recorded_secret_scope(*args, **kwargs):
         secret_reads.append(threading.get_ident())
         return build_secret_scope(*args, **kwargs)
 
-    monkeypatch.setattr(room_admin, "_enabled", counted)
+    monkeypatch.setattr(room_admin.MatrixAdminSelection, "capture", counted)
     monkeypatch.setattr(agent.secret_scope, "build_profile_secret_scope", recorded_secret_scope)
     _, writes, tokens = _bind_admin_room({"users": {ACTOR: 100, BOT: 100}},
                                          bot_membership="leave" if action == "forget" else "join")
@@ -751,3 +787,288 @@ async def test_profile_files_are_read_off_the_gateway_loop(action, monkeypatch):
     assert isinstance(raw, str)
     assert (json.loads(raw).get("error"), len(writes), len(calls), loop_thread in calls,
             bool(secret_reads), loop_thread in secret_reads) == (None, 1, 2, False, True, False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["invite", "redact", "leave", "forget", "pin", "unpin"])
+@pytest.mark.parametrize("stage", ["m.room.encryption", "m.room.create", "selection"])
+async def test_admin_write_uses_current_requester_power_after_preflight(action, stage, monkeypatch):
+    from plugins.platforms.matrix import room_admin
+
+    users = {ACTOR: 100, BOT: 100}
+    power = {"users": users, "invite": 50}
+    adapter, writes, tokens = _bind_admin_room(
+        power, bot_membership="leave" if action == "forget" else "join",
+    )
+    request = adapter._client.api.request
+    selections = 0
+    require_selection = room_admin._AdminContext.require_selection
+
+    async def changing_state(method, path, **kwargs):
+        event_type = unquote(str(path)).rstrip("/").rsplit("/", 1)[-1]
+        if event_type == stage:
+            users[ACTOR] = 0
+        value = await request(method, path, **kwargs)
+        if event_type == "m.room.pinned_events":
+            return {"pinned": ["$target"] if action == "unpin" else []}
+        return deepcopy(value)
+
+    async def changing_selection(context, *args, **kwargs):
+        nonlocal selections
+        selection = await require_selection(context, *args, **kwargs)
+        selections += 1
+        if stage == "selection" and selections == 2:
+            users[ACTOR] = 0
+        return selection
+
+    adapter._client.api.request = changing_state
+    monkeypatch.setattr(room_admin._AdminContext, "require_selection", changing_selection)
+    tool = "matrix_pin" if action in {"pin", "unpin"} else "matrix_room_admin"
+    try:
+        raw = await asyncio.to_thread(
+            _dispatch_in_worker, tool, {"action": action, "user_id": "@bob:server", "event_id": "$target"},
+        )
+        assert isinstance(raw, str)
+        result = json.loads(raw)
+    finally:
+        clear_session_vars(tokens)
+    purpose = {"invite": "invite users", "redact": "redact this event",
+               "leave": "remove the bot from this room", "forget": "remove the bot from this room"}
+    error = ("Matrix requester lacks permission to change pins" if action in {"pin", "unpin"}
+             else f"Matrix requester lacks permission to {purpose[action]}")
+
+    assert (result, writes) == ({"error": error, "required": 50, "level": 0}, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["invite", "redact", "leave", "forget", "pin", "unpin", "create"])
+@pytest.mark.parametrize("selected_home", ["runtime", "transport"])
+@pytest.mark.parametrize("selected_after_read", [True, False], ids=["still-selected", "revoked"])
+async def test_admin_rechecks_profile_selection_after_final_permissions(
+    action, selected_home, selected_after_read,
+):
+    from gateway.run import _profile_runtime_scope
+    from mautrix.types import RoomCreatePreset
+
+    transport_home = get_hermes_home()
+    runtime_home = transport_home / "runtime-profile"
+    runtime_home.mkdir()
+    atomic_config_write(runtime_home / "config.yaml", {
+        "platform_toolsets": {"matrix": ["matrix_admin"]},
+    })
+    adapter, writes, initial_tokens = _bind_admin_room(
+        {"users": {ACTOR: 100, BOT: 100}, "invite": 50},
+        bot_membership="leave" if action == "forget" else "join",
+    )
+    clear_session_vars(initial_tokens)
+    identity = RoutingIdentity(
+        "transport", "runtime", transport_home, runtime_home,
+        transport=weakref.ref(adapter),
+    )
+    homes = {"runtime": runtime_home, "transport": transport_home}
+    request = adapter._client.api.request
+    power_reads = 0
+    observed_homes = []
+    final_power_read = 0 if action == "create" else (1 if action in {"pin", "unpin"} else 2)
+    allowed_room_event = adapter._is_allowed_matrix_room_event
+    access_reads = 0
+
+    async def changing_access(room_id):
+        nonlocal access_reads
+        allowed = await allowed_room_event(room_id)
+        access_reads += 1
+        if action == "create" and access_reads == 4:
+            atomic_config_write(homes[selected_home] / "config.yaml", {
+                "platform_toolsets": {
+                    "matrix": ["matrix_admin"] if selected_after_read else [],
+                },
+            })
+        return allowed
+
+    async def changing_state(method, path, **kwargs):
+        nonlocal power_reads
+        event_type = unquote(str(path)).rstrip("/").rsplit("/", 1)[-1]
+        value = await request(method, path, **kwargs)
+        if event_type == "m.room.pinned_events":
+            return {"pinned": ["$target"] if action == "unpin" else []}
+        if event_type == "m.room.power_levels":
+            power_reads += 1
+            observed_homes.append(get_hermes_home())
+            if power_reads == final_power_read:
+                atomic_config_write(homes[selected_home] / "config.yaml", {
+                    "platform_toolsets": {
+                        "matrix": ["matrix_admin"] if selected_after_read else [],
+                    },
+                })
+        return deepcopy(value)
+
+    adapter._client.api.request = changing_state
+    adapter._is_allowed_matrix_room_event = changing_access
+    tool = "matrix_pin" if action in {"pin", "unpin"} else "matrix_room_admin"
+    with _profile_runtime_scope(runtime_home, hydrate_secrets=False):
+        tokens = set_session_vars(
+            platform="matrix", chat_id=ROOM, chat_type="group", user_id=ACTOR,
+            session_key="session-A", transport_adapter=adapter,
+            transport_loop=asyncio.get_running_loop(), routing_identity=identity,
+        )
+        try:
+            raw = await asyncio.to_thread(
+                _dispatch_in_worker, tool,
+                {"action": action, "user_id": "@bob:server", "event_id": "$target"},
+            )
+            assert isinstance(raw, str)
+            result = json.loads(raw)
+        finally:
+            clear_session_vars(tokens)
+    results = {
+        "create": {"action": "create", "room_id": "!created:server", "encrypted": False},
+        "invite": {"action": "invite", "room_id": ROOM, "user_id": "@bob:server"},
+        "redact": {
+            "action": "redact", "room_id": ROOM, "event_id": "$target",
+            "redaction_event_id": "$redaction",
+        },
+        "leave": {"action": "leave", "room_id": ROOM},
+        "forget": {"action": "forget", "room_id": ROOM},
+        "pin": {"pinned": ["$target"], "state_event_id": "$redaction"},
+        "unpin": {"pinned": [], "state_event_id": "$redaction"},
+    }
+    calls = {
+        "create": ("create_room", (), {"name": None, "topic": None, "invitees": [],
+                                       "is_direct": False, "preset": RoomCreatePreset.PRIVATE,
+                                       "initial_state": []}),
+        "invite": ("invite_user", (ROOM, "@bob:server"), {"reason": None}),
+        "redact": ("redact", (ROOM, "$target"), {"reason": None}),
+        "leave": ("leave_room", (ROOM,), {"reason": None, "raise_not_in_room": True}),
+        "forget": ("forget_room", (ROOM,), {}),
+        "pin": ("send_state_event", (ROOM, "m.room.pinned_events", {"pinned": ["$target"]}), {}),
+        "unpin": ("send_state_event", (ROOM, "m.room.pinned_events", {"pinned": []}), {}),
+    }
+    error = "Enable matrix_admin for Matrix in both the runtime and transport profiles in hermes tools"
+    expected = (results[action], [calls[action]]) if selected_after_read else ({"error": error}, [])
+
+    expected_power_reads = final_power_read + int(selected_after_read and action != "create")
+    assert (result, writes, power_reads, observed_homes) == (
+        *expected, expected_power_reads, [transport_home] * expected_power_reads,
+    )
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["pin", "unpin"])
+@pytest.mark.parametrize("lower_during_access", [True, False], ids=["lower-during-access", "control"])
+@pytest.mark.parametrize("room_ttl", [60.0, float("nan")], ids=["finite-ttl", "refresh-each-access"])
+async def test_pin_power_response_is_not_reused_after_an_access_await(
+    action, lower_during_access, room_ttl, monkeypatch,
+):
+    pytest.importorskip("mautrix.types")
+    from gateway.run import _profile_runtime_scope
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from aiohttp import ClientSession
+    from mautrix.api import HTTPAPI
+    from mautrix.client import ClientAPI
+    from mautrix.types import DeviceID, UserID
+
+    transport_home = get_hermes_home()
+    runtime_home = transport_home / "runtime-profile"
+    runtime_home.mkdir()
+    atomic_config_write(runtime_home / "config.yaml", {
+        "platform_toolsets": {"matrix": ["matrix_admin"]},
+    })
+    users = {ACTOR: 100, BOT: 100}
+    adapter, _, initial_tokens = _bind_admin_room({"users": users})
+    clear_session_vars(initial_tokens)
+    adapter._room_identity_ttl_seconds = room_ttl
+    adapter._room_identity_cache_max = 2048
+    adapter._room_state_values = {}
+    owner_loop = asyncio.get_running_loop()
+    power_returned = False
+    lowered = False
+    writes = []
+    response_homes = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, value, event_type):
+            self.value = deepcopy(value)
+            self.event_type = event_type
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def json(self):
+            nonlocal power_returned
+            assert asyncio.get_running_loop() is owner_loop
+            if self.event_type == "m.room.power_levels":
+                power_returned = True
+                response_homes.append(get_hermes_home())
+            return deepcopy(self.value)
+
+    class Session:
+        def request(self, method, url, *, data, params, headers):
+            path = unquote(url.path).removeprefix("/_matrix/client/v3/rooms/")
+            room, _, rest = path.partition("/")
+            kind, _, rest = rest.partition("/")
+            event_type, _, state_key = rest.partition("/")
+            if kind == "joined_members":
+                return Response({"joined": {ACTOR: {}, BOT: {}, "@bob:server": {}}}, kind)
+            if method == "PUT":
+                writes.append((method, room, event_type, state_key, json.loads(data)))
+                return Response({"event_id": "$redaction"}, event_type)
+            value = {
+                "m.room.member": {"membership": "join"},
+                "m.room.pinned_events": {"pinned": ["$target"] if action == "unpin" else []},
+                "m.room.power_levels": {"users": users},
+                "m.room.create": {"type": "m.room.create", "sender": "@creator:server",
+                                  "content": {"room_version": "11"}},
+            }.get(event_type, {})
+            return Response(value, event_type)
+
+    async with ClientSession() as session:
+        monkeypatch.setattr(session, "request", Session().request)
+        api = HTTPAPI("https://matrix.invalid", token="test-token", client_session=session,
+                      default_retry_count=0)
+        adapter._client = ClientAPI(UserID(BOT), device_id=DeviceID("TEST"), api=api)
+        if room_ttl != room_ttl:
+            adapter._is_dm_room = MatrixAdapter._is_dm_room.__get__(adapter)
+            adapter._get_room_members = MatrixAdapter._get_room_members.__get__(adapter)
+            adapter._is_allowed_matrix_room_event = MatrixAdapter._is_allowed_matrix_room_event.__get__(adapter)
+        is_dm_room = adapter._is_dm_room
+
+        async def lower_during_owner_access(room_id):
+            nonlocal lowered
+            assert asyncio.get_running_loop() is owner_loop
+            if lower_during_access and power_returned:
+                users[ACTOR] = 0
+                lowered = True
+                await asyncio.sleep(0)
+            return await is_dm_room(room_id)
+
+        adapter._is_dm_room = lower_during_owner_access
+        identity = RoutingIdentity("transport", "runtime", transport_home, runtime_home,
+                                   transport=weakref.ref(adapter))
+        with _profile_runtime_scope(runtime_home, hydrate_secrets=False):
+            tokens = set_session_vars(
+                platform="matrix", chat_id=ROOM, chat_type="group", user_id=ACTOR,
+                session_key="session-A", transport_adapter=adapter,
+                transport_loop=owner_loop, routing_identity=identity,
+            )
+            try:
+                raw = await asyncio.to_thread(_dispatch_in_worker, "matrix_pin",
+                                              {"action": action, "event_id": "$target"})
+                assert isinstance(raw, str)
+                result = json.loads(raw)
+            finally:
+                clear_session_vars(tokens)
+        pinned = ["$target"] if action == "pin" else []
+        expected = (
+            {"error": "Matrix requester lacks permission to change pins", "required": 50, "level": 0}, []
+        ) if lowered else (
+            {"pinned": pinned, "state_event_id": "$redaction"},
+            [("PUT", ROOM, "m.room.pinned_events", "", {"pinned": pinned})],
+        )
+        assert (result, writes) == expected
+        assert response_homes and all(home == transport_home for home in response_homes)

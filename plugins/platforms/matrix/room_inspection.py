@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import quote
 
 from plugins.platforms.matrix.client_events import Method, raw_event
@@ -13,6 +15,9 @@ from plugins.platforms.matrix.read_context import (
     MatrixReadEvent, _current_read_access, _read_access, _visible_event,
 )
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+
+if TYPE_CHECKING:
+    from plugins.platforms.matrix.admin_selection import MatrixAdminSelection
 
 
 def _content(value: Any) -> dict[str, Any]:
@@ -139,6 +144,13 @@ async def _permissions(context: _InspectionContext) -> dict[str, Any]:
     return _permission_levels(context.requester, context.owner.bot_id, power, encryption, create)
 
 
+async def _pin_permissions(context: _InspectionContext) -> dict[str, Any]:
+    encryption = await _state(context, "m.room.encryption") or {}
+    create = _RoomCreate.parse(await _state_event(context, "m.room.create", {"format": "event"}))
+    power = await context.read_power_levels()
+    return _permission_levels(context.requester, context.owner.bot_id, power, encryption, create)
+
+
 def _permission_levels(
     requester: str, bot: str, power: dict[str, Any] | None, encryption: dict[str, Any], create: _RoomCreate,
 ) -> dict[str, Any]:
@@ -251,6 +263,46 @@ class _InspectionOwner:
 
 
 @dataclass(frozen=True)
+class _InspectionRoomScope:
+    identity: Any = field(repr=False)
+    cached_at: float
+    direct: bool | None
+    ttl: float
+    refreshed_since: float | None = None
+    captured_at: float = 0.0
+
+    @classmethod
+    def capture(
+        cls, adapter: Any, room_id: str, *, refreshed_since: float | None = None,
+    ) -> _InspectionRoomScope:
+        return cls(
+            adapter._room_identities.get(room_id),
+            adapter._room_identity_cached_at.get(room_id, 0.0),
+            adapter._dm_rooms.get(room_id),
+            adapter._room_identity_ttl_seconds, refreshed_since, time.monotonic(),
+        )
+
+    def check(self, adapter: Any, room_id: str) -> None:
+        current = self.capture(adapter, room_id)
+        refresh_mode = math.isnan(self.ttl)
+        same_ttl = current.ttl == self.ttl or (refresh_mode and math.isnan(current.ttl))
+        fresh = self.ttl <= 0 or time.monotonic() - self.cached_at <= self.ttl
+        if refresh_mode:
+            fresh = (
+                self.identity is not None and self.refreshed_since is not None
+                and self.refreshed_since <= self.cached_at <= self.captured_at
+                and time.monotonic() <= self.captured_at + 10.0
+            )
+        if (
+            current.identity is not self.identity or current.cached_at != self.cached_at
+            or current.direct != self.direct or not same_ttl
+            or (self.identity is not None and not fresh)
+            or (refresh_mode and not fresh)
+        ):
+            raise _InspectionRejected({"error": "Matrix room is not allowed or joined"})
+
+
+@dataclass(frozen=True)
 class _InspectionContext:
     adapter: Any
     client: Any
@@ -263,6 +315,37 @@ class _InspectionContext:
 
     async def check_access(self) -> None:
         await self.owner.access(self.room_id, self.requester, self.chat_type)
+
+    def check_current_access(self) -> None:
+        self.owner.check()
+        client, chat_type, error = _current_read_access(
+            self.adapter, self.room_id, self.requester, self.chat_type,
+        )
+        if error is not None:
+            raise _InspectionRejected(error)
+        if client is not self.client:
+            raise _InspectionRejected({"error": "Matrix room inspection context changed"})
+
+    async def read_power_levels(self) -> dict[str, Any] | None:
+        access_started = time.monotonic()
+        await self.check_access()
+        room_scope = _InspectionRoomScope.capture(
+            self.adapter, self.room_id, refreshed_since=access_started,
+        )
+        try:
+            value = await asyncio.wait_for(
+                self.client.api.request(Method.GET, _state_path(self.room_id, "m.room.power_levels")),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            self.check_current_access()
+            room_scope.check(self.adapter, self.room_id)
+            if _is_missing_state(exc):
+                return None
+            raise
+        self.check_current_access()
+        room_scope.check(self.adapter, self.room_id)
+        return value if isinstance(value, dict) else {}
 
     async def request(self, operation: Callable[[], Awaitable[Any]]) -> Any:
         await self.check_access()
@@ -412,7 +495,7 @@ class _PinChange:
 async def change_matrix_pin(
     adapter: Any, action: str, room_id: str, event_id: str, *, requester: str,
     interrupt_check: Callable[[], bool], before_write: Callable[[], None],
-    recheck_before_write: Callable[[], Awaitable[None]] | None = None, expected_client: Any = None,
+    recheck_before_write: Callable[[], Awaitable[MatrixAdminSelection | None]] | None = None, expected_client: Any = None,
 ) -> dict[str, Any]:
     owner = _InspectionOwner.capture(adapter)
     try:
@@ -433,7 +516,7 @@ async def change_matrix_pin(
 
 async def _change_pin_state(
     change: _PinChange, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
-    recheck_before_write: Callable[[], Awaitable[None]] | None = None,
+    recheck_before_write: Callable[[], Awaitable[MatrixAdminSelection | None]] | None = None,
 ) -> dict[str, Any]:
     context, event_id = change.context, change.event_id
     if interrupt_check():
@@ -441,12 +524,23 @@ async def _change_pin_state(
 
     dispatched = False
     try:
-        state = await _state(context, "m.room.pinned_events") or {}
-        permissions = await _permissions(context)
-        actor, required = permissions["requester"], permissions["required"]["edit_pins"]
-        if not actor["creator_override"] and (actor["level"] is None or actor["level"] < required):
-            return {"error": "Matrix requester lacks permission to change pins",
-                    "required": required, "level": actor["level"]}
+        selection = None
+        for _attempt in range(2):
+            if recheck_before_write is not None:
+                try:
+                    selection = await recheck_before_write()
+                except ValueError as exc:
+                    return {"error": str(exc)}
+            state = await _state(context, "m.room.pinned_events") or {}
+            permissions = await _pin_permissions(context)
+            actor, required = permissions["requester"], permissions["required"]["edit_pins"]
+            if not actor["creator_override"] and (actor["level"] is None or actor["level"] < required):
+                return {"error": "Matrix requester lacks permission to change pins",
+                        "required": required, "level": actor["level"]}
+            if selection is None or selection.current():
+                break
+        if selection is not None:
+            selection.require_current()
 
         pinned = state.get("pinned")
         if pinned is None:
@@ -462,14 +556,15 @@ async def _change_pin_state(
         if updated == pinned:
             return {"pinned": event_ids, "unchanged": True}
 
-        if recheck_before_write is not None:
-            try:
-                await recheck_before_write()
-            except ValueError as exc:
-                return {"error": str(exc)}
-        if interrupt_check():
+        try:
+            interrupted = interrupt_check()
+        except ValueError as exc:
+            return {"error": str(exc)}
+        if interrupted:
             return {"error": "Matrix pin update interrupted"}
 
+        if selection is not None:
+            selection.require_current()
         before_write()
         dispatched = True
         state_event_id = await asyncio.wait_for(

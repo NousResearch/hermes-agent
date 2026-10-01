@@ -1886,8 +1886,9 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
             if isinstance(max_ctx, int) and max_ctx > 0:
                 max_result[slug.strip()] = max_ctx
     if result:
-        _codex_oauth_context_cache[cache_key] = (result, now)
+        # Max first: a reader that sees the fresh context entry must also see its cap.
         _codex_oauth_max_context_cache[cache_key] = max_result
+        _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
 
 

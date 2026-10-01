@@ -680,6 +680,25 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
+    def test_catalog_max_is_published_before_the_context_entry(self):
+        """A reader that sees a fresh context entry must already be able to see its cap, or a
+        concurrent -900k resolution between the two writes skips the catalog max."""
+        import agent.model_metadata as mm
+
+        max_cache: dict = {}
+
+        class _ContextCache(dict):
+            def __setitem__(self, key, value):
+                assert key in max_cache, "context entry published before its max_context_window cap"
+                super().__setitem__(key, value)
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "gpt-5.6-luna", "context_window": 272_000, "max_context_window": 872_000}]}
+        with patch.object(mm, "_codex_oauth_context_cache", _ContextCache()), patch.object(mm, "_codex_oauth_max_context_cache", max_cache), \
+             patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+            live, _fresh = mm._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("fake-token"))
+        assert live == {"gpt-5.6-luna": 272_000}
+
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k"])
     def test_fallback_table_resolution_also_bumped(self, slug):

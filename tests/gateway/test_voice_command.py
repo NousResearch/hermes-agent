@@ -56,10 +56,10 @@ from gateway.platforms.base import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType
 
 
-def _unbound_voice_adapter() -> AsyncMock:
+def _unbound_voice_adapter() -> MagicMock:
     """A Discord adapter bound to text channel 123 with no join source (a programmatic join)."""
     from gateway.config import Platform
-    adapter = AsyncMock()
+    adapter = MagicMock()
     adapter._voice_text_channels, adapter._voice_sources = {111: 123}, {}
     adapter._client = MagicMock()
     adapter.handle_message = AsyncMock()
@@ -576,6 +576,7 @@ class TestVoiceChannelCommands:
         """Voice input creates synthetic event and calls handle_message."""
         from gateway.config import Platform
         mock_adapter = _unbound_voice_adapter()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_channel = AsyncMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         runner.adapters[Platform.DISCORD] = mock_adapter
@@ -604,7 +605,8 @@ class TestVoiceChannelCommands:
             "gateway.run._multiplex_profile_homes",
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
-        mock_adapter = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._owner_profile = "team-bot"
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: SessionSource(
@@ -654,7 +656,8 @@ class TestVoiceChannelCommands:
             platform=Platform.DISCORD,
         )
 
-        mock_adapter = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: bound_source.to_dict()}
         mock_channel = AsyncMock()
@@ -925,7 +928,7 @@ class TestCallbackWiringOrder:
 
         mock_channel = MagicMock()
         mock_channel.name = "General"
-        mock_adapter = AsyncMock()
+        mock_adapter = MagicMock()
         mock_adapter.join_voice_channel = AsyncMock(
             side_effect=RuntimeError("No permission")
         )

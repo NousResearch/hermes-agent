@@ -3638,8 +3638,10 @@ class GatewayTurnMixin:
         )
         pending_event = None
         pending = None
-        preserve_pending_for_restart = self._draining and self._queue_during_drain_enabled()
-        if result and adapter and session_key and not preserve_pending_for_restart:
+        # A draining gateway starts no new turn, so leave queued work in the slot: the shutdown flush
+        # persists it for the next process. That covers /queue in every busy mode, not only the
+        # follow-ups the drain notice promised to keep.
+        if result and adapter and session_key and not self._draining:
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).

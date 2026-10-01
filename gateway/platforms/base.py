@@ -4514,15 +4514,10 @@ class BasePlatformAdapter(ABC):
                 if inspect.isawaitable(_post_result):
                     await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
-    def _preserve_pending_for_gateway_restart(self) -> bool:
-        """Leave drain-time follow-ups queued for replacement recovery."""
-        runner = getattr(self, "gateway_runner", None)
-        queue_during_drain = getattr(runner, "_queue_during_drain_enabled", None)
-        return bool(
-            getattr(runner, "_draining", False)
-            and callable(queue_during_drain)
-            and queue_during_drain()
-        )
+    def _preserve_pending_for_gateway_drain(self) -> bool:
+        """Leave queued follow-ups for the shutdown flush while the gateway drains: the runner refuses
+        new turns then, so a drain task would only get the event rejected and dropped."""
+        return bool(getattr(getattr(self, "gateway_runner", None), "_draining", False))
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4530,7 +4525,7 @@ class BasePlatformAdapter(ABC):
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
         late_pending = None
-        if not self._preserve_pending_for_gateway_restart():
+        if not self._preserve_pending_for_gateway_drain():
             late_pending = self._pending_messages.pop(session_key, None)
         current_task = asyncio.current_task()
         if late_pending is not None:
@@ -4638,11 +4633,10 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            # Check if there's a pending message that was queued during our processing.
-            # During a queued restart drain, teardown owns this event and persists it
-            # for the replacement gateway instead of this process starting another turn.
+            # While the gateway drains, teardown owns a queued event and persists it for the next
+            # process instead of this one starting another turn.
             if (
-                not self._preserve_pending_for_gateway_restart()
+                not self._preserve_pending_for_gateway_drain()
                 and session_key in self._pending_messages
             ):
                 pending_event = self._pending_messages[session_key]

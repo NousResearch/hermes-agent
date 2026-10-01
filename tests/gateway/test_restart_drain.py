@@ -62,10 +62,16 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "busy_mode, queue_before_restart",
+    [("queue", False), ("interrupt", True)],
+    ids=["followup-during-drain", "slash-queue-in-interrupt-mode"],
+)
 async def test_restart_drain_preserves_queued_followup_for_shutdown(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, busy_mode, queue_before_restart
 ):
-    """A drain-time follow-up must reach replacement recovery intact (#82381)."""
+    """A drain-time follow-up must reach replacement recovery intact (#82381). A ``/queue``
+    accepted before the restart is queued in every busy mode, so it must survive too."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "1")
     monkeypatch.setattr(
@@ -99,7 +105,7 @@ async def test_restart_drain_preserves_queued_followup_for_shutdown(
 
     runner, adapter = make_restart_runner()
     adapter.gateway_runner = runner
-    runner._busy_input_mode = "queue"
+    runner._busy_input_mode = busy_mode
     runner._restart_after_turn_timeout = 5.0
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
@@ -161,6 +167,11 @@ async def test_restart_drain_preserves_queued_followup_for_shutdown(
         await asyncio.sleep(0.01)
     assert session_key in runner._running_agents
 
+    if queue_before_restart:
+        await adapter.handle_message(MessageEvent(
+            text="/queue follow up", message_type=MessageType.TEXT, source=source, message_id="queued",
+        ))
+
     restart_event = MessageEvent(
         text="/restart",
         message_type=MessageType.TEXT,
@@ -179,16 +190,18 @@ async def test_restart_drain_preserves_queued_followup_for_shutdown(
         media_urls=["/tmp/followup.png"],
         metadata={"opaque": "preserve-me"},
     )
-    await adapter.handle_message(followup)
-
-    assert adapter._pending_messages[session_key] is followup
-    assert any("queued for the next turn after it comes back" in message for message in adapter.sent)
+    if not queue_before_restart:
+        await adapter.handle_message(followup)
+        assert adapter._pending_messages[session_key] is followup
+        assert any("queued for the next turn after it comes back" in message for message in adapter.sent)
+    queued = adapter._pending_messages[session_key]
+    assert queued.text == "follow up"
 
     release_turn.set()
     await asyncio.wait_for(runner._restart_task, timeout=5)
 
     assert agent_calls == ["first turn"]
-    assert flush_calls == [({session_key: followup}, "adapter_shutdown")]
+    assert flush_calls == [({session_key: queued}, "adapter_shutdown")]
     assert stop_calls == [
         {
             "restart": True,

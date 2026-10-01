@@ -651,11 +651,11 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 def _guard_exports(db, session_ids: list[str]) -> None:
     """Per-session export budget: only an individual runaway transcript trips it; 0 disables."""
-    from hermes_state import SessionExportTooLargeError, export_too_large_message
+    from hermes_state import SessionExportTooLargeError
     try:
         db.assert_exports_safe(session_ids)
     except SessionExportTooLargeError as exc:
-        raise ConsoleCommandError(export_too_large_message(exc)) from exc
+        raise ConsoleCommandError(str(exc)) from exc
 
 
 @_captured

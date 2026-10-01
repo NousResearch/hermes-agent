@@ -349,7 +349,7 @@ def _cmd_export(db, args):
         """The transfer projection holds every stored row in memory: the console export's per-session
         ``sessions.max_export_messages`` guard (0 disables) runs before any is loaded. ``None`` = the
         sessions a bare export loads."""
-        from hermes_state import SessionExportTooLargeError, export_too_large_message, resolved_max_export_messages
+        from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
         if shown:
             return False
         limit = resolved_max_export_messages()
@@ -360,7 +360,7 @@ def _cmd_export(db, args):
         try:
             db.assert_exports_safe(session_ids, max_messages=limit)
         except SessionExportTooLargeError as exc:
-            print(f"Error: {export_too_large_message(exc)}")
+            print(f"Error: {exc}")
             return True
         return False
 

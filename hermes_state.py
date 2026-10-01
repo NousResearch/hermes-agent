@@ -116,7 +116,7 @@ class SessionResumeTooLargeError(ValueError):
         super().__init__(
             f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
             "Start a fresh chat and keep a copy with the dashboard Sessions page's Export action or "
-            "`hermes sessions export --format md` (neither is capped), or raise the limit "
+            "`hermes sessions export --format md --session-id <id>` (neither is capped), or raise the limit "
             "with `hermes config set sessions.max_resume_messages 0`."
         )
 
@@ -124,19 +124,12 @@ class SessionResumeTooLargeError(ValueError):
 class SessionExportTooLargeError(ValueError):
     def __init__(self, session_id: str, message_count: int, limit: int = _MAX_SAFE_MESSAGES):
         self.session_id, self.message_count, self.limit = session_id, message_count, limit
+        # User-facing refusal shared by every in-memory JSON/JSONL export (CLI and console).
         super().__init__(
-            f"session '{session_id}' has at least {message_count} active messages; "
-            f"safe in-memory export limit is {limit}"
+            f"Session '{session_id}' has more than {limit:,} exportable messages; the JSON/JSONL "
+            "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
+            "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
         )
-
-
-def export_too_large_message(exc: SessionExportTooLargeError) -> str:
-    """User-facing refusal shared by every in-memory JSON/JSONL export (CLI and console)."""
-    return (
-        f"Session '{exc.session_id}' has more than {exc.limit:,} exportable messages; the JSON/JSONL "
-        "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
-        "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
-    )
 
 
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:

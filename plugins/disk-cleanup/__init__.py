@@ -60,19 +60,19 @@ _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], Set[str]]] = {
     "terminal": _extract_paths_from_terminal}
 
 
-# (task_id or session_id, tool_call_id) -> (snapshot time, the call's argument paths that did NOT
-# exist before it ran). Tracking is for what a call CREATED: 'test' items are deleted at age 0 when
-# the turn ends (rmtree for dirs), so a user's test_* script the agent patched, ran or merely listed
-# must never be queued. The owning task/session is part of the key because tool_call_id is not
-# unique (llama.cpp sends one constant id for every call). Post tracks only paths this snapshot saw
-# absent, so a path it never covered — e.g. one another plugin's ``modify`` directive swapped in
-# after every pre hook ran on the original args — fails closed.
+# (owner, tool_call_id) -> (snapshot time, argument paths absent before the call). Post tracks only
+# these, so pre-existing files and paths swapped in after the snapshot (another hook's modify) fail closed.
 _pre_call: Dict[Tuple[str, str], Tuple[float, FrozenSet[str]]] = {}
 _PRE_CALL_TTL_S = 3600.0  # a call whose post hook never fires (blocked) must not leak its entry
 
 
+def _owner(task_id: str, session_id: str) -> str:
+    return task_id or session_id or "default"
+
+
 def _pre_call_key(task_id: str, session_id: str, tool_call_id: str) -> Tuple[str, str]:
-    return (task_id or session_id or "default", tool_call_id)
+    # tool_call_id alone is not unique (llama.cpp sends one constant id), so scope it by owner.
+    return (_owner(task_id, session_id), tool_call_id)
 
 
 def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, task_id: str = "",
@@ -94,7 +94,7 @@ def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None
     return None
 
 
-def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, result: Any = None,
+def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
                        task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
     """Auto-track ephemeral files THIS call created: a path from the call's final arguments that
     this call's own pre-call snapshot saw absent and that exists now. Paths seen only in terminal
@@ -104,7 +104,7 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = Non
     if not isinstance(args, dict) or extractor is None or not tool_call_id:
         return
     with _lock:
-        _taken, absent = _pre_call.pop(_pre_call_key(task_id, session_id, tool_call_id), (0.0, frozenset()))
+        absent = _pre_call.pop(_pre_call_key(task_id, session_id, tool_call_id), (0.0, frozenset()))[1]
     if not absent:
         return
     for path_str in extractor(args):
@@ -116,7 +116,7 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = Non
         category = dg.guess_category(p) if created else None
         if category is not None and dg.track(str(p), category, silent=True) and category == "test":
             with _lock:
-                _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))
+                _recent_test_tracks.setdefault(_owner(task_id, session_id), set()).add(str(p))
 
 
 def _on_session_end(

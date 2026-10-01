@@ -710,10 +710,31 @@ def _entry_is_rate_limit_exhausted(entry: Dict[str, Any]) -> bool:
 CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
 _codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
 _codex_quota_probe_lock = threading.Lock()
+# The key is a SHA-256 prefix of the Codex access token, so every OAuth refresh mints a new one.
+# The interval throttles how often a token is PROBED, not how long its entry is kept: a rotated
+# token's key is never presented again, so it — and the throttling it bought — is retained for the
+# life of the process (#130249). The cap is sized for the pool entries one process holds; the write
+# path also drops entries already past the interval, so a short-lived token leaves nothing behind.
+_CODEX_QUOTA_PROBE_CACHE_MAX_ENTRIES = 64
 
 
 def _codex_quota_probe_cache_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _prune_codex_quota_probe_cache(cache: Dict[str, Tuple[float, Optional[bool]]], now: float,
+                                   min_interval_seconds: float) -> None:
+    """Drop probe entries that can no longer be served: first the ones past the throttle interval,
+    then the oldest until ``_CODEX_QUOTA_PROBE_CACHE_MAX_ENTRIES`` holds. Caller holds the lock.
+
+    The mapping is passed in rather than read from the module global because every caller reaches it
+    through ``hermes_cli.auth``'s re-export — the same object the tests swap — so pruning the module
+    global here would clean a different dict than the one about to be written."""
+    for cache_key, entry in list(cache.items()):
+        if now - entry[0] >= min_interval_seconds:
+            cache.pop(cache_key, None)
+    while len(cache) > _CODEX_QUOTA_PROBE_CACHE_MAX_ENTRIES:
+        cache.pop(next(iter(cache)), None)
 
 
 def _codex_usage_probe_url(base_url: Optional[str]) -> str:
@@ -751,6 +772,8 @@ def _probe_codex_quota_restored(
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return cached[1]
         # Reserve the slot immediately so concurrent selectors don't stampede the endpoint.
+        _prune_codex_quota_probe_cache(_codex_quota_probe_cache, now, min_interval_seconds)
+        _codex_quota_probe_cache.pop(cache_key, None)
         _codex_quota_probe_cache[cache_key] = (now, None)
     result: Optional[bool] = None
     try:
@@ -820,6 +843,9 @@ def _refresh_expired_codex_probe_token(
     except Exception:
         logger.debug("Codex pre-probe token refresh failed", exc_info=True)
         with _codex_quota_probe_lock:
+            # This path reserves nothing up front (unlike the probe), so it prunes for itself.
+            _prune_codex_quota_probe_cache(_codex_quota_probe_cache, now, min_interval_seconds)
+            _codex_quota_probe_cache.pop(cache_key, None)
             _codex_quota_probe_cache[cache_key] = (now, None)
         return None
 

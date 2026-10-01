@@ -48,6 +48,11 @@ _LIVE_CACHE: Optional[Tuple[Dict[str, Dict[str, Any]], float]] = None
 # failure) to profile B. The unscoped slot above stays for the single-profile path and its tests.
 _LIVE_CACHE_BY_CREDENTIAL: Dict[Tuple[str, Optional[str]], Tuple[Dict[str, Dict[str, Any]], float]] = {}
 _LIVE_CACHE_TTL = 300.0
+# The key carries an api-key fingerprint, so every rotated key mints a new one and the TTL bounds
+# REUSE, never lifetime: a key that is never presented again keeps its catalog entry for the life of
+# the process (#130261). The write path drops keys past their TTL, then the oldest, until this cap
+# holds — a multiplexed host serves a handful of profiles, not one entry per rotation.
+_LIVE_CACHE_BY_CREDENTIAL_MAX_ENTRIES = 32
 _LIVE_TIMEOUT = 10.0
 
 _XAI_ASPECT_RATIOS = {
@@ -113,8 +118,24 @@ def _live_models() -> Dict[str, Dict[str, Any]]:
     if cached is not None and time.monotonic() - cached[1] < _LIVE_CACHE_TTL:
         return cached[0]
     live = _fetch_live_models_or_empty(creds)
-    _LIVE_CACHE_BY_CREDENTIAL[key] = (live, time.monotonic())
+    now = time.monotonic()
+    _prune_live_cache_by_credential(now)
+    # Re-insert so a re-fetched credential moves to the young end of the ring instead of keeping
+    # the eviction order of the fetch that first created its entry.
+    _LIVE_CACHE_BY_CREDENTIAL.pop(key, None)
+    _LIVE_CACHE_BY_CREDENTIAL[key] = (live, now)
     return live
+
+
+def _prune_live_cache_by_credential(now: float) -> None:
+    """Drop credential-scoped catalog entries that can no longer be served: first the ones past
+    their TTL, then the oldest until the cap holds. A rotated key's fingerprint is never presented
+    again, so without this the cache tracks every key the process ever held (#130261)."""
+    for cache_key, entry in list(_LIVE_CACHE_BY_CREDENTIAL.items()):
+        if now - entry[1] >= _LIVE_CACHE_TTL:
+            _LIVE_CACHE_BY_CREDENTIAL.pop(cache_key, None)
+    while len(_LIVE_CACHE_BY_CREDENTIAL) > _LIVE_CACHE_BY_CREDENTIAL_MAX_ENTRIES:
+        _LIVE_CACHE_BY_CREDENTIAL.pop(next(iter(_LIVE_CACHE_BY_CREDENTIAL)), None)
 
 
 def _fetch_live_models_or_empty(creds: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

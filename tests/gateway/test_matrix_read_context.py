@@ -137,7 +137,8 @@ async def test_read_rejects_unauthorized_requester_before_network():
 async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeypatch):
     encrypted = {"event_id": "$secret", "sender": "@alice:server", "type": "m.room.encrypted", "content": {}}
     types_module = ModuleType("mautrix.types")
-    types_module.Event = SimpleNamespace(deserialize=lambda raw: raw)
+    types_module.EncryptedEvent = SimpleNamespace(deserialize=lambda raw: raw)
+    types_module.JSON = lambda raw: raw
     mautrix_module = ModuleType("mautrix")
     mautrix_module.types = types_module
     monkeypatch.setitem(sys.modules, "mautrix", mautrix_module)

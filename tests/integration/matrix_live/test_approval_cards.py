@@ -29,6 +29,11 @@ def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
     return _create_live_room(synapse, unique_accounts=True)
 
 
+@pytest.fixture
+def gateway(approval_gateway: ApprovalGateway) -> ApprovalGateway:
+    return approval_gateway
+
+
 @pytest.mark.parametrize("approval_gateway", [
     (encrypted, decision)
     for encrypted in (False, True)

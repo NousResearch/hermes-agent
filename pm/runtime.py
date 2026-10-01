@@ -249,12 +249,15 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
         ) if python_version else None)
         if (staged_uv is not None and staged_uv.is_file()
                 and staged_python is not None and staged_python.is_file()):
+            # The lock may require a newer Python than the caller currently runs;
+            # select the managed interpreter before uv evaluates that lock.
             tools = staged_uv, staged_python
-        else:
-            # Non-shell bootstrap callers (CI) already have a host interpreter.
-            tools = _toolchain(explicit=True)
     if tools is None:
-        raise InstallError("pm-runtime", "pinned uv and Python are unavailable")
+        raise InstallError(
+            "pm-runtime",
+            "pinned uv and managed Python are unavailable",
+            "run `hermes pm install` to prepare the Python runtime",
+        )
     uv, python = tools
     return prepare_runtime(uv, python, install_state_dir(project) / "pm-runtime",
                            bootstrap=bootstrap, cache=cache)

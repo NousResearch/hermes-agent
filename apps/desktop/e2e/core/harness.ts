@@ -495,7 +495,7 @@ export async function waitForInteractive(app: ElectronApplication, page: Page, t
           if (cs.position === 'fixed') {
             const r = node.getBoundingClientRect()
 
-            if (r.left <= 0 && r.top <= 0 && r.right >= window.innerWidth && r.bottom >= window.innerHeight) {
+            if (r.left <= 1 && r.top <= 1 && r.right >= window.innerWidth - 1 && r.bottom >= window.innerHeight - 1) {
               return false
             }
           }

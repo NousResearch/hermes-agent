@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
-from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
+from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
@@ -171,7 +171,8 @@ def _render_terminal(ctx):
         persist_enabled = (bool(terminal_cfg.get("container_persistent", True)) if persist is None
                            else persist.lower() in {"1", "true", "yes", "on"})
         auth_status = describe_vercel_auth()
-        _kv("Runtime:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime') or 'node24')
+        _kv("Image:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime')
+            or os.getenv('TERMINAL_VERCEL_IMAGE') or terminal_cfg.get('vercel_image') or DEFAULT_VERCEL_IMAGE)
         _kv_flag("SDK:", importlib.util.find_spec("vercel") is not None, "installed",
                  "missing (run hermes setup terminal and select Vercel Sandbox, then restart Hermes)")
         _kv("Auth:", f"{check_mark(auth_status.ok)} {auth_status.label}")

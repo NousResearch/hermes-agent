@@ -308,7 +308,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
-        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
+        # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
+        served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
 

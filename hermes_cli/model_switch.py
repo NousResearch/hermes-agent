@@ -507,12 +507,6 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Legacy 5-tuple ``(model_input, explicit_provider, is_global, force_refresh, is_session)``."""
-    p = parse_model_flags_detailed(raw_args)
-    return (p.model_input, p.explicit_provider, p.is_global, p.force_refresh, p.is_session)
-
-
 def resolve_persist_behavior(
     is_global: bool, is_session: bool, is_once: bool = False, explicit_provider: str = "") -> bool:
     """Decide whether a ``/model`` switch should persist to ``config.yaml``.
@@ -1632,7 +1626,10 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        # A settings-only ``providers.<slug>`` block (no endpoint of its own) is not a
+        # user-defined endpoint: only a block declaring a base_url takes the custom
+        # validation branch (#120020; mirrors ``_lap_lmstudio_row``'s endpoint test).
+        if pdef is not None and pdef.source == "user-config" and (pdef.base_url or ""):
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

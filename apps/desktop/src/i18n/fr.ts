@@ -4,6 +4,43 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Aider à améliorer Hermes ?',
+    consentBody:
+      'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
+    whatIsCollected: 'Ce qui est collecté',
+    collectedIntro: 'Uniquement des compteurs bornés :',
+    collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
+    collectedModels: 'Routes de modèles et totaux de tokens',
+    collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
+    collectedMilestones: 'Comptes de configuration regroupés',
+    collectedReliability:
+      'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    collectedUsage:
+      "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
+    collectedMachine:
+      "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
+    installId:
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
+    consentWindow:
+      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    readDocs: 'Lire tous les détails',
+    share: 'Collecter et envoyer à Nous',
+    local: 'Collecter en local uniquement',
+    off: 'Non merci',
+    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
+    saveFailed: 'Impossible d’enregistrer votre choix',
+    collectLabel: 'Collecter les statistiques d’utilisation',
+    collectDesc:
+      'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
+    sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
+    sendDesc:
+      'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
+    unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
+    stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
+    stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
+    stripDetails: 'Détails'
+  },
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -695,7 +732,7 @@ export const frOverrides = {
       'view.toggleProfileRail': 'Afficher ou masquer la barre des profils',
       'view.toggleSimpleMode': 'Activer ou désactiver le mode simple',
       'view.showFiles': "Afficher l'explorateur de fichiers",
-      'view.showBrowser': 'Ouvrir le navigateur',
+      'view.showBrowser': 'Basculer le navigateur',
       'view.toggleHud': 'Basculer le mode HUD',
       'hud.snapToPointer': 'Déplacer le HUD vers le pointeur (global, lorsque le HUD est ouvert)',
       'view.showTerminal': 'Basculer le terminal',
@@ -1097,6 +1134,9 @@ export const frOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Taille du texte du chat',
+      chatTextScaleDesc:
+        'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',
@@ -1177,7 +1217,8 @@ export const frOverrides = {
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
       modelPricingTitle: 'Tarifs des modèles',
-      modelPricingDesc: "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
+      modelPricingDesc:
+        "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -1480,7 +1521,8 @@ export const frOverrides = {
       fileReadMaxChars: 'Nombre maximal de caractères que Hermes peut lire dans une demande de fichier.',
       approvals: {
         mode: 'Comment Hermes gère les commandes nécessitant une approbation explicite.',
-        timeout: "Durée d'attente des invites d'approbation avant expiration."
+        timeout:
+          "Durée d'attente des invites d'approbation sur les plateformes de messagerie avant expiration. L'app et le terminal attendent votre réponse."
       },
       security: {
         redactSecrets: "Masque les secrets détectés du contenu visible par le modèle lorsque c'est possible."
@@ -3149,7 +3191,8 @@ export const frOverrides = {
     gatewayStopped: 'Gateway de messagerie arrêté',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sessions actives ${count}`,
     restartGateway: 'Redémarrer le gateway',
-    openBrowser: 'Ouvrir le navigateur',
+    openBrowser: 'Basculer le navigateur',
+    toggleBrowser: 'Basculer le navigateur',
     gatewayRestartFailed: 'Échec du redémarrage du gateway.',
     sharedGatewayRestartTitle: 'Redémarrer le gateway partagé ?',
     sharedGatewayRestartDescription: bots => `Tous les bots de cet appareil se reconnecteront : ${bots}`,
@@ -5002,7 +5045,8 @@ export const frOverrides = {
     removeCustomModel: 'Retirer le modèle personnalisé',
     resetToDefaults: 'Rétablir les valeurs par défaut',
     resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
-    resetDescription: 'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetDescription:
+      'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
     resetAction: 'Rétablir'
   },
   shell: {
@@ -5015,6 +5059,10 @@ export const frOverrides = {
       editModels: 'Modifier les modèles…',
       followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
+      favorites: 'Favoris',
+      addFavorite: 'Ajouter aux favoris',
+      removeFavorite: 'Retirer des favoris',
+      favoriteShortcut: '⇧ Clic',
       fast: 'Rapide',
       free: 'gratuit',
       cacheRead: 'lecture en cache',
@@ -5341,6 +5389,7 @@ export const frOverrides = {
     hideTabStrip: 'Masquer les onglets',
     showStripTab: title => `Afficher ${title}`,
     hideStripTab: title => `Masquer ${title}`,
+    zoneMenuLabel: title => `Options de zone pour ${title}`,
     lastTabKeptTitle: 'Le dernier onglet reste affiché',
     lastTabKeptBody:
       "Cette zone doit conserver au moins un onglet visible. Affichez d'abord un autre onglet ou repliez toute la barre latérale.",
@@ -5434,6 +5483,7 @@ export const frOverrides = {
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
+      responseStopped: 'Réponse interrompue',
       errorLayers: {
         auth: "Erreur d'authentification",
         billing: 'Crédits épuisés',
@@ -5500,6 +5550,10 @@ export const frOverrides = {
           title: 'Service d’IA injoignable',
           body: provider =>
             `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
+        },
+        no_reply: {
+          title: "La réponse n'a pas abouti",
+          body: 'Hermes a terminé ce tour sans réponse. Réessayez pour la renvoyer.'
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
@@ -5682,14 +5736,11 @@ export const frOverrides = {
       placeholder: 'Saisissez votre réponse…',
       skip: 'Passer',
       skipped: 'Ignoré',
-      continueLabel: 'Continuer',
+      noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
-      answeredBadge: 'Répondu',
+      singleSelectHint: 'Choisir une réponse',
+      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      lateAnswer: (question, choice) => `Re : « ${question} » — ma réponse : ${choice}`,
-      lateAnswerTip: 'Rédiger cette réponse comme message de suivi',
-      lateAnswerHint:
-        "Cette invite n'attend plus de réponse. Choisissez une option pour la rédiger comme message de suivi.",
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
     },

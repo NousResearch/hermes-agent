@@ -551,10 +551,12 @@ export function useMessageStream({
       // a tool part can't jump ahead of the text that preceded it.
       flushQueuedDeltas(sessionId)
 
-      if (sessionInterrupted(sessionId)) {
-        return
-      }
-
+      // Status-store projections (todo mirror, delegate subagent upserts)
+      // bypass the interrupted gate below — they retire rows, they don't
+      // repaint the sealed bubble. Only the assistant bubble stays sealed
+      // after a Stop (mutateStream drops late writes on its own). Background
+      // work outlives the turn, so completions must still retire status rows
+      // (#81114).
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
       if (payload && isTodoToolName(payload.name)) {
@@ -574,6 +576,10 @@ export function useMessageStream({
             phase === 'complete' ? 'delegate.complete' : 'delegate.running'
           )
         }
+      }
+
+      if (sessionInterrupted(sessionId)) {
+        return
       }
 
       mutateStream(
@@ -654,6 +660,7 @@ export function useMessageStream({
           // duplicate landing after the turn settled — refresh it in place.
           const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
           const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
+
           const prevSameText = nextMessages.findLast(
             (message, index) =>
               index > lastUserIndex &&
@@ -661,6 +668,7 @@ export function useMessageStream({
               !message.hidden &&
               chatMessageText(message).replace(/\s+/g, ' ').trim() === normalizedText
           )
+
           if (prevSameText) {
             nextMessages = nextMessages.map(m =>
               m.id === prevSameText.id

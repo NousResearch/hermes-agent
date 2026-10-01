@@ -335,11 +335,19 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed"):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+
+def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> Any:
+    """Save under the request's profile scope; a new provider API key also counts as a provider setup."""
+    from hermes_cli.config import load_env
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_cli.observability.shared_metrics_setup import record_api_key_saved, web_setup_surface
+
+    previous = load_env().get(key)
+    result = save_provider_env_credential(key, value)
+    record_api_key_saved(key, value, previous, web_setup_surface(), connecting=provider_setup)
+    return result
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -718,12 +726,26 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
         # drop this write (or vice versa).
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
+            providers = cfg.get("providers")
+            created = _resolve_custom_endpoint_entry(
+                providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        if created:  # editing an endpoint that exists sets nothing new up
+            _record_custom_endpoint_setup(home)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
+
+
+def _record_custom_endpoint_setup(home: Any) -> None:
+    """Counted after the config lock is released (a cold metrics runtime must not stall writers)."""
+    from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done, web_setup_surface
+
+    record_provider_setup_done(web_setup_surface(), "custom", hermes_home=home, background=True)
 
 
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")

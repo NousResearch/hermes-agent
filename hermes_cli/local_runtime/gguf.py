@@ -16,6 +16,8 @@ _GGUF_MAGIC = b"GGUF"
 # Split GGUF naming: "<stem>-00001-of-00003.gguf"; the part suffix is not part of the model id.
 SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+# Same tensor selection as context_policy's per-block FFN -ot override.
+_FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
 
 
 def model_id_from_stem(stem: str) -> str:
@@ -58,6 +60,9 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    # block index -> bytes of that block's FFN weights (the tensors a `blk\.N\.ffn_.*\.weight`
+    # -ot override moves), so spill placement can move only as many blocks as it needs.
+    ffn_block_bytes: dict[int, int] = field(default_factory=dict)
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -207,6 +212,7 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        ffn_block_bytes: dict[int, int] = {}
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -224,7 +230,10 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
+            elif m := _FFN_WEIGHT.match(name):
+                block = int(m.group(1))
+                ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes)
+                      embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes)

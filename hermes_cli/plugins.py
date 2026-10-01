@@ -928,6 +928,49 @@ class PluginContext:
         logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
         return count
 
+    def register_locale(
+        self, lang: str, source: Union[str, Path, Mapping[str, Any]], *, endonym: Optional[str] = None,
+        rtl: bool = False, surface: str = "core",
+    ) -> PluginRegistration:
+        """Register a language-pack layer for ``lang`` (``pl``, ``pt-br``): ``source`` is a YAML file path or
+        a nested/flat mapping of ``dotted.key: text``. ``surface`` is ``core`` (Python ``t()``), ``tui`` or
+        ``desktop`` (served to the renderers over ``i18n.catalog``). Partial catalogs are fine; the last
+        registration wins key by key. Resets the i18n caches; never changes ``display.language``. Raises
+        ``ValueError`` for a malformed id/surface/file and ``FileNotFoundError`` for a missing path."""
+        from agent.i18n_layers import (
+            SURFACES, is_language_id, load_locale_source, normalize_language_id, register_pack, unregister_pack,
+        )
+        lang_id = normalize_language_id(lang)
+        if not is_language_id(lang_id):
+            raise self._refuse(f"locale with invalid language id {lang!r} (expected e.g. 'pl', 'pt-br')")
+        if surface not in SURFACES:
+            raise self._refuse(f"locale {lang_id!r} for unknown surface {surface!r} (one of {', '.join(SURFACES)})")
+        messages = load_locale_source(source)
+        entry = register_pack(lang_id, surface, messages, source=f"plugin:{self.manifest.name}",
+                              endonym=endonym, rtl=rtl)
+        handle = self._track("locale", f"{lang_id}.{surface}", lambda: unregister_pack(entry))
+        logger.debug("Plugin %s registered locale: %s/%s (%d keys)", self.manifest.name, lang_id, surface,
+                     len(messages))
+        return handle
+
+    def register_locale_dir(
+        self, path: Union[str, Path], *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ) -> List[PluginRegistration]:
+        """Register every ``<lang>[.tui|.desktop].yaml`` under ``path`` (a pack's ``locales/`` dir). The
+        loader calls this for plugins declaring ``provides_locales``; ``metadata`` maps ids to
+        ``{endonym, rtl}``. A broken file is skipped with a warning so one typo never disables the pack."""
+        from agent.i18n_layers import scan_locale_dir
+        handles: List[PluginRegistration] = []
+        for lang_id, surface, file in scan_locale_dir(Path(path)):
+            meta = dict((metadata or {}).get(lang_id) or {})
+            try:
+                handles.append(self.register_locale(
+                    lang_id, file, surface=surface, endonym=meta.get("endonym"), rtl=bool(meta.get("rtl", False)),
+                ))
+            except Exception as exc:
+                logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
+        return handles
+
     def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
@@ -1191,6 +1234,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
+        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
+        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
+        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
+        self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         # Ink TUI / desktop. Must not alias ``_gateway_message_injector``: a live
@@ -1369,24 +1416,34 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             plugin_sources = list_plugin_sources()
         except Exception:
             return
-        if not plugin_sources:
-            return
-        try:
-            from hermes_cli.config import load_config
-            secrets = (load_config() or {}).get("secrets") or {}
-        except Exception:
-            secrets = {}
-
-        def _enabled(source) -> bool:
-            section = secrets.get(getattr(source, "name", ""))
+        enabled_names: list[str] = []
+        if plugin_sources:
             try:
-                return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                from hermes_cli.config import load_config
+                secrets = (load_config() or {}).get("secrets") or {}
             except Exception:
-                return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+                secrets = {}
 
-        enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
+            def _enabled(source) -> bool:
+                section = secrets.get(getattr(source, "name", ""))
+                try:
+                    return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                except Exception:
+                    return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+
+            enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
         if not enabled_names:
-            return
+            # Nothing enabled now. If an earlier discovery re-applied plugin sources for this home, the
+            # snapshot and installed scope still carry that plugin's names (force-reload unloads the
+            # registration first, so this is exactly the "last plugin source removed" path) — reconcile
+            # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
+            if not self._plugin_secret_sources_reconciled:
+                return
+            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
+            # fallible, and clearing first left the stale credential active with no retry on the next
+            # discovery (review on f5f88d5058).
+        else:
+            self._plugin_secret_sources_reconciled = True
         try:
             # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
             # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
@@ -1395,8 +1452,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             home = get_hermes_home()
             reset_secret_source_cache(home)
             load_hermes_dotenv(hermes_home=home)
+            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
+            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
+            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
+            # into the installed scope or THIS fire never sees the plugin credential.
+            from agent.secret_scope import refresh_installed_secret_scope
+            refresh_installed_secret_scope(Path(home))
+            if not enabled_names:
+                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
-                         ", ".join(sorted(enabled_names)))
+                         ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 
@@ -1417,7 +1482,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         stale_relay_keys = legacy_relay_plugin_keys(enabled)
         if stale_relay_keys:
             logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
-                           "remove it and configure native Relay plugins with %s",
+                           "remove it and configure a standard user or system Relay plugins.toml, or use %s "
+                           "for an explicit user-file override",
                            ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
         # Later sources win on key collision (project > user > bundled) except a flat impostor claiming a
         # bundled key from another directory (resolve_manifest_winners); gate the winners, then

@@ -98,6 +98,14 @@ def _refuse_skill_slash(command: str) -> None:
 
 
 def _run(cli: HermesCLI, command: str) -> str:
+    """Run one command; return its captured, ANSI-stripped output.
+
+    A command like /prompt or /blueprint parks the composed text on the one-shot
+    ``_pending_agent_seed`` for the interactive REPL loop (cli.py) — but this
+    worker has no REPL, so the seed is harvested here onto ``cli._harvested_seed``
+    and routed back to the gateway, which sends it as the next turn (#107800).
+    """
+    cli._harvested_seed = ""  # one-shot: a fresh run never re-sends a stale seed
     cmd = (command or "").strip()
     if not cmd:
         return ""
@@ -118,7 +126,9 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
-    return strip_ansi(buf.getvalue().rstrip())
+    output = strip_ansi(buf.getvalue().rstrip())
+    cli._harvested_seed, cli._pending_agent_seed = getattr(cli, "_pending_agent_seed", None) or "", None
+    return output
 
 
 def _sw_log(reason: str) -> None:
@@ -148,6 +158,8 @@ def main():
         # MoA preset NAME to the configured real provider (#57283).
         cli = HermesCLI(model=args.model or None, provider=args.provider or None,
                         compact=True, resume=args.session_key, verbose=False)
+    cli._slash_metrics_surface = None  # the TUI/Desktop client already counted the typed command
+    cli.is_slash_worker = True
     # Spurious stdin-EOF recovery (same shared-file-description O_NONBLOCK issue as the gateway entry
     # point — any child inheriting fd 0 can flip the flag).
     _sw_recovery_times: list[float] = []
@@ -165,7 +177,8 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            _reply(id=rid, ok=True, output=_run(cli, req.get("command", "")))
+            output = _run(cli, req.get("command", ""))
+            _reply(id=rid, ok=True, output=output, seed=getattr(cli, "_harvested_seed", "") or "")
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

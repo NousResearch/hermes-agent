@@ -864,23 +864,6 @@ def _is_summary_stub(content: str) -> bool:
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
 
-# Sentinel ``user_response`` values from timeout / no-user clarify callbacks;
-# must never be quoted as a user answer.
-_CLARIFY_NON_RESPONSE_PREFIXES = (
-    "The user did not provide a response", "[user did not respond",
-    "[clarify prompt could not be delivered", "[oneshot mode:",
-)
-
-
-def _is_clarify_non_response_sentinel(response: Any) -> bool:
-    """Return True when a clarify ``user_response`` is runtime sentinel prose, not an answer.
-    For lists, ANY sentinel item poisons the whole response: real producers only emit scalar sentinels,
-    so a mixed list is forged/corrupt content — fall back to the generic path (may lose info, never
-    misattributes a user answer)."""
-    items = [response] if isinstance(response, str) else response if isinstance(response, list) else ()
-    return any(isinstance(s, str) and s.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES) for s in items)
-
-
 # Ghost-skill defense: the ONE canonical prune marker; emit sites and presence
 # checks must use the same string so they cannot drift.
 # Ghost-skill defense (#32106): when compaction reduces an old ``skill_view`` result to a 1-line metadata
@@ -1736,41 +1719,104 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
 
 
+# Runtime notices that clarify producers persisted as user_response before per-response
+# status existed. Only status-less (legacy) entries are checked; explicit status wins.
+_CLARIFY_NON_RESPONSE_PREFIXES = (
+    "The user did not provide a response",  # tools/clarify_tool.TIMEOUT_RESPONSE
+    "[user did not respond",  # gateway clarify delivery timeout
+    "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
+    "[oneshot mode:",  # hermes_cli/oneshot.py
+)
+# Matched whole: as a prefix these would also swallow real answers that start the same way.
+_CLARIFY_NON_RESPONSE_TEXTS = (
+    "The user cancelled. Use your best judgement to proceed.",  # classic CLI Ctrl+C
+)
+
+
+# Historical callbacks used repr(question) and repr(list[str]). Quoted fields
+# must close before a suffix counts: user text can contain the suffix itself.
+_CLARIFY_QUOTED_TEXT = r"(?:'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")"
+_CLARIFY_HEADLESS_NOTICE = re.compile(
+    r"\[(?:oneshot mode: no user available\. |"
+    rf"single-query mode: no user available to answer {_CLARIFY_QUOTED_TEXT}\. )"
+    r"(?:Make the most reasonable assumption you can and continue\.|"
+    rf"Pick the best (?:option|subset) from \[{_CLARIFY_QUOTED_TEXT}"
+    rf"(?:,\s*{_CLARIFY_QUOTED_TEXT})*\] using your own judgment and continue\.)\]",
+    re.DOTALL,
+)
+
+
+def _is_clarify_non_response(item) -> bool:
+    if not isinstance(item, str):
+        return False
+    text = item.strip()
+    return (text in _CLARIFY_NON_RESPONSE_TEXTS
+            or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+            or _CLARIFY_HEADLESS_NOTICE.fullmatch(text) is not None)
+
+
+def _filter_legacy_clarify_answers(values):
+    """Remove complete notices, including contiguous comma-normalized fragments."""
+    answers = []
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if isinstance(item, str) and item.strip().startswith((
+            "[oneshot mode: no user available.",
+            "[single-query mode: no user available to answer ",
+        )):
+            text = ""
+            notice_end = None
+            for end in range(index, len(values)):
+                if not isinstance(values[end], str):
+                    break
+                text += ("," if end > index else "") + values[end].strip()
+                if _CLARIFY_HEADLESS_NOTICE.fullmatch(text):
+                    notice_end = end
+                    break
+            if notice_end is not None:
+                index = notice_end + 1
+                continue
+        if not _is_clarify_non_response(item):
+            answers.append(item)
+        index += 1
+    return answers
+
+
 def _sum_clarify(name, args, content, content_len, line_count):
     response_prefix = "[clarify] user responded: "
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    parsed = _json_dict(content)
-    response = parsed.get("user_response")
-    # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
-    # rather than the top level; without this every batch answer was lost and the summarizer only
-    # saw "asked user a question" (#106077).
-    if response is None:
-        batch_responses = parsed.get("responses")
-        if isinstance(batch_responses, list) and batch_responses:
-            collected = []
-            for entry in batch_responses:
-                if not isinstance(entry, dict):
-                    continue
-                single = entry.get("user_response")
-                # multi_select emits a list of strings; flatten it so the summary keeps every choice.
-                if isinstance(single, str) and single:
-                    collected.append(single)
-                elif isinstance(single, list) and all(isinstance(s, str) and s for s in single):
-                    collected.extend(single)
-            response = collected if collected else None
-    is_answer_shaped = (isinstance(response, str) and bool(response)) or (
-        isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
-    )
-    # Timeout / no-user sentinel prose must not be quoted as a user answer.
-    if is_answer_shaped and not _is_clarify_non_response_sentinel(response):
-        # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
-        serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
-        summary = response_prefix + serialized.decode("utf-8")
-        summary = elide(summary, max_summary_chars)
-        return summary
-    return "[clarify] asked user a question"
+    payload = _json_dict(content)
+    responses = payload.get("responses")
+    if not isinstance(responses, list) and "user_response" in payload:
+        # Clarify results written before per-response status was introduced used
+        # the response fields directly on the top-level object.
+        responses = [payload]
+    answers: list = []
+    for entry in responses if isinstance(responses, list) else ():
+        if isinstance(entry, dict) and (
+            entry.get("status") == "answered"
+            or ("status" not in entry and "user_response" in entry)
+        ):
+            value = entry.get("user_response")
+            values = value if isinstance(value, list) else [value]
+            # Pre-status sessions also stored timeout/delivery notices as user_response.
+            # Only those legacy records need the old sentinel check; explicit status wins.
+            # Drop just the notice items so other selections in the same entry survive.
+            if "status" not in entry:
+                # Scan complete envelopes, not the whole list: genuine selections
+                # can surround a notice split by the old multi-select normalizer.
+                values = _filter_legacy_clarify_answers(values)
+            answers.extend(values)
+    answers = [answer for answer in answers if isinstance(answer, str) and answer]
+    if not answers:
+        return "[clarify] asked user a question"
+    # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
+    serialized = json.dumps(answers[0] if len(answers) == 1 else answers,
+                            ensure_ascii=False).encode("utf-8", errors="backslashreplace")
+    return elide(response_prefix + serialized.decode("utf-8"), max_summary_chars)
 
 
 def _sum_skill_manage(name, args, content, content_len, line_count):
@@ -4842,6 +4888,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         else:
             replay = _fresh_compaction_message_copy(inflight)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
+        # A restated row is NEW at the compaction boundary: never persist the
+        # in-flight turn's original timestamp, or timestamp-ordered views show
+        # the question after its own answer (#121064). Dropping it lets the
+        # store stamp compaction time (its monotonic now_ts orders it last).
+        replay.pop("timestamp", None)
         if isinstance(replay.get("content"), str):
             # Plain text: rebuild from the header-stripped task text so a
             # task surviving several compactions never stacks headers.
@@ -4869,6 +4920,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
             drop_stale_api_content(carrier)
+            # The carrier absorbed a durable user turn: record its uid (merge witness).
+            from agent.message_metadata import record_absorbed_message
+
+            record_absorbed_message(carrier, inflight)
             return compressed
 
         compressed.append(replay)

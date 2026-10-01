@@ -14,9 +14,31 @@ from dataclasses import dataclass
 from typing import Optional
 
 from utils import is_truthy_value
+from agent.i18n import t
 from hermes_constants import INDICATOR_STYLES
 
 logger = logging.getLogger(__name__)
+
+
+def _localized(key: str, default: str) -> str:
+    """``t(key)`` with *default* when no catalog (not even ``en``) carries the key."""
+    value = t(key)
+    return default if value == key else value
+
+
+# Category identifiers -> ``slash.category.<slug>`` (identifiers stay English; labels are localized
+# only at render time via ``category_label``).
+_CATEGORY_SLUGS: dict[str, str] = {
+    "Session": "session", "Configuration": "configuration", "Info": "info",
+    "Tools & Skills": "tools_skills", "Plugins": "plugins", "Exit": "exit",
+    "Context": "context", "Background & Automation": "background_automation",
+}
+
+
+def category_label(category: str) -> str:
+    """Localized label for a registry category / help sub-group identifier."""
+    slug = _CATEGORY_SLUGS.get(category)
+    return _localized(f"slash.category.{slug}", category) if slug else category
 
 
 @dataclass(frozen=True)
@@ -43,6 +65,16 @@ class CommandDef:
     argument_mode: str | None = None  # desktop composer: options|text|mixed; None inferred
     # Desktop availability: None = offered; "hidden" = runs but out of the popover; else a reason.
     desktop: str | None = None
+    # Desktop subcommand scope.  When set, the desktop surface only offers
+    # (completion) and forwards (exec) these subcommands — the first argument
+    # token must be one of them.  Use when a command family mixes desktop-
+    # relevant review actions with CLI-hub mutations (e.g. /skills install),
+    # so offering the command doesn't widen the whole family.
+    desktop_subcommands: tuple[str, ...] | None = None
+
+    def describe(self) -> str:
+        """Localized description (``slash.<name>.description``); ``description`` is the English source."""
+        return _localized(f"slash.{self.name}.description", self.description)
 
 
 VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrupt_then_dispatch"})
@@ -219,7 +251,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_config_gate="skills.write_approval",
                subcommands=("search", "browse", "inspect", "install", "audit",
                             "pending", "approve", "reject", "diff", "approval"),
-               desktop="settings"),
+               # Desktop exposes only the write-approval review slice — the
+               # same surface the gateway handler offers.  The hub mutations
+               # (search/browse/inspect/install/audit) run a full interactive
+               # CLI hub that must not be reachable from a desktop exec
+               # (#98330 review).
+               desktop_subcommands=("pending", "approve", "reject", "diff",
+                                    "approval")),
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills", args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
@@ -323,9 +361,12 @@ def infer_argument_mode(cmd: CommandDef) -> str | None:
     return "text" if hint else None
 
 
-def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
+def command_desktop_meta(cmd: CommandDef) -> dict[str, object]:
     """Wire shape for ``commands.catalog`` — reads the CommandDef, nothing else."""
-    return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+    meta: dict[str, object] = {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+    if cmd.desktop_subcommands is not None:
+        meta["desktop_subcommands"] = list(cmd.desktop_subcommands)
+    return meta
 
 
 def desktop_surface_registry() -> dict[str, str | None]:
@@ -358,27 +399,45 @@ def resolve_command(name: str) -> CommandDef | None:
 
 
 def _build_description(cmd: CommandDef) -> str:
-    """CLI-facing description including the usage hint."""
+    """CLI-facing localized description including the usage hint."""
     if not cmd.args_hint:
-        return cmd.description
-    return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
+        return cmd.describe()
+    return t("slash.shared.usage_suffix", description=cmd.describe(), name=cmd.name, args_hint=cmd.args_hint)
 
 
-# Flat "/command" -> description, and the same grouped by category; both exclude gateway_only.
-COMMANDS: dict[str, str] = {}
-COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
+def build_commands_by_category() -> dict[str, dict[str, str]]:
+    """Localized ``{category: {"/command": description}}`` (excludes gateway_only).
+
+    Built per call so a ``display.language`` change applies without a restart; category keys are
+    the registry identifiers -- render them with ``category_label``.
+    """
+    grouped: dict[str, dict[str, str]] = {}
+    for cmd in COMMAND_REGISTRY:
+        if cmd.gateway_only:
+            continue
+        entries = {f"/{cmd.name}": _build_description(cmd)}
+        for alias in cmd.aliases:
+            entries[f"/{alias}"] = t("slash.shared.alias_for", description=cmd.describe(), name=cmd.name)
+        grouped.setdefault(cmd.category, {}).update(entries)
+    return grouped
+
+
+def build_commands() -> dict[str, str]:
+    """Localized flat ``{"/command": description}`` (excludes gateway_only)."""
+    flat: dict[str, str] = {}
+    for entries in build_commands_by_category().values():
+        flat.update(entries)
+    return flat
+
+
+# ``COMMANDS`` / ``COMMANDS_BY_CATEGORY`` resolve lazily through the module ``__getattr__`` below so
+# every ``from hermes_cli.commands import COMMANDS`` sees the active language.
+_LAZY_LOCALIZED_TABLES = {"COMMANDS": build_commands, "COMMANDS_BY_CATEGORY": build_commands_by_category}
+
 # Subcommands lookup: "/cmd" -> ["sub1", ...]; explicit ``subcommands`` first (in
 # registry order), then pipe patterns in args_hint ("[on|off|status]") as fallback.
 SUBCOMMANDS: dict[str, list[str]] = {
     f"/{_cmd.name}": list(_cmd.subcommands) for _cmd in COMMAND_REGISTRY if _cmd.subcommands}
-for _cmd in COMMAND_REGISTRY:
-    if _cmd.gateway_only:
-        continue
-    _entries = {f"/{_cmd.name}": _build_description(_cmd)}
-    for _alias in _cmd.aliases:
-        _entries[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
-    COMMANDS.update(_entries)
-    COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {}).update(_entries)
 
 _PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
 for _cmd in COMMAND_REGISTRY:
@@ -483,8 +542,8 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
         # Skip internal aliases like reload_mcp (underscore variant of the name).
         alias_parts = [f"`/{a}`" for a in cmd.aliases
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        alias_note = t("slash.shared.alias_note", aliases=", ".join(alias_parts)) if alias_parts else ""
+        lines.append(f"`/{cmd.name}{args}` -- {cmd.describe()}{alias_note}")
     return lines
 
 
@@ -496,6 +555,13 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
         commands = get_plugin_commands() or {}
     except Exception:
         return []
-    return [(name, str(meta.get("description") or f"Run /{name}"),
+    return [(name, str(meta.get("description") or t("slash.shared.plugin_default_desc", name=name)),
              str(meta.get("args_hint") or "").strip())
             for name, meta in commands.items() if isinstance(name, str) and isinstance(meta, dict)]
+
+
+def __getattr__(name):  # PEP 562 — COMMANDS / COMMANDS_BY_CATEGORY are built per call so labels follow the active language
+    localized = _LAZY_LOCALIZED_TABLES.get(name)
+    if localized is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return localized()

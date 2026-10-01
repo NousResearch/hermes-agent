@@ -1449,8 +1449,12 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
         return None
     topology = host_gateway_topology()
+    # The multiplexer's record lives in the home that LAUNCHED it; a named-hosted multiplexer leaves
+    # a possibly stale standalone record at the default root, which must not be projected.
+    launch_home = get_default_hermes_root()
     if topology is not None and topology.serves(name):
         pid: Optional[int] = topology.pid
+        launch_home = topology.home or launch_home
     elif name != "default" and named_profile_served_by_running_multiplexer(name):
         # Config-derived fallback for a record that predates ``served_profiles``.
         pid = live_default_gateway_pid()
@@ -1458,7 +1462,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
         return None
     if pid is None:
         return None
-    return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
+    return pid, read_runtime_status(launch_home / "gateway_state.json") or {}
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
@@ -1497,6 +1501,13 @@ def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profil
     prefix = f"{profile}:"
     own = {key[len(prefix):]: value for key, value in plats.items()
            if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)}
+    if profile == "default":
+        # The flat keys ARE the default's own adapters (a multiplex host's primary map is always
+        # ``default``, whoever launched it; a standalone gateway writes only flat keys). Dropping
+        # them projected ``{}`` for the one profile the record never prefixes → "Restart needed"
+        # forever on /api/status and the Messaging card (#123088, #123869).
+        own.update({key: value for key, value in plats.items()
+                    if isinstance(key, str) and ":" not in key and isinstance(value, dict)})
     return {**shared_listener_mirror_platforms(runtime, profile), **own}
 
 

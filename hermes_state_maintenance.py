@@ -100,7 +100,11 @@ _PINNED_TAIL_SQL = ("WITH RECURSIVE tail(id) AS ("
                     " SELECT c.id FROM tail t JOIN sessions p ON p.id = t.id JOIN sessions c ON c.parent_session_id = p.id"
                     f" WHERE {_CONTINUATION_EDGE_SQL}"
                     ") SELECT id FROM tail")
-_NOT_PINNED_SQL = f"COALESCE(s.pinned, 0) = 0 AND s.id NOT IN ({_PINNED_TAIL_SQL})"
+
+
+def _not_pinned_sql(alias: str = "s") -> str:
+    """Predicate sparing pinned rows and the unpinned continuations a pinned segment covers."""
+    return f"COALESCE({alias}.pinned, 0) = 0 AND {alias}.id NOT IN ({_PINNED_TAIL_SQL})"
 
 
 class SessionMaintenanceMixin:
@@ -182,8 +186,7 @@ class SessionMaintenanceMixin:
         if not (hb_grace is not None and hb_grace >= 0):
             hb_grace = hb_staleness
         cutoff = (now := time.time()) - max_idle_seconds
-        pin_scope = (f" AND COALESCE(pinned, 0) = 0 AND sessions.id NOT IN ({_PINNED_TAIL_SQL})"
-                     if exclude_pinned else "")
+        pin_scope = f" AND {_not_pinned_sql('sessions')}" if exclude_pinned else ""
         orphan_predicate = f"started_at < ? AND {_sql_session_last_active('sessions')} < ?"
         heartbeat_params: Tuple[float, ...] = ()
         if respect_gateway_heartbeats:
@@ -235,7 +238,7 @@ class SessionMaintenanceMixin:
             clauses.append(f"s.archived = {int(archived)}")
         # Pinned is a durable "keep" flag: bulk prune/delete/archive exclude pinned rows unless opted in.
         if not include_pinned:
-            clauses.append(_NOT_PINNED_SQL)
+            clauses.append(_not_pinned_sql())
         return " AND ".join(clauses), params
 
     def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> Tuple[str, list]:
@@ -272,6 +275,8 @@ class SessionMaintenanceMixin:
                             pinned_only: bool = False, **filters) -> int:
         """Count-only :meth:`list_prune_candidates`; ``pinned_only`` counts rows carrying the pin
         itself, not the continuations it protects (CLI reports spared pinned sessions)."""
+        if pinned_only:
+            filters["include_pinned"] = True
         where, params = self._prune_where(older_than_days, source, filters)
         if pinned_only:
             where += " AND COALESCE(s.pinned, 0) = 1"
@@ -298,7 +303,7 @@ class SessionMaintenanceMixin:
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
-        pin_clause = f"AND {_NOT_PINNED_SQL}" if exclude_pinned else ""
+        pin_clause = f"AND {_not_pinned_sql()}" if exclude_pinned else ""
         rows = self._read_all(
             f"""
             SELECT s.id FROM sessions s

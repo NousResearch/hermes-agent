@@ -582,6 +582,21 @@ describe('recoverInFlightTurnJournal', () => {
     expect(result.messages.map(message => message.id)).toEqual(['queued-turn-row', 'assistant-stream-1'])
   })
 
+  it('anchors on durable identity when hydration rewrites the prompt text', () => {
+    const journaled = user('user-live', 'see /tmp/upload-abc/report.pdf')
+    journaled.rowId = 41
+    journalEntry([journaled, assistant('assistant-stream-1', 'partial', { pending: true })])
+
+    const durable = user('db-u1', 'see report.pdf')
+    durable.rowId = 41
+    const newer = user('db-u2', 'a newer turn')
+    newer.rowId = 43
+    const result = recoverInFlightTurnJournal('stored-1', [durable, newer], { keepPending: true })
+
+    expect(result.messages.map(message => message.id).indexOf('assistant-stream-1')).toBe(1)
+    expect(result.messages.filter(message => message.role === 'user')).toHaveLength(2)
+  })
+
   it('appends only the assistant tail when the user row was persisted', () => {
     journalEntry([
       user('u1', 'do the thing'),

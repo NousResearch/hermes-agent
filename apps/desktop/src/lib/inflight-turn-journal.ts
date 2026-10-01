@@ -539,17 +539,21 @@ function attachmentSignature(message: ChatMessage): string {
 }
 
 function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
-  const identityMatches =
-    left.clientMessageId && right.clientMessageId
-      ? left.clientMessageId === right.clientMessageId
-      : left.rowId !== undefined && right.rowId !== undefined
-        ? left.rowId === right.rowId
-        : true
+  if (left.role !== 'user' || right.role !== 'user') {
+    return false
+  }
+
+  // Identity decides when both sides carry it: hydration may rewrite a durable
+  // prompt's text or attachment paths. Only unidentified rows compare content.
+  if (left.clientMessageId && right.clientMessageId) {
+    return left.clientMessageId === right.clientMessageId
+  }
+
+  if (left.rowId !== undefined && right.rowId !== undefined) {
+    return left.rowId === right.rowId
+  }
 
   return (
-    left.role === 'user' &&
-    right.role === 'user' &&
-    identityMatches &&
     normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
     attachmentSignature(left) === attachmentSignature(right)
   )

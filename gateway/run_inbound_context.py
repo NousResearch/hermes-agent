@@ -148,7 +148,7 @@ class GatewayInboundContextMixin:
         self: GatewayRunner, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
+            message_text, audio_paths, event=event,
         )
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
@@ -385,7 +385,7 @@ class GatewayInboundContextMixin:
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
-        message_text: str = getattr(event, "_gateway_pending_stt_text", event.text) or ""
+        message_text = event.text or ""
         # Prefer the caller's resolved session key so this write key matches the consume key at the
         # run_conversation site; derive it here only for tests and legacy standalone callers.
         session_key = session_key or self._session_key_for_source(source)
@@ -400,15 +400,28 @@ class GatewayInboundContextMixin:
             context_snapshot.use_turn_context(await turn_context_update(
                 self, event=event, source=source, session_key=session_key, history=history,
             ))
-        if "@" in message_text:
-            expanded_message_text = await self._expand_inbound_context_references(source, session_key, message_text)
-            if expanded_message_text is None:
-                return None
-            message_text = expanded_message_text
-
-        message_text = self._prefix_inbound_sender_context(event, source, message_text)
         media_event = context_snapshot.media_event(event) if context_snapshot is not None else event
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(media_event, _pending_stt_prepared)
+        if audio_paths:
+            await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+        from gateway.run_inbound_voice import VoiceTranscription
+
+        transcription = getattr(event, "_gateway_pending_stt_input", None)
+        cached_clips = getattr(event, "_gateway_pending_stt_clips", ())
+        raw_voice = transcription if isinstance(transcription, VoiceTranscription) else VoiceTranscription("", tuple(cached_clips))
+        authored_text = raw_voice.authored_text(message_text)
+        expanded_authored_text = authored_text
+        if "@" in authored_text:
+            expanded_authored_text = await self._expand_inbound_context_references(source, session_key, authored_text)
+            if expanded_authored_text is None:
+                return None
+        if isinstance(transcription, VoiceTranscription):
+            message_text = transcription.render(message_text) + expanded_authored_text[len(authored_text):]
+        elif _pending_stt_prepared:
+            message_text = str(getattr(event, "_gateway_pending_stt_text", "") or "")
+        else:
+            message_text = expanded_authored_text
+        message_text = self._prefix_inbound_sender_context(event, source, message_text)
         authored_images = ()
         if image_paths and context_snapshot is not None:
             from gateway.inbound_context import ImageEnrichment
@@ -416,8 +429,6 @@ class GatewayInboundContextMixin:
             authored_images = await ImageEnrichment.enrich_each(self, source, session_key, image_paths)
         elif image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
-        if audio_paths:
-            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         redact_pii = False

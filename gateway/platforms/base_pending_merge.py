@@ -40,11 +40,7 @@ def _absorb_pending_media(existing: MessageEvent, event: MessageEvent) -> None:
         existing.message_type = MessageType.PHOTO
     elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
         existing.message_type = event.message_type
-    for attr in (
-        "_gateway_pending_stt_text",
-        "_gateway_pending_stt_transcripts",
-        "_gateway_pending_stt_clips",
-    ):
+    for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts", "_gateway_pending_stt_clips", "_gateway_pending_stt_input"):
         if hasattr(existing, attr):
             delattr(existing, attr)
 

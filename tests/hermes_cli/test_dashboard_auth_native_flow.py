@@ -452,27 +452,11 @@ def _start_native_password_login(client, *, challenge, state="desk-state"):
     return r.cookies
 
 
-def test_native_password_login_rejects_browser_parser_differential(pw_gated_client):
-    """A redirect accepted as loopback must not resolve to a remote browser authority."""
-    _verifier, challenge = _make_pkce()
-    r = pw_gated_client.get(
-        "/auth/native/authorize",
-        params={
-            "provider": "testpw",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "redirect_uri": "http://attacker.example\\@127.0.0.1/callback",
-            "state": "desk-state",
-        },
-    )
-    assert r.status_code == 400, r.text
-    assert "set-cookie" not in r.headers
-
-
 def test_native_redirect_uri_boundary_matches_browser_authority(gated_client):
     """Only canonical loopback authorities survive the upstream OAuth callback."""
     verifier, challenge = _make_pkce()
     rejected = (
+        "http://attacker.example\\@127.0.0.1/callback",  # browser authority = attacker host
         "http://user@127.0.0.1/callback",
         "http://@127.0.0.1/callback",
         "http://%31%32%37%2e%30%2e%30%2e%31/callback",

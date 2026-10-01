@@ -38,8 +38,11 @@ async def test_pending_logical_reply_is_serialisable_without_losing_live_revalid
             }]},
         }
         assert event._inbound_context_dependencies == (dependency,)
+        from gateway.shutdown_pending_codec import decode_pending_event
+        restored = decode_pending_event(record, adapter=adapter)
+        assert [snapshot.pending_state() for snapshot in restored._inbound_context_dependencies] == record["context"]["snapshots"]
         adapter._event_context_cache.redact(source.chat_id, ids[0])
-        prompt = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+        prompt = await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
         assert prompt == (
             '[Replying to your previous message: "[redacted]"]\n\n'
             f"Matrix reaction by {event.user_id}: 👍 on reply {ids[-1]} (reaction event $reaction)."

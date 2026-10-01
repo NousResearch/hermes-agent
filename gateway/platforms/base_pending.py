@@ -338,6 +338,9 @@ def withdraw_from_event(event: Any, matches: Callable[[MessageEvent], bool]) -> 
     if not remaining:
         return True, None
     rebuilt = pending_part(remaining[0][0])
+    uid = getattr(event, "_pending_snapshot_uid", None)
+    if uid is not None:
+        setattr(rebuilt, "_pending_snapshot_uid", uid)
     for part, merge in remaining[1:]:
         merge_recorded(rebuilt, part, merge)
     echoed = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))

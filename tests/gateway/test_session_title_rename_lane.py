@@ -71,21 +71,23 @@ _OPENING = _thread_source(
 )
 
 
-def _attach_in_thread(current, entry_origin, row_origin=None):
+def _attach_in_thread(current, entry_origin, row_origin=None, get_session=None):
     """Attach the title callback for an unmarked in-thread follow-up *current* whose routing entry
     holds *entry_origin* (and whose session row holds *row_origin*), through the REAL lane
     predicate and recovery. Returns (agent, scheduled renames)."""
     scheduled: list = []
     entry = types.SimpleNamespace(session_id="sess-1", origin=entry_origin)
     row = {"origin_json": json.dumps(row_origin.to_dict())} if row_origin else None
+    db = types.SimpleNamespace(get_session=get_session or {"sess-1": row}.get)
     runner = types.SimpleNamespace(
-        session_store=types.SimpleNamespace(lookup_by_session_key={"key-1": entry}.get),
-        _session_db=types.SimpleNamespace(get_session={"sess-1": row}.get),
+        session_store=types.SimpleNamespace(
+            lookup_by_session_key={"key-1": entry}.get, _db_for_key={"key-1": db}.get,
+        ),
         _is_telegram_topic_lane=lambda src: False,
         _is_relay_discord_channel_lane=lambda src: False,
         _schedule_discord_semantic_thread_rename=lambda src, sid, title: scheduled.append((src, sid, title)),
     )
-    for name in ("_sync_session_db", "_is_discord_auto_thread_lane", "_recover_discord_auto_thread_source"):
+    for name in ("_is_discord_auto_thread_lane", "_recover_discord_auto_thread_source"):
         setattr(runner, name, types.MethodType(getattr(GatewayRunner, name), runner))
     holder = types.SimpleNamespace(
         _runner=runner,
@@ -105,8 +107,8 @@ def test_discord_title_retry_recovers_auto_thread_origin(rebuilt_entry):
     adapter = type("Adapter", (), {})()
     current = _thread_source(message_id="follow-up", profile="runtime-profile")
     current._transport_adapter_ref = weakref.ref(adapter)
-    if rebuilt_entry:  # routing index lost: the entry was rebuilt from this very event
-        agent, scheduled = _attach_in_thread(current, entry_origin=current, row_origin=_OPENING)
+    if rebuilt_entry:  # routing index lost: the entry was rebuilt from an unmarked event
+        agent, scheduled = _attach_in_thread(current, entry_origin=_thread_source(), row_origin=_OPENING)
     else:
         agent, scheduled = _attach_in_thread(current, entry_origin=_OPENING)
     agent._on_session_title("Recovered semantic title", "llm")
@@ -118,15 +120,23 @@ def test_discord_title_retry_recovers_auto_thread_origin(rebuilt_entry):
     assert (session_id, title) == ("sess-1", "Recovered semantic title")
 
 
-@pytest.mark.parametrize("origin", [
+def _unreadable(session_id):
+    raise RuntimeError("state.db unavailable")
+
+
+@pytest.mark.parametrize("entry_origin,row_origin,get_session", [
     pytest.param(
         _thread_source("thread-2", auto_thread_created=True, auto_thread_initial_name="Other"),
-        id="other-thread",
+        _thread_source("thread-2", auto_thread_created=True, auto_thread_initial_name="Other"),
+        None, id="other-thread",
     ),
-    pytest.param(_thread_source(message_id="opening-message"), id="user-created-thread"),
+    pytest.param(_thread_source(message_id="opening-message"), None, None, id="user-created-thread"),
+    pytest.param(_thread_source(), None, _unreadable, id="unreadable-row"),
 ])
-def test_discord_title_retry_never_borrows_markers_from_another_origin(origin):
-    agent, scheduled = _attach_in_thread(_thread_source(message_id="follow-up"), entry_origin=origin)
+def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_origin, row_origin, get_session):
+    agent, scheduled = _attach_in_thread(
+        _thread_source(message_id="follow-up"), entry_origin, row_origin, get_session,
+    )
     assert not hasattr(agent, "_on_session_title")
     assert scheduled == []
 

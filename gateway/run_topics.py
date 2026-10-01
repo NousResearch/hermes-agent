@@ -295,17 +295,25 @@ class GatewayTopicThreadsMixin:
         entry = self.session_store.lookup_by_session_key(session_key)
         if entry is None:
             return source
+
+        def opens_this_thread(origin: Optional[SessionSource]) -> bool:
+            return (
+                origin is not None and str(origin.thread_id) == str(source.thread_id)
+                and self._is_discord_auto_thread_lane(origin)
+            )
+
         origin = entry.origin
-        if origin is not None and source.message_id and origin.message_id == source.message_id:
-            # An entry rebuilt from this very event (lost routing index) holds the unmarked live
-            # source; the session row keeps the opening origin until this turn's peer refresh.
-            origin = None
-            session_db = self._sync_session_db()
-            with suppress(Exception):
-                row = session_db.get_session(entry.session_id) if session_db is not None else None
-                origin = SessionSource.from_dict(json.loads(row["origin_json"]))
-        if origin is None or origin.thread_id != source.thread_id or not self._is_discord_auto_thread_lane(origin):
-            return source
+        if not opens_this_thread(origin):
+            # An entry rebuilt after a lost routing index holds an unmarked event, while the session
+            # row keeps the opening origin until that entry's first peer refresh overwrites it.
+            db = self.session_store._db_for_key(session_key)
+            row = db.get_session(entry.session_id) if db is not None else None
+            raw, origin = (row or {}).get("origin_json"), None
+            if raw:
+                with suppress(ValueError, KeyError, TypeError):  # malformed/legacy row: no recovery
+                    origin = SessionSource.from_dict(json.loads(raw))
+            if not opens_this_thread(origin):
+                return source
         return replace_source(
             source, auto_thread_created=True, auto_thread_initial_name=origin.auto_thread_initial_name,
         )

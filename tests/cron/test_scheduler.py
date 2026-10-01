@@ -1090,14 +1090,16 @@ class TestRunJobConfigEnvVarExpansion:
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
         from tools import web_tools
+        from tools.registry import invalidate_check_fn_cache
 
         # Keep the test independent of packages or credentials installed on
         # the developer machine. Tavily remains the only availability signal.
         def tavily_only_backend_available(backend):
             return backend == "tavily" and bool(os.environ.get("TAVILY_API_KEY"))
 
+        invalidate_check_fn_cache()
         model_tools._clear_tool_defs_cache()
-        with patch.object(
+        with contextlib.ExitStack() as cleanup, patch.object(
             web_tools,
             "_is_backend_available",
             side_effect=tavily_only_backend_available,
@@ -1108,11 +1110,15 @@ class TestRunJobConfigEnvVarExpansion:
             "agent.web_search_registry.get_active_extract_provider",
             return_value=None,
         ):
+            cleanup.callback(invalidate_check_fn_cache)
+            cleanup.callback(model_tools._clear_tool_defs_cache)
             stale_tools = model_tools.get_tool_definitions(
                 enabled_toolsets=["web", "file"], quiet_mode=True
             )
             stale_names = {tool["function"]["name"] for tool in stale_tools}
-            assert "web_search" not in stale_names
+            assert not {"web_search", "web_extract"} & stale_names
+            file_names = {"patch", "read_file", "search_files", "write_file"}
+            assert file_names <= stale_names
             (tmp_path / ".env").write_text("TAVILY_API_KEY=cron-test-key\n")
 
             created_agents = []
@@ -1139,7 +1145,7 @@ class TestRunJobConfigEnvVarExpansion:
             with patch("cron.scheduler._hermes_home", tmp_path), \
                  patch("cron.scheduler._resolve_delivery_target", return_value=None), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", return_value=fake_db), \
+                 patch("hermes_state_registry.acquire", return_value=fake_db), \
                  patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                        return_value=self._RUNTIME), \
                  patch("run_agent.AIAgent", side_effect=build_agent) as mock_agent_cls:
@@ -1150,8 +1156,7 @@ class TestRunJobConfigEnvVarExpansion:
         mock_agent_cls.assert_called_once()
         assert len(created_agents) == 1
         tool_names = {tool["function"]["name"] for tool in created_agents[0].tools}
-        assert {"web_search", "web_extract"} <= tool_names
-
+        assert {"web_search", "web_extract"} | file_names <= tool_names
 
     def test_transient_dns_fallback_switches_provider_and_model_together(self, tmp_path):
         """DNS blip during primary OAuth resolve must still walk fallback_providers.

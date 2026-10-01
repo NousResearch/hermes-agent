@@ -27,7 +27,12 @@ class BaseApprovalPromptMixin:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
         render them natively in ``_send_exec_approval_prompt``."""
-        from gateway.platforms.base import ExecApprovalPrompt, ea_default_reason_text
+        from gateway.platforms.base import ExecApprovalPrompt, SendResult, ea_default_reason_text
+
+        approval_id = str((metadata or {}).get("approval_id") or "")
+        if approval_id and request_id and approval_id != request_id:
+            return SendResult(success=False, error="Approval request identities disagree")
+        request_id = request_id or approval_id or None
 
         if description is None:
             description = ea_default_reason_text()

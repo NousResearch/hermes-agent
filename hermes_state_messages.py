@@ -587,12 +587,13 @@ class SessionMessagesMixin:
             return None
         sql, params = self._reaction_row_query(session_id, message_row_id)
         def _do(conn):
-            row = conn.execute(sql, params).fetchone()
-            row = conn.execute(_DISPLAY_META_ROW_BLOB_SQL, (message_row_id, session_id)).fetchone()
-            if row is None:
+            # Liveness gate first (main's lineage-scoped visibility query), then the
+            # fail-closed BLOB seam: a malformed cell aborts here; only a legal empty
+            # cell starts from {} (#109465 review).
+            gate_row = conn.execute(sql, params).fetchone()
+            if gate_row is None:
                 return None
-            # Fail-closed seam: a malformed cell aborts here; only a legal empty cell starts from {}.
-            meta = self._strict_display_metadata_cell(row[0], message_row_id) or {}
+            meta = self._strict_display_metadata_cell(gate_row[0], message_row_id) or {}
             existing = self._reaction_list(meta)
             reactions = [r for r in existing if r.get("author") != author]
             previous = next((r for r in existing if r.get("author") == author), None)

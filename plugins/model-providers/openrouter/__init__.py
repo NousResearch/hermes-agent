@@ -4,6 +4,8 @@ import logging
 from typing import Any
 
 from agent.portal_tags import get_affinity_scope, get_conversation_context
+from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
+from agent.reasoning_effort import codex_supported_efforts
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -86,8 +88,11 @@ class OpenRouterProfile(ProviderProfile):
             # A reasoning-mandatory route 400s on a disable ("Reasoning is
             # mandatory for this endpoint and cannot be disabled") — omit
             # the field and let the model think, same as the Nous profile.
+            # OpenRouter's catalog lists ``none`` for openai/gpt-6.1-sol, but upstream 400s on it
+            # (live 2026-09-29), so the OpenAI ladder in agent.reasoning_effort wins over the catalog.
             if disabled:
-                return None if caps.get("mandatory") else cfg
+                no_disable = (model or "").startswith("openai/") and "none" not in codex_supported_efforts(model)
+                return None if caps.get("mandatory") or no_disable else cfg
             clamped = clamp_reasoning_effort_to_supported(
                 effort, caps.get("supported_efforts")
             )
@@ -190,7 +195,11 @@ class OpenRouterProfile(ProviderProfile):
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
         # xAI's prompt cache is pinned per backend server via this header.
         grok_conv_id = _sticky_key(session_id)
-        if grok_conv_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
+        # A cache-parity fork carries the parent's ambient scope; on Grok that key would evict
+        # the parent's server slot, so honour the fork-derived scope (agent/prompt_cache_scope.py).
+        if is_fork_cache_scope(context.get("cache_scope_id")):
+            grok_conv_id = context["cache_scope_id"]
+        if grok_conv_id and model and model.startswith(GROK_AGGREGATOR_MODEL_PREFIXES):
             top_level["extra_headers"] = {"x-grok-conv-id": grok_conv_id}
         return extra_body, top_level
 

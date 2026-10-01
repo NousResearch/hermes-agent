@@ -4,6 +4,9 @@ The default footer remains ``model · context % · cwd``. Opt-in fields expose
 turn latency, uncached provider input, cache-hit share, exact last-call context,
 and requested reasoning effort. Unknown or untrustworthy usage facets are
 omitted instead of rendered as zero.
+
+``served_model`` remains opt-in and shows the official proxy/fallback-reported
+deployment when it differs from the requested model.
 """
 
 from __future__ import annotations
@@ -224,6 +227,8 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    requested_model: Optional[str] = None,
+    served_model: Optional[str] = None,
     tokens_in: Optional[int] = None,
     tokens_out: Optional[int] = None,
     cache_read_tokens: Optional[int] = None,
@@ -240,6 +245,11 @@ def format_runtime_footer(
         if field == "model":
             if value := _model_short(model):
                 parts.append(value)
+        elif field == "served_model":
+            requested = requested_model or model
+            alias = _model_short(requested)
+            if served_model and served_model not in (alias, requested):
+                parts.append(f"{alias} → {served_model}")
         elif field in {"context_pct", "context_window"}:
             if (
                 context_usage_status == "reported"
@@ -301,6 +311,8 @@ def build_footer_line(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    requested_model: Optional[str] = None,
+    served_model: Optional[str] = None,
     tokens_in: Optional[int] = None,
     tokens_out: Optional[int] = None,
     cache_read_tokens: Optional[int] = None,
@@ -323,6 +335,8 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         turn_seconds=turn_seconds,
+        requested_model=requested_model,
+        served_model=served_model,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         cache_read_tokens=cache_read_tokens,

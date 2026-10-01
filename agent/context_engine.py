@@ -8,17 +8,18 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 (CLI exit, /reset, gateway expiry), never per-turn.
 """
 
+import copy
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from agent.compression_marker import elide_middle
 from agent.redact import redact_sensitive_text
 
 
 MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
-_MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...\n"
 
 
 def sanitize_memory_context(memory_context: str) -> str:
@@ -26,7 +27,7 @@ def sanitize_memory_context(memory_context: str) -> str:
     sanitized = redact_sensitive_text(memory_context.strip(), force=True, redact_url_credentials=True)
     if len(sanitized) <= MEMORY_CONTEXT_MAX_CHARS:
         return sanitized
-    return sanitized[:_MEMORY_CONTEXT_HEAD_CHARS] + _MEMORY_CONTEXT_TRUNCATION_MARKER + sanitized[-_MEMORY_CONTEXT_TAIL_CHARS:]
+    return elide_middle(sanitized, _MEMORY_CONTEXT_HEAD_CHARS, _MEMORY_CONTEXT_TAIL_CHARS)
 
 
 def automatic_compaction_status_message(engine: Any, *, phase: str, default_message: str, **context: Any) -> str | None:
@@ -221,6 +222,13 @@ class ContextEngine(ABC):
             "usage_percent": min(100, last_prompt / self.context_length * 100) if self.context_length else 0,
             "compression_count": self.compression_count,
         }
+
+    def clone_for_agent(self) -> "ContextEngine":
+        """Per-agent instance of a plugin-registered engine (the plugin system holds ONE shared
+        instance; every AIAgent gets its own so a child's update_model() cannot mutate the parent's).
+        Override when the engine holds uncopyable state (locks, DB connections): return a fresh
+        engine sharing the durable backend and copying only mutable budget state."""
+        return copy.deepcopy(self)
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",

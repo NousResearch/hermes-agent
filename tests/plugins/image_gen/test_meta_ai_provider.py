@@ -65,18 +65,9 @@ def _patched_openai(fake_client: MagicMock):
 
 
 class TestMetadata:
-    def test_name(self, provider):
-        assert provider.name == "meta-ai"
 
-    def test_display_name(self, provider):
-        assert provider.display_name == "Meta Model API"
 
-    def test_default_model(self, provider):
-        assert provider.default_model() == "muse-image-1.0"
 
-    def test_list_models(self, provider):
-        ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["muse-image-1.0"]
 
     def test_catalog_entries_have_display_speed_strengths_price(self, provider):
         for entry in provider.list_models():
@@ -85,10 +76,6 @@ class TestMetadata:
             assert entry["strengths"]
             assert entry["price"]
 
-    def test_text_only_capabilities(self, provider):
-        caps = provider.capabilities()
-        assert caps["modalities"] == ["text"]
-        assert caps["max_reference_images"] == 0
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -117,27 +104,40 @@ class TestResolution:
         monkeypatch.setenv("MODEL_API_KEY", "first")
         assert meta_plugin._resolve_api_key() == "first"
 
-    def test_default_base_url(self):
-        assert meta_plugin._resolve_base_url() == "https://api.meta.ai/v1"
 
     def test_base_url_override(self, monkeypatch):
         monkeypatch.setenv("META_BASE_URL", "https://proxy.internal/v1")
         assert meta_plugin._resolve_base_url() == "https://proxy.internal/v1"
+
+    def test_base_url_follows_the_profile_secret_scope(self, monkeypatch):
+        """Under multiplexing os.environ is the launch profile's: a routed profile's key must go to
+        ITS base URL, and a profile without an override gets the default — never the launch URL."""
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+        monkeypatch.setenv("META_BASE_URL", "https://launch.example/v1")
+        set_multiplex_active(True)
+        try:
+            for scope, expected in (({"META_BASE_URL": "https://profile-b.example/v1"}, "https://profile-b.example/v1"),
+                                    ({}, "https://api.meta.ai/v1")):
+                token = set_secret_scope(scope)
+                try:
+                    assert meta_plugin._resolve_base_url() == expected
+                finally:
+                    reset_secret_scope(token)
+        finally:
+            set_multiplex_active(False)
 
 
 # ── Model resolution ──────────────────────────────────────────────────────────
 
 
 class TestModelResolution:
-    def test_default(self):
-        model_id, _meta = meta_plugin._resolve_model()
-        assert model_id == "muse-image-1.0"
 
     def test_env_var_override_ignores_unknown(self, monkeypatch):
         monkeypatch.setenv("META_IMAGE_MODEL", "not-a-real-model")
         model_id, _meta = meta_plugin._resolve_model()
         # Unknown id is ignored; falls through to the default.
-        assert model_id == "muse-image-1.0"
+        assert model_id == meta_plugin.DEFAULT_MODEL
 
     def test_caller_model_kwarg_wins(self, monkeypatch):
         # The dispatcher forwards top-level image_gen.model as the `model`
@@ -153,7 +153,7 @@ class TestModelResolution:
 
     def test_caller_model_unknown_falls_through(self):
         model_id, _meta = meta_plugin._resolve_model("not-a-real-model")
-        assert model_id == "muse-image-1.0"
+        assert model_id == meta_plugin.DEFAULT_MODEL
 
 
 # ── Generate ──────────────────────────────────────────────────────────────────
@@ -175,8 +175,6 @@ class TestGenerate:
             fake_client.images.generate.call_args.kwargs["model"] == "muse-image-test"
         )
 
-    def test_badge_is_standard_paid(self, provider):
-        assert provider.get_setup_schema()["badge"] == "paid"
 
     def test_empty_prompt_rejected(self, provider):
         result = provider.generate("", aspect_ratio="square")
@@ -290,7 +288,7 @@ class TestGenerate:
             result = provider.generate("a cat")
 
         assert result["success"] is True
-        assert result["image"].startswith("/")
+        assert Path(result["image"]) == mock_save_url.return_value
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 

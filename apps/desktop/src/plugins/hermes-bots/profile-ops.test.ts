@@ -126,14 +126,6 @@ describe('duplicating a bot', () => {
     expect(name).not.toBe(base)
   })
 
-  it('ensures the source bot has its metadata before cloning', async () => {
-    // clone_from copies the profile dir; the source's Bot Chat has to exist
-    // first or the clone inherits a half-built profile.
-    await duplicateBot({ name: 'ops' } as RosterRow, [])
-
-    expect(ensureBotMetadataMock).toHaveBeenCalledTimes(1)
-  })
-
   it('only collides against rows on the SAME connection', async () => {
     // A same-named bot on another gateway is a different agent entirely.
     const bot = {

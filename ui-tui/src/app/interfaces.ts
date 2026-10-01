@@ -281,6 +281,10 @@ export interface SubscriptionOverlayState {
   stepUpRetry?: null | SubscriptionStepUpRetry
 }
 
+export interface ConnectionOverlayState {
+  opId: string
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
@@ -288,6 +292,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  connection: ConnectionOverlayState | null
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */
@@ -438,8 +443,8 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
-  answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
+  cancelClarify: () => void
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
@@ -567,11 +572,11 @@ export interface SlashHandlerContext {
 
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
-  answerClarify: (answer: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   answerVaultUnlock: (password: string) => void
+  cancelClarify: () => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -636,7 +641,7 @@ export interface AppOverlaysProps {
   compIdx: number
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
-  onClarifyAnswer: (value: string) => void
+  onClarifyCancel: () => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>

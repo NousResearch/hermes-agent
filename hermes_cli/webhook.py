@@ -29,7 +29,7 @@ def _load_subscriptions() -> Dict[str, dict]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -160,6 +160,8 @@ def _cmd_subscribe(args):
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
             return
         route["deliver_only"] = True
+    if getattr(args, "mirror_to_session", False):
+        route["mirror_to_session"] = True
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
@@ -189,6 +191,8 @@ def _cmd_subscribe(args):
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
+    if route.get("mirror_to_session"):
+        print("  Replies: each delivery is mirrored into the target chat's session")
     if route.get("cron_job"):
         print(f"  Mode: cron-job trigger — fires job '{route['cron_job']}' on each event")
     if route.get("prompt"):
@@ -273,27 +277,3 @@ _ACTIONS = {
     "list": _cmd_list, "ls": _cmd_list,
     "remove": _cmd_remove, "rm": _cmd_remove,
     "test": _cmd_test}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'atomic_replace': ('utils', 'atomic_replace'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -10,6 +10,9 @@
 /** Characters beyond which a plain-text paste becomes a `.txt` attachment. */
 export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 3_000
 
+/** Maximum source text retained exclusively for automatic title generation. */
+export const LARGE_PASTE_TITLE_PREVIEW_CHARS = 1_000
+
 /**
  * True when a plain-text paste should be converted into a text attachment
  * rather than inserted inline. Only sheer size qualifies — rich clipboard
@@ -21,6 +24,15 @@ export function shouldConvertPasteToAttachment(
   threshold: number = LARGE_PASTE_ATTACHMENT_THRESHOLD
 ): boolean {
   return typeof text === 'string' && threshold > 0 && text.length > threshold
+}
+
+// `electron/composer-paste.ts` names every saved paste `pasted_content_<stamp>_<hex>.txt`;
+// staging into the session may append `-N`. Anything else is a real file.
+const PASTED_CONTENT_FILE_RE = /(?:^|[\\/])pasted_content_[\w-]+\.txt$/
+
+/** True for a large-paste file, whose chip reads "Pasted content" instead of its path. */
+export function isPastedContentPath(path: string): boolean {
+  return PASTED_CONTENT_FILE_RE.test(path)
 }
 
 /** Human-readable size of a paste's UTF-8 bytes, for the attachment chip. */

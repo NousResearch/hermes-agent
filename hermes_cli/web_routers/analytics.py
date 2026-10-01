@@ -8,7 +8,7 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import get_config_path, read_raw_config
@@ -44,7 +44,7 @@ async def get_config_raw(profile: Optional[str] = None):
             path = get_config_path()
         if not path.exists():
             return {"yaml": "", "path": str(path)}
-        return {"yaml": path.read_text(encoding="utf-8"), "path": str(path)}
+        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}
 
     return await asyncio.to_thread(_run)
 
@@ -82,8 +82,9 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
+        # Local calendar day, per-row (DST-correct), the same day /insights uses (agent/insights.py).
         daily = _rows(db, """
-            SELECT date(started_at, 'unixepoch') as day,
+            SELECT date(started_at, 'unixepoch', 'localtime') as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,

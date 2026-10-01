@@ -124,15 +124,17 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
-        from hermes_constants import named_profile_is_deleted
+        from hermes_constants import named_profile_has_identity, named_profile_is_deleted
 
         profiles, profiles_dir = {"default"}, self.root / "profiles"
         if profiles_dir.is_dir():
             # ``profiles/.deleted/`` is the tombstone dir `hermes profile delete` leaves behind, not a
             # profile: feeding it to validate_roster failed plan_next_task on every cycle (#106847).
+            # Marker-less dirs (cron/log side-effect shells) are not profiles either.
             profiles.update(
                 path.name for path in profiles_dir.iterdir()
-                if path.is_dir() and not path.name.startswith(".") and not named_profile_is_deleted(path))
+                if path.is_dir() and not path.name.startswith(".")
+                and named_profile_has_identity(path) and not named_profile_is_deleted(path))
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
@@ -619,11 +621,3 @@ class _RouteStatusPeerClient:
                 self._on_ready()
             return result
         return tracked
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

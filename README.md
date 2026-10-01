@@ -5,7 +5,9 @@
 # Hermes Agent ☤
 
 > **Fork scope:** This repository implements the [employee specification](docs/specs/employee.md)
-> on native Hermes. Use the [deployment instructions](deploy/railway/README.md) for this fork.
+> on native Hermes. **[Start here: deploy and connect your agent](docs/getting-started.md)**
+> covers Railway, models, Telegram, memory and work accounts. The
+> [deployment reference](deploy/railway/README.md) contains operator details.
 > The employee runtime targets Linux (including WSL2) and macOS; native Windows is
 > unsupported because responsibility storage requires POSIX directory operations.
 > The remaining overview and installer links below are retained upstream reference,

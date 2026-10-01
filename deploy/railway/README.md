@@ -1,5 +1,9 @@
 # Employee deployment
 
+New to this fork? Follow the [getting-started guide](../../docs/getting-started.md)
+for the setup sequence, variable values, Telegram approval and first tasks.
+This page is the operator reference.
+
 This directory contains the runtime configuration for a Railway deployment.
 No server login is needed to develop or run the local protocol tests.
 The deployment runs Linux; local development supports macOS and Linux/WSL2.
@@ -21,6 +25,11 @@ profile gateway and dashboard, plus the private Codex inference service on
 port `8879`. Do not publish port `8879`. Hindsight listens privately on `8888`.
 The PostgreSQL image must support `CREATE EXTENSION vector`; an ordinary image
 without pgvector is insufficient. See [pgvector's Docker instructions](https://github.com/pgvector/pgvector#docker).
+
+The validated PostgreSQL image is pinned to
+`pgvector/pgvector@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f`.
+Mount `/var/lib/postgresql/data` and set `PGDATA=/var/lib/postgresql/data/pgdata`
+so the database initializes in a child directory of the Railway volume.
 
 Set each service's Dockerfile path and start command in Railway's service settings
 as shown above. Railway rejects the old `railwayConfigFile` setting; no TOML

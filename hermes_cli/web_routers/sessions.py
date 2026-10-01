@@ -601,17 +601,16 @@ def _session_files_dir(profile) -> Path:
 
 
 def _is_untyped_scaffold_notice(message) -> bool:
-    """A ``[System: …]`` role=user row persisted without a ``display_kind``.
-
-    ``[System:`` is a reserved gateway-notice namespace — it must never render as a user
-    bubble (the gateway's own history projection drops these rows outright) — but recovery
-    scaffolding written before typing existed carries no kind. Rows WITH a kind
-    (``model_switch``, …) are timeline entries and keep flowing.
-    """
+    """Return whether a persisted user row is model-only scaffolding."""
     if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind"):
         return False
     content = message.get("content")
-    return isinstance(content, str) and content.lstrip().startswith("[System:")
+    if not isinstance(content, str):
+        return False
+    if content.lstrip().startswith("[System:"):
+        return True
+    from tools.todo_tool import TODO_INJECTION_HEADER
+    return content.startswith(TODO_INJECTION_HEADER)
 
 
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:

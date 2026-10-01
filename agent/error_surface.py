@@ -62,10 +62,39 @@ _CUSTOM_ENDPOINT_PROVIDERS = {"custom", "local", "llama.cpp", "llamacpp", "ollam
 
 # Mid-stream drop markers. Deliberately narrow: our own retry-exhaustion
 # summaries plus the OpenAI SDK's stream-abort errors.
+#
+# "sse" is a BARE TOKEN and must start a word, never sit inside one: as a plain
+# substring it matched unrelated English words ("asse**sse**ment",
+# "me**sse**sage", "dismi**sse**d"), so any provider error whose text happened to
+# spell those letters surfaced as a dropped connection and blamed the user's
+# network. "starts a word" (no end boundary) still catches the real SSE errors
+# written as class names — SSEParserError, sse_error — which is why the token is
+# kept at all.
 _STREAM_DROP_FRAGMENTS = (
     "stream connection", "peer closed connection", "incomplete chunked read",
-    "connection broken", "stream ended prematurely", "sse", "mid-stream",
+    "connection broken", "stream ended prematurely", "mid-stream",
 )
+_STREAM_DROP_WORD_TOKENS = ("sse",)
+
+
+def _looks_like_stream_drop(message: str) -> bool:
+    """True when the text looks like an SSE stream that died mid-reply.
+
+    Multi-word fragments match as substrings; bare tokens only when they begin a
+    word. Written without regex on purpose: a word-boundary escape written through
+    a string literal can be corrupted into a literal backslash (the ``\\b`` bug),
+    which silently turns the guard into a no-op.
+    """
+    lowered = message.lower()
+    if any(fragment in lowered for fragment in _STREAM_DROP_FRAGMENTS):
+        return True
+    for token in _STREAM_DROP_WORD_TOKENS:
+        start = 0
+        while (index := lowered.find(token, start)) != -1:
+            if index == 0 or not lowered[index - 1].isalnum():
+                return True
+            start = index + 1
+    return False
 
 # Exception top-level modules that mean "API/transport call failed" (vs. a bug
 # in our dispatcher = gateway layer): every SDK family our adapters raise from
@@ -79,10 +108,6 @@ _API_EXC_MODULE_PREFIXES = (
 def _is_custom_endpoint(provider: Optional[str]) -> bool:
     p = (provider or "").strip().lower()
     return p in _CUSTOM_ENDPOINT_PROVIDERS or p.startswith("custom:")
-
-
-def _looks_like_stream_drop(message: str) -> bool:
-    return any(fragment in message.lower() for fragment in _STREAM_DROP_FRAGMENTS)
 
 
 def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: str = "") -> dict:

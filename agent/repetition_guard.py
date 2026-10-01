@@ -169,13 +169,14 @@ class RunawayStreamWatch:
     and the gap doubles until it reaches one tail window, then stays there. A fixed stride keeps a
     loop that starts late in a long reply from streaming as long as the reply already was before
     a check sees it; each check reads only the tail, so the total work stays linear in the output.
+    Each check also trims the held text to the tail, and checks are at most one tail window apart,
+    so the watch never holds more than two tail windows plus the latest delta.
     """
 
-    __slots__ = ("_parts", "_held", "_chars", "_next_check")
+    __slots__ = ("_parts", "_chars", "_next_check")
 
     def __init__(self) -> None:
         self._parts: list[str] = []
-        self._held = 0
         self._chars = 0
         self._next_check = STOP_PATH_MIN_CHARS
 
@@ -184,18 +185,10 @@ class RunawayStreamWatch:
         if not text:
             return False
         self._parts.append(text)
-        self._held += len(text)
         self._chars += len(text)
-        # Text held between checks is bounded by trimming every tail's worth of new text.
-        if self._held >= 2 * _STREAM_TAIL_CHARS:
-            self._trim()
         if self._chars < self._next_check:
             return False
         self._next_check = self._chars + min(self._chars, _STREAM_TAIL_CHARS)
-        return is_runaway_repetition(self._trim())
-
-    def _trim(self) -> str:
         tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
         self._parts = [tail]
-        self._held = len(tail)
-        return tail
+        return is_runaway_repetition(tail)

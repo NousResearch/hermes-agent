@@ -344,7 +344,24 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
     skill_dir = existing["path"]
     guard = ((org_guard and _org_mirror_write_guard(name, skill_dir, action))
              or _background_review_write_guard(name, skill_dir, action))
-    return (None, guard) if guard else (skill_dir, None)
+    if guard:
+        return None, guard
+    # A manifest entry plus an origin hash proves that this is a pristine bundled
+    # copy. Refuse the mutation before reading or writing it: editing it would mark
+    # the skill user-modified and silently opt it out of future bundled updates.
+    try:
+        from tools.skills_sync import _matches_origin_hash, _read_manifest
+        origin_hash = _read_manifest().get(name, "")
+        if origin_hash and _matches_origin_hash(skill_dir, origin_hash):
+            return None, _err(
+                f"Skill '{name}' is bundled and has not been modified. Refusing {action}: "
+                "editing it marks it user-modified and prevents future bundled updates. "
+                "Create a user-local skill with skill_manage(action='create'), or change the "
+                "bundled source in an in-repo contribution."
+            )
+    except (OSError, ImportError):
+        logger.debug("Bundled skill guard unavailable", exc_info=True)
+    return skill_dir, None
 
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,

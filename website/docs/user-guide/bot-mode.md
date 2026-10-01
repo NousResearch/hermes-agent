@@ -16,6 +16,19 @@ See [Profiles, agents, and bots](./profiles.md#profiles-agents-and-bots) for how
 Bot Mode relates to messaging bots and delegated subagents.
 :::
 
+## Coming from profiles?
+
+Your profiles keep working exactly as they did; Bot Mode adds the parts a profile alone does not have:
+
+| With plain profiles | With Bot Mode |
+|---|---|
+| A pile of sessions per profile; you pick one or start another | One permanent **Bot Chat** per Bot. Click the Bot and you are back in the same conversation; `/new` compacts it instead of forking it |
+| Switch profiles to talk to a different specialist | Every Bot sits in one roster with its avatar, latest message, and unread state |
+| Profiles never talk to each other | Bots [message each other](#bot-to-bot-messaging) and share [group chats](#groups-and-group-chats) |
+| Scheduled jobs live in `hermes cron`, apart from any chat | Each Bot's [routines](#routines) are scheduled and edited beside its chat |
+
+Nothing moves: config, memory, skills, and credentials stay in `~/.hermes/profiles/<name>/`, and `hermes -p <bot> chat` still opens the same agent.
+
 ## The Bots pane
 
 The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.

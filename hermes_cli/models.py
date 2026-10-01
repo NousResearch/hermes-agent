@@ -1179,7 +1179,11 @@ def _fast_mode_route_supported(
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
-        allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
+        allowed = {
+            "openai": "api.openai.com",
+            "openai-api": "api.openai.com",
+            "openai-codex": "chatgpt.com",
+        }
     if provider and normalize_provider(provider) not in allowed:
         return False
     host = (urlparse(str(base_url or "")).hostname or "").lower()

@@ -102,6 +102,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
@@ -300,6 +306,12 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run one command; return its output text.
+
+        A command like /prompt may also have parked a next-turn prompt (a "seed")
+        on the worker CLI; it rides back on the reply's ``seed`` field and is
+        retrieved separately via ``pop_seed()``.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -318,9 +330,15 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self._last_seed = str(msg.get("seed", "") or "")
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_seed(self) -> str:
+        """Return and clear the seed from the last ``run()`` (empty when none)."""
+        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
+        return seed
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -793,9 +811,9 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
-    The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
-    is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
-    interrupt) withdraws the request with ``request.cancel``."""
+    The wait is owned by ``tools.approval``'s queue (no deadline on TUI/Desktop turns, ``/approve all``, coalescing),
+    so the request is queue-backed: the response resolves the queue entry, and the entry's own resolution (any
+    surface, interrupt, session close) withdraws the request with ``request.cancel``."""
     from tui_gateway import server_requests
     from tools import approval as _approval
     payload = _approval_request_payload(data)
@@ -806,8 +824,8 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         if result is None:
             # No client can answer this prompt: the request was never sent (the only attached client predates
             # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
-            # queue entry the agent would idle for the whole approvals.timeout with no prompt anywhere
-            # (#112548). A withdrawal, not a deny: nobody refused the command.
+            # queue entry the agent would idle on a prompt shown nowhere (#112548). A withdrawal, not a deny:
+            # nobody refused the command.
             if request_id:
                 _approval.withdraw_gateway_approval(session_key, request_id,
                                                     "the attached client cannot answer approval requests "
@@ -1359,24 +1377,16 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
 
 
 
-def _clarify_timeout_seconds() -> float | None:
-    """Clarify wait for the TUI/desktop bridge from the canonical config (gateway/CLI parity); 300s
-    historical default if config can't be read; ``<= 0`` = unlimited → None (never auto-skip)."""
-    with contextlib.suppress(Exception):
-        from tools.clarify_gateway import get_clarify_timeout
-        timeout = get_clarify_timeout()
-        return timeout if timeout > 0 else None
-    return 300
-
-
 def _clarify_block(sid: str, questions: list[dict]) -> dict:
     """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
-    (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
-    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
+    (tool-side entries carry result-assembly keys too). No deadline: the TUI/Desktop card stays until the
+    user answers, the turn is interrupted, or the session closes. Answers lock one at a time through
+    ``clarify.lock`` (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no
+    client took it."""
     from tui_gateway import server_requests
     wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
             for e in questions]
-    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=None,
                                   qids=[e["qid"] for e in questions])
     return result or {"answers": {}, "outcome": "undelivered"}
 

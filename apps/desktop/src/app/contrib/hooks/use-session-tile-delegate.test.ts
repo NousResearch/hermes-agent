@@ -23,7 +23,7 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: vi.fn()
 }))
 
-const { getLatestSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
@@ -46,22 +46,24 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
 
 function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
-  refs?: {
+  options: {
+    branchLoadedSession?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
-  }
+  } = {}
 ) {
   renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
+      branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
       branchStoredSession: vi.fn(async () => undefined),
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
-      sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
-      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
+      runtimeIdByStoredSessionIdRef: (options.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
+      sessionStateByRuntimeIdRef: (options.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
+      updateSessionState: (options.updateSessionState ?? vi.fn()) as never
     })
   )
 }
@@ -575,6 +577,41 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
     expect(runtimeId).toBe('runtime-fresh')
   })
+
+  it('branches a tile from the live message array that rendered the clicked action', async () => {
+    const messages = [
+      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] }
+    ]
+
+    const state = { ...createClientSessionState('stored-x', messages), cwd: '/repo' }
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), {
+      branchLoadedSession,
+      sessionStateByRuntimeIdRef: { current: new Map([['runtime-x', state]]) }
+    })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-x', 'a1')).resolves.toBe(true)
+    expect(branchLoadedSession).toHaveBeenCalledWith({
+      busy: false,
+      cwd: '/repo',
+      messageId: 'a1',
+      messages,
+      runtimeId: 'runtime-x',
+      storedSessionId: 'stored-x'
+    })
+  })
+
+  it('does not branch when the clicked tile no longer has live state', async () => {
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), { branchLoadedSession })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
+    expect(branchLoadedSession).not.toHaveBeenCalled()
+  })
 })
 
 describe('useSessionTileDelegate retireBusyClaim', () => {
@@ -756,5 +793,105 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       undefined
     )
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+})
+
+describe('useSessionTileDelegate submitToSession', () => {
+  beforeEach(() => {
+    setSessions([])
+    // A leftover mockResolvedValueOnce on getLatestSessionMessages from an
+    // earlier describe leaks into this suite's full-file run, so reset the
+    // mock and restore its default empty-transcript implementation (same
+    // pattern as the #65047 describe above).
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: '' }))
+  })
+
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('returns the accepted runtime and its stored binding', async () => {
+    setSessions([row({ id: 'stored-submit', profile: 'default' })])
+
+    const state = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-submit' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-submit', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', state]]) }
+    // #92961: a known owner always routes through the profile router, even
+    // 'default', never the ambient socket — so the routed seam carries the
+    // failed submit, the recovery resume, and the retry.
+    const routed = vi.mocked(requestGatewayForProfile)
+    routed.mockReset()
+    routed.mockImplementation(async (_profile: string, method: string) => {
+      if (method === 'prompt.submit') {
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-recovered' } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    })
+
+    let promptAttempts = 0
+    routed.mockImplementationOnce(async () => {
+      promptAttempts += 1
+      throw new Error('session not found')
+    })
+
+    renderTile(vi.fn(), { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    const delegate = sessionTileDelegate()!
+
+    const recovered = await delegate.submitToSession('runtime-dead', 'Send from Quick Entry')
+    expect(recovered).toEqual({
+      runtimeSessionId: 'runtime-recovered',
+      storedSessionId: 'stored-submit'
+    })
+
+    const accepted = await delegate.submitToSession('runtime-recovered', 'Send again')
+    expect(accepted).toEqual({
+      runtimeSessionId: 'runtime-recovered',
+      storedSessionId: 'stored-submit'
+    })
+    expect(promptAttempts).toBe(1)
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-submit')).toBe('runtime-recovered')
+    expect(routed).toHaveBeenNthCalledWith(
+      1,
+      'default',
+      'prompt.submit',
+      { session_id: 'runtime-dead', text: 'Send from Quick Entry' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
+      2,
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-submit',
+        source: 'desktop',
+        omit_messages: true,
+        profile: 'default'
+      },
+      undefined,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
+      3,
+      'default',
+      'prompt.submit',
+      { session_id: 'runtime-recovered', text: 'Send from Quick Entry' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
+      4,
+      'default',
+      'prompt.submit',
+      { session_id: 'runtime-recovered', text: 'Send again' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
+    )
   })
 })

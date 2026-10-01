@@ -69,6 +69,7 @@ export const SETTINGS_MANIFEST = {
     tours: appearanceSetting('general', ['tour', 'walkthrough', 'guide', 'onboarding', 'help'], 'tours'),
     theme: appearanceSetting('theme', ['color mode', 'skin', 'light', 'dark'], 'theme'),
     uiScale: appearanceSetting('typography', ['zoom', 'size'], 'uiScale'),
+    chatTextScale: appearanceSetting('typography', ['chat', 'text', 'font', 'size', 'scale', 'zoom'], 'chatTextScale'),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',

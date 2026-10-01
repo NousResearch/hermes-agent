@@ -1644,12 +1644,10 @@ class SessionSessionsMixin:
         share one transaction so a concurrent flush can't be lost. A row under an active turn lease
         or compression lock is never a candidate: the emptiness predicate reads committed state, so a
         row whose first turn is already leased but not yet flushed would be deleted mid-turn
-        (#123583). Raises :class:`SessionActiveWriteGuardError` like the guarded deletes."""
+        (#123583). A guarded row is simply not deleted (returns ``False``), like any non-empty row."""
         def _do(conn):
             if self._guarded_ids(conn, [session_id]):
-                raise SessionActiveWriteGuardError(
-                    f"session '{session_id}' has an active turn lease or compression lock"
-                )
+                return False
             cursor = conn.execute(
                 """
                 DELETE FROM sessions

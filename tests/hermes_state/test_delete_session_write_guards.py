@@ -101,8 +101,7 @@ def test_delete_session_if_empty_refuses_when_write_guard_active(tmp_path):
     turn_holder = f"pid={os.getpid()}:turn=1"
     assert db.try_acquire_session_turn_lease("empty-live", turn_holder, ttl_seconds=300.0) is True
 
-    with pytest.raises(SessionActiveWriteGuardError):
-        db.delete_session_if_empty("empty-live")
+    assert db.delete_session_if_empty("empty-live") is False
     assert db.get_session("empty-live") is not None
 
     db.release_session_turn_lease("empty-live", turn_holder)

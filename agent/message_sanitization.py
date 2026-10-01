@@ -638,6 +638,71 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
 
 
+def native_anthropic_accounting_projection(messages: Any) -> Any:
+    """Project native Anthropic replay messages into the generic rough estimator.
+
+    Canonical history may retain storage-only reasoning alongside the signed replay
+    carriers. Native conversion prefers ordered anthropic_content_blocks over
+    reasoning_details and never sends reasoning itself, so charging all three
+    representations can double-count the same thinking. Keep normal content/tool
+    payloads, replace the active replay carrier with readable thinking text exactly
+    once, and never price opaque signature/data bytes as plaintext.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    projected = []
+    replayable_ordered_types = {"thinking", "redacted_thinking", "text", "tool_use", "image"}
+    thinking_types = {"thinking", "redacted_thinking"}
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            projected.append(message)
+            continue
+
+        shadow = dict(message)
+        ordered = shadow.pop("anthropic_content_blocks", None)
+        details = shadow.pop("reasoning_details", None)
+        shadow.pop("_anthropic_content_blocks", None)
+
+        # Native Anthropic conversion never consumes the canonical storage-only
+        # reasoning field directly.
+        shadow.pop("reasoning", None)
+
+        ordered_authoritative = isinstance(ordered, list) and any(
+            isinstance(block, dict) and block.get("type") in replayable_ordered_types
+            for block in ordered
+        )
+        details_authoritative = (
+            not ordered_authoritative
+            and isinstance(details, list)
+            and any(
+                isinstance(block, dict) and block.get("type") in thinking_types
+                for block in details
+            )
+        )
+        carrier = ordered if ordered_authoritative else details if details_authoritative else None
+
+        # The converter returns/replays the authoritative carrier before considering
+        # reasoning_content, so it must not be charged in addition to that carrier.
+        if carrier is not None:
+            shadow.pop("reasoning_content", None)
+
+        readable = []
+        if isinstance(carrier, list):
+            for block in carrier:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "thinking"
+                    and isinstance(block.get("thinking"), str)
+                    and block.get("thinking")
+                ):
+                    readable.append(block["thinking"])
+        if readable:
+            shadow["_anthropic_readable_thinking_estimate"] = "\n".join(readable)
+
+        projected.append(shadow)
+    return projected
+
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:
     """Copy provider-facing reasoning fields onto an API replay message (mutates ``api_msg``).
     ``needs_thinking_pad`` is the require-side flag (``needs_reasoning_echo``)."""

@@ -427,6 +427,37 @@ def test_relaunch_carries_generation_dependencies(tmp_path, monkeypatch):
     assert result.stdout.strip() == '"from generation"'
 
 
+def test_relaunch_activates_generation_pth_files(tmp_path, monkeypatch):
+    """The generation's .pth files must take effect: uv activates its editable members
+    through .pth, which a bare ``sys.path.append`` of site-packages never processes."""
+    from pm.environments import install_state_dir
+
+    root = tmp_path / "source"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    environment = install_state_dir(root) / "environments" / "gen-1"
+    packages = environment / "lib/python3.11/site-packages"
+    packages.mkdir(parents=True)
+    # An editable member: importable only through the extra path its .pth file adds.
+    editable_root = tmp_path / "editable-member"
+    editable_root.mkdir()
+    (editable_root / "needs_pth_activation.py").write_text("value = 'via pth'\n")
+    (packages / "zzz_editable_member.pth").write_text(f"{editable_root}\n", encoding="utf-8")
+    (environment / "pyvenv.cfg").write_text("version = 3.11\n")
+    fact = runtime_facts_path(root)
+    fact.parent.mkdir(parents=True, exist_ok=True)
+    fact.write_text(json.dumps({"packages": {"venv": {"environment": str(environment)}}}))
+    snippet = "import needs_pth_activation, json; print(json.dumps(needs_pth_activation.value))"
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, ["-c", snippet], [sys.executable, "-c", snippet], None,
+    )
+    child = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == '"via pth"'
+
+
 def test_relaunch_without_committed_generation_keeps_the_prefix_root_only(tmp_path):
     """Nothing committed means the child's own hermes_bootstrap decides, so the prefix
     must not mention a dependency path it cannot vouch for."""
@@ -437,7 +468,7 @@ def test_relaunch_without_committed_generation_keeps_the_prefix_root_only(tmp_pa
     )
     assert command == [
         str(sys.executable), "-I", "-c",
-        f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
+        f"import sys, site, runpy; sys.path.insert(0, {str(root)!r}); "
         f"sys.argv = ['-c', 'pass']; exec('pass')",
     ]
 
@@ -455,7 +486,7 @@ def test_relaunch_with_unreadable_dependency_facts_keeps_the_prefix_root_only(tm
     )
     assert command == [
         str(sys.executable), "-I", "-c",
-        f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
+        f"import sys, site, runpy; sys.path.insert(0, {str(root)!r}); "
         f"sys.argv = ['-c', 'pass']; exec('pass')",
     ]
 

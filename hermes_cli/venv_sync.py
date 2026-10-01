@@ -495,7 +495,9 @@ def relaunch_command(
     the agent import runs before ``hermes_bootstrap`` activates the runtime, so
     the relaunched process must carry the committed generation's dependency
     path itself (``activation_environment`` pairs the project root with exactly
-    that path for the children it spawns).
+    that path for the children it spawns). The path is activated with
+    ``site.addsitedir`` so the generation's ``.pth`` files (uv's editable
+    members) take effect, not just the bare directory entry.
     """
     # Preserve interpreter options, not application flags with the same names.
     options: list[str] = []
@@ -511,7 +513,7 @@ def relaunch_command(
             index += 1
     from pm.environments import committed_venv, site_packages
 
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    prefix = f"import sys, site, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
     try:
         environment = committed_venv(root)
     except Exception:
@@ -521,9 +523,11 @@ def relaunch_command(
         # runtime it cannot resolve.
         environment = None
     if environment is not None:
-        # Append, not insert: the checkout stays ahead of its installed
-        # dependencies, as activation_environment's PYTHONPATH pairing keeps it.
-        prefix += f"sys.path.append({str(site_packages(environment))!r}); "
+        # addsitedir, not sys.path.append: uv activates its editable members
+        # with .pth files, which a bare append never processes (pm/environments
+        # makes the same choice for the children it spawns). Added last, the
+        # checkout still stays ahead of its installed dependencies.
+        prefix += f"site.addsitedir({str(site_packages(environment))!r}); "
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

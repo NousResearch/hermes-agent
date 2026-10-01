@@ -2,17 +2,22 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
+  $browserPages,
   $previewServerRestart,
   $previewServerRestartStatus,
   $previewTabs,
   $previewTarget,
   beginPreviewServerRestart,
+  closeBrowserPreviewMatchingLiveUrl,
   closePreviewForSource,
   closePreviewMatching,
   closeRightRail,
   closeRightRailTab,
   commitBrowserTabLocation,
+  decodePreviewTabs,
+  markPreviewTabMissing,
   newBrowserTab,
+  noteBrowserPage,
   openPreview,
   previewTabId,
   type PreviewTarget,
@@ -35,12 +40,14 @@ function artifactTarget(id: string): PreviewTarget {
 
 describe('preview store', () => {
   beforeEach(() => {
+    $browserPages.set({})
     $previewServerRestart.set(null)
     closeRightRail()
     window.localStorage.clear()
   })
 
   afterEach(() => {
+    $browserPages.set({})
     $previewServerRestart.set(null)
     closeRightRail()
     window.localStorage.clear()
@@ -263,6 +270,36 @@ describe('preview store', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
+  it('closes a Browser tab by its live navigated URL and removes it from persistence', () => {
+    openPreview(urlTarget('https://example.com'))
+    const tabId = $previewTabs.get()[0].id
+
+    noteBrowserPage(tabId, {
+      title: 'Dashboard',
+      url: 'https://example.com/dashboard'
+    })
+
+    expect(closeBrowserPreviewMatchingLiveUrl('https://example.com/dashboard')).toBe(true)
+    expect($previewTabs.get()).toHaveLength(0)
+    expect($browserPages.get()[tabId]).toBeUndefined()
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+  })
+
+  it('prefers the tab currently showing a URL over one that navigated away from it', () => {
+    openPreview(urlTarget('https://example.com'))
+    const first = $previewTabs.get()[0].id
+    noteBrowserPage(first, { title: 'Elsewhere', url: 'https://elsewhere.example/' })
+
+    newBrowserTab()
+    openPreview(urlTarget('https://example.com'))
+    const second = $previewTabs.get()[1].id
+    noteBrowserPage(second, { title: 'Example', url: 'https://example.com/' })
+
+    expect(closeBrowserPreviewMatchingLiveUrl('https://example.com')).toBe(true)
+    expect($previewTabs.get().map(tab => tab.id)).toEqual([first])
+    expect($browserPages.get()[first]?.url).toBe('https://elsewhere.example/')
+  })
+
   it('does not wipe the rail on an empty or unknown close query', () => {
     openPreview(fileTarget('/work/keep.html'))
 
@@ -312,5 +349,41 @@ describe('preview store', () => {
     // Nothing persistable, so the profile's bucket is empty and the key is
     // removed rather than stored as an empty list (matching the tiles store).
     expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+  })
+
+  it('tombstones a confirmed-missing tab in place without closing it', () => {
+    openPreview(fileTarget('/work/demo.html'))
+    openPreview(fileTarget('/work/keep.html'))
+    const demoId = 'file:file:///work/demo.html'
+
+    markPreviewTabMissing(demoId)
+
+    const tabs = $previewTabs.get()
+
+    expect(tabs).toHaveLength(2)
+    expect(tabs.find(tab => tab.id === demoId)?.target.missing).toBe(true)
+    expect(tabs.find(tab => tab.id !== demoId)?.target.missing).toBeFalsy()
+
+    // Idempotent: a second tombstone must not rewrite the list.
+    const before = JSON.stringify($previewTabs.get())
+    markPreviewTabMissing(demoId)
+    expect(JSON.stringify($previewTabs.get())).toBe(before)
+  })
+
+  it('ignores a tombstone for a tab that is not open', () => {
+    markPreviewTabMissing('file:file:///nowhere.html')
+
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('drops tombstoned file tabs at restore so dead paths are not re-probed next boot', () => {
+    const raw = JSON.stringify([
+      { id: 'file:file:///work/gone.html', target: { ...fileTarget('/work/gone.html'), missing: true } },
+      { id: 'file:file:///work/alive.html', target: fileTarget('/work/alive.html') }
+    ])
+
+    const restored = decodePreviewTabs(raw)
+
+    expect(restored.map(tab => tab.target.path)).toEqual(['/work/alive.html'])
   })
 })

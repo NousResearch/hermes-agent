@@ -475,7 +475,12 @@ class ComputeHost:
             with session["history_lock"]:
                 ack.update(_history_meta(session))
         else:
-            output = server._mirror_slash_side_effects(sid, session, command) if command else ""
+            if route_name == "slash.refine":
+                parts = command.lstrip("/").split(maxsplit=1)
+                focus = parts[1] if len(parts) > 1 else ""
+                output = server._live_slash_command_output(sid, session, "refine", focus) or ""
+            else:
+                output = server._mirror_slash_side_effects(sid, session, command) if command else ""
             with session["history_lock"]:
                 messages = server._history_to_messages(list(session.get("history") or []), profile_home=session.get("profile_home"))
                 ack = {"output": output, **_history_meta(session), "messages": messages}

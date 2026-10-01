@@ -205,11 +205,13 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "rapide"
     status_normal: "normal"
-    picker_title: "⚡ **Priority Processing**\\n\\nMode actuel : `{mode}`\\n\\nChoisissez une option :"
+    picker_title: "⚡ **Priority Processing**\n\nMode actuel : `{mode}`\n\nChoisissez une option :"
     choice_fast: "fast — Priority Processing activé"
     choice_normal: "normal — traitement standard"
     choice_auto: "auto — rapide pendant les premières secondes de chaque tour"
     choice_cold: "cold — rapide uniquement au premier tour d'une session"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prix x6)"
+    ultrafast_not_supported: "⚡ Ultrafast n'est disponible que pour GPT-6 Astra (modèle actuel : `{model}`)."
   footer:
     status: "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"
     usage: "Usage : `/footer [on|off|status]`"
@@ -308,7 +310,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` n'est pas pris en charge. Utilisez `/reasoning <level> --global` pour modifier la valeur globale par défaut."
     reset_done: "🧠 ✓ Remplacement de raisonnement de la session effacé ; retour à la configuration globale."
     unknown_arg: "⚠️ Argument inconnu : `{arg}`\n\n**Niveaux valides :** none, minimal, low, medium, high, xhigh, max, ultra\n**Affichage :** show, hide\n**Persister :** ajoutez `--global` pour enregistrer au-delà de cette session"
-    picker_title: "🧠 **Paramètres de raisonnement**\\n\\n**Effort :** `{level}`\\n**Portée :** {scope}\\n**Affichage :** {display}\\n\\nChoisissez une option :"
+    picker_title: "🧠 **Paramètres de raisonnement**\n\n**Effort :** `{level}`\n**Portée :** {scope}\n**Affichage :** {display}\n\nChoisissez une option :"
     choice_none: "none — désactiver le raisonnement"
     choice_reset: "reset — effacer le réglage de session"
     choice_show: "afficher le raisonnement dans les réponses"
@@ -1850,7 +1852,7 @@ slash:
   reasoning:
     description: "Gérer l'effort de raisonnement et son affichage"
   fast:
-    description: "Mode rapide — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Mode rapide — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Afficher ou changer le skin/thème d'affichage"
   indicator:
@@ -2929,7 +2931,9 @@ cli:
       feature_generic: "Mode rapide"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Usage : /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast n'est disponible que pour GPT-6 Astra (modèle actuel : {model})."
+      usage: "Usage : /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature} : {status}"
       set_to: "✓ {feature} défini sur {value} {scope}"
     hatch:
@@ -3600,6 +3604,7 @@ cli:
     shallow_clone_keeping: "⚠ Clone superficiel — impossible de vérifier l'état du push, conservé : {path}"
     next_session_deepens: "La prochaine session `hermes -w` approfondira le clone et supprimera automatiquement les worktrees fusionnés."
     unpushed_keeping: "⚠ Le worktree a des commits non poussés, conservé : {path}"
+    uncommitted_keeping: "⚠ Le worktree a des modifications non commitées, conservé : {path}"
     clean_up_manually: "Pour nettoyer manuellement : git worktree remove --force {path}"
     cleaned_up: "✓ Worktree nettoyé : {path}"
 display:

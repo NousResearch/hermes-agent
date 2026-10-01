@@ -1,6 +1,7 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -581,12 +582,20 @@ class TestIterCacheFiles:
         doc_dir.mkdir(parents=True)
         (doc_dir / "upload.zip").write_bytes(b"PK\x03\x04")
         (doc_dir / "report.pdf").write_bytes(b"%PDF-1.4")
+        old = time.time() - 25 * 3600
+        os.utime(doc_dir / "report.pdf", (old, old))
+        # cache/generated is never swept: sync only its last-24h files (#126445).
+        gen_dir = hermes_home / "cache" / "generated" / "images"
+        gen_dir.mkdir(parents=True)
+        (gen_dir / "fresh.png").write_bytes(b"\x89PNG")
+        (gen_dir / "stale.png").write_bytes(b"\x89PNG")
+        os.utime(gen_dir / "stale.png", (old, old))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         entries = iter_cache_files()
         names = {Path(e["container_path"]).name for e in entries}
-        assert "upload.zip" in names
-        assert "report.pdf" in names
+        assert {"upload.zip", "report.pdf", "fresh.png"} <= names
+        assert "stale.png" not in names
 
     @pytest.mark.require_symlinks
     def test_skips_symlinks(self, tmp_path, monkeypatch):

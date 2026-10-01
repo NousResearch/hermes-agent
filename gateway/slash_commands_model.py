@@ -29,6 +29,7 @@ _FAST_SELECTIONS = {
     "off": (None, "normal", "gateway.fast.label_normal"),
     "auto": ("auto", "auto", None),
     "cold": ("cold", "cold", None),
+    "ultrafast": ("ultrafast", "ultrafast", None),
 }
 
 # /reasoning display-toggle arguments -> show_reasoning value.
@@ -115,6 +116,9 @@ class _ModelSwitchContext:
 
 
 
+_TEXT_LISTING_MODELS = 5
+
+
 def _model_provider_listing_lines(providers) -> list[str]:
     """Text-list body for ``/model`` with no args on platforms without a picker."""
     lines: list[str] = []
@@ -122,8 +126,9 @@ def _model_provider_listing_lines(providers) -> list[str]:
         tag = t("gateway.model.current_tag") if p["is_current"] else ""
         lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
         if p["models"]:
-            model_strs = ", ".join(f"`{m}`" for m in p["models"])
-            hidden = p["total_models"] - len(p["models"])
+            shown = p["models"][:_TEXT_LISTING_MODELS]  # uncapped rows arrive full; this is a preview
+            model_strs = ", ".join(f"`{m}`" for m in shown)
+            hidden = p["total_models"] - len(shown)
             extra = t("gateway.model.more_models_suffix", count=hidden) if hidden > 0 else ""
             lines.append(f"  {model_strs}{extra}")
         elif p.get("api_url"):
@@ -474,7 +479,7 @@ class GatewayModelCommandsMixin:
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
                    provider=get_label(ctx.current_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
+            providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass
@@ -804,18 +809,23 @@ class GatewayModelCommandsMixin:
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
         (persists agent.service_tier, parity with /model)."""
+        from agent.fast_mode import service_tier_word
         from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_cli.models import model_supports_fast_mode, model_supports_ultrafast
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
         session_key = self._session_key_for_source(event.source)
         self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        if not model_supports_fast_mode(_resolve_gateway_model(_load_gateway_config())):
+        model = _resolve_gateway_model(_load_gateway_config())
+        if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
+        ultrafast = model_supports_ultrafast(model)
+        if args == "ultrafast" and not ultrafast:
+            return t("gateway.fast.ultrafast_not_supported", model=model)
         if args and args != "status":
             return self._apply_fast_selection(session_key, args, persist=persist_global)
-        mode = "fast" if self._service_tier == "priority" else (self._service_tier or "normal")
+        mode = service_tier_word(self._service_tier)
         status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
 
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
@@ -827,7 +837,7 @@ class GatewayModelCommandsMixin:
             title=t("gateway.fast.picker_title", mode=status),
             choices=[
                 {"value": v, "label": t(f"gateway.fast.choice_{v}"), "is_current": mode == v}
-                for v in ("fast", "normal", "auto", "cold")
+                for v in ("fast", "normal", "auto", "cold", *(("ultrafast",) if ultrafast else ()))
             ],
             on_choice_selected=_on_fast_choice,
         )

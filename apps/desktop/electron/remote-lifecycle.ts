@@ -29,6 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import { backendProfileArg } from './profile-id-guard'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -39,7 +40,16 @@ const PROTOCOL_VERSION = 1
 const READY_RE = READY_IN_MERGED_OUTPUT_RE // the remote log is `>> log 2>&1`: merged, not line-accurate
 const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
-const DEFAULT_READY_TIMEOUT_MS = 45_000
+// On a busy remote host a healthy cold boot can take 60-150s before the
+// freshly spawned `hermes serve --isolated` prints its READY line (event-loop
+// stalls of 5-27s each during spawn storms are routine). The historical 45s
+// budget gave up milliseconds before a healthy backend announced ready and
+// surfaced a timeout toast (issue #94642). A roomier default absorbs the
+// cold-start cost; a warm start still announces in well under a second.
+const DEFAULT_READY_TIMEOUT_MS = 120_000
+// Never trust a deadline tighter than the warm-start path needs; floor at 45s
+// (the historical default) so a malformed override can't reintroduce the loop.
+const MIN_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
 // macOS sshd starts non-interactive shells with a 256-FD soft limit even when
 // the hard limit is unlimited. A Desktop backend can legitimately exceed that
@@ -54,6 +64,22 @@ function classifySshReuseProof(proof, spawnNonce) {
     proof.runtimeIntact !== false
     ? 'authenticated-ok'
     : 'authenticated-stale'
+}
+
+/**
+ * Resolve the remote ready-port deadline. Honors the
+ * HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS env override (for users on busy
+ * hosts whose cold boots routinely exceed the default), clamped to a sane
+ * floor so a bad value can't make boot flakier than the default.
+ */
+function resolveReadyTimeoutMs(env = process.env) {
+  const parsed = Number(env.HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS)
+
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(MIN_READY_TIMEOUT_MS, Math.round(parsed))
+  }
+
+  return DEFAULT_READY_TIMEOUT_MS
 }
 
 function mintToken() {
@@ -300,6 +326,11 @@ from pathlib import Path
 home=Path(os.path.expanduser(sys.argv[1]))
 if home.parent.name=='profiles':home=home.parent.parent
 marker=home/'.hermes-update-in-progress'
+def clear():
+    try:marker.unlink()
+    except FileNotFoundError:pass
+    except OSError:pass
+    print('CLEAR');raise SystemExit
 try:
     with marker.open('rb') as stream:raw=stream.read(257)
 except FileNotFoundError:
@@ -319,15 +350,20 @@ except ValueError:
 try:
     os.kill(owner,0)
 except ProcessLookupError:
-    print('CLEAR')
+    clear()
 except PermissionError:
-    print('LIVE:'+str(owner))
+    print('LIVE:'+str(owner));raise SystemExit
 except OSError as error:
-    if error.errno==errno.ESRCH:print('CLEAR')
-    elif error.errno==errno.EPERM:print('LIVE:'+str(owner))
-    else:print('UNCERTAIN')
-else:
-    print('LIVE:'+str(owner))
+    if error.errno==errno.ESRCH:clear()
+    elif error.errno==errno.EPERM:print('LIVE:'+str(owner));raise SystemExit
+    else:print('UNCERTAIN');raise SystemExit
+try:
+    cmd=open('/proc/%d/cmdline'%owner,'rb').read().replace(b'\0',b' ')
+except OSError:
+    cmd=b''
+if cmd and b'update' not in cmd:
+    clear()
+print('LIVE:'+str(owner))
 `
 
 /**
@@ -930,35 +966,35 @@ def owned(args):
 pidfd=None
 if sys.platform.startswith("linux"):
  if not hasattr(os,"pidfd_open") or not hasattr(signal,"pidfd_send_signal"):
-  print("UNAVAILABLE");sys.exit(2)
+  print("UNAVAILABLE");sys.exit(0)
  try:pidfd=os.pidfd_open(pid,0)
  except ProcessLookupError:print("ALREADY_STOPPED");sys.exit(0)
- except (OSError,PermissionError):print("UNAVAILABLE");sys.exit(2)
+ except (OSError,PermissionError):print("UNAVAILABLE");sys.exit(0)
 
 try:
  live_creation,live_args=identity_before_signal()
  if live_creation!=expected_creation or not owned(live_args):
-  print("REFUSED");sys.exit(3)
+  print("REFUSED");sys.exit(0)
  if (sys.platform=="darwin"):
   # Darwin has no pidfd-style signal binding. Refuse instead of accepting the
   # residual PID-reuse window between ps and os.kill; reconnect will surface
   # the still-running remote owner for an explicit retry.
-  print("DARWIN_UNAVAILABLE");sys.exit(2)
+  print("DARWIN_UNAVAILABLE");sys.exit(0)
  try:
   if pidfd is not None:signal.pidfd_send_signal(pidfd,signal.SIGTERM)
   else:os.kill(pid,signal.SIGTERM)
  except ProcessLookupError:print("ALREADY_STOPPED");sys.exit(0)
  if pidfd is not None:
   poller=select.poll();poller.register(pidfd,select.POLLIN)
-  if not poller.poll(10000):print("TIMEOUT");sys.exit(4)
+  if not poller.poll(10000):print("TIMEOUT");sys.exit(0)
  else:
   deadline=time.monotonic()+10
   while time.monotonic()<deadline:
    try:os.kill(pid,0)
    except ProcessLookupError:break
-   except PermissionError:print("UNAVAILABLE");sys.exit(2)
+   except PermissionError:print("UNAVAILABLE");sys.exit(0)
    time.sleep(.1)
-  else:print("TIMEOUT");sys.exit(4)
+  else:print("TIMEOUT");sys.exit(0)
  print("TERMINATED")
 finally:
  if pidfd is not None:os.close(pidfd)
@@ -1116,7 +1152,20 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
 // fd-detachment is already handled by </dev/null + redirect + &).
 function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const hermes = expandRemotePath(hermesPath)
-  const profileArgs = profile ? `--profile ${shq(profile)} ` : ''
+  // The roster/SSH bridge hands us the profile verbatim: a non-slug value must never
+  // cross into the remote spawn argv, where the CLI used to str()-coerce it into a
+  // phantom profiles/0/ directory (#88842).
+  const pinned = backendProfileArg(profile)
+  const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
+
+  // The lockfile the spawn script publishes must carry the SAME normalized
+  // profile as the argv: pidIsOurDashboard and the managed-update drain both
+  // prove ownership by comparing the live `--profile` value against
+  // lock.profile, and a raw-case record refuses to reap our own backend.
+  if (opts.lockMetadata && opts.lockMetadata.profile !== (pinned ?? '')) {
+    opts.lockMetadata = { ...opts.lockMetadata, profile: pinned ?? '' }
+  }
+
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
@@ -1216,7 +1265,7 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
     .endsWith('YES')
 }
 
-async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT_MS, isAlive, signal }: any = {}) {
+async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs(), isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
 
@@ -1471,7 +1520,7 @@ async function waitForRemoteSpawnCompletion(ssh, ownershipId, timeoutMs) {
 async function connect(deps) {
   const {
     ssh,
-    profile = '',
+    profile: requestedProfile = '',
     remoteHermesPath = '',
     ownershipId,
     forward,
@@ -1480,10 +1529,17 @@ async function connect(deps) {
     probeReuseProof,
     adoptServedToken,
     rememberLog = () => {},
-    readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    readyTimeoutMs = resolveReadyTimeoutMs(),
     guestOnboarding = false,
     signal
   } = deps
+
+  // The profile must be normalized ONCE, before anything derives from it: the
+  // spawn argv (via buildSpawnCommand), the lockfile metadata the spawn script
+  // publishes, the ownedSpawn rewrite, and the reuse check all have to agree,
+  // or the argv-based ownership proof (pidIsOurDashboard) refuses to reap our
+  // own backend after a case-folding change (#88842).
+  const profile = backendProfileArg(requestedProfile) ?? ''
 
   const log = msg => rememberLog(`[ssh-lifecycle] ${msg}`)
 
@@ -1773,6 +1829,7 @@ export {
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
+  MIN_READY_TIMEOUT_MS,
   mintToken,
   openForward,
   ownershipDirectory,
@@ -1789,6 +1846,7 @@ export {
   remoteProcessCreationTime,
   remoteSupportsSshOwnership,
   removeLockfile,
+  resolveReadyTimeoutMs,
   scrapeReadyPort,
   shq,
   spawnLogPath,

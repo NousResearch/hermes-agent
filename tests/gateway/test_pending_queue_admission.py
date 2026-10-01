@@ -8,13 +8,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.base_pending import pending_dispatch_scope
+from gateway.platforms.base_pending import pending_dispatch_scope, release_pending_dispatch, reserve_pending_dispatch
 from gateway.platforms.event import MessageType
 from gateway.run import _AGENT_PENDING_SENTINEL
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.wake import WakeNotAccepted, admit_internal_event
 from tests.gateway.test_active_session_text_merge import _make_event, _make_initialized_adapter
 from tests.gateway.test_busy_followup_after_session_release import _QueueRunner
+from gateway.session import SessionStore
+from gateway.config import GatewayConfig
+from gateway.platforms.base_pending import bind_pending_dispatch_input
 
 
 class _AdmissionRunner(GatewayInboundMixin, _QueueRunner):
@@ -65,13 +68,69 @@ def _setup(depth):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", [
     "fifo", "normal", "queue", "steer", "grace", "debounce", "reserved", "redispatch",
+    "redispatch-arrival", "redispatch-rewrite", "redispatch-idless", "cancel-before",
+    "cancel-admission", "cancel-claimed", "cancel-claim-race", "cancel-claim-complete", "reservation-replaced",
 ])
-async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypatch):
+async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypatch, tmp_path):
     adapter, runner, expected = _setup(31 if path == "reserved" else 32)
+    runner.session_store = SessionStore(tmp_path / "sessions", GatewayConfig())
     incoming = _make_event("later", chat_type="group", user_id="new-user")
     reply = None
     arrival_accepted = None
     try:
+        if path.startswith("cancel-") or path == "reservation-replaced":
+            attempted = adapter._pending_messages.pop("shared")
+            adapter._stage_next_queued_event("shared", attempted)
+            if path == "reservation-replaced":
+                reserve_pending_dispatch(adapter, "shared", incoming)
+                with pending_dispatch_scope(adapter, "shared", attempted):
+                    release_pending_dispatch(adapter, "shared", attempted)
+                assert {key: reservation.event for key, reservation in adapter._pending_dispatch_reservations.items()} == {"shared": incoming}
+                return
+            entered = asyncio.Event()
+
+            async def handler(event):
+                if path == "cancel-claimed":
+                    release_pending_dispatch(adapter, "shared", event, claimed=True)
+                entered.set()
+                await asyncio.Event().wait()
+
+            if path in {"cancel-claim-race", "cancel-claim-complete"}:
+                async def admit(event):
+                    entered.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        return event, event.source, True
+
+                runner._hm_admit_event = admit
+                runner._hm_estop_gate = lambda *args: None
+                runner._session_key_for_source = lambda source: "shared"
+                runner._hm_pending_reply_intercepts = AsyncMock(return_value=None)
+                runner._hm_evict_idle_stale_agent = lambda key: None
+                runner._is_session_running = lambda key: False
+                runner._hm_dispatch_idle_commands = AsyncMock(return_value=(False, None))
+                runner._claim_active_session_slot = lambda *args: (None, None)
+                runner._hm_rescue_orphaned_fifo = lambda event, source, internal, key: (event, source, internal)
+                runner._persist_active_agents = lambda: None
+                runner._begin_session_run_generation = lambda key: 1
+                runner._handle_message_with_agent = (AsyncMock(side_effect=asyncio.CancelledError)
+                                                     if path == "cancel-claim-race" else AsyncMock(return_value=None))
+                runner._run_post_turn_hooks = AsyncMock()
+                runner._restore_pending_one_turn_model_override = lambda *args: None
+                runner._clear_durable_active_turn = AsyncMock()
+                runner._release_running_agent_state = lambda *args, **kwargs: None
+                runner._release_turn_lease = lambda *args: None
+                handler = runner._handle_message
+
+            adapter.set_message_handler(handler)
+            adapter._start_session_processing(attempted, "shared")
+            if path != "cancel-before":
+                await asyncio.wait_for(entered.wait(), 2)
+            await adapter.cancel_session_processing("shared", discard_pending=False)
+            assert (_events(adapter, runner), adapter._pending_dispatch_reservations) == (
+                expected[1:] if path in {"cancel-claimed", "cancel-claim-race", "cancel-claim-complete"} else expected, {})
+            return
         if path == "reserved":
             buffered = _make_event("reserved", chat_type="group", user_id="buffered-user")
             assert await adapter._queue_text_debounce("shared", buffered)
@@ -93,11 +152,21 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
             runner._hm_busy_telegram_grace_queue(incoming, incoming.source, "shared", "queue")
         if path == "debounce":
             await adapter.handle_message(incoming)
-        if path == "redispatch":
+        if path.startswith("redispatch"):
             attempted = adapter._pending_messages.pop("shared")
-            adapter._pending_messages["shared"] = runner._overflow_queue("shared").pop(0)
+            if path == "redispatch-idless":
+                attempted.message_id = None
+                expected[0].message_id = None
+            adapter._stage_next_queued_event("shared", attempted)
+            if path == "redispatch-arrival":
+                async def arrive():
+                    runner._enqueue_fifo("shared", incoming, adapter)
+                await asyncio.create_task(arrive())
+                arrival_accepted = incoming._gateway_accepted
             with pending_dispatch_scope(adapter, "shared", attempted):
-                runner._queue_or_replace_pending_event("shared", attempted)
+                dispatched = replace(attempted) if path in {"redispatch-rewrite", "redispatch-idless"} else attempted
+                runner._queue_or_replace_pending_event("shared", dispatched)
+            assert adapter._pending_dispatch_reservations == {}
             incoming = attempted
         assert (_events(adapter, runner), incoming._gateway_accepted,
                 "full" in reply.lower() if reply else None, arrival_accepted) == (
@@ -107,6 +176,7 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
     finally:
         adapter._discard_text_debounce("shared")
         await adapter.cancel_background_tasks()
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

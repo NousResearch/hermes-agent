@@ -1373,6 +1373,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
+        from gateway.platforms.base_pending import close_pending_dispatch_withdrawal, release_pending_dispatch
+        close_pending_dispatch_withdrawal(self._delivery_adapter_for(source), _quick_key, event)
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease

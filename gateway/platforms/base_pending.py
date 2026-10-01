@@ -1,12 +1,16 @@
 """Pending-event attribution and dispatch ownership for gateway adapters."""
 
 import asyncio
-from contextlib import contextmanager
+import logging
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Iterator
 
 from gateway.platforms.event import MessageEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 _SECURITY_METADATA_KEYS = (
@@ -52,6 +56,17 @@ def _can_join_pending_event(first: MessageEvent, second: MessageEvent) -> bool:
     )
 
 
+@dataclass
+class _PendingDispatchReservation:
+    event: MessageEvent
+    claimed: bool = False
+    preserve_on_completion: bool = False
+    withdrawal_closed: bool = False
+    input_session_id: str | None = None
+    input_owner: str | None = None
+    task: asyncio.Task | None = None
+
+
 @dataclass(frozen=True)
 class _PendingDispatch:
     adapter: object
@@ -61,6 +76,71 @@ class _PendingDispatch:
 
 
 _dispatch: ContextVar[_PendingDispatch | None] = ContextVar("pending_dispatch", default=None)
+
+
+def reserve_pending_dispatch(adapter: object, session_key: str, event: MessageEvent) -> None:
+    reservations = getattr(adapter, "_pending_dispatch_reservations", None)
+    if reservations is None:
+        reservations = {}
+        setattr(adapter, "_pending_dispatch_reservations", reservations)
+    reservations[session_key] = _PendingDispatchReservation(event)
+
+
+def release_pending_dispatch(adapter: object, session_key: str, event: MessageEvent, *,
+                             claimed: bool = False) -> None:
+    reservations = getattr(adapter, "_pending_dispatch_reservations", None)
+    if not isinstance(reservations, dict):
+        return
+    reserved = reservations.get(session_key)
+    dispatch = _dispatch.get()
+    if reserved is None:
+        return
+    if reserved.event is event or (dispatch is not None and reserved.event is dispatch.event
+                            and dispatch.adapter is adapter and dispatch.session_key == session_key
+                            and dispatch.task is asyncio.current_task()):
+        reserved.claimed = claimed
+        if reserved.preserve_on_completion and not reserved.claimed:
+            return
+        reservations.pop(session_key, None)
+
+
+def close_pending_dispatch_withdrawal(adapter: object, session_key: str, event: MessageEvent) -> None:
+    reservations = getattr(adapter, "_pending_dispatch_reservations", {})
+    record = reservations.get(session_key)
+    dispatch = _dispatch.get()
+    owning_dispatch = (dispatch is not None and dispatch.adapter is adapter
+                       and dispatch.session_key == session_key and dispatch.task is asyncio.current_task())
+    if record is not None and (record.event is event or (owning_dispatch and record.event is dispatch.event)):
+        record.withdrawal_closed = True
+
+def bind_pending_dispatch_input(session_id: str, owner: str) -> None:
+    dispatch = _dispatch.get()
+    if dispatch is None or dispatch.task is not asyncio.current_task():
+        return
+    record = getattr(dispatch.adapter, "_pending_dispatch_reservations", {}).get(dispatch.session_key)
+    if record is None or record.event is not dispatch.event:
+        return
+    record.input_session_id = session_id
+    record.input_owner = owner
+
+def pending_dispatch_needs_snapshot(adapter: object, reserved: _PendingDispatchReservation) -> bool:
+    """Whether this provisional input still needs shutdown preservation."""
+    if reserved.claimed:
+        return False
+    if not reserved.input_session_id or not reserved.input_owner:
+        return True
+    runner = getattr(adapter, "gateway_runner", None)
+    if runner is None:
+        return True
+    scope = getattr(runner, "_profile_scope_for_source", None)
+    try:
+        with scope(reserved.event.source) if callable(scope) else nullcontext():
+            return not runner.session_store.has_input_owner(
+                reserved.input_session_id, reserved.input_owner,
+            )
+    except Exception:
+        logger.warning("Could not verify durable pending input; preserving the event", exc_info=True)
+        return True
 
 
 @contextmanager

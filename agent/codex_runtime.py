@@ -1014,8 +1014,9 @@ def _consume_codex_event_stream(
 
 def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dict[str, Any]:
     """Drop fields the ChatGPT OAuth Codex endpoint rejects, at the final wire boundary (after Relay /
-    middleware / ``request_overrides``): a late ``prompt_cache_retention``, top-level or nested in
-    ``extra_body``, would otherwise HTTP 400 a valid follow-up."""
+    middleware / ``request_overrides``): late ``prompt_cache_retention`` or
+    ``prompt_cache_options``, top-level or nested in ``extra_body``, would
+    otherwise HTTP 400 a valid follow-up."""
     sanitized = dict(request)
     # getattr: run_codex_stream is also driven with stand-in agents carrying only the attrs a path needs.
     backend_predicate = getattr(agent, "_is_codex_backend", None)
@@ -1023,6 +1024,8 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
         return sanitized
     dropped_from = ["top-level"] if "prompt_cache_retention" in sanitized else []
     sanitized.pop("prompt_cache_retention", None)
+    dropped_cache_options_from = ["top-level"] if "prompt_cache_options" in sanitized else []
+    sanitized.pop("prompt_cache_options", None)
     # Copy before editing (caller's mapping must not mutate); drop when emptied.
     extra_body = sanitized.get("extra_body")
     if isinstance(extra_body, dict) and "prompt_cache_retention" in extra_body:
@@ -1030,9 +1033,19 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
         if not sanitized["extra_body"]:
             sanitized.pop("extra_body")
         dropped_from.append("extra_body")
+    extra_body = sanitized.get("extra_body")
+    if isinstance(extra_body, dict) and "prompt_cache_options" in extra_body:
+        sanitized["extra_body"] = {k: v for k, v in extra_body.items() if k != "prompt_cache_options"}
+        if not sanitized["extra_body"]:
+            sanitized.pop("extra_body")
+        dropped_cache_options_from.append("extra_body")
     if dropped_from:
         logger.warning("Dropped unsupported prompt_cache_retention at consumer Codex wire boundary (model=%s, via %s).",
                        sanitized.get("model", getattr(agent, "model", "unknown")), ", ".join(dropped_from))
+    if dropped_cache_options_from:
+        logger.warning("Dropped unsupported prompt_cache_options at consumer Codex wire boundary (model=%s, via %s).",
+                       sanitized.get("model", getattr(agent, "model", "unknown")),
+                       ", ".join(dropped_cache_options_from))
     return sanitized
 
 

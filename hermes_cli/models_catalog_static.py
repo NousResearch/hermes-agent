@@ -136,6 +136,8 @@ def _xai_curated_models() -> list[str]:
 
 
 # Native OpenAI Chat Completions (api.openai.com); also the head of the Copilot list.
+# GPT-6 entries stay out of this shared list: Copilot does not expose these bare
+# slugs, and Astra must remain account-discovery-only.
 _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
@@ -165,7 +167,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
     "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")],
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
-    "openai": list(_OPENAI_CHAT_MODELS),
+    "openai": ["gpt-6-sol", "gpt-6-luna", *_OPENAI_CHAT_MODELS],
     "openai-api": [
         "gpt-6.1-sol", "gpt-6.1-sol-pro", "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna",

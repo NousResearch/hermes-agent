@@ -75,3 +75,14 @@ def test_astra_is_offered_only_by_successful_account_discovery(monkeypatch):
     assert "gpt-6-astra" in discovered
     assert "gpt-6-astra" not in not_entitled
     assert "gpt-6-astra" not in discovery_failed
+
+
+def test_legacy_openai_catalog_has_confirmed_gpt6_family_without_guessed_variants():
+    """Static fallback exposes public tiers without bypassing Astra account discovery."""
+    models = M._PROVIDER_MODELS["openai"]
+
+    assert models[:2] == ["gpt-6-sol", "gpt-6-luna"]
+    assert "gpt-6-astra" not in models
+    assert not any(model.startswith("gpt-6") and model.endswith("-pro") for model in models)
+    assert "gpt-6.1-sol" not in models
+    assert not any(model.startswith("gpt-6") for model in M._PROVIDER_MODELS["copilot"])

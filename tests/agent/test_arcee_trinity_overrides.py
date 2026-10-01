@@ -117,6 +117,16 @@ def test_base_slugs_still_autoraised_alongside_900k_variants() -> None:
     assert _compression_threshold_for_model("gpt-5.6-sol-900k", "openai-codex") is None
 
 
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+def test_gpt6_base_tiers_use_codex_272k_compression_threshold(model) -> None:
+    assert _compression_threshold_for_model(model, "openai-codex") == pytest.approx(0.85)
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol-900k", "gpt-6-luna-900k"])
+def test_gpt6_900k_tiers_keep_global_compression_threshold(model) -> None:
+    assert _compression_threshold_for_model(model, "openai-codex") is None
+
+
 
 
 

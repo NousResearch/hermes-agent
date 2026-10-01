@@ -39,11 +39,11 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
 
-def _build_agent(monkeypatch):
+def _build_agent(monkeypatch, *, model="gpt-5-codex"):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(
-        model="gpt-5-codex",
+        model=model,
         base_url="https://chatgpt.com/backend-api/codex",
         api_key="codex-token",
         quiet_mode=True,
@@ -288,6 +288,20 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+def test_build_api_kwargs_codex_gpt6_omits_unsupported_cache_options(monkeypatch, model):
+    """Consumer Codex rejects prompt_cache_options even when ttl is 30m."""
+    agent = _build_agent(monkeypatch, model=model)
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert "prompt_cache_options" not in kwargs
+    assert "prompt_cache_options" not in kwargs.get("extra_body", {})
+    assert isinstance(kwargs["prompt_cache_key"], str)
+    assert "prompt_cache_retention" not in kwargs
+    assert "max_output_tokens" not in kwargs
+
+
 def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
@@ -530,6 +544,20 @@ def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
     assert sanitized["extra_body"]["unrelated"] == "keep"
     assert extra_body["prompt_cache_retention"] == "24h"
     assert sanitized["prompt_cache_key"] == "cache-key-sentinel"
+
+
+def test_consumer_codex_wire_guard_strips_gpt6_cache_options_without_mutating_caller():
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: True, model="gpt-6-sol")
+    extra_body = {"prompt_cache_options": {"ttl": "24h"}, "unrelated": "keep"}
+    request = {"model": "gpt-6-sol", "extra_body": extra_body}
+
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert "prompt_cache_options" not in sanitized["extra_body"]
+    assert sanitized["extra_body"]["unrelated"] == "keep"
+    assert extra_body["prompt_cache_options"] == {"ttl": "24h"}
 
 
 def test_consumer_codex_wire_guard_preserves_nested_retention_on_compatible_endpoint():

@@ -63,6 +63,7 @@ def merge_pending_message_event(
             for attr in (
                 "_gateway_pending_stt_text",
                 "_gateway_pending_stt_transcripts",
+                "_gateway_pending_stt_input",
             ):
                 if hasattr(existing, attr):
                     delattr(existing, attr)

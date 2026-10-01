@@ -869,7 +869,8 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 When this variable is set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Any path outside those roots is **rejected immediately** — the write does not go through the dangerous-command approval system and there is no prompt to override it.
 
-The official Docker image sets `HERMES_WRITE_SAFE_ROOT=/opt/data` alongside `HERMES_HOME=/opt/data` so the agent cannot escape the mounted data volume.
+<!-- no-tmp: ok — documents the Docker image's dedicated, security-validated scratch path. -->
+The official Docker image sets `HERMES_WRITE_SAFE_ROOT=/opt/data:/tmp/hermes-files` alongside `HERMES_HOME=/opt/data`: durable Hermes state stays on the mounted data volume, while `write_file` and `patch` may use the dedicated `/tmp/hermes-files` scratch directory. It also sets `TMPDIR` to that directory for conventional temporary output without exposing other `/tmp` runtime paths.
 
 **Do not add this to `~/.hermes/.env` unless you intend to sandbox writes.** A common mistake is pointing it at a project directory while expecting the agent to edit `~/.hermes/cron/jobs.json`, `~/.hermes/skills/`, or scripts under a profile — those paths are outside the sandbox and every `write_file`/`patch` to them fails with an `outside HERMES_WRITE_SAFE_ROOT` error.
 

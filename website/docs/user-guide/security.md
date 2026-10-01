@@ -388,7 +388,8 @@ file bridge, background jobs with no human channel) fail closed. Private keys,
 
 When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked** — not routed through dangerous-command approval.
 
-- Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
+<!-- no-tmp: ok — documents the Docker image's dedicated, security-validated scratch path. -->
+- Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data:/tmp/hermes-files`): `/opt/data` holds durable state and `/tmp/hermes-files` is the dedicated disposable-artifact directory
 - Supports multiple roots separated by `:` on Unix or `;` on Windows
 - **Do not add to `~/.hermes/.env` casually.** If you set it to a project directory, the agent cannot write to `~/.hermes/cron/jobs.json`, profile skills, or other Hermes state outside that prefix
 

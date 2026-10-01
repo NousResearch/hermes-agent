@@ -1525,7 +1525,8 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def _post_ephemeral_fallback(
-        self, chat_id: str, ctx: Dict[str, Any], content: str) -> "SendResult":
+        self, chat_id: str, ctx: Dict[str, Any], content: str,
+        metadata: Optional[Dict[str, Any]] = None) -> "SendResult":
         """Deliver a slash reply via ``chat.postEphemeral`` when ``response_url`` fails.
         Keeps the reply private (a public channel post must never happen for an ephemeral reply).
         Cannot ``replace_original``, so the ack stays; no 5-POST cap applies here.
@@ -1537,7 +1538,9 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="no user_id in slash context for postEphemeral")
         chunks = self._format_chunks(content)
         try:
-            client = self._get_client(chat_id)
+            # The reply's own workspace: the channel map has no owner for a channel that two
+            # installed workspaces share, and the primary bot need not be a member of it.
+            client = self._client_for(chat_id, metadata)
             for chunk in chunks:
                 result = await client.chat_postEphemeral(channel=chat_id, user=user_id, text=chunk)
                 payload = _slack_response_payload(result)
@@ -2322,7 +2325,7 @@ class SlackAdapter(BasePlatformAdapter):
         logger.warning(
             "[Slack] response_url slash reply failed (%s); retrying via chat.postEphemeral",
             ephemeral_result.error)
-        fallback_result = await self._post_ephemeral_fallback(chat_id, slash_ctx, content)
+        fallback_result = await self._post_ephemeral_fallback(chat_id, slash_ctx, content, metadata)
         if fallback_result.success:
             await self._clear_thread_status_quietly(chat_id, metadata)
             return fallback_result

@@ -1012,25 +1012,31 @@ export function LocalFilePreview({
       // agent edit, an external save), don't clobber it silently — surface the
       // choice. `force` is the user picking "overwrite" from that banner.
       if (!force) {
-        try {
-          const current = await readTextPreview(filePath)
+        // A failed or partial read cannot establish that the file is unchanged.
+        // Keep the draft open on read errors; only explicit overwrite may bypass
+        // a changed/binary/truncated result.
+        const current = await readTextPreview(filePath)
 
-          if (!current.binary && (current.text ?? '') !== baselineRef.current) {
-            setConflict(true)
-            setSaving(false)
+        if (current.binary || current.truncated || (current.text ?? '') !== baselineRef.current) {
+          setConflict(true)
 
-            return
-          }
-        } catch {
-          // Couldn't re-read for the check — fall through and attempt the write.
+          return
         }
       }
 
-      await writeDesktopFileText(filePath, draftRef.current)
-      baselineRef.current = draftRef.current
-      setDirty(false)
+      const savedText = draftRef.current
+      await writeDesktopFileText(filePath, savedText)
+      // The editor stays editable during IPC/remote I/O. Only the submitted
+      // snapshot is now on disk; newer typing must remain an unsaved draft.
+      baselineRef.current = savedText
+      const hasNewerEdits = draftRef.current !== savedText
+      setDirty(hasNewerEdits)
       setConflict(false)
-      setEditing(false)
+
+      if (!hasNewerEdits) {
+        setEditing(false)
+      }
+
       notifyWorkspaceChanged()
       setSelfReload(n => n + 1)
     } catch (error) {

@@ -1,13 +1,14 @@
 import { PassThrough } from 'node:stream'
 
-import { renderSync } from '@hermes/ink'
+import { renderSync, stringWidth } from '@hermes/ink'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { expect, it } from 'vitest'
 
-import { buildProcessRows, PROCESS_RETAIN_SECONDS, type ProcessEntry } from '../app/processRoster.js'
+import { buildProcessRows, PROCESS_RETAIN_SECONDS, type ProcessEntry, processLabel } from '../app/processRoster.js'
 import { AgentsPanelView, buildProcessBlock, splitDockBudget } from '../components/agentsPanel.js'
 import { buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
+import { PROCESS_GLYPH } from '../lib/processGlyph.js'
 import { DEFAULT_THEME } from '../theme.js'
 import type { SubagentProgress } from '../types.js'
 
@@ -108,4 +109,29 @@ it('paints a Processes block under the agents without letting either block hide 
   const collapsed = paint(<AgentsPanelView collapsed cols={80} {...agentRows} processes={block} t={DEFAULT_THEME} />)
 
   expect(collapsed.trim().split('\n')).toHaveLength(1)
+})
+
+it('names a process by the program it runs, not its cd / env / redirect setup', () => {
+  expect(
+    processLabel(
+      'cd /Users/me/code/backend-v0-worktrees/cor-4200-probe && set -a && . /Users/me/code/backend-v0/.env.prod && set +a && R=/Users/me/reports/a4 && PYTHONPATH=.:scripts:$R nohup /Users/me/code/backend-v0/.venv/bin/python $R/s13_hash_replay.py --ids-file $R/sample_ids.txt --max-combos 3000 > $R/s13.log 2>&1'
+    )
+  ).toEqual({ label: 'python s13_hash_replay.py --ids-file sample_ids.txt --max-combos 3000', where: 'cor-4200-probe' })
+
+  expect(
+    processLabel(
+      'cd /Users/me/code/coral_frontend-worktrees/cor-4426 && rm -rf .next && env -u NODE_OPTIONS NODE_ENV=development pnpm dev > /tmp/fe.log 2>&1'
+    )
+  ).toEqual({ label: 'pnpm dev', where: 'cor-4426' })
+
+  expect(processLabel('bash /Users/me/.hermes/skills/stack/scripts/keepalive.sh > /tmp/k.log 2>&1')).toEqual({
+    label: 'bash keepalive.sh'
+  })
+  expect(processLabel('pytest tests/')).toEqual({ label: 'pytest tests/' })
+})
+
+it('draws every process status glyph one cell wide so live rows never smear', () => {
+  for (const { glyph } of Object.values(PROCESS_GLYPH)) {
+    expect(stringWidth(glyph)).toBe(1)
+  }
 })

@@ -887,7 +887,16 @@ def _kill_known_pids(proc, descendants) -> None:
 
 
 def _kill_process_windows(proc) -> None:
-    """Identity-checked terminate (start time guards against PID reuse), else kill."""
+    """Identity-checked terminate (start time guards against PID reuse), else kill.
+    Descendants are snapshotted first: ``taskkill /T`` walks the live parent chain, and
+    when it fails or times out the ``proc.kill()`` fallback signals only the bash wrapper,
+    leaving its children running (orphaned once the wrapper dies). Survivors are killed by
+    PID afterwards; psutil's identity-aware Process skips recycled PIDs."""
+    try:  # empty on any failure (must never break the kill)
+        import psutil
+        descendants = psutil.Process(proc.pid).children(recursive=True)
+    except Exception:
+        descendants = []
     try:
         from gateway.status import get_process_start_time, terminate_pid
         terminate_pid(proc.pid, force=True, expected_start_time=get_process_start_time(proc.pid))
@@ -895,6 +904,10 @@ def _kill_process_windows(proc) -> None:
         proc.kill()
     with contextlib.suppress(subprocess.TimeoutExpired, OSError):
         proc.wait(timeout=2.0)
+    for child in descendants:
+        with contextlib.suppress(Exception):
+            if child.is_running():
+                child.kill()
 
 
 class LocalEnvironment(BaseEnvironment):

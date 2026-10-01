@@ -323,6 +323,10 @@ wake = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+# Smart Turn v3 semantic end-of-turn endpointer for the converse loop (voice.endpoint.model).
+# Opt-in and lazy-installed (tools/lazy_deps.py voice.endpoint); excluded from [all]. transformers
+# is used ONLY for the Whisper log-mel front end (numpy path — no torch); onnxruntime runs the model.
+voice-endpoint = ["onnxruntime==1.29.0", "transformers==5.17.0"]
 honcho = ["honcho-ai==2.2.0"]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
 # only real extras (contract: tests/pm/test_extras.py). Each is

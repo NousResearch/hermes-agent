@@ -591,11 +591,34 @@ class PluginDispatchMixin:
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
         results: List[Any] = []
+        current_route = copy.deepcopy(kwargs.get("route")) if kind == "turn_route" else None
         for cb in self._middleware.get(kind, []):
             try:
-                ret = cb(**kwargs)
+                callback_kwargs = kwargs
+                if kind == "turn_route":
+                    # Each callback gets a private draft. Promote only a successful returned
+                    # decision so later callbacks refine the last successful route while a
+                    # callback that mutates and raises cannot leak its draft.
+                    callback_kwargs = dict(kwargs)
+                    callback_kwargs["route"] = copy.deepcopy(current_route)
+                    if "original_redacted_route" in kwargs:
+                        callback_kwargs["original_redacted_route"] = copy.deepcopy(
+                            kwargs["original_redacted_route"]
+                        )
+                ret = cb(**callback_kwargs)
                 if ret is not None:
+                    if kind == "turn_route" and isinstance(ret, dict):
+                        plugin_name = getattr(cb, "_hermes_plugin_name", None)
+                        if isinstance(plugin_name, str) and plugin_name:
+                            ret = dict(ret)
+                            ret["plugin"] = plugin_name
                     results.append(ret)
+                    if (
+                        kind == "turn_route"
+                        and isinstance(ret, dict)
+                        and isinstance(ret.get("route"), dict)
+                    ):
+                        current_route = copy.deepcopy(ret["route"])
             except (Exception, SystemExit) as exc:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")

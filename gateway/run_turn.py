@@ -36,6 +36,7 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.run_turn_routing import GatewayTurnRoutingMixin
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayTurnRoutingMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -305,44 +306,6 @@ class GatewayTurnMixin:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
-        """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
-        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
-        from gateway.run import _deep_merge_request_overrides
-        from agent.fast_mode import STATIC_TIERS
-        from hermes_cli.models import resolve_fast_mode_overrides
-        # Tests bind this method onto bare namespaces, so no class-level tables here.
-        runtime = {
-            k: runtime_kwargs.get(k) for k in (
-                "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
-                "credential_pool", "max_tokens", "capabilities",
-            )
-        }
-        runtime["args"] = list(runtime["args"] or [])
-        runtime["capabilities"] = dict(runtime["capabilities"] or {})
-        base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
-        route = {
-            "model": model,
-            "runtime": runtime,
-            "signature": (
-                model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
-                runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
-            ),
-        }
-        tier = getattr(self, "_service_tier", None)
-        if tier not in STATIC_TIERS:
-            # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
-            route["request_overrides"] = base_request_overrides
-            return route
-        try:
-            overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier,
-            )
-        except Exception:
-            overrides = None
-        # Fast-mode keys (service_tier / speed) are top-level and don't collide with extra_body.
-        route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
-        return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
@@ -2110,6 +2073,7 @@ class GatewayTurnMixin:
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event, source=source, history=history, session_key=session_key,
+            defer_image_routing=True, defer_context_references=True,
         )
         if message_text is None:
             return None, _session_env_tokens
@@ -2200,6 +2164,7 @@ class GatewayTurnMixin:
                 channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 title_user_message=prepared.title_user_message,
                 persist_user_message=prepared.persist_user_message,
+                context_reference_message=getattr(event, "_gateway_context_reference_message", None),
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
@@ -2208,6 +2173,9 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                internal=bool(
+                    getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None)
+                ),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2215,6 +2183,9 @@ class GatewayTurnMixin:
             # send (bracketed by the adapter against this event) must be ledgered under that
             # message's id or it collides with an earlier turn's row carrying the same text. Reply
             # routing is untouched: the anchor still comes from this event.
+            if isinstance(agent_result, dict) and agent_result.get("context_reference_blocked"):
+                return None
+
             if isinstance(agent_result, dict):
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
@@ -2440,7 +2411,7 @@ class GatewayTurnMixin:
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, internal=True)
 
             # Enrich the prompt with image descriptions (same as the main flow).
             enriched_prompt = prompt
@@ -3596,7 +3567,12 @@ class GatewayTurnMixin:
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
-        _cfg_model = _resolve_gateway_model()
+        # A turn-local middleware route is the expected model for this cleanup pass.
+        # Only fall back to the configured model when no route was realized (legacy/internal
+        # callers); a genuine in-turn fallback still differs from the expected route and is
+        # evicted below.
+        realized_route = getattr(turn_ctx, "realized_route", None)
+        _cfg_model = (realized_route or {}).get("model") or _resolve_gateway_model()
         # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
         # cached agent is evicted every turn, destroying prompt caching.
         with suppress(Exception):
@@ -3811,12 +3787,14 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        next_internal = False
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
+        next_context_reference_message = None
         next_display_kind = display_kind_for_event(pending_event)
         next_reply_expected = pending_event.reply_expected if pending_event is not None else None
         # See #60671.
@@ -3839,11 +3817,15 @@ class GatewayTurnMixin:
                 )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
+                defer_image_routing=True, defer_context_references=True,
             )
             if next_message is None:
                 return result
             from gateway.run_inbound import strip_discord_triggering_note
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
+            next_context_reference_message = getattr(
+                pending_event, "_gateway_context_reference_message", None,
+            )
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
@@ -3853,6 +3835,10 @@ class GatewayTurnMixin:
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.
                 await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_internal = bool(
+                getattr(pending_event, "internal", False)
+                or getattr(pending_event, "_heartbeat_session_id", None)
+            )
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt
             # of the turn they are recursively following.
@@ -3903,10 +3889,12 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
+                context_reference_message=next_context_reference_message,
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                internal=next_internal,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -4230,18 +4218,57 @@ class GatewayTurnMixin:
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
+        context_reference_message: Optional[str] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        internal: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
         if self._get_proxy_url():
+            proxy_message = message
+            reference_message = message if context_reference_message is None else context_reference_message
+            if "@" in reference_message:
+                expanded_message = await self._expand_inbound_context_references(  # type: ignore[attr-defined]
+                    source, session_key, reference_message,
+                )
+                if expanded_message is None:
+                    return {
+                        "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+                        "context_reference_blocked": True,
+                    }
+                if expanded_message != reference_message:
+                    if proxy_message == reference_message:
+                        proxy_message = expanded_message
+                    elif proxy_message.endswith(reference_message):
+                        proxy_message = proxy_message[:-len(reference_message)] + expanded_message
+                    else:
+                        logger.warning(
+                            "Could not splice deferred context expansion into proxy message; "
+                            "forwarding the raw reference"
+                        )
+            # Ingress deferred image handling to the local TurnRunner, which a proxy turn never
+            # reaches. The proxy protocol is text-only, so consume the buffered photos and fall
+            # back to auxiliary text descriptions before forwarding.
+            proxy_image_paths = self._consume_pending_native_image_paths(session_key)
+            if proxy_image_paths:
+                from agent.auxiliary_client import scoped_runtime_main
+                vision_runtime = None
+                try:
+                    turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        source=source, session_key=session_key,
+                    )
+                    vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
+                except Exception:
+                    logger.debug("proxy vision enrichment: session runtime resolution failed", exc_info=True)
+                with scoped_runtime_main(vision_runtime):
+                    proxy_message = await self._enrich_message_with_vision(proxy_message, proxy_image_paths)
             return await self._run_agent_via_proxy(
-                message=message, context_prompt=context_prompt, history=history, source=source,
+                message=proxy_message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )
@@ -4274,6 +4301,8 @@ class GatewayTurnMixin:
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
+            internal=internal,
+            context_reference_message=context_reference_message,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

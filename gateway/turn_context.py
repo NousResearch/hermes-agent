@@ -19,6 +19,8 @@ class TurnContext:
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False
+    # Self-injected events must bypass external-user turn routing.
+    internal: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"
@@ -41,6 +43,7 @@ class TurnContext:
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
+    native_image_paths: list = field(default_factory=list)
     # turn parameters / config snapshots (read-only in run_sync)
     history: Any = None
     context_prompt: Optional[str] = None
@@ -99,3 +102,11 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    # Per-turn middleware state. Kept at the end so existing positional construction remains stable.
+    # Fallback cleanup compares against the route this turn actually realized, not durable config.
+    realized_route: Optional[dict] = None
+    context_reference_blocked: bool = False
+    # Raw body before the reply pointer/Discord attribution is prepended. Deferred context
+    # expansion must operate on this body only so quoted text stays literal.
+    context_reference_message: Optional[str] = None

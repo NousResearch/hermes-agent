@@ -1118,7 +1118,7 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import get_plugin_command_handler, invoke_plugin_command
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
@@ -1127,16 +1127,39 @@ class GatewayInboundMixin:
                     # so session_key is derived from source. Sync handlers run on the gateway pool
                     # (contextvars carried), never the loop thread: blocking I/O there starves the
                     # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    # Commands and turn-route middleware share this durable route/control identity.
+                    # The physical session id remains diagnostic and may rotate after compaction.
                     _plugin_context = build_session_context(source, self.config)
-                    _plugin_context.session_key = self._session_key_for_source(source)
+                    durable_session_key = self._session_key_for_source(source)
+                    _plugin_context.session_key = durable_session_key
+                    physical_session_id = None
+                    session_store = getattr(self, "session_store", None)
+                    peek_session_id = getattr(session_store, "peek_session_id", None)
+                    if callable(peek_session_id):
+                        with suppress(Exception):
+                            physical_session_id = peek_session_id(durable_session_key)
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):
-                            result = await plugin_handler(user_args)
+                            result = await invoke_plugin_command(
+                                plugin_handler,
+                                user_args,
+                                session_id=physical_session_id,
+                                session_key=durable_session_key,
+                                platform=source.platform.value if source.platform else None,
+                            )
                         else:
-                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                            if asyncio.iscoroutine(result):
-                                result = await result
+                            result = await self._run_in_executor_with_context(
+                                lambda: invoke_plugin_command(
+                                    plugin_handler,
+                                    user_args,
+                                    session_id=physical_session_id,
+                                    session_key=durable_session_key,
+                                    platform=source.platform.value if source.platform else None,
+                                )
+                            )
+                        if asyncio.iscoroutine(result):
+                            result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
@@ -1500,9 +1523,16 @@ class GatewayInboundMixin:
         return image_paths, audio_paths, audio_file_paths, video_paths
 
     async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
+        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str],
+        *, defer_image_routing: bool = False,
     ) -> str:
         """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
+        # The realized route is selected later, after the runner sees the prepared turn. Keep the
+        # original attachment until then so a text-configured session that routes to a vision model
+        # does not irreversibly replace pixels with an auxiliary description.
+        if defer_image_routing:
+            self._session_state(session_key).persistent.native_image_paths = list(image_paths)
+            return message_text
         # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
         # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
         _img_mode = await asyncio.to_thread(
@@ -1649,9 +1679,16 @@ class GatewayInboundMixin:
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
         return message_text
 
-    async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
-        """Context length of the model this turn runs on. A global ``model.context_length`` pin
-        belongs to the configured model, not a /model or channel override; custom-provider limits win."""
+    async def _inbound_model_context_length(
+        self, source: SessionSource, session_key: str, turn_route: Optional[dict] = None,
+    ) -> int:
+        """Return the context length for the route that will execute this turn.
+
+        Before turn routing exists, resolve the session route here as before. Once the
+        pre-agent route has been realized, use that host-owned result directly so a
+        middleware-selected model is the sole budget authority and routing is not
+        invoked a second time.
+        """
         from gateway.run import _load_gateway_config
         from agent.model_metadata import get_model_context_length_async
 
@@ -1672,10 +1709,15 @@ class GatewayInboundMixin:
                 _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
             except Exception:
                 _msg_custom_providers = _msg_cfg.get("custom_providers") or []
-        # GatewayRunner has no self._model/self._base_url; resolve the session's actual runtime.
-        _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
-            source=source, session_key=session_key, user_config=_msg_cfg,
-        )
+        # GatewayRunner has no self._model/self._base_url. A realized turn route is
+        # already host-resolved; do not re-resolve it (or route middleware) here.
+        if isinstance(turn_route, dict):
+            _msg_model = turn_route.get("model")
+            _msg_runtime = turn_route.get("runtime") or {}
+        else:
+            _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key, user_config=_msg_cfg,
+            )
         _msg_base_url = _msg_runtime.get("base_url") or ""
         if isinstance(_msg_model_cfg, dict):
             _msg_configured_model = _msg_model_cfg.get("default") or _msg_model_cfg.get("model")
@@ -1709,7 +1751,8 @@ class GatewayInboundMixin:
         )
 
     async def _expand_inbound_context_references(
-        self, source: SessionSource, session_key: str, message_text: str
+        self, source: SessionSource, session_key: str, message_text: str,
+        *, turn_route: Optional[dict] = None, warning_sender=None,
     ) -> Optional[str]:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
         try:
@@ -1720,17 +1763,20 @@ class GatewayInboundMixin:
             except ImportError:
                 _ts_env = os.environ.get
             _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
-            _msg_ctx_len = await self._inbound_model_context_length(source, session_key)
+            _msg_ctx_len = await self._inbound_model_context_length(
+                source, session_key, turn_route=turn_route,
+            )
             _ctx_result = await preprocess_context_references_async(
                 message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd
             )
             if _ctx_result.blocked:
-                _adapter = self._delivery_adapter_for(source)
-                if _adapter:
-                    await _adapter.send(
-                        source.chat_id,
-                        "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused"),
-                    )
+                warning = "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused")
+                if warning_sender is not None:
+                    await warning_sender(warning)
+                else:
+                    _adapter = self._delivery_adapter_for(source)
+                    if _adapter:
+                        await _adapter.send(source.chat_id, warning)
                 return None
             if _ctx_result.expanded:
                 message_text = _ctx_result.message
@@ -1741,7 +1787,8 @@ class GatewayInboundMixin:
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, defer_image_routing: bool = False,
+        defer_context_references: bool = False,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent. Shared by the normal inbound and queued
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
@@ -1759,12 +1806,20 @@ class GatewayInboundMixin:
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
-            message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
+            message_text = await self._enrich_inbound_images(
+                source, session_key, message_text, image_paths,
+                defer_image_routing=defer_image_routing,
+            )
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        if "@" in message_text:
+        if defer_context_references:
+            # Keep the authored/pre-reply body separate from the reply pointer. Deferred
+            # expansion runs after route selection; the quoted reply is another person's
+            # text and must remain literal even when it contains an ``@`` reference.
+            setattr(event, "_gateway_context_reference_message", message_text)
+        if "@" in message_text and not defer_context_references:
             message_text = await self._expand_inbound_context_references(source, session_key, message_text)
             if message_text is None:
                 return None
@@ -1774,11 +1829,16 @@ class GatewayInboundMixin:
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, defer_image_routing: bool = False,
+        defer_context_references: bool = False,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
-        kwargs = dict(event=event, source=source, history=history, session_key=session_key)
+        kwargs = dict(
+            event=event, source=source, history=history, session_key=session_key,
+            defer_image_routing=defer_image_routing,
+            defer_context_references=defer_context_references,
+        )
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._prepare_inbound_message_text(**kwargs)
@@ -1955,7 +2015,7 @@ class GatewayInboundMixin:
     def _decide_image_input_mode(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, provider: Optional[str] = None,
-        model: Optional[str] = None,
+        model: Optional[str] = None, requested_provider: Optional[str] = None,
     ) -> str:
         """Resolve image-input routing (``"native"`` / ``"text"``) for the effective model this turn
         (see agent/image_routing.py). Sessions can carry /model overrides and this runs before AIAgent
@@ -1969,7 +2029,7 @@ class GatewayInboundMixin:
             cfg = user_config if isinstance(user_config, dict) else load_config()
             resolved_provider = (provider or "").strip()
             resolved_model = (model or "").strip()
-            resolved_requested_provider = ""
+            resolved_requested_provider = (requested_provider or "").strip()
 
             if (not resolved_provider or not resolved_model) and (source is not None or session_key):
                 try:

@@ -1112,7 +1112,7 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
-        return ctx.AIAgent(
+        agent = ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
@@ -1135,6 +1135,12 @@ class TurnRunner:
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
         )
+        # ``requested_provider`` is part of the realized route contract, not an
+        # optional constructor side effect. Adapters and lightweight wrappers may
+        # inspect it before the core turn facade establishes context-local runtime.
+        agent.requested_provider = (turn_route.get("runtime") or {}).get("requested_provider") or ""
+        agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
+        return agent
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
         """Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache
@@ -1160,6 +1166,8 @@ class TurnRunner:
         # configured after caching must reach the next turn; per-session serialization keeps it safe.
         if found.reused and agent is not None:
             self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+            # Route trace is per turn: a cached agent must not keep the previous turn's decision.
+            agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
@@ -1662,12 +1670,125 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
+    async def _send_context_reference_warning(self, warning: str) -> None:
+        """Deliver a blocked-reference warning on the gateway loop from the worker thread."""
+        adapter = self._runner._delivery_adapter_for(self._ctx.source)
+        if adapter is None:
+            return
+        future = self._schedule(
+            adapter.send(self._ctx.source.chat_id, warning),
+            "context-reference warning scheduling error",
+        )
+        if future is not None:
+            await asyncio.wrap_future(future)
+
+    def _prepare_context_references_for_realized_route(self, turn_route) -> bool:
+        """Expand ``@`` references against the already-realized route.
+
+        Inbound admission stages the raw reference until this point because the selected
+        model owns the 50% context budget. This runs in the turn worker, like image
+        enrichment, so reference I/O cannot block the gateway event loop.
+        """
+        ctx = self._ctx
+        reference_message = ctx.context_reference_message
+        if reference_message is None:
+            reference_message = ctx.message
+        if not isinstance(reference_message, str) or "@" not in reference_message:
+            return True
+
+        async def expand():
+            return await self._runner._expand_inbound_context_references(
+                ctx.source, ctx.session_key or "", reference_message, turn_route=turn_route,
+                warning_sender=self._send_context_reference_warning,
+            )
+
+        original_message = reference_message
+        expanded_message = asyncio.run(expand())
+        if expanded_message is None:
+            ctx.context_reference_blocked = True
+            return False
+        if ctx.context_reference_message is None:
+            ctx.message = expanded_message
+        elif ctx.message == original_message:
+            ctx.message = expanded_message
+        elif isinstance(ctx.message, str) and ctx.message.endswith(original_message):
+            ctx.message = ctx.message[:-len(original_message)] + expanded_message
+        else:
+            logger.warning(
+                "Could not splice deferred context expansion into the turn message; "
+                "leaving the raw reference in place"
+            )
+            return True
+        # Keep the durable authored row aligned with the pre-route behavior. The
+        # timestamp/Discord prefix may differ between the API and persisted forms, so
+        # replace the original body when it is present rather than overwriting blindly.
+        persisted = ctx.persist_user_message
+        if isinstance(persisted, str) and original_message and expanded_message != original_message:
+            if persisted == original_message:
+                ctx.persist_user_message = expanded_message
+            elif ctx.context_reference_message is None and expanded_message.startswith(original_message):
+                # Timestamp/Discord attribution may prefix ctx.message but is absent
+                # from the clean durable row; preserve only the attached suffix.
+                ctx.persist_user_message = persisted + expanded_message[len(original_message):]
+            elif persisted.endswith(original_message):
+                # Deferred expansion keeps the raw body as the durable-row suffix.
+                ctx.persist_user_message = persisted[:-len(original_message)] + expanded_message
+        return True
+
+    def _prepare_images_for_realized_route(self, turn_route):
+        """Choose native versus auxiliary image handling after middleware realizes the route."""
+        ctx = self._ctx
+        runner = self._runner
+        image_paths = runner._consume_pending_native_image_paths(ctx.session_key)
+        if not image_paths:
+            return
+        runtime = turn_route.get("runtime") or {}
+        image_mode = runner._decide_image_input_mode(
+            source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
+            provider=runtime.get("provider"), model=turn_route.get("model"),
+            requested_provider=runtime.get("requested_provider"),
+        )
+        if image_mode == "native":
+            ctx.native_image_paths = image_paths
+            return
+        # run_sync executes in the turn executor, so the blocking auxiliary call does not stall
+        # the gateway event loop. The helper handles per-image failures fail-open.
+        original_message = ctx.message or ""
+        # Bind the realized route as the main runtime (the old ingress path did the same for the
+        # session route); asyncio.run copies this context into its task, and the scope is reset
+        # on completion or error. Explicit auxiliary provider/model config still wins downstream.
+        from agent.auxiliary_client import scoped_runtime_main
+
+        with scoped_runtime_main({**runtime, "model": turn_route.get("model")}):
+            enriched_message = asyncio.run(
+                runner._enrich_message_with_vision(original_message, image_paths)
+            )
+        ctx.message = enriched_message
+        # Preserve the previous replay contract: text-fallback descriptions belong in the durable
+        # authored row too, but API-only wrappers already stripped from persist_user_message must
+        # not be reintroduced. _enrich_message_with_vision prepends one prefix to its input.
+        suffix = f"\n\n{original_message}" if original_message else ""
+        if suffix and enriched_message.endswith(suffix):
+            image_prefix = enriched_message[:-len(suffix)]
+        elif not original_message:
+            image_prefix = enriched_message
+        else:
+            image_prefix = ""
+        if image_prefix:
+            persisted = ctx.persist_user_message
+            ctx.persist_user_message = (
+                f"{image_prefix}\n\n{persisted}" if isinstance(persisted, str) and persisted else image_prefix
+            )
+
     def _native_image_run_message(self):
         """Wrap the user turn as an OpenAI-style multimodal content list when
-        _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
-        same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
+        the realized route supports native vision; consume-and-clear so later turns never
+        re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
-        native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+        native_imgs = list(getattr(ctx, "native_image_paths", None) or [])
+        ctx.native_image_paths = []
+        if not native_imgs:
+            native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
         if not native_imgs:
             return ctx.message
         try:
@@ -1690,7 +1811,7 @@ class TurnRunner:
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
-        token = set_current_session_key(session_key)
+        context_token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
@@ -1729,7 +1850,7 @@ class TurnRunner:
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)
-            reset_current_session_key(token)
+            reset_current_session_key(context_token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx
@@ -1932,11 +2053,26 @@ class TurnRunner:
                 "messages": [], "api_calls": 0, "tools": [],
             }
         pr = runner._provider_routing
-        reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
-        runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = runner._resolve_turn_agent_config(
+            ctx.message, model, runtime_kwargs,
+            session_id=ctx.session_id, session_key=ctx.session_key,
+            source=ctx.source, conversation_history=ctx.history, internal=ctx.internal,
+        )
+        ctx.realized_route = turn_route
+        if not self._prepare_context_references_for_realized_route(turn_route):
+            return {
+                "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+                "context_reference_blocked": True,
+            }
+        self._prepare_images_for_realized_route(turn_route)
+        # Reasoning policy follows the realized turn model (session override > per-model > global).
+        # Resolve after turn_route so an automatic route cannot carry the configured model's effort.
+        reasoning_config = runner._resolve_session_reasoning_config(
+            source=ctx.source, session_key=ctx.session_key, model=turn_route["model"],
+        )
+        runner._reasoning_config = reasoning_config
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )

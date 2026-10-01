@@ -1,5 +1,6 @@
 """Tests for gateway /fast support and Priority Processing routing."""
 
+import asyncio
 import sys
 import threading
 import types
@@ -117,7 +118,9 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
         "credential_pool": None,
     }
 
-    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs, internal=True
+    )
 
     assert route["runtime"]["provider"] == "openai"
     assert route["runtime"]["api_mode"] == "chat_completions"
@@ -125,8 +128,103 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
 
     # Proxied routes never receive the param (OpenRouter strips it / others 400).
     runtime_kwargs.update(base_url="https://openrouter.ai/api/v1", provider="openrouter")
-    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs, internal=True
+    )
     assert route["request_overrides"] == {}
+
+
+def test_turn_route_reports_history_derived_first_turn(monkeypatch):
+    runner = _make_runner()
+    seen = []
+
+    def fake_apply(route, **context):
+        seen.append(context["is_first_turn"])
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    runtime_kwargs = {
+        "api_key": "***", "base_url": "https://api.openai.com/v1", "provider": "openai",
+        "api_mode": "chat_completions", "command": None, "args": [], "credential_pool": None,
+    }
+
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "first", "gpt-5.4", runtime_kwargs, source=_make_source(), conversation_history=[], internal=False
+    )
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "later", "gpt-5.4", runtime_kwargs, source=_make_source(),
+        conversation_history=[{"role": "user", "content": "first"}], internal=False,
+    )
+
+    assert seen == [True, False]
+
+
+def test_turn_route_resolves_requested_provider_alias(monkeypatch):
+    runner = _make_runner()
+
+    def fake_apply(route, **_context):
+        return SimpleNamespace(
+            changed=True,
+            payload={**route, "model": "target", "provider": "custom",
+                     "requested_provider": "custom:beta",
+                     "runtime": {**route["runtime"], "requested_provider": "custom:beta", "api_mode": "invalid"}},
+            trace=[],
+        )
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    resolver = MagicMock(return_value={
+        "provider": "custom", "requested_provider": "custom:beta",
+        "api_key": "beta-key", "base_url": "https://beta.example/v1", "api_mode": "responses",
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    route = runner._resolve_turn_agent_config(
+        "route", "primary", {
+            "provider": "custom", "requested_provider": "custom:alpha",
+            "api_key": "alpha-key", "base_url": "https://alpha.example/v1",
+            "api_mode": "chat_completions",
+        }, session_id="session-1", session_key="chat-1", source=_make_source(),
+        internal=False,
+    )
+
+    resolver.assert_called_once_with("custom:beta", target_model="target")
+    assert route["runtime"]["provider"] == "custom"
+    assert route["runtime"]["requested_provider"] == "custom:beta"
+    assert route["runtime"]["api_key"] == "beta-key"
+    assert route["runtime"]["api_mode"] == "responses"
+
+
+def test_turn_route_resolves_same_provider_model_change(monkeypatch):
+    """A model-only selection must still resolve the selected model's api_mode/base_url."""
+    runner = _make_runner()
+
+    def fake_apply(route, **_context):
+        return SimpleNamespace(
+            changed=True,
+            payload={**route, "model": "claude-sonnet-4-5", "provider": "opencode-zen",
+                     "requested_provider": "opencode-zen"},
+            trace=[],
+        )
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    resolver = MagicMock(return_value={
+        "provider": "opencode-zen", "requested_provider": "opencode-zen",
+        "api_key": "zen-key", "base_url": "https://opencode.ai/zen",
+        "api_mode": "anthropic_messages", "request_overrides": {},
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    route = runner._resolve_turn_agent_config(
+        "route", "gpt-5.4", {
+            "provider": "opencode-zen", "requested_provider": "opencode-zen",
+            "api_key": "zen-key", "base_url": "https://opencode.ai/zen/v1",
+            "api_mode": "codex_responses",
+        }, session_id="session-1", session_key="chat-1", source=_make_source(),
+        internal=False,
+    )
+
+    resolver.assert_called_once_with("opencode-zen", target_model="claude-sonnet-4-5")
+    assert route["runtime"]["provider"] == "opencode-zen"
+    assert route["runtime"]["api_mode"] == "anthropic_messages"
+    assert route["runtime"]["base_url"] == "https://opencode.ai/zen"
 
 
 @pytest.mark.asyncio
@@ -174,3 +272,173 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["sync", "async", "sync_returns_coroutine"])
+async def test_plugin_command_retains_session_context(monkeypatch, kind):
+    """Async handlers and sync handlers returning coroutines must run while session ContextVars are bound."""
+    from gateway.session_context import get_session_env
+
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    runner._session_key_for_source = lambda source: "durable-chat"
+    runner.session_store = SimpleNamespace(peek_session_id=lambda key: "physical-chat")
+    runner.config.get_connected_platforms = lambda: []
+    runner._run_in_executor_with_context = asyncio.to_thread
+
+    seen = []
+
+    def capture(args, **context):
+        seen.append((
+            get_session_env("HERMES_SESSION_CHAT_ID"),
+            get_session_env("HERMES_SESSION_KEY"),
+            context["session_id"],
+            context["session_key"],
+        ))
+        return "ok"
+
+    async def async_capture(args, **context):
+        await asyncio.sleep(0)
+        return capture(args, **context)
+
+    handler = {
+        "sync": capture,
+        "async": async_capture,
+        "sync_returns_coroutine": lambda args, **kw: async_capture(args, **kw),
+    }[kind]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda name: handler)
+
+    source = _make_source()
+    source.chat_id = "intended-chat"
+    event = MessageEvent(text="/probe hi", source=source)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "probe")
+
+    assert handled is True
+    assert result == "ok"
+    assert seen == [("intended-chat", "durable-chat", "physical-chat", "durable-chat")]
+
+
+@pytest.mark.asyncio
+async def test_plugin_control_and_turn_route_share_durable_identity_after_rotation(monkeypatch):
+    """A control command must affect the next turn even when the physical session rotates."""
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    runner._session_key_for_source = lambda _source: "durable-chat"
+    physical_session = ["physical-before"]
+    runner.session_store = SimpleNamespace(
+        peek_session_id=lambda _key: physical_session[0]
+    )
+    runner.config.get_connected_platforms = lambda: []
+    runner._run_in_executor_with_context = asyncio.to_thread
+
+    disabled = {}
+
+    def veto_off(args, *, session_key=None, **_context):
+        assert args == ""
+        disabled[session_key] = True
+        return "routing disabled"
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: veto_off)
+    source = _make_source()
+    event = MessageEvent(text="/veto-off", source=source)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+        event, source, "veto-off"
+    )
+
+    assert handled is True
+    assert result == "routing disabled"
+    assert disabled == {"durable-chat": True}
+
+    route_contexts = []
+
+    def apply_route(route, **context):
+        route_contexts.append(context)
+        assert disabled.get(context["session_key"]) is True
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", apply_route)
+    physical_session[0] = "physical-after"
+    runtime_kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "custom",
+        "requested_provider": "custom:alpha",
+        "api_mode": "chat_completions",
+        "args": [],
+        "capabilities": {},
+    }
+    route = runner._resolve_turn_agent_config(
+        "next user turn",
+        "test-model",
+        runtime_kwargs,
+        session_id=physical_session[0],
+        session_key="durable-chat",
+        source=source,
+        conversation_history=[{"role": "user", "content": "before"}],
+        internal=False,
+    )
+
+    assert route["model"] == "test-model"
+    assert route_contexts[0]["session_id"] == "physical-after"
+    assert route_contexts[0]["session_key"] == "durable-chat"
+
+
+@pytest.mark.asyncio
+async def test_plugin_pin_command_uses_durable_identity_for_next_turn(monkeypatch):
+    """A pin command and its following routed turn use the same durable key."""
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    runner._session_key_for_source = lambda _source: "durable-chat"
+    runner.session_store = SimpleNamespace(peek_session_id=lambda _key: "physical-before")
+    runner.config.get_connected_platforms = lambda: []
+    runner._run_in_executor_with_context = asyncio.to_thread
+
+    pinned = {}
+
+    def veto_pin(args, *, session_key=None, **_context):
+        pinned[session_key] = args
+        return "routing pinned"
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: veto_pin)
+    source = _make_source()
+    event = MessageEvent(text="/veto-pin target-model", source=source)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+        event, source, "veto-pin"
+    )
+
+    assert handled is True
+    assert result == "routing pinned"
+    assert pinned == {"durable-chat": "target-model"}
+
+    route_contexts = []
+
+    def apply_route(route, **context):
+        route_contexts.append(context)
+        assert pinned.get(context["session_key"]) == "target-model"
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", apply_route)
+    route = runner._resolve_turn_agent_config(
+        "next user turn",
+        "test-model",
+        {
+            "api_key": "test-key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "custom",
+            "requested_provider": "custom:alpha",
+            "api_mode": "chat_completions",
+            "args": [],
+            "capabilities": {},
+        },
+        session_id="physical-after",
+        session_key="durable-chat",
+        source=source,
+        conversation_history=[{"role": "user", "content": "before"}],
+        internal=False,
+    )
+
+    assert route["model"] == "test-model"
+    assert route_contexts[0]["session_id"] == "physical-after"
+    assert route_contexts[0]["session_key"] == "durable-chat"

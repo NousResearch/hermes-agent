@@ -339,7 +339,9 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     exit_single_query(_exit_code)
 
 
-def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
+def _route_single_query_images(
+    cli, query, effective_query, single_query_images, single_query_image_urls, *, turn_route=None,
+):
     """Attach one-shot images natively when the model supports vision, else pre-describe them as text."""
     if not (single_query_images or single_query_image_urls):
         return effective_query
@@ -354,9 +356,14 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
         from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
 
+        route_runtime = (turn_route or {}).get("runtime") or {}
         _img_mode = decide_image_input_mode(
-            (cli.provider or "").strip(), (cli.model or "").strip(), load_config(),
-            requested_provider=(cli.requested_provider or "").strip(),
+            (route_runtime.get("provider") or cli.provider or "").strip(),
+            ((turn_route or {}).get("model") or cli.model or "").strip(),
+            load_config(),
+            requested_provider=(
+                route_runtime.get("requested_provider") or cli.requested_provider or ""
+            ).strip(),
         )
     except Exception:
         _img_mode = "text"
@@ -530,10 +537,13 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                 from hermes_cli.stream_json import StreamJsonEmitter
                 emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "")
             if cli._ensure_runtime_credentials():
+                # Middleware must realize the target model before image representation is chosen:
+                # a text-only default may route this turn to a model that accepts native pixels.
+                turn_route = cli._resolve_turn_agent_config(query)
                 effective_query: Any = _route_single_query_images(
-                    cli, query, query, single_query_images, single_query_image_urls
+                    cli, query, query, single_query_images, single_query_image_urls,
+                    turn_route=turn_route,
                 )
-                turn_route = cli._resolve_turn_agent_config(effective_query)
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
@@ -542,6 +552,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     request_overrides=turn_route.get("request_overrides"),
                 ):
                     _configure_quiet_agent(cli.agent)
+                    cli.agent._turn_route_middleware_trace = list(turn_route.get("middleware_trace") or [])
                     if emitter is not None:
                         emitter.attach(cli.agent)
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)

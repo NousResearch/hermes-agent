@@ -88,3 +88,37 @@ class TestImageBadgeFormatting:
         assert badges.startswith("[📎 ")
         assert "Image #1" not in badges
 
+
+
+def test_single_query_images_follow_realized_turn_route(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.cli_single_query import _route_single_query_images
+
+    cli_obj = SimpleNamespace(
+        provider="text-provider", requested_provider="text-provider", model="text-model",
+        _preprocess_images_with_vision=lambda *_args, **_kwargs: "unexpected auxiliary analysis",
+    )
+    decisions = []
+    monkeypatch.setattr(
+        "agent.image_routing.decide_image_input_mode",
+        lambda provider, model, _config, *, requested_provider: (
+            decisions.append((provider, model, requested_provider)) or "native"
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.image_routing.build_native_content_parts",
+        lambda text, _paths, **_kwargs: (
+            [{"type": "text", "text": text}, {"type": "image_url"}], []
+        ),
+    )
+
+    routed = _route_single_query_images(
+        cli_obj, "inspect", "inspect", [Path("image.png")], [],
+        turn_route={
+            "model": "vision-model",
+            "runtime": {"provider": "vision-provider", "requested_provider": "vision-provider"},
+        },
+    )
+
+    assert decisions == [("vision-provider", "vision-model", "vision-provider")]
+    assert routed[-1]["type"] == "image_url"

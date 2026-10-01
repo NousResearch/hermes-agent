@@ -32,6 +32,7 @@ class _RuntimeCLI(CLIAgentSetupMixin):
         self._explicit_base_url = None
         self._credential_pool = None
         self.service_tier = None
+        self.reasoning_config = None
 
     def _normalize_model_for_provider(self, _provider: str) -> bool:
         return False
@@ -75,6 +76,7 @@ def _resolve_cli_route():
 def test_real_cli_args_keep_transport_and_capability_identities_separate():
     from agent.image_routing import decide_image_input_mode
     from hermes_cli.config import load_config
+    from hermes_cli.middleware import public_turn_route
 
     cli, route = _resolve_cli_route()
     runtime = route["runtime"]
@@ -83,6 +85,11 @@ def test_real_cli_args_keep_transport_and_capability_identities_separate():
     assert cli.requested_provider == REQUESTED_PROVIDER
     assert runtime["provider"] == "custom"
     assert runtime["requested_provider"] == REQUESTED_PROVIDER
+    public = public_turn_route(
+        route["model"],
+        {**runtime, "command": "hermes-acp", "args": ["--api-key", "cli-acp-token-value"]},
+    )
+    assert "cli-acp-token-value" not in repr(public)
     assert decide_image_input_mode(
         runtime["provider"],
         route["model"],
@@ -105,7 +112,7 @@ def test_named_identity_reaches_agent_and_vision_tool_native_gates():
 
     _cli, route = _resolve_cli_route()
     runtime = route["runtime"]
-    token = set_runtime_main(
+    runtime_restore = set_runtime_main(
         runtime["provider"],
         route["model"],
         requested_provider=runtime["requested_provider"],
@@ -122,4 +129,4 @@ def test_named_identity_reaches_agent_and_vision_tool_native_gates():
         assert agent._model_supports_vision() is True
         assert _should_use_native_vision_fast_path() is True
     finally:
-        reset_runtime_main(token)
+        reset_runtime_main(runtime_restore)

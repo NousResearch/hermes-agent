@@ -56,7 +56,9 @@ def _runner_with_real_runtime_resolution():
     # Pass the resolved runtime straight through so the kwargs handed to AIAgent are the resolved ones.
     # (Production pops ``request_overrides`` out of the runtime into the route; mirror that so the
     # resolved kwargs never carry it twice.)
-    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt: {
+    # Turn routing passes turn identity as keywords (session_id / session_key / source /
+    # conversation_history / internal); the stub forwards only the positional route inputs.
+    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt, **_kw: {
         "model": model, "runtime": {k: v for k, v in rt.items() if k != "request_overrides"}}
     return runner
 

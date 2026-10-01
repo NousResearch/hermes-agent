@@ -171,17 +171,29 @@ async function rememberConnection(connectionId: string): Promise<void> {
   }
 }
 
+async function resolveStartupProfile(connectionId: string, preferredProfile: string): Promise<string | null> {
+  try {
+    const { profiles } = await getProfiles({ connectionId })
+    const available = new Set(profiles.map(profile => profile.name))
+    const remembered = normalizeProfileKey($lastProfileByConnection.get()[connectionId] ?? '')
+
+    if (remembered && available.has(remembered)) {
+      return remembered
+    }
+
+    const current = normalizeProfileKey(preferredProfile)
+
+    return available.has(current) ? current : available.has('default') ? 'default' : null
+  } catch {
+    // A failed roster read is not evidence that the current profile is absent.
+    return null
+  }
+}
+
 /**
  * The sidebar registry initializes in parallel with the primary gateway boot.
  * Wait for main's resolved descriptor before deciding whether the preferred
- * source needs a secondary dial. Otherwise a remote primary can be opened a
- * second time through the registry while the identical primary SSH backend is
- * still publishing its connection identity.
- *
- * Bounded: a primary that never publishes (spawn failure, dead SSH target)
- * must not strand the registry restore forever — after the deadline the
- * restore proceeds exactly as it did before this wait existed. The listener
- * is always torn down so a late descriptor can't leak a dangling resolver.
+ * source needs a secondary dial. A primary that never publishes is bounded.
  */
 function waitForInitialConnection(): Promise<void> {
   if ($connection.get()) {
@@ -298,7 +310,20 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   }
 
   if ($activeConnectionId.get() === preferredId) {
-    await rememberConnection(preferredId)
+    const active = $connection.get()
+    const preferredConnection = preferred
+    const shouldValidateProfile =
+      active?.registryScoped === true &&
+      preferredConnection?.kind !== 'local'
+    const startupProfile = shouldValidateProfile
+      ? await resolveStartupProfile(preferredId, $activeGatewayProfile.get())
+      : null
+
+    if (startupProfile && startupProfile !== normalizeProfileKey($activeGatewayProfile.get())) {
+      await selectConnection(preferredId, { profile: startupProfile })
+    } else {
+      await rememberConnection(preferredId)
+    }
   } else {
     await selectConnection(preferredId)
   }

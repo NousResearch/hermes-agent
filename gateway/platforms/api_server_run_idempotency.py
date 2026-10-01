@@ -537,6 +537,16 @@ class RunIdempotencyStore:
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
 
+    def forget_unaccepted(self, scope, key, fingerprint, record):
+        """CAS retirement after the canonical owner proved no input was accepted."""
+        with self._lock:
+            cursor = self._conn.execute("""DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?
+                AND fingerprint=? AND run_id=? AND owner_pid=? AND owner_started=? AND status_json=?""",
+                (scope, key, fingerprint, record['run_id'], record['owner_pid'], record['owner_started'],
+                 _encode_status(record['status'])))
+            self._conn.commit()
+            return cursor.rowcount == 1
+
     def forget(self, scope: str, key: str) -> None:
         """Release a reservation whose run was refused before it existed."""
         with self._lock:

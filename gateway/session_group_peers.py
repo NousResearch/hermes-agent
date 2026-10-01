@@ -190,7 +190,13 @@ def refused_peer_turn(service, room_id, task):
     """The refusal for a peer turn this v1 cannot deliver, else None."""
     payload = task['payload']
     if payload.get('attachments'):
-        return _RefusedTurn('This member is on another gateway and can receive text only.')
+        member = str(payload.get('target_member_id') or payload['target_profile'])
+        from gateway.hosted_room_documents import manifest
+        try:
+            manifest([{**item, 'recipient_member_id': member, 'sha256': '0' * 64}
+                      for item in payload['attachments']], member_id=member)
+        except ValueError:
+            return _RefusedTurn('This member accepts bounded file/PDF documents only; this batch is unsupported.')
     if (room_id, str(payload.get('target_member_id') or payload['target_profile'])) not in service.peer_routes:
         return _RefusedTurn('This member is on another gateway that has not joined this Group Chat yet.')
     return None

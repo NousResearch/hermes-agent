@@ -233,7 +233,10 @@ async def _handle_room_member_capabilities(
         enrollment = current_target_enrollment(
             _grant_db(self), room_id=claims["room_id"],
             authority_gateway_id=claims["authority_gateway_id"], authority_epoch=claims["authority_epoch"])
+    from gateway.hosted_room_documents import advertised_capability
+    documents = advertised_capability(self) if request.headers.get("Hermes-Room-Features") == "document-input-v1" else None
     return web.json_response({
+        **({"document_inputs": documents} if documents is not None else {}),
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
         "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
         **({"retirement_enrollment": enrollment} if enrollment is not None else {})})

@@ -115,7 +115,8 @@ class SessionResumeTooLargeError(ValueError):
         self.scope = scope
         super().__init__(
             f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
-            "Start a fresh chat and use `hermes sessions export` to keep a copy, or raise the limit "
+            "Start a fresh chat and keep a copy with the dashboard Sessions page's Export action or "
+            "`hermes sessions export --format md` (neither is capped), or raise the limit "
             "with `hermes config set sessions.max_resume_messages 0`."
         )
 

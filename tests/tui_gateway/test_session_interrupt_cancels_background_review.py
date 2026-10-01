@@ -76,7 +76,7 @@ def test_stop_interrupts_a_review_running_after_the_turn_finished(server, monkey
     monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
-    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid, **_kwargs: None)
 
     response = server._methods["session.interrupt"](
         "stop", {"session_id": "ui-session"}
@@ -124,7 +124,7 @@ def test_stop_without_a_review_is_unaffected(server, monkeypatch):
     monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
-    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid, **_kwargs: None)
 
     response = server._methods["session.interrupt"](
         "stop", {"session_id": "ui-session"}

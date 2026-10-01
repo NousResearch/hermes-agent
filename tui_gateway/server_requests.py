@@ -313,13 +313,14 @@ def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[s
     return remaining
 
 
-def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
+def cancel(sid: str | None = None, reason: str = "interrupted", *, request_ids: set[str] | None = None) -> int:
     """Withdraw open requests — only *sid*'s (session.interrupt must not touch other sessions'), or
     every one when *sid* is None (shutdown). Blocked waits return None (a batch returns its locked
     answers with ``outcome: cancelled``); queue-backed requests run ``on_result(None)`` so their
     owner can settle. Returns the number withdrawn."""
     with _lock:
-        targets = [req for req in _open.values() if sid is None or req.sid == sid]
+        targets = [req for req in _open.values()
+                   if (sid is None or req.sid == sid) and (request_ids is None or req.id in request_ids)]
         for req in targets:
             _open.pop(req.id, None)
             if req.qids is not None:

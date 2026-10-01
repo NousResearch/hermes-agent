@@ -43,6 +43,7 @@ class GatewayTurnRoutingMixin:
         The default keeps internal/background turns out of user-turn middleware. The external
         TurnRunner passes the event's internal identity after loading persisted turn history.
         """
+        from agent.fast_mode import STATIC_TIERS
         from gateway.run import _deep_merge_request_overrides
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -115,12 +116,13 @@ class GatewayTurnRoutingMixin:
                         route["middleware_trace"] = result.trace
             except Exception as exc:
                 logger.warning("Turn-route middleware failed open: %s", exc)
-        if getattr(self, "_service_tier", None) != "priority":
+        tier = getattr(self, "_service_tier", None)
+        if tier not in STATIC_TIERS:
             route["request_overrides"] = base_request_overrides
             return route
         try:
             overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+                route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier,
             )
         except Exception:
             overrides = None

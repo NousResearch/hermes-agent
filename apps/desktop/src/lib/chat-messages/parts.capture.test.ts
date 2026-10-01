@@ -37,3 +37,28 @@ describe('MEDIA tag capture validity', () => {
     expect(renderMediaTags('MEDIA:report.md prose')).toBe(`${card('report.md')} prose`)
   })
 })
+
+// Models wrap `MEDIA:` paths in markdown emphasis — trailing (`MEDIA:/x.png**`,
+// `MEDIA:/x.png)`) and the dominant leading form ``MEDIA:** `/x.png```. Left in
+// the capture, the junk lands in the `#media:` href (the desktop FS read 404s
+// and the image never thumbnails) and also breaks extension detection, so the
+// tag mislabels as a `File` instead of an `Image`.
+describe('MEDIA tag markdown emphasis wrapping', () => {
+  const image = '[Image: shot.png](#media:%2Ftmp%2Fshot.png)'
+
+  it('keeps the trailing-emphasis case linkable with a clean href', () => {
+    expect(renderMediaTags('MEDIA:/tmp/shot.png**')).toBe(`${image}**`)
+    expect(renderMediaTags('MEDIA:/tmp/shot.png)')).toBe(`${image})`)
+    expect(mediaTagValues('MEDIA:/tmp/shot.png**')).toEqual(['/tmp/shot.png'])
+  })
+
+  it('skips leading emphasis so the wrapped tag still links', () => {
+    expect(renderMediaTags('MEDIA:** `/tmp/shot.png`')).toBe(image)
+    expect(renderMediaTags('MEDIA:`/tmp/shot.png`')).toBe(image)
+  })
+
+  it('preserves the home-relative prefix rather than stripping it as emphasis', () => {
+    expect(renderMediaTags('MEDIA:~/shots/x.png')).toBe('[Image: x.png](#media:~%2Fshots%2Fx.png)')
+    expect(mediaTagValues('MEDIA:~/shots/x.png')).toEqual(['~/shots/x.png'])
+  })
+})

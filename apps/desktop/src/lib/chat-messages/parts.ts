@@ -94,9 +94,13 @@ const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*
 // closer is not swallowed. Apostrophes stay legal inside the path.
 const _MEDIA_PATH_BARE = '[^\\s`"]+'
 
-// Sentence punctuation that can trail a bare capture when the tag sits in
-// prose (`open MEDIA:/tmp/a.pdf.`).
-const _MEDIA_TRAILING_PUNCTUATION = '.,;:!?'
+// Residue that can trail a bare capture: sentence punctuation when the tag sits
+// in prose (`open MEDIA:/tmp/a.pdf.`), and markdown formatting a model wrapped
+// around the path (`MEDIA:/tmp/x.png**`, `…png)`, `…png_`). Both belong to the
+// prose, not the path — captured into the href they 404 the desktop FS read and
+// the image never thumbnails, and the junk also breaks extension detection so
+// the tag mislabels as a `File`.
+const _MEDIA_TRAILING_PUNCTUATION = ".,;:!?*`_)]}"
 
 /**
  * Whether a capture can name a real deliverable: a path separator, or a dot
@@ -110,12 +114,12 @@ function isPlausibleMediaPath(value: string): boolean {
 }
 
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?:[*_]+[\\t ]*)?(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
   'g'
 )
 
 const MEDIA_TAG_RE = new RegExp(
-  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
+  `[\`"']?MEDIA:\\s*(?:[*_]+[\\t ]*)?(?<inline>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?`,
   'g'
 )
 

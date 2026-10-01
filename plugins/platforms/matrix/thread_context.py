@@ -66,9 +66,10 @@ async def fetch_thread_entries(
         return []
 
     entries: list[MatrixEventContext] = []
-    root = await cache.resolve(client, room_id, thread_id)
-    if root is not None:
-        entries.append(root)
+    if thread_id not in exclude_event_ids:
+        root = await cache.resolve(client, room_id, thread_id)
+        if root is not None:
+            entries.append(root)
 
     chunk = response.get("chunk") if isinstance(response, dict) else None
     if not isinstance(chunk, list):

@@ -754,6 +754,7 @@ gateway:
     already_paused: "⏸️ A Hermes már szünetel{suffix}. Folytatás: `/pause off`."
     paused: "⏸️ Szüneteltetve{suffix}. Az új cron-/kanban-/átjárómunka várakozik; a folyamatban lévő munka rendesen befejeződik. Folytatás: `/pause off`."
   queue:
+    full: "A várakozási sor megtelt. Ez az üzenet nem került a sorba. Várd meg, amíg egy sorban álló kör befejeződik, majd küldd el újra."
     usage: "Használat: /queue <prompt>"
     queued: "Sorba állítva a következő körre."
     queued_depth: " ({depth} a sorban)"

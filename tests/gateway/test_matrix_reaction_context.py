@@ -104,7 +104,8 @@ async def test_encrypted_reaction_requires_decryption_and_uses_outer_cleartext_r
 
     mautrix = types.ModuleType("mautrix")
     mautrix_types = types.ModuleType("mautrix.types")
-    mautrix_types.Event = SimpleNamespace(deserialize=lambda event: event)
+    mautrix_types.EncryptedEvent = SimpleNamespace(deserialize=lambda event: event)
+    mautrix_types.JSON = lambda event: event
     with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix_types}):
         visible = await fetch_event_reactions(client, room_id, target_id)
 
@@ -323,7 +324,8 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
 
     mautrix = types.ModuleType("mautrix")
     mautrix_types = types.ModuleType("mautrix.types")
-    mautrix_types.Event = SimpleNamespace(deserialize=lambda event: event)
+    mautrix_types.EncryptedEvent = SimpleNamespace(deserialize=lambda event: event)
+    mautrix_types.JSON = lambda event: event
     with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix_types}):
         result = await read_matrix_context(adapter, "event", room_id, target_id, 1,
                                            requester="@alice:example.org")

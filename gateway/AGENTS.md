@@ -206,7 +206,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   that touches a session's home, secrets or terminal scope with no turn on the stack: release and
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
-  shutdown (`run_shutdown.py::_finalize_session`), post-turn media delivery
+  shutdown (`run_shutdown.py::_finalize_session`, with notices in
+  `run_shutdown_notices.py` and process teardown in `run_shutdown_processes.py`), post-turn media delivery
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never

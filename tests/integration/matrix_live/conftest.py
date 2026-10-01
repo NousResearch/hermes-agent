@@ -99,6 +99,9 @@ def pytest_runtest_makereport(
     gateway = getattr(item, "funcargs", {}).get("gateway")
     if report.when == "call" and report.failed and isinstance(gateway, LiveGateway):
         report.sections.append(("gateway.log", gateway.log_tail()))
+        trace = gateway.home / "discovery-trace.jsonl"
+        if trace.exists():
+            report.sections.append(("discovery trace", trace.read_text(encoding="utf-8")))
     return report
 
 
@@ -404,6 +407,7 @@ def gateway(
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
                    if context_pause else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")
+                + ("plugins:\n  enabled:\n    - matrix-live-discovery\n" if mode == "discovery" else "")
             ),
         )
         if native_images:
@@ -529,6 +533,18 @@ def gateway(
             )
             (plugin / "__init__.py").write_text(
                 (Path(__file__).parent / "resolution_probe.py").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+        if mode == "discovery":
+            plugin = home / "plugins" / "matrix-live-discovery"
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.yaml").write_text(
+                "name: matrix-live-discovery\nversion: 1.0.0\ndescription: Matrix live discovery trace\n",
+                encoding="utf-8",
+            )
+            (plugin / "__init__.py").write_text(
+                (Path(__file__).parent / "discovery_probe.py").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
 

@@ -1950,10 +1950,35 @@ def resolve_nous_access_token(
 
             with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
                               headers={"Accept": "application/json"}, verify=verify) as client:
-                refreshed = _refresh_nous_or_quarantine(
-                    client=client, auth_store=auth_store, state=state, portal_base_url=portal_base_url,
-                    client_id=client_id, refresh_token=refresh_token,
-                    reason="managed_access_token_refresh_failure", persist=persist)
+                # Cross-PROCESS exclusion for the read -> POST -> write window (see
+                # auth_nous._nous_refresh_owner_lock): another Hermes process may be redeeming the
+                # same single-use grant right now, and a second redemption revokes the session.
+                from hermes_cli.auth_nous import _nous_refresh_owner_lock
+                with _nous_refresh_owner_lock(timeout_seconds=lock_timeout) as owned:
+                    # A peer may have rotated while we waited for ownership: re-read under the
+                    # shared lock and adopt its rotation instead of POSTing a spent token.
+                    if _merge_shared_nous_oauth_state(state):
+                        fresh = state.get("access_token")
+                        if isinstance(fresh, str) and fresh and not _is_expiring(
+                                state.get("expires_at"), refresh_skew_seconds):
+                            persist()
+                            return _memo(fresh)
+                    rotated_refresh = state.get("refresh_token")
+                    if isinstance(rotated_refresh, str) and rotated_refresh:
+                        refresh_token = rotated_refresh
+                    if not owned:
+                        # Ownership timed out: a peer is redeeming this grant right now. POSTing
+                        # would be the second redemption of a single-use token, which the Portal
+                        # answers by revoking the whole session chain. Report a retryable error
+                        # instead — the caller's next attempt adopts the peer's rotation.
+                        raise AuthError(
+                            "Another Hermes process is refreshing the Nous Portal session; "
+                            "retry shortly.", provider="nous", code="nous_refresh_in_progress",
+                            retryable=True)
+                    refreshed = _refresh_nous_or_quarantine(
+                        client=client, auth_store=auth_store, state=state, portal_base_url=portal_base_url,
+                        client_id=client_id, refresh_token=refresh_token,
+                        reason="managed_access_token_refresh_failure", persist=persist)
 
             _apply_nous_refreshed_tokens(state, refreshed, refresh_token)
             state["portal_base_url"] = portal_base_url

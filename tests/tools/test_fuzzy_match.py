@@ -146,6 +146,28 @@ class TestIndentationPreservation:
         assert lines[1] == ""
         assert lines[2] == "    b = 99"
 
+    def test_mid_line_anchor_keeps_new_string_indentation(self):
+        # Replacing an expression, not a whole line: old_string's first line has no
+        # indentation because the text before it on that line was never part of it.
+        content = "def f():\n        total = compute(a,  b)\n"
+        old = "compute(a, b)"
+        new = "compute(\n            a, b)"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1 and strategy != "exact"
+        assert out == "def f():\n        total = compute(\n            a, b)\n"
+
+    def test_match_starting_with_line_break_is_reindented(self):
+        # old_string starts with the line break that ends the previous line, so the
+        # match starts at the end of a line, but every code line in it is whole.
+        content = "class A:\n    def f(self):\n        x = 1\n        return x\n"
+        old = "\n    return x"
+        new = "\n    return x + 1"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1 and strategy != "exact"
+        assert "\n        return x + 1\n" in out
+        import ast
+        ast.parse(out)
+
 
 class TestReplaceAll:
     def test_multiple_matches_without_flag_errors(self):

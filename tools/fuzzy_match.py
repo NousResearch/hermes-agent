@@ -525,11 +525,22 @@ def _first_meaningful_line(text: str) -> Optional[str]:
     return next((line for line in text.split("\n") if line.strip()), None)
 
 
-def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
+def _reindent_replacement(file_region: str, old_string: str, new_string: str, *,
+                          match_starts_at_line_start: bool) -> str:
     """Re-anchor ``new_string``'s indentation onto the file's actual base indent after a
     non-exact match: swap the LLM base prefix (first non-blank old_string line) for the
-    file's, preserving relative nesting; shallower lines anchor to the file base."""
-    if not new_string:
+    file's, preserving relative nesting; shallower lines anchor to the file base.
+
+    Skips entirely when the match does not begin at column 0 of a line in the file
+    (``match_starts_at_line_start`` False). Anchoring mid-line is normal when the model
+    replaces an expression rather than a whole statement -- old_string never captured
+    whatever precedes it on that line, so its own first-line leading whitespace is not a
+    real "base indent" to re-anchor onto; treating it as one (the old behavior) silently
+    prepends the file's indentation onto lines that already carry their own. A genuine
+    whole-line anchor whose old_string happens to start with no indentation is unaffected:
+    match_starts_at_line_start is still True there, so it re-anchors exactly as before.
+    """
+    if not new_string or not match_starts_at_line_start:
         return new_string
     old_first = _first_meaningful_line(old_string)
     file_first = _first_meaningful_line(file_region)
@@ -582,7 +593,9 @@ def _apply_replacements(content: str, matches: list[Span],
     for start, end in sorted(matches, key=lambda x: x[0], reverse=True):
         adjusted = new_string
         if old_string is not None:
-            adjusted = _reindent_replacement(content[start:end], old_string, new_string)
+            match_starts_at_line_start = start == 0 or content[start - 1] == "\n"
+            adjusted = _reindent_replacement(content[start:end], old_string, new_string,
+                                             match_starts_at_line_start=match_starts_at_line_start)
         result = result[:start] + adjusted + result[end:]
     return result
 

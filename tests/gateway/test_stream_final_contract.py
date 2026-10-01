@@ -49,7 +49,7 @@ def _make_draft_adapter():
     a.send_draft = _send_draft
 
     async def _send(chat_id, content, reply_to=None, metadata=None, **kw):
-        a.send_calls.append({"content": content, "metadata": dict(metadata or {})})
+        a.send_calls.append({"content": content, "metadata": dict(metadata or {}), "reply_to": reply_to})
         return SendResult(success=True, message_id="sealed_ts_1")
     a.send = _send
 
@@ -266,3 +266,83 @@ class TestQueuedLaneReconcile:
         )
         assert adapter.edit_calls == []
         assert len(adapter.send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_queued_first_response_drops_turn_origin_anchor_but_keeps_ledger(self):
+        from gateway.platforms.base import SendResult
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        adapter = _make_draft_adapter()
+        captured = {}
+
+        async def _send_final_ledgered(event, session_key, text_content, metadata, *, reply_to, **_kw):
+            captured.update({
+                "ledger_message_id": getattr(event, "ledger_message_id", None),
+                "metadata": dict(metadata or {}),
+                "reply_to": reply_to,
+                "session_key": session_key,
+                "text_content": text_content,
+            })
+            return SendResult(success=True, message_id="queued-final"), adapter
+
+        adapter.send_final_ledgered = _send_final_ledgered
+        source = SimpleNamespace(chat_id="D1")
+
+        ok = await GatewayRunner._deliver_queued_first_response(
+            runner,
+            "queued lane final",
+            source=source,
+            adapter=adapter,
+            metadata={"thread_ts": "thread-1"},
+            event_message_id="original-human-message",
+            text_already_delivered=False,
+            deliver_media=False,
+            session_key="discord:D1",
+            inbound_message_id="background-notification-message",
+        )
+
+        assert ok is True
+        assert captured == {
+            "ledger_message_id": "background-notification-message",
+            "metadata": {"thread_ts": "thread-1", "notify": True},
+            "reply_to": None,
+            "session_key": "discord:D1",
+            "text_content": "queued lane final",
+        }
+
+    @pytest.mark.asyncio
+    async def test_queued_first_response_refusal_keeps_anchor_dropped(self):
+        from gateway.platforms.base import SendResult
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        adapter = _make_draft_adapter()
+        captured = {}
+
+        async def _send_final_ledgered(event, session_key, text_content, metadata, *, reply_to, **_kw):
+            captured["reply_to"] = reply_to
+            captured["ledger_message_id"] = getattr(event, "ledger_message_id", None)
+            return SendResult(success=False, error="transport refused"), adapter
+
+        adapter.send_final_ledgered = _send_final_ledgered
+        source = SimpleNamespace(chat_id="D1")
+
+        ok = await GatewayRunner._deliver_queued_first_response(
+            runner,
+            "queued lane final",
+            source=source,
+            adapter=adapter,
+            metadata={"thread_ts": "thread-1"},
+            event_message_id="stale-human-message",
+            text_already_delivered=False,
+            deliver_media=False,
+            session_key="discord:D1",
+            inbound_message_id="background-notification-message",
+        )
+
+        assert ok is False
+        assert captured == {
+            "reply_to": None,
+            "ledger_message_id": "background-notification-message",
+        }

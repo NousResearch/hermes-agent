@@ -313,15 +313,15 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
             "debounce",
             ("a", "b", "a"),
             (None, None, None),
-            (("one", 0, 0, (0,)), ("two\nthree", 1, 2, (1, 2))),
+            (("one", 0, 0, (0,)), ("two", 1, 1, (1,)), ("three", 2, 2, (2,))),
             id="debounce-same-sender-keeps-order",
         ),
         pytest.param(
             "debounce",
             ("a", "b", "c"),
             (None, None, None),
-            (("one", 0, 0, (0,)), ("two\nthree", 1, 2, (1, 2))),
-            id="debounce-runnerless-fallback",
+            (("one", 0, 0, (0,)), ("two", 1, 1, (1,)), ("three", 2, 2, (2,))),
+            id="debounce-runnerless-distinct-quotes",
         ),
         pytest.param(
             "debounce",
@@ -417,64 +417,69 @@ async def test_busy_merges_preserve_reply_context_and_attachments(
     actual = [adapter._pending_messages[session_key]]
     buffered = adapter._text_debounce.get(session_key)
     if buffered is not None:
-        actual.append(buffered.event)
+        actual.extend([*buffered.earlier_events, buffered.event])
     adapter._discard_text_debounce(session_key)
     assert actual == expected
 
 
 @pytest.mark.asyncio
-async def test_third_sender_not_dropped_when_debounce_store_is_stuck():
-    """Regression: when B is stuck in the debounce store (task=None because
-    the timer fired but the pending slot belongs to sender A) and C arrives
-    from a third sender, C must not be silently dropped.
-
-    Pre-fix behaviour: the inner branch hit ``return`` without saving C
-    anywhere — no pending entry, no interrupt, no retry.
-    """
+@pytest.mark.parametrize("lifecycle", ["drain", "discard", "shutdown", "cap"])
+async def test_third_sender_not_dropped_when_debounce_store_is_stuck(lifecycle, tmp_path, monkeypatch):
     import time as _time
 
     from gateway.platforms.base import TextDebounceState
 
-    adapter = _make_adapter()
+    adapter = _make_initialized_adapter()
 
     event_a = _make_event("sender-a message", user_id="ua")
     session_key = build_session_key(event_a.source)
 
     adapter._active_sessions[session_key] = asyncio.Event()
 
-    # A's message is already in the pending slot (flushed from debounce
-    # by a previous timer).
     adapter._pending_messages[session_key] = event_a
-
-    # B's debounce state is stuck: timer fired but couldn't flush because
-    # pending already has A (different sender). task=None means no retry
-    # is scheduled.
     event_b = _make_event("sender-b message", user_id="ub")
     _now = _time.monotonic()
     adapter._text_debounce[session_key] = TextDebounceState(
-        event=event_b,
-        task=None,
-        first_ts=_now - 0.5,
-        last_ts=_now - 0.2,
+        event=event_b, task=None, first_ts=_now - 0.5, last_ts=_now - 0.2,
     )
 
-    # C arrives from a third sender.
     event_c = _make_event("sender-c message", user_id="uc")
     await adapter._queue_text_debounce(session_key, event_c)
 
-    # C must not be dropped — its text must appear in the pending slot.
-    pending = adapter._pending_messages.get(session_key)
-    assert pending is not None, "C was permanently dropped — pending slot is empty"
-    assert "sender-c message" in (pending.text or ""), (
-        f"C's text missing from pending; got: {pending.text!r}"
-    )
+    state = adapter._text_debounce[session_key]
+    assert [adapter._pending_messages[session_key], *state.earlier_events, state.event] == [
+        event_a, event_b, event_c,
+    ]
+    if lifecycle == "drain":
+        adapter._pending_messages.pop(session_key)
+        await adapter._flush_text_debounce_now(session_key)
+        assert [adapter._pending_messages[session_key], state.event] == [event_b, event_c]
+    elif lifecycle == "cap":
+        expected = [event_a, event_b, event_c]
+        for index in range(29):
+            event = _make_event(f"follow-up {index}", user_id=f"sender-{index}")
+            assert await adapter._queue_text_debounce(session_key, event)
+            expected.append(event)
+        rejected = _make_event("over cap", user_id="other")
+        assert await adapter._queue_text_debounce(session_key, rejected) is False
+        assert (rejected._gateway_accepted,
+                [adapter._pending_messages[session_key], *state.earlier_events, state.event]) == (
+            False, expected,
+        )
+    elif lifecycle == "shutdown":
+        import json
+        from gateway.shutdown_flush import _serialise_value
 
-    # B must still be in the debounce store — it will be flushed by
-    # _drain_pending_after_session_command when the active session completes.
-    assert session_key in adapter._text_debounce, (
-        "B's debounce state was unexpectedly removed"
-    )
-    assert "sender-b message" in (adapter._text_debounce[session_key].event.text or "")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        await adapter.cancel_background_tasks()
+        payloads = [json.loads(path.read_text(encoding="utf-8"))
+                    for path in (tmp_path / "pending_messages").glob("*.json")]
+        assert sorted((payload["data"] for payload in payloads), key=lambda value: value["text"]) == [
+            _serialise_value(event) for event in (event_a, event_b, event_c)
+        ]
+        assert (adapter._pending_messages, adapter._text_debounce) == ({}, {})
+    adapter._discard_text_debounce(session_key)
+    assert adapter._text_debounce == {}
 
 
 @pytest.mark.asyncio
@@ -497,5 +502,5 @@ async def test_shared_session_text_that_cannot_join_the_slot_goes_to_the_runner_
     pending = adapter._pending_messages.get("shared")
     assert (pending.text if pending else None, queued, adapter._text_debounce) == (
         ("one", [("shared", "two"), ("shared", "three")], {}) if pending_sender is not None
-        else ("two", [("shared", "three")], {})
+        else (None, [("shared", "two"), ("shared", "three")], {})
     )

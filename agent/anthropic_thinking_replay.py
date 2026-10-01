@@ -221,4 +221,10 @@ def remember_rejected_thinking(agent: Any, api_messages: Any) -> int:
     agent._anthropic_rejected_thinking_loaded = True
     _persist_state(agent, fingerprints, strip_all)
 
+    # Suppression changes provider-visible history without changing the canonical
+    # content/tool fingerprint used by usage anchors. An old provider count would
+    # therefore still appear valid and override the smaller repaired request.
+    from agent.usage_anchor import set_usage_anchor
+
+    set_usage_anchor(agent, None)
     return sum(_filter_message(message, fingerprints, strip_all) for message in api_messages)

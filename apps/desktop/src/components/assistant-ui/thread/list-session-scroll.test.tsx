@@ -770,7 +770,74 @@ describe('list session-scroll restore', () => {
     }
   })
 
-  it.each(['exhausted', 'failed'] as const)('releases an unreachable restore when history is %s', async outcome => {
+  it('keeps a warm switch into a streaming session pinned to the live tail (#84997)', async () => {
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const deliverContentResize = () => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    const { container, rerender, unmount } = render(<ScrollHarness messages={sessionMessages('idle')} sessionKey="idle" />)
+    const vp = viewportEl(container)
+
+    try {
+      await settleScroll(10)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      // Warm switch into a session whose agent is still running: the settle
+      // loop glues the viewport while streamed chunks keep the height moving.
+      rerender(<ScrollHarness isRunning messages={sessionMessages('live', 2)} sessionKey="live" />)
+      await settleScroll(4)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      for (const delta of [400, 600, 800]) {
+        act(() => {
+          scrollHeightValue += delta
+          deliverContentResize()
+        })
+        await settleScroll(4)
+        expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+      }
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
+  it.each(['exhausted', 'failed'] as const)('falls back to the live tail when an unreachable reading position is %s', async outcome => {
+    // A deep reading offset the mounted window cannot cover (the session grew,
+    // the store ran out, or the history page failed) must not strand the view
+    // at the top of the mounted window — the top of a windowed long session is
+    // the MIDDLE of the conversation. Fall back to the latest messages instead.
     saveThreadScrollPosition('lost', { fromBottom: 9000, kind: 'offset' })
     const expandWindow = vi.fn(async () => false)
     const history = { olderAvailable: outcome === 'failed', expandWindow }
@@ -785,8 +852,8 @@ describe('list session-scroll restore', () => {
     }
 
     act(() => window.dispatchEvent(new Event('beforeunload')))
-    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: SCROLL_H - CLIENT_H })
-    expect(viewportEl(container).scrollTop).toBe(0)
+    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'bottom' })
+    expect(viewportEl(container).scrollTop).toBeGreaterThanOrEqual(SCROLL_H - CLIENT_H - 1)
 
     if (outcome === 'failed') {
       expect(expandWindow).toHaveBeenCalledTimes(1)

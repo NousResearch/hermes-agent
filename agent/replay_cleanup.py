@@ -132,16 +132,26 @@ def strip_dangling_tool_call_tail(agent_history: List[Dict[str, Any]]) -> List[D
     if not (isinstance(last, dict) and last.get("role") == "assistant" and last.get("tool_calls")):
         return agent_history
     tool_calls = last.get("tool_calls") or []
-    if _any_side_effecting(tool_calls):
-        recovered = list(agent_history)
-        for call in tool_calls:
-            name = _call_name(call) or "unknown"
-            disposition, content = _orphan_recovery(name, _DANGLING_NOTICES)
-            recovered.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+    results = unanswered_call_results(tool_calls)
+    if results is not None:
         logger.warning("Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them")
-        return recovered
+        return list(agent_history) + results
     logger.debug("Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))", len(tool_calls))
     return agent_history[:-1]
+
+
+def unanswered_call_results(calls: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """Orphan-recovery results for ``calls`` that never got an answer, or None when every call is
+    read-only (erasing those loses nothing). One side-effecting call keeps the whole set: the model
+    must learn the action may have happened, or it repeats it."""
+    if not _any_side_effecting(calls):
+        return None
+    results = []
+    for call in calls:
+        name = _call_name(call) or "unknown"
+        disposition, content = _orphan_recovery(name, _DANGLING_NOTICES)
+        results.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+    return results
 
 
 def sanitize_replay_history(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

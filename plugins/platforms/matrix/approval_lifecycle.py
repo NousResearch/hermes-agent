@@ -161,22 +161,25 @@ class MatrixApprovalMixin:
         core_expires_at = gateway_approval_expires_at(session_key, approval_id)
 
         def _make(message_id, requester, expires_at):
-            return _MatrixApprovalPrompt(
+            stored = _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at if core_expires_at is None else core_expires_at, approval_id=approval_id,
                 command=redacted_command, description=prompt.description,
                 allow_permanent=allow_permanent, allow_session=allow_session,
                 smart_denied=prompt.smart_denied, metadata=send_meta, owner_context=owner_context,
             )
+            self._schedule_approval_resolution_watch(stored)
+            return stored
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         result = await self._send_reaction_prompt(
             chat_id, text, send_meta, _make, self._approval_prompts_by_event, reactions, "approval")
         if result.success and result.message_id:
-            stored = self._approval_prompts_by_event[result.message_id]
+            stored = self._approval_prompts_by_event.get(result.message_id)
+            if stored is None or stored.resolved:
+                return result
             summary_cfg = load_matrix_approval_summary_config()
             if summary_cfg.enabled:
                 self._schedule_approval_summary(stored, summary_cfg)
-            self._schedule_approval_resolution_watch(stored)
         return result
 
     async def _handle_approval_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:

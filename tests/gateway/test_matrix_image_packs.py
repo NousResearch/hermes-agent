@@ -19,6 +19,7 @@ RoomID = matrix_types.RoomID
 MemoryStateStore = pytest.importorskip("mautrix.client.state_store").MemoryStateStore
 ClientAPI = pytest.importorskip("mautrix.client.api").ClientAPI
 MNotFound = pytest.importorskip("mautrix.errors").MNotFound
+MForbidden = pytest.importorskip("mautrix.errors").MForbidden
 
 from agent.secret_scope import is_multiplex_active, set_multiplex_active
 from gateway.run import _profile_runtime_scope
@@ -398,7 +399,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
             "crypto-power",
             {"error": "Matrix bot cannot send m.room.encrypted in this room"},
         ),
-        ("server", {"error": "M_FORBIDDEN: server refused sticker"}),
+        ("server", {"error": "server refused sticker"}),
         ("late-encryption", SENT),
         (
             "late-encryption-missing",
@@ -514,9 +515,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
         if change == "expired":
             clock[0] += image_packs.SELECTION_TTL + 1
         if change == "server":
-            client.api.send.side_effect = RuntimeError(
-                "M_FORBIDDEN: server refused sticker"
-            )
+            client.api.send.side_effect = MForbidden(403, "server refused sticker")
         if change == "after-write-owner":
 
             async def accepted(*args, **kwargs):
@@ -1085,3 +1084,84 @@ async def test_send_reads_the_create_event_for_creator_power(
         clear_session_vars(tokens)
         reset_hermes_home_override(scope)
     assert result == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["malformed", "interrupt", "deadline", "unchanged"])
+async def test_registry_sticker_send_reports_dispatch_uncertainty(tmp_path, monkeypatch, failure):
+    import importlib
+    import json
+    import threading
+    from tools.interrupt import acting_for_tid, set_interrupt
+    from tools.registry import registry
+    from tools import matrix_tool_runtime
+
+    importlib.import_module("tools.matrix_image_packs_tool")
+    home = tmp_path / "owner"
+    home.mkdir()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    drained = asyncio.Event()
+    clock = [0.0]
+    monkeypatch.setattr(matrix_tool_runtime, "_monotonic", lambda: clock[0])
+    parent = threading.get_ident()
+    parent_token = acting_for_tid.set(parent)
+    with _profile_runtime_scope(home, prepared_secret_scope={"MATRIX_ACCESS_TOKEN": "test"}):
+        adapter, client = make_adapter(home)
+        tokens = set_session_vars(
+            platform="matrix", chat_id=ROOM, user_id=USER,
+            session_key="session", session_id="conversation",
+            transport_adapter=adapter, transport_loop=asyncio.get_running_loop(),
+        )
+        try:
+            listed_raw = await asyncio.to_thread(registry.dispatch, "matrix_image_packs", {"action": "list"})
+            assert isinstance(listed_raw, str)
+            listed = json.loads(listed_raw)
+            selected = listed["packs"][0]["items"][0]["selection_id"]
+
+            async def sent(*_args, **_kwargs):
+                entered.set()
+                try:
+                    if failure == "malformed":
+                        raise json.JSONDecodeError("malformed homeserver response", "{", 1)
+                    if failure in {"interrupt", "deadline"}:
+                        if failure == "interrupt":
+                            set_interrupt(True, parent)
+                        else:
+                            clock[0] = 31.0
+                        await release.wait()
+                    return {"event_id": "$sent"}
+                finally:
+                    drained.set()
+
+            client.api.send.side_effect = sent
+            pending = asyncio.create_task(asyncio.to_thread(
+                registry.dispatch, "matrix_image_packs", {"action": "send", "selection_id": selected},
+            ))
+            await asyncio.wait_for(entered.wait(), timeout=3.0)
+            forced_release = False
+            try:
+                raw = await asyncio.wait_for(asyncio.shield(pending), timeout=3.0)
+            except asyncio.TimeoutError:
+                forced_release = True
+                release.set()
+                raw = await pending
+            assert isinstance(raw, str)
+            result = json.loads(raw)
+            if failure == "unchanged":
+                assert (result, drained.is_set(), forced_release, client.api.send.await_count) == (SENT, True, False, 1)
+            else:
+                error = {
+                    "malformed": "Matrix sticker send failed: JSONDecodeError",
+                    "interrupt": "Matrix image-pack request interrupted after the change was sent to the homeserver",
+                    "deadline": "Matrix image-pack request timed out after the change was sent to the homeserver",
+                }[failure]
+                assert (result, drained.is_set(), forced_release, client.api.send.await_count) == (
+                    {"error": error, "outcome": "unknown", "next_step": "Check the room before retrying the sticker send"},
+                    True, False, 1,
+                )
+        finally:
+            release.set()
+            set_interrupt(False, parent)
+            acting_for_tid.reset(parent_token)
+            clear_session_vars(tokens)

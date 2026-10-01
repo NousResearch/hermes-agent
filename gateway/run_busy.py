@@ -20,7 +20,10 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch
+from gateway.platforms.base_pending import (
+    can_join_pending_event, is_pending_redispatch, release_pending_dispatch,
+    pending_dispatch_needs_snapshot,
+)
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -185,7 +188,7 @@ class GatewayBusySessionMixin:
             depth += len(buffered.earlier_events) + 1
         reservations = getattr(adapter, "_pending_dispatch_reservations", None)
         reserved = reservations.get(session_key) if isinstance(reservations, dict) else None
-        if reserved is not None:
+        if reserved is not None and pending_dispatch_needs_snapshot(adapter, reserved):
             stored = [getattr(adapter, "_pending_messages", {}).get(session_key),
                       *(self._overflow_queue(session_key) or ())]
             if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:

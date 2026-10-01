@@ -435,6 +435,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.base_pending import (
     _PendingDispatchReservation,
     pending_dispatch_scope, release_pending_dispatch, reserve_pending_dispatch,
+    pending_dispatch_needs_snapshot,
 )
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
@@ -3779,7 +3780,7 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
     ) -> None:
         preserve = reserved.preserve_on_completion
         reserved.preserve_on_completion = False
-        if preserve and not reserved.claimed:
+        if preserve and pending_dispatch_needs_snapshot(self, reserved):
             restore = getattr(self.gateway_runner, "_restore_pending_dispatch", None)
             if callable(restore):
                 restore(session_key, reserved.event, self)

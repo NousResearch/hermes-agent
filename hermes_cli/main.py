@@ -375,6 +375,7 @@ from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.governor import build_governor_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
@@ -791,6 +792,7 @@ from hermes_cli.model_setup_flows import (
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
     cmd_acp,
+    cmd_governor,
     cmd_insights,
     cmd_memory,
     cmd_monitoring,
@@ -2890,6 +2892,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
+        "governor",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
@@ -3523,6 +3526,7 @@ def _build_cli_parser():
     build_pets_parser(subparsers)
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
+    build_governor_parser(subparsers, cmd_governor=cmd_governor)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
     build_computer_use_parser(subparsers)
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)

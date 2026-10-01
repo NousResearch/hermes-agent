@@ -77,6 +77,77 @@ _ACP_FLAGS = (
     ("assume_yes", "--yes"))
 
 
+
+def cmd_governor(args):
+    """hermes governor init|status|rotate — governed-key lifecycle for the
+    certified ri-context-governor engine (receipt-carrying compaction)."""
+    import shutil as _shutil
+
+    sub = getattr(args, "governor_command", None) or "status"
+    try:
+        from plugins.context_engine._context_governor.key_state import (
+            ContextGovernorKeyError,
+            ContextGovernorKeyState,
+        )
+    except ImportError:
+        print("Governor engine adapter not installed in this tree.")
+        raise SystemExit(2)
+
+    from hermes_constants import get_hermes_home
+
+    binary = _shutil.which("context-governor") or ""
+    state = ContextGovernorKeyState(get_hermes_home(), binary or "context-governor")
+
+    def _binding_ok() -> bool:
+        try:
+            state.active_binding().close()
+            return True
+        except ContextGovernorKeyError as exc:
+            print(f"key binding: NOT PROVISIONED ({exc.code}) — run: hermes governor init")
+            return False
+
+    if sub == "init":
+        try:
+            state.active_binding().close()
+            print("Governed key already provisioned.")
+            return
+        except ContextGovernorKeyError:
+            pass
+        try:
+            binding = state.initialize_first_install()
+            binding.close()
+            print("Governed key provisioned (0600, descriptor-gated).")
+        except ContextGovernorKeyError as exc:
+            print(f"init failed: {exc.code} {exc}")
+            raise SystemExit(1)
+    elif sub == "rotate":
+        try:
+            binding = state.rotate()
+            binding.close()
+            print("Key rotated; previous key retained as retired.")
+        except ContextGovernorKeyError as exc:
+            print(f"rotate failed: {exc.code} {exc}")
+            raise SystemExit(1)
+    else:  # status
+        print(f"binary: {binary or 'NOT FOUND — run: cargo install context-governor'}")
+        print("engine: ri-context-governor (context.engine)")
+        if binary and _binding_ok():
+            try:
+                from plugins.context_engine import load_context_engine
+
+                eng = load_context_engine("ri-context-governor")
+                if eng is None:
+                    print("strict probe: FAIL (engine adapter not loadable)")
+                    return
+                try:
+                    eng.probe_activation()
+                    st = eng.get_status()
+                    print(f"strict probe: pass (store: {st.get('store_dir')})")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"strict probe: FAIL ({exc})")
+            except Exception as exc:  # noqa: BLE001
+                print(f"strict probe: FAIL ({exc})")
+
 def cmd_acp(args):
     """Launch Hermes Agent as an ACP server."""
     try:

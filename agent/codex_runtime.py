@@ -566,11 +566,13 @@ def _codex_turn_effort(agent, model: str | None) -> str | None:
     if not isinstance(reasoning_config, dict) or not (
             reasoning_config.get("enabled") is False or reasoning_config.get("effort")):
         return None
+    from agent.codex_responses_adapter import classify_responses_route
     from agent.transports.codex import _resolve_reasoning
-    provider = str(getattr(agent, "provider", "") or "")
+    route = classify_responses_route(agent)
     effort, _enabled = _resolve_reasoning(model or "", {
-        "reasoning_config": reasoning_config, "provider": provider,
-        "base_url": getattr(agent, "base_url", None), "is_codex_backend": provider == "openai-codex",
+        "reasoning_config": reasoning_config, "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None), "is_codex_backend": route.is_codex_backend,
+        "is_xai_responses": route.is_xai_responses,
     })
     return effort
 
@@ -579,8 +581,8 @@ def _codex_turn_service_tier(agent) -> str | None:
     """``turn/start.serviceTier``: the tier Hermes' own Responses path would request this turn (a static
     ``/fast`` tier pinned in request_overrides, or an open ``auto``/``cold`` window), in codex's words: the
     OpenAI ``priority`` tier is codex's ``fast``. A tier codex has no word for (``ultrafast``) is not sent."""
-    from agent.fast_mode import effective_request_overrides
-    return {"priority": "fast"}.get(effective_request_overrides(agent).get("service_tier"))
+    from agent.fast_mode import CODEX_TIER_WORDS, effective_request_overrides
+    return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
 
 
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
@@ -717,15 +719,13 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
-    model_provider = getattr(agent, "_codex_session_model_provider", None)
-    wire_model = _codex_wire_model(agent, model_provider)
-    reasoning_effort = _codex_turn_effort(agent, wire_model)
-    service_tier = _codex_turn_service_tier(agent)
     try:
         _start_codex_thread(agent)
+        wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
         turn = agent._codex_session.run_turn(
             user_input=user_message,
-            model=wire_model, reasoning_effort=reasoning_effort, service_tier=service_tier)
+            model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
+            service_tier=_codex_turn_service_tier(agent))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

@@ -562,6 +562,14 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # (~55s per sub() on a 320KB compaction payload).
 _STRICT_URL_USERINFO_RE = re.compile(r"(//)([^/\s?#@]+)@")
 
+# Forced egress: clear Basic-auth pairs assigned to an auth-named variable.
+# A generic colon-value rule would hide host:port, image tags and timestamps.
+_FORCED_BASIC_PAIR_RE = re.compile(
+    r'(?im)(^[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*(?:BASIC|USERPASS|AUTH_PAIR)[ \t]*=[ \t]*["\']?)'
+    r'([^\s:"\'@/]+):([^\s"\'@/]{8,})(["\']?)$'
+)
+
+
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
 
@@ -888,8 +896,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     raw secrets regardless.
 
     ``redact_url_credentials=True``: also redact credential-named query params
-    and ``user:pass@`` userinfo — off by default because OAuth-callback /
-    magic-link / pre-signed URLs must survive ordinary tool flows unchanged.
+    and ``user:pass@`` userinfo. Ordinary mode leaves those URLs unchanged for
+    OAuth/magic-link flows; ``force=True`` masks userinfo at safety boundaries.
     ``code_file=True``: skip the ENV/JSON assignment passes for known source
     code (``MAX_TOKENS=***``, ``"apiKey": "test"`` fixtures). ``file_read=True``
     (implies code_file unless ``secret_file``): prefix-matched credentials become a
@@ -968,6 +976,16 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    if force:
+        # Do not change ordinary URL passthrough (#34029). Safety/egress and
+        # redacted session exports must not emit Basic userinfo or auth pairs.
+        text = _STRICT_URL_USERINFO_RE.sub(
+            lambda m: f"{m.group(1)}{m.group(2).partition(':')[0]}:***@"
+            if ":" in m.group(2) else m.group(0), text)
+        if not code_file and "=" in text and ":" in text:
+            text = _FORCED_BASIC_PAIR_RE.sub(
+                lambda m: f"{m.group(1)}{m.group(2)}:***{m.group(4)}", text)
 
     if redact_url_credentials:  # opt-in; known credential shapes in URLs are caught above
         # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log request targets) is

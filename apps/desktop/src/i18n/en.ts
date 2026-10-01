@@ -4859,6 +4859,8 @@ export const en: Translations = {
     loading: 'Loading preview',
     unavailable: 'Preview unavailable',
     missingTarget: 'That path does not exist on this computer',
+    missingTitle: 'File no longer exists',
+    missingBody: label => `${label} was deleted, moved, or its temporary location was cleared. This tab will not be restored on the next launch.`,
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',

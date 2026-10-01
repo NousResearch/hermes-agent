@@ -26,7 +26,12 @@ a context-note prepend into the agent's prompt — both wrong for an explicit
 /new or /reset.
 """
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 from gateway.config import GatewayConfig, Platform
+from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -101,6 +106,20 @@ class TestVanillaBehaviorUnaffected:
         entry.updated_at = entry.created_at.replace(microsecond=entry.created_at.microsecond + 1)
         assert entry.is_fresh_reset is False
         assert _is_new_session(entry) is False
+
+    def test_runner_emits_session_start_for_pending_first_turn(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        entry.updated_at = entry.created_at.replace(microsecond=entry.created_at.microsecond + 1)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.hooks = SimpleNamespace(emit=AsyncMock())
+        result = asyncio.run(runner._hmwa_open_session(entry, entry.session_key, source))
+
+        assert result == (False, True)
+        runner.hooks.emit.assert_awaited_once()
+        assert "first_agent_turn_pending" not in entry.metadata
 
     def test_read_only_command_before_first_message_still_flags_first_turn(self, tmp_path):
         store = _make_store(tmp_path)

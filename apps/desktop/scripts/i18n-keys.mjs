@@ -23,7 +23,14 @@ export function flattenKeys(tree, prefix = '') {
   for (const [key, value] of Object.entries(tree)) {
     const path = prefix ? `${prefix}.${key}` : key
     if (isRecord(value)) keys.push(...flattenKeys(value, path))
-    else keys.push(path)
+    else if (typeof value === 'function') {
+      try {
+        const result = value(...Array.from({ length: value.length }, (_, index) => `{${index}}`))
+        if (typeof result === 'string') keys.push(path)
+      } catch {
+        // A function that cannot produce a string is not a valid pack leaf.
+      }
+    } else keys.push(path)
   }
   return keys.sort()
 }

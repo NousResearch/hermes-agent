@@ -131,6 +131,29 @@ afterEach(() => {
 // all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
 describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
+  it.each(['matrix_read', 'matrix_unread', 'matrix_image_packs'])(
+    'excludes %s from Desktop rows and bulk writes',
+    async name => {
+      const matrix = toolset({ name, label: 'Matrix channel', tools: [name] })
+      getToolsets.mockResolvedValue([toolset(), matrix])
+      await renderSkills()
+      await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+      expect(screen.getAllByRole('switch').map(element => element.getAttribute('aria-label'))).toEqual([
+        'Turn Web Search toolset off'
+      ])
+
+      await act(async () => {
+        fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
+      })
+      const all = await screen.findByRole('menuitem', { name: 'All' })
+      await act(async () => {
+        fireEvent.click(all)
+      })
+      await waitFor(() => expect(setToolsetEnabled.mock.calls).toEqual([['web', false, 'default']]))
+      expect(matrix).toEqual(toolset({ name, label: 'Matrix channel', tools: [name] }))
+    }
+  )
+
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 

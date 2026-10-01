@@ -87,10 +87,10 @@ import {
 // must sit above that cap or the desktop reports a false timeout while the
 // host is still compressing (#97948).
 export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
-// Slash commands can intentionally wait for user interaction, such as
-// /prompt opening an editor. Disable the transport deadline for this worker;
-// the backend still owns command completion and cancellation.
-export const SLASH_EXEC_TIMEOUT_MS = 0
+// Only /prompt intentionally waits for user interaction (the backend opens an
+// editor and does not complete until it closes). Keep every other slash worker
+// request on the gateway's normal timeout so a wedged command can fall through.
+export const slashExecTimeoutMs = (name: string): number | undefined => (name === 'prompt' ? 0 : undefined)
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
@@ -404,14 +404,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         try {
-          const result = await requestGateway<unknown>(
-            'slash.exec',
-            {
-              session_id: sessionId,
-              command: command.replace(/^\/+/, '')
-            },
-            SLASH_EXEC_TIMEOUT_MS
-          )
+          const slashExecParams = {
+            session_id: sessionId,
+            command: command.replace(/^\/+/, '')
+          }
+          const timeoutMs = slashExecTimeoutMs(name)
+          const result =
+            timeoutMs === undefined
+              ? await requestGateway<unknown>('slash.exec', slashExecParams)
+              : await requestGateway<unknown>('slash.exec', slashExecParams, timeoutMs)
 
           const dispatch = parseCommandDispatch(result)
 

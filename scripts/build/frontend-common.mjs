@@ -102,7 +102,7 @@ export async function withProduct(out, compile, { source } = {}) {
     await compile(product, scratch)
     publishDirectory(product, out, { source })
   } finally {
-    rmTree(scratch)
+    await rmTree(scratch)
   }
 }
 

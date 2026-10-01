@@ -2354,6 +2354,7 @@ cli:
     removed: "Kuyruk öğesi {index} kaldırıldı: {preview}"
     item_not_found: "Kuyruk öğesi {index} bulunamadı. Geçerli boyut: {size}"
     usage_edit: "Kullanım: /queue edit <number> <new prompt>"
+    usage_remove: "Kullanım: /queue rm <number>"
     updated: "Kuyruk öğesi {index} güncellendi: {preview}"
     usage_move: "Kullanım: /queue move <from> <to>"
     move_out_of_range: "Kuyruk taşıma aralık dışında. Geçerli boyut: {size}"

@@ -2354,6 +2354,7 @@ cli:
     removed: "キュー項目 {index} を削除しました: {preview}"
     item_not_found: "キュー項目 {index} が見つかりません。現在のサイズ: {size}"
     usage_edit: "使い方: /queue edit <number> <new prompt>"
+    usage_remove: "使い方: /queue rm <number>"
     updated: "キュー項目 {index} を更新しました: {preview}"
     usage_move: "使い方: /queue move <from> <to>"
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"

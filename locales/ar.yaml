@@ -2354,6 +2354,7 @@ cli:
     removed: "أُزيل العنصر {index} من قائمة الانتظار: {preview}"
     item_not_found: "العنصر {index} غير موجود في قائمة الانتظار. الحجم الحالي: {size}"
     usage_edit: "الاستخدام: /queue edit <number> <new prompt>"
+    usage_remove: "الاستخدام: /queue rm <number>"
     updated: "حُدّث العنصر {index} في قائمة الانتظار: {preview}"
     usage_move: "الاستخدام: /queue move <from> <to>"
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"

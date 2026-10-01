@@ -2454,6 +2454,7 @@ cli:
     removed: "Removed queue item {index}: {preview}"
     item_not_found: "Queue item {index} not found. Current size: {size}"
     usage_edit: "Usage: /queue edit <number> <new prompt>"
+    usage_remove: "Usage: /queue rm <number>"
     updated: "Updated queue item {index}: {preview}"
     usage_move: "Usage: /queue move <from> <to>"
     move_out_of_range: "Queue move out of range. Current size: {size}"

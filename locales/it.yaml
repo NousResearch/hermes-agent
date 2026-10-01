@@ -2354,6 +2354,7 @@ cli:
     removed: "Rimosso l'elemento {index} della coda: {preview}"
     item_not_found: "Elemento {index} della coda non trovato. Dimensione attuale: {size}"
     usage_edit: "Uso: /queue edit <number> <new prompt>"
+    usage_remove: "Uso: /queue rm <number>"
     updated: "Aggiornato l'elemento {index} della coda: {preview}"
     usage_move: "Uso: /queue move <from> <to>"
     move_out_of_range: "Spostamento fuori dai limiti della coda. Dimensione attuale: {size}"

@@ -2354,6 +2354,7 @@ cli:
     removed: "Se eliminó el elemento {index} de la cola: {preview}"
     item_not_found: "No se encontró el elemento {index} de la cola. Tamaño actual: {size}"
     usage_edit: "Uso: /queue edit <número> <nuevo prompt>"
+    usage_remove: "Uso: /queue rm <number>"
     updated: "Se actualizó el elemento {index} de la cola: {preview}"
     usage_move: "Uso: /queue move <desde> <hasta>"
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"

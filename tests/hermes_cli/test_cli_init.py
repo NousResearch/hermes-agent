@@ -168,6 +168,21 @@ class TestBusyInputMode:
         cli.process_command("/queue move 1 9")
         assert cli._pending_input_items() == ["only item"]
 
+    def test_queue_rm_without_index_prints_usage_instead_of_raising(self):
+        """``/queue rm`` with no index reaches _queue_remove with rest="" and used to
+        raise ValueError out of the prompt_toolkit key handler, killing the TUI."""
+        cli = _make_cli()
+        cli.process_command("/queue first prompt")
+        cli.process_command("/queue rm")
+        assert cli._pending_input_items() == ["first prompt"]
+
+    def test_queue_rm_with_trailing_words_prints_usage_instead_of_raising(self):
+        """``rest`` is only known to start with a digit, so "2 extra" reached int()."""
+        cli = _make_cli()
+        cli.process_command("/queue first prompt")
+        cli.process_command("/queue rm 1 extra")
+        assert cli._pending_input_items() == ["first prompt"]
+
 
 
 

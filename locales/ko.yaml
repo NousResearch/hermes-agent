@@ -2354,6 +2354,7 @@ cli:
     removed: "대기열 항목 {index}을(를) 제거했어요: {preview}"
     item_not_found: "대기열 항목 {index}을(를) 찾을 수 없어요. 현재 크기: {size}"
     usage_edit: "사용법: /queue edit <number> <new prompt>"
+    usage_remove: "사용법: /queue rm <number>"
     updated: "대기열 항목 {index}을(를) 수정했어요: {preview}"
     usage_move: "사용법: /queue move <from> <to>"
     move_out_of_range: "대기열 이동 범위를 벗어났어요. 현재 크기: {size}"

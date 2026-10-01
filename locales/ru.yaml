@@ -2354,6 +2354,7 @@ cli:
     removed: "Удалён элемент очереди {index}: {preview}"
     item_not_found: "Элемент очереди {index} не найден. Текущий размер: {size}"
     usage_edit: "Использование: /queue edit <номер> <новый промпт>"
+    usage_remove: "Использование: /queue rm <number>"
     updated: "Обновлён элемент очереди {index}: {preview}"
     usage_move: "Использование: /queue move <откуда> <куда>"
     move_out_of_range: "Перемещение выходит за границы очереди. Текущий размер: {size}"

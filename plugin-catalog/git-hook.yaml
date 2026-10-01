@@ -1,0 +1,25 @@
+name: git-hook
+repo: https://github.com/aean0x/hermes-git-hook
+sha: 6d5607ced4f38660541281a43431954dfb2fdfb8
+description: "Auto fetch/pull before reads, and commit + push only the files each turn changed, for every git worktree Hermes touches."
+maintainer: aean0x
+tier: community
+category: automation
+docs_url: https://github.com/aean0x/hermes-git-hook#readme
+version: "0.4.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env:
+    - GIT_HOOK_COMMIT
+    - GIT_HOOK_COMMIT_MSG
+    - GIT_HOOK_COMMIT_PATH
+    - GIT_HOOK_PULL_TIMEOUT_S
+    - GIT_HOOK_PUSH
+    - GIT_HOOK_PUSH_TIMEOUT_S
+    - PROJECTS_ROOT

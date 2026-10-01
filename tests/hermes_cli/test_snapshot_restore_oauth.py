@@ -91,8 +91,9 @@ def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypat
     """A partial restore must not report success after refusing the auth store (#127010)."""
     from hermes_cli.backup import restore_quick_snapshot
 
+    snap_id = "20260101-000000-pre-update"
     home = tmp_path / "home"
-    snap_dir = home / "state-snapshots" / "partial"
+    snap_dir = home / "state-snapshots" / snap_id
     snap_dir.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     live_path = home / "auth.json"
@@ -103,9 +104,9 @@ def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypat
     (snap_dir / "config.yaml").write_text("model: snapshot\n", encoding="utf-8")
     (snap_dir / "auth.json").write_text("{invalid-json", encoding="utf-8")
     files = {name: (snap_dir / name).stat().st_size for name in ("auth.json", "config.yaml")}
-    (snap_dir / "manifest.json").write_text(json.dumps({"id": "partial", "files": files}), encoding="utf-8")
+    (snap_dir / "manifest.json").write_text(json.dumps({"id": snap_id, "files": files}), encoding="utf-8")
 
-    result = restore_quick_snapshot("partial", hermes_home=home)
+    result = restore_quick_snapshot(snap_id, hermes_home=home)
 
     assert live_path.read_bytes() == before
     assert (home / "config.yaml").read_text(encoding="utf-8") == "model: snapshot\n"
@@ -114,11 +115,18 @@ def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypat
     # The /snapshot restore caller must not report an existing snapshot as missing.
     from types import SimpleNamespace
 
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin, _t
 
     capsys.readouterr()
-    CLICommandsMixin._snapshot_restore(SimpleNamespace(), ["/snapshot", "restore", "partial"])
+    CLICommandsMixin._snapshot_restore(SimpleNamespace(), ["/snapshot", "restore", snap_id])
     out = capsys.readouterr().out
-    assert "partial" in out and "auth.json" in out
-    assert "not found" not in out.lower()
+    assert out.strip() == _t("snapshot.restore_incomplete", snapshot_id=snap_id)
+    assert live_path.read_bytes() == before
+
+    # A manifest-listed auth.json missing from the snapshot dir also fails closed.
+    (snap_dir / "auth.json").unlink()
+    (home / "config.yaml").write_text("model: live\n", encoding="utf-8")
+
+    assert restore_quick_snapshot(snap_id, hermes_home=home) is False
+    assert (home / "config.yaml").read_text(encoding="utf-8") == "model: snapshot\n"
     assert live_path.read_bytes() == before

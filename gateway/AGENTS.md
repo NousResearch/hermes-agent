@@ -211,3 +211,5 @@ guard behaviour are invariants worth a test; platform API quirks belong in conne
 tests, not in prose.
 
 Restart-safe cron delivery draining is defined in `run_delivery_queue_watch.py`.
+
+Cron and housekeeping thread startup is defined in `run_startup.py::_start_gateway_start_cron_and_housekeeping`.

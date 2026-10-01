@@ -594,6 +594,73 @@ describe('preview session scoping (#73890)', () => {
     expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['tip-2', 'tip-2'])
   })
 
+  it('survives a rotation that points back at an earlier tip', () => {
+    $selectedStoredSessionId.set('tip-a')
+    openPreview(fileTarget('/work/a.html'))
+
+    rekeyPreviewTabsSession('tip-a', 'tip-b')
+    rekeyPreviewTabsSession('tip-b', 'tip-c')
+    rekeyPreviewTabsSession('tip-c', 'tip-a')
+    rekeyPreviewTabsSession('tip-b', 'tip-a')
+
+    for (const id of ['tip-a', 'tip-b', 'tip-c']) {
+      $selectedStoredSessionId.set(id)
+      expect(paths($visiblePreviewTabs.get())).toEqual(['/work/a.html'])
+    }
+  })
+
+  it('stamps a tab opened under a rotated-away id with the new tip, so it outlives a relaunch', async () => {
+    $selectedStoredSessionId.set('tip-1')
+    rekeyPreviewTabsSession('tip-1', 'tip-2')
+    // Focus has not followed the rotation yet.
+    openPreview(fileTarget('/work/in-window.html'))
+    newBrowserTab()
+
+    expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['tip-2', 'tip-2'])
+
+    const relaunched = await relaunchedPreviewStore()
+    const { $selectedStoredSessionId: selected } = await import('./session')
+
+    selected.set('tip-2')
+    expect(relaunched.$visiblePreviewTabs.get()).toHaveLength(2)
+    selected.set(null)
+  })
+
+  it('prunes a deleted conversation by any of its ids', () => {
+    $selectedStoredSessionId.set('tip-1')
+    openPreview(fileTarget('/work/a.html'))
+    rekeyPreviewTabsSession('tip-1', 'tip-2')
+    openPreview(fileTarget('/work/b.html'))
+
+    prunePreviewTabsForSession('tip-1')
+
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('agent close without a url writes the tab list once and fronts what the session still sees', () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(fileTarget('/work/pinned.html'))
+    const pinned = $previewTabs.get()[0]!.id
+    setPreviewTabPinned(pinned, true)
+
+    for (let i = 0; i < 5; i++) {
+      openPreview(fileTarget(`/work/a${i}.html`))
+    }
+
+    let writes = 0
+    const unbind = $previewTabs.listen(() => writes++)
+
+    try {
+      closeAgentPreview('sess-a', [])
+    } finally {
+      unbind()
+    }
+
+    expect(writes).toBe(1)
+    expect(paths($previewTabs.get())).toEqual(['/work/pinned.html'])
+    expect($rightRailActiveTabId.get()).toBe(pinned)
+  })
+
   it('tombstones a missing file by the url the file pane reports', () => {
     $selectedStoredSessionId.set('sess-1')
     openPreview(fileTarget('/work/gone.html'))

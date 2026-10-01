@@ -366,12 +366,18 @@ const $rotatedSessionIds = atom<ReadonlyMap<string, string>>(new Map())
 function latestSessionId(sessionId: null | string | undefined, rotated: ReadonlyMap<string, string>): null | string {
   let id = sessionId ?? null
 
-  // Tips are fresh ids, so the chain only ever moves forward.
+  // Acyclic by construction: `rekeyPreviewTabsSession` only links one tip to
+  // a different tip.
   while (id && rotated.has(id)) {
     id = rotated.get(id)!
   }
 
   return id
+}
+
+/** `sessionId` resolved through every compression rotation seen so far. */
+function currentSessionId(sessionId: null | string | undefined): null | string {
+  return latestSessionId(sessionId, $rotatedSessionIds.get())
 }
 
 /** True when `sessionId`'s drawer shows `tab`: its own tabs plus every pin.
@@ -398,7 +404,7 @@ export const $visiblePreviewTabs = computed(
 const activeTabBySession = new Map<string, RightRailTabId>()
 
 function rememberActiveTab(sessionId: null | string, tabId: RightRailTabId | null): void {
-  const key = latestSessionId(sessionId, $rotatedSessionIds.get())
+  const key = currentSessionId(sessionId)
 
   if (key && tabId) {
     activeTabBySession.set(key, tabId)
@@ -408,16 +414,20 @@ function rememberActiveTab(sessionId: null | string, tabId: RightRailTabId | nul
 /** Rekey a rotated conversation's tabs onto its new stored id. Every profile
  *  bucket, not just the view: a background tile's conversation rotates too. */
 export function rekeyPreviewTabsSession(previousId: string, nextId: string): void {
-  if (!previousId || !nextId || previousId === nextId) {
+  // Both ends resolve to their current tips first: a late or replayed event
+  // can name an id that already rotated, or point back at an older tip, and
+  // linking anything but two distinct tips would close an alias cycle.
+  const from = currentSessionId(previousId)
+  const to = currentSessionId(nextId)
+
+  if (!from || !to || from === to) {
     return
   }
 
-  $rotatedSessionIds.set(new Map([...$rotatedSessionIds.get(), [previousId, nextId]]))
+  const owned = (tab: PreviewTab) => currentSessionId(tab.sessionId) === from
 
   const rekey = (tabs: PreviewTab[]) =>
-    tabs.some(tab => tab.sessionId === previousId)
-      ? tabs.map(tab => (tab.sessionId === previousId ? { ...tab, sessionId: nextId } : tab))
-      : null
+    tabs.some(owned) ? tabs.map(tab => (owned(tab) ? { ...tab, sessionId: to } : tab)) : null
 
   let backgroundChanged = false
 
@@ -436,14 +446,17 @@ export function rekeyPreviewTabsSession(previousId: string, nextId: string): voi
 
   const view = rekey($previewTabs.get())
 
+  // Only after the rekey: `owned` resolves through the map as it was.
+  $rotatedSessionIds.set(new Map([...$rotatedSessionIds.get(), [from, to]]))
+
   if (view) {
     $previewTabs.set(view)
   }
 
-  const remembered = activeTabBySession.get(previousId)
+  const remembered = activeTabBySession.get(from)
 
   if (remembered) {
-    activeTabBySession.set(nextId, remembered)
+    activeTabBySession.set(to, remembered)
   }
 }
 
@@ -467,7 +480,7 @@ export function preferredVisibleTabId(): RightRailTabId | null {
     return active
   }
 
-  const key = latestSessionId($focusedStoredSessionId.get(), $rotatedSessionIds.get())
+  const key = currentSessionId($focusedStoredSessionId.get())
   const remembered = key ? activeTabBySession.get(key) : undefined
 
   return isVisible(remembered) ? remembered! : (visible[0]?.id ?? null)
@@ -818,7 +831,10 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
  *  session's tab; a reused tab keeps its owner and pin. Opening for a session
  *  that is not focused does not touch the focused drawer's selection — the
  *  tab is fronted when that session's drawer shows. */
-export function openPreview(target: PreviewTarget, owner: null | string = $focusedStoredSessionId.get()) {
+export function openPreview(target: PreviewTarget, requestedOwner: null | string = $focusedStoredSessionId.get()) {
+  // Stamp the tip, not an alias: the alias map is memory-only, so a tab
+  // stamped with a rotated-away id would be orphaned by the next relaunch.
+  const owner = currentSessionId(requestedOwner)
   const current = $previewTabs.get()
   const visible = tabsVisibleTo(current, owner)
 
@@ -913,7 +929,7 @@ export function newBrowserTab() {
   recordFeatureUse('browser_pane')
   $previewTabs.set([
     ...$previewTabs.get(),
-    { id, pinned: false, sessionId: $focusedStoredSessionId.get() ?? undefined, target: blankPage() }
+    { id, pinned: false, sessionId: currentSessionId($focusedStoredSessionId.get()) ?? undefined, target: blankPage() }
   ])
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
@@ -923,7 +939,7 @@ export function newBrowserTab() {
  *  explicit cross-session workspace; unpinning returns it to its session
  *  (adopting the current one when the tab never had an owner). */
 export function setPreviewTabPinned(tabId: string, pinned: boolean): void {
-  const currentSession = $focusedStoredSessionId.get() ?? undefined
+  const currentSession = currentSessionId($focusedStoredSessionId.get()) ?? undefined
 
   $previewTabs.set(
     $previewTabs
@@ -937,27 +953,38 @@ export function setPreviewTabPinned(tabId: string, pinned: boolean): void {
 /** Drop the tabs a deleted session opened. Pinned tabs survive — they belong
  *  to the workspace, not the session that opened them. */
 export function prunePreviewTabsForSession(sessionId: string): void {
-  $previewTabs.set($previewTabs.get().filter(tab => tab.pinned || tab.sessionId !== sessionId))
+  const doomed = currentSessionId(sessionId)
+
+  $previewTabs.set($previewTabs.get().filter(tab => tab.pinned || currentSessionId(tab.sessionId) !== doomed))
 }
 
 export function closeRightRailTab(tabId: string) {
+  closeRightRailTabs(new Set([tabId]))
+}
+
+/** Close `tabIds` in one write, then re-home the selection once. */
+function closeRightRailTabs(tabIds: ReadonlySet<string>) {
   const current = $previewTabs.get()
 
-  if (!current.some(tab => tab.id === tabId)) {
+  if (!current.some(tab => tabIds.has(tab.id))) {
     return
   }
 
-  const next = current.filter(tab => tab.id !== tabId)
+  const next = current.filter(tab => !tabIds.has(tab.id))
   // The neighbour comes from the focused drawer: a hidden session's tab
   // must not become the selection.
+  const activeId = $rightRailActiveTabId.get()
   const visible = $visiblePreviewTabs.get()
-  const visibleIndex = visible.findIndex(tab => tab.id === tabId)
-  const remaining = visible.filter(tab => tab.id !== tabId)
+  const visibleIndex = visible.findIndex(tab => tab.id === activeId)
+  const remaining = visible.filter(tab => !tabIds.has(tab.id))
 
-  forgetBrowserPage(tabId)
+  for (const tabId of tabIds) {
+    forgetBrowserPage(tabId)
+  }
+
   $previewTabs.set(next)
 
-  if ($rightRailActiveTabId.get() === tabId) {
+  if (activeId && tabIds.has(activeId)) {
     const nextId = remaining[Math.min(Math.max(visibleIndex, 0), remaining.length - 1)]?.id ?? null
 
     if (nextId) {
@@ -1095,11 +1122,7 @@ export function closeAgentPreview(owner: null | string, candidates: string[]): v
     return
   }
 
-  for (const tab of visible) {
-    if (!tab.pinned) {
-      closeRightRailTab(tab.id)
-    }
-  }
+  closeRightRailTabs(new Set(visible.filter(tab => !tab.pinned).map(tab => tab.id)))
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it

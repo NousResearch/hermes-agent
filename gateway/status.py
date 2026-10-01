@@ -556,6 +556,20 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
         _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
     )
 
+    # Windows process readers may return an unquoted CreateProcess command line even when
+    # argv[0] contains spaces. Reconstruct that interpreter token before walking options;
+    # otherwise the first path fragment looks like a script name and hides a later ``-c``.
+    if len(tokens) > 2 and not tokens[1].startswith("-"):
+        option_index = None
+        executable = ""
+        for candidate_index in range(2, len(tokens)):
+            candidate = " ".join(tokens[:candidate_index]).lower().rstrip('"\'')
+            if candidate.endswith(("python", "python.exe", "python3", "python3.exe")):
+                option_index, executable = candidate_index, candidate
+                break
+        if option_index is not None:
+            tokens = [executable, *tokens[option_index:]]
+
     index = 1
     while index < len(tokens):
         token = tokens[index]

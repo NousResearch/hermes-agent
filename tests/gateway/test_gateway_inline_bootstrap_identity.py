@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.status import looks_like_gateway_command_line
+from gateway.status import inline_source_flag_index, looks_like_gateway_command_line
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
@@ -53,3 +53,8 @@ def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -
     watcher = _JOINS[join]([PY, "-c", "import os, sys, time\npid = int(sys.argv[1]); cmd = sys.argv[2:]\n", "1234", *store])
     assert not looks_like_gateway_command_line(chat) and _hermes_holder_subcommand(chat) == "chat"
     assert not looks_like_gateway_command_line(watcher) and _hermes_holder_subcommand(watcher) is None
+
+
+def test_unquoted_interpreter_path_with_spaces_reaches_inline_source() -> None:
+    tokens = "C:/Hermes Agent/.venv/Scripts/python.exe -I -c source hermes gateway run".split()
+    assert inline_source_flag_index(tokens) == 2

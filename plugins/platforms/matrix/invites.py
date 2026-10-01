@@ -14,9 +14,11 @@ logger = logging.getLogger("plugins.platforms.matrix.adapter")
 
 
 def _is_invited_room_source(source: Any) -> bool:
-    """True when *source* (the mautrix ``SyncStream`` flag ``Client.dispatch_event`` stamps on an
-    event) says it came from the ``rooms.invite`` section. Anything unclassifiable answers True so
-    an unusual caller keeps the old act-on-it behaviour rather than silently dropping an invite."""
+    """Return whether the sync source includes ``rooms.invite``.
+
+    Unclassifiable sources continue through the usual invitation checks so
+    manual callback invocations remain supported.
+    """
     try:
         from mautrix.client import SyncStream
 
@@ -28,15 +30,7 @@ def _is_invited_room_source(source: Any) -> bool:
 
 class MatrixInvitesMixin:
     async def _on_invite(self: MatrixAdapter, event: Any) -> None:
-        """Auto-join rooms when invited, recording DM rooms in m.direct.
-
-        mautrix's ``MembershipEventDispatcher`` fans out every ``m.room.member`` event whose
-        membership is ``invite`` as ``InternalEventType.INVITE``, including historic ones
-        re-read on each (re)connect: we sync with ``MemorySyncStore``, so every connect is a
-        full-state initial sync that dispatches each joined room's state and recent timeline
-        again. The only invite we can act on is the one the homeserver delivers in
-        ``rooms.invite``; everything else is history and stays quiet.
-        """
+        """Join live invitations for this bot and record direct rooms in m.direct."""
         room_id = str(getattr(event, "room_id", ""))
         source = getattr(event, "source", None)
         if source is not None and not _is_invited_room_source(source):
@@ -45,8 +39,6 @@ class MatrixInvitesMixin:
         if room_id and room_id in self._joined_rooms:
             logger.debug("Matrix: ignoring invite to %s — already joined", room_id)
             return
-        # Skip invites addressed to someone else (bridged rooms carry other users'
-        # invites via state_key). An unresolved target keeps the old path (#76292).
         target = str(getattr(event, "state_key", "") or "")
         if self._user_id and target and not self._is_self_sender(target):
             logger.debug("Matrix: ignoring invite to %s addressed to %s", room_id, target)
@@ -162,9 +154,8 @@ class MatrixInvitesMixin:
             return False, ""
 
         members = [e for e in events if isinstance(e, dict) and e.get("type") == "m.room.member"]
-        # Our event is the one addressed to our exact id (the one mautrix dispatches to
-        # _on_invite). Only when there is none, fall back to _on_invite's case-insensitive
-        # identity check, so a look-alike member event can never stand in for ours.
+        # Prefer the exact ID before accepting a case-insensitive fallback;
+        # otherwise a look-alike member can replace the bot's own invite.
         own = [e for e in members if e.get("state_key") == self._user_id]
         if not own:
             own = [e for e in members if self._is_self_sender(str(e.get("state_key") or ""))]

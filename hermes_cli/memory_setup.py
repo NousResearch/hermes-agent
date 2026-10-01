@@ -362,6 +362,43 @@ def _mark(enabled) -> str:
     return "enabled ✓" if enabled else "disabled ✗"
 
 
+def _provider_load_diagnostics(provider_name: str, limit: int = 5) -> list[str]:
+    """Re-run one provider load with the loader loggers captured at DEBUG.
+
+    Every failure on the load path (import, ``register()``, subclass
+    instantiation) collapses to ``None`` and only ever logs at DEBUG, so a
+    status renderer cannot tell *why* a provider is missing. Re-running with
+    ``register_skills=False`` leaves no registry side effects, letting status
+    show the reason instead of claiming the plugin is absent (#130072).
+    """
+    import logging
+    from plugins.memory import load_memory_provider
+
+    messages: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            if record.name.startswith(("plugins.memory", "plugins.plugin_loader")):
+                messages.append(f"{record.levelname}: {record.getMessage()}")
+
+    capture = _Capture(level=logging.DEBUG)
+    loggers = [logging.getLogger("plugins.memory"), logging.getLogger("plugins.plugin_loader")]
+    saved_levels = [(lg, lg.level) for lg in loggers]
+    root = logging.getLogger()
+    root.addHandler(capture)
+    try:
+        for lg in loggers:
+            lg.setLevel(logging.DEBUG)
+        load_memory_provider(provider_name, register_skills=False)
+    except Exception as exc:  # load_named() absorbs these; a direct raise is still news
+        messages.append(f"ERROR: {exc}")
+    finally:
+        root.removeHandler(capture)
+        for lg, level in saved_levels:
+            lg.setLevel(level)
+    return messages[:limit]
+
+
 def cmd_status(args) -> None:
     """Show current memory provider config."""
     from hermes_cli.config import load_config
@@ -424,12 +461,22 @@ def cmd_status(args) -> None:
                 print("  Note: systemd/gateway services do not inherit ~/.hermes/.env —")
                 print("        set any variables above in the service environment.")
         else:
-            print("\n  Plugin:    NOT installed ✗")
-            install = _catalog_install_hint(provider_name)
-            if install:
-                print(f"  Install it with: {install}")
+            from plugins.memory import find_provider_dir, find_provider_entry_point
+
+            if find_provider_dir(provider_name) or find_provider_entry_point(provider_name) is not None:
+                # The plugin is present; the load above failed. The install hint
+                # would point at the directory it already lives in (#130072).
+                print("\n  Plugin:    installed — LOAD FAILED ✗")
+                print("  The plugin exists but failed to load:")
+                for line in _provider_load_diagnostics(provider_name):
+                    print(f"    {line}")
             else:
-                print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+                print("\n  Plugin:    NOT installed ✗")
+                install = _catalog_install_hint(provider_name)
+                if install:
+                    print(f"  Install it with: {install}")
+                else:
+                    print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

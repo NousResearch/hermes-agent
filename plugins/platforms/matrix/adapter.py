@@ -89,7 +89,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.media_content import _is_bare_media_filename
+from plugins.platforms.matrix.media_content import _inbound_media_caption, _is_bare_media_filename
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
@@ -423,16 +423,6 @@ _E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg ai
 # Keycap 1-9, 🔟; choice pickers (/reasoning, /fast) can need 12 slots, so they add 🅰️ 🅱️.
 _MATRIX_MODEL_PICKER_REACTIONS = tuple(f"{d}\ufe0f\u20e3" for d in "123456789") + ("\U0001f51f",)
 _MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + ("\U0001f170\ufe0f", "\U0001f171\ufe0f")
-
-def _inbound_media_caption(msgtype: str, body: str, source_content: dict, relates_to: dict) -> str:
-    wire_body = str(source_content.get("body") or "")
-    if relates_to.get("m.in_reply_to"):
-        wire_body = _strip_reply_fallback(wire_body)
-    declared_filename = str(source_content.get("filename") or "").strip()
-    if declared_filename:
-        return "" if wire_body.strip() == declared_filename else body
-    return "" if _is_bare_media_filename(msgtype, wire_body) else body
-
 
 def _matrix_event_timestamp_seconds(event: Any) -> float:
     """Return a Matrix event timestamp in seconds, accepting ms or sec values."""

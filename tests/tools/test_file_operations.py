@@ -803,3 +803,103 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+# =========================================================================
+# Non-UTF-8 source encoding on write (#121982: an edit used to encode the
+# INSERTED text as UTF-8 regardless of the file's own encoding, leaving the
+# file in two encodings at once — and reporting success)
+# =========================================================================
+
+class TestNonUtf8SourceEncoding:
+    """The write must be refused, not silently mixed, when the text an edit
+    adds cannot be represented in the file's own encoding."""
+
+    def test_undeclared_non_utf8_refuses_non_ascii_insertion(self, tmp_path):
+        """A latin-1 file with no encoding declaration: inserting ``olé`` used to
+        land as UTF-8 ``ol\xc3\xa9`` beside the untouched ``caf\xe9``, so Python
+        (which honours latin-1) read the new line as ``olÃ©``. The edit reported
+        success and linted clean. Refuse it instead."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "legacy.py"
+        original = "name = 'café'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("latin-1"))
+
+        result = ops.patch_replace(str(path), "label = 'x'", "label = 'olé'")
+
+        assert result.success is not True
+        assert "latin-1" in (result.error or "") or "utf-8" in (result.error or "").lower()
+        # The file on disk is untouched: still valid latin-1, no UTF-8 bytes.
+        assert path.read_bytes() == original.encode("latin-1")
+
+    def test_declared_encoding_is_honoured_for_inserted_text(self, tmp_path):
+        """With a PEP 263 cookie naming the encoding, the edit is applied IN that
+        encoding — the whole file stays single-encoding and Python reads it back
+        as the author intended."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "legacy.py"
+        original = "# -*- coding: latin-1 -*-\nname = 'café'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("latin-1"))
+
+        result = ops.patch_replace(str(path), "label = 'x'", "label = 'olé'")
+
+        assert getattr(result, "error", None) is None, result.error
+        on_disk = path.read_bytes()
+        assert b"ol\xe9" in on_disk, "inserted text must be encoded latin-1"
+        assert b"\xc3\xa9" not in on_disk, "no UTF-8 bytes may be mixed in"
+        # And it decodes as the file declares, round-trip.
+        assert on_disk.decode("latin-1").splitlines()[-1] == "label = 'olé'"
+
+    def test_declared_cookie_honoured_when_body_is_ascii(self, tmp_path):
+        """The cookie is authoritative even when the file holds no non-UTF-8 bytes
+        yet. Gating on "does the body already carry undecodable bytes" skipped every
+        declared file that happens to be pure ASCII today: the edit then went out as
+        UTF-8 into a file that declares latin-1, so Python (which honours the cookie)
+        read the new text back as mojibake — #121982's mixing, unreported.
+        """
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "legacy.py"
+        original = "# -*- coding: latin-1 -*-\nname = 'x'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("latin-1"))
+        assert path.read_bytes().isascii(), "precondition: body carries no non-UTF-8 byte"
+
+        result = ops.patch_replace(str(path), "label = 'x'", "label = 'olé'")
+
+        assert getattr(result, "error", None) is None, result.error
+        on_disk = path.read_bytes()
+        assert on_disk.startswith(b"# -*- coding: latin-1")
+        assert b"ol\xe9" in on_disk, "inserted text must be encoded latin-1"
+        assert b"\xc3\xa9" not in on_disk, "no UTF-8 bytes may be mixed in"
+        assert on_disk.decode("latin-1").splitlines()[-1] == "label = 'olé'"
+
+    def test_declared_narrow_encoding_refuses_unrepresentable_insert(self, tmp_path):
+        """A cookie naming an encoding the edit cannot use must refuse, not write.
+        ``write_file`` is called here WITHOUT ``pre_content``: the gate has to read
+        the same pre-content the encoder does (the probe fills it in), or it approves
+        an edit the write path then cannot encode.
+        """
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "legacy.py"
+        original = "# -*- coding: ascii -*-\nname = 'x'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("ascii"))
+
+        result = ops.write_file(str(path), original.replace("label = 'x'", "label = '€'"))
+
+        assert getattr(result, "error", None), "must refuse, not write an unencodable edit"
+        assert "ascii" in result.error
+        assert path.read_bytes() == original.encode("ascii"), "file must be untouched"
+
+    def test_utf8_declared_file_stays_on_the_utf8_path(self, tmp_path):
+        """A file that declares utf-8 must not start refusing edits: the declared
+        branch is the file's own word about its encoding, and for utf-8 that word is
+        "the path already on". Guards against over-broadening the gate.
+        """
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "modern.py"
+        original = "# -*- coding: utf-8 -*-\nname = 'café'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("utf-8"))
+
+        result = ops.patch_replace(str(path), "label = 'x'", "label = 'olé'")
+
+        assert getattr(result, "error", None) is None, result.error
+        assert path.read_bytes() == original.replace("label = 'x'", "label = 'olé'").encode("utf-8")

@@ -268,6 +268,119 @@ def _has_bom(text: Optional[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Source encoding for writes (#121982)
+# ---------------------------------------------------------------------------
+
+# PEP 263 declaration: `coding[:=]\s*([-\w.]+)` on line 1 or 2 of a .py file.
+_PEP263_RE = re.compile(rb"^[ \t\f]*#.*?coding[:=][ \t]*([-_.a-zA-Z0-9]+)")
+
+
+def _contains_escaped_bytes(text: str) -> bool:
+    """True if ``text`` carries bytes UTF-8 could not decode — i.e. the read
+    needed ``surrogateescape``. Those are U+DC80-U+DCFF, exactly the range
+    surrogateescape produces, so a clean UTF-8 file never trips this."""
+    return any("\udc80" <= ch <= "\udcff" for ch in text)
+
+
+def _sniff_encoding(text: str) -> str:
+    """Best-effort name of the encoding a surrogateescape'd string came from,
+    for the refusal message. The bytes do not record it; try the handful of
+    single-byte encodings a source file realistically uses and report the first
+    that round-trips, else say so plainly."""
+    raw = text.encode("utf-8", "surrogateescape")
+    for candidate in ("latin-1", "cp1252", "cp1250", "iso-8859-15"):
+        try:
+            # Round-trip check on BYTES: comparing the decoded string to ``text``
+            # would never match, because decoding maps a raw 0xE9 back to "é"
+            # while ``text`` still holds the U+DC89 escape standing for that byte.
+            if raw.decode(candidate).encode(candidate) == raw:
+                return candidate
+        except UnicodeDecodeError:
+            continue
+    return "a non-UTF-8 encoding"
+
+
+def declared_source_encoding(path: str, raw: bytes) -> Optional[str]:
+    """The encoding a ``.py`` file declares on line 1 or 2 (PEP 263), else None.
+
+    Only Python files carry a machine-readable declaration; for anything else
+    (or an unparseable one) the answer is None, which keeps the write on the
+    UTF-8 path it has always used.
+    """
+    if not path.endswith(".py"):
+        return None
+    for line in raw.split(b"\n", 2)[:2]:
+        m = _PEP263_RE.match(line)
+        if m:
+            return m.group(1).decode("ascii", "replace")
+    return None
+
+
+def encode_in_source_encoding(content: str, encoding: str) -> bytes:
+    """Encode post-edit ``content`` for a file whose own encoding is ``encoding``.
+
+    ``content`` still carries the original's undecodable bytes as U+DC80-U+DCFF
+    (surrogateescape). Those are not characters of any real encoding — each one
+    stands for the single byte it was decoded from — so they are emitted back as
+    that byte, while the text the edit actually added is encoded in the file's
+    real encoding. Result: one encoding for the whole file, and a byte-for-byte
+    round-trip of the parts the edit never touched.
+
+    Raises ``UnicodeEncodeError`` when the added text cannot be represented;
+    callers refuse the write rather than fall back to mixing encodings (#121982).
+    """
+    out = bytearray()
+    for ch in content:
+        if "\udc80" <= ch <= "\udcff":
+            out.append(0x80 + (ord(ch) - 0xdc80))
+        else:
+            out += ch.encode(encoding)
+    return bytes(out)
+
+
+def source_encoding_write_payload(content: str, encoding: str) -> str:
+    """``content`` re-expressed so the transport's UTF-8+surrogateescape encode
+    lands the bytes :func:`encode_in_source_encoding` produced.
+
+    Every backend pipes stdin as ``str`` and encodes it once
+    (``_pipe_stdin`` → ``data.encode("utf-8", "surrogateescape")``). Decoding
+    the target bytes back with ``surrogateescape`` is the exact inverse of that
+    encode, so the non-UTF-8 bytes reach disk as themselves instead of being
+    re-encoded as UTF-8 — the mixing #121982 reported.
+    """
+    return encode_in_source_encoding(content, encoding).decode("utf-8", "surrogateescape")
+
+
+def encoding_refusal(path: str, encoding: str, content: str) -> Optional[str]:
+    """Why the whole post-edit ``content`` cannot be written to a file whose
+    encoding is ``encoding``, or None when it can.
+
+    The write path encodes the WHOLE post-edit file in one encoding, and a file
+    decoded with ``surrogateescape`` carries untouched non-UTF-8 bytes as
+    U+DC80-U+DCFF. Encoding that string as UTF-8 (what the transport did before
+    #121982) round-trips those bytes but emits the text the edit ADDED as UTF-8
+    too — leaving the file in two encodings, silently, reported as success.
+
+    With no encoding declared the only safe case is a wholly-ASCII file
+    (``content.isascii()``): ASCII is the same byte in UTF-8 and in the
+    single-byte encodings this reaches, so nothing can be mixed. Any non-ASCII
+    byte — untouched or added — means refusing, since the file's real encoding
+    is unknown.
+    """
+    if encoding.lower().replace("_", "-") in ("utf-8", "utf8"):
+        return None
+    if content.isascii():
+        return None
+    return (
+        f"Refusing to write '{path}': the file is not UTF-8 (encoding {encoding}) and "
+        "this edit would mix encodings — the file's existing non-UTF-8 bytes cannot be "
+        f"written back together with new text as {encoding} without corrupting it. The file "
+        "was NOT modified. Add a PEP 263 coding declaration naming the encoding, or "
+        "convert the file to UTF-8."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Pagination clamps
 # ---------------------------------------------------------------------------
 

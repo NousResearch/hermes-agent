@@ -544,3 +544,76 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     assert len(warnings) == 1
     assert "['alice']" in warnings[0]
     assert "bob" not in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Received-file path resolution (extra.files_folder)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_relative_file_path_resolved_against_files_folder(tmp_path):
+    """The daemon reports paths relative to its --files-folder; the adapter
+    must hand the gateway an absolute path it can actually open."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "files_folder": str(tmp_path)},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("pic.jpg", "pic.jpg"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].media_urls == [str(tmp_path / "pic.jpg")]
+
+
+@pytest.mark.asyncio
+async def test_absolute_file_path_not_rewritten(tmp_path):
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "files_folder": str(tmp_path)},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/srv/pic.jpg", "pic.jpg"))
+
+    assert dispatched[0].media_urls == ["/srv/pic.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_relative_file_path_without_base_warns_once(caplog):
+    """No files_folder configured — the path passes through unchanged and the
+    misconfiguration is surfaced once instead of failing later as an opaque
+    'Audio file not found'."""
+    import logging as _logging
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    with caplog.at_level(_logging.WARNING, logger=_simplex.__name__):
+        await adapter._handle_chat_item(_make_file_chat_item("voice_1.m4a", "voice_1.m4a"))
+        await adapter._handle_chat_item(_make_file_chat_item("voice_2.m4a", "voice_2.m4a"))
+
+    assert dispatched[0].media_urls == ["voice_1.m4a"]
+    assert dispatched[1].media_urls == ["voice_2.m4a"]
+    warnings = [r for r in caplog.records if "files_folder" in r.getMessage()]
+    assert len(warnings) == 1

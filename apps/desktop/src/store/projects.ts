@@ -12,7 +12,13 @@ import {
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway, type SessionInfo } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import {
+  desktopDefaultCwd,
+  isDesktopFsRemoteMode,
+  readDesktopDir,
+  selectDesktopPaths,
+  writeDesktopFileText
+} from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
@@ -1552,6 +1558,15 @@ export async function openFolderAsProject(dir?: string): Promise<void> {
 
   if (!target) {
     return
+  }
+
+  if (isDesktopFsRemoteMode()) {
+    const readable = await readDesktopDir(target)
+
+    if (readable.error) {
+      notify({ kind: 'warning', message: readable.error })
+      return
+    }
   }
 
   // Refresh first so the membership check runs against live truth — a repo

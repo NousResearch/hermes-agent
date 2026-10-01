@@ -14,8 +14,13 @@ from typing import Any
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
+    # OR the hide flag into the shared kwargs instead of passing the keyword twice.
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
     return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", **kwargs,
+        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        **kwargs,
     )
 
 
@@ -101,7 +106,12 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
-    return _fetch(git_cmd, root, depth_args, "origin", branch), f"origin/{branch}"
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
+    print("→ Fetching from origin...")
+    return fetch_with_partial_clone_recovery(
+        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
 
 
 def repair_shallow_grafts(root: Path) -> None:

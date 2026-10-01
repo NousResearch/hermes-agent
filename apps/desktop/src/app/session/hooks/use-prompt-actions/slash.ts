@@ -2,7 +2,9 @@ import { skillInvocationText } from '@hermes/shared'
 import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
+import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
@@ -13,6 +15,7 @@ import {
   type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
@@ -190,7 +193,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -266,8 +269,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
-        if (!isDesktopSlashCommand(name)) {
+        // Resolve the INVOCATION, not just the name: a command the desktop owns
+        // for its management surface can still delegate individual subcommands
+        // to the backend (`/skills pending` — see desktopSubcommandAllowlist).
+        if (!isDesktopSlashCommand(name, arg)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+          return
+        }
+
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its write-approval review slice here — the CLI hub mutations
+        // must not be reachable from a desktop exec) stop at the client.
+        const subcommandBlocked = desktopSubcommandUnavailableMessage(name, arg)
+
+        if (subcommandBlocked) {
+          renderSlashOutput(subcommandBlocked)
 
           return
         }
@@ -747,13 +764,28 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // toChatMessages handles it directly. updateSessionState only
             // publishes for the active runtime, guarding against a late result
             // clobbering the foreground after a session switch.
+            // The pre-compression segment stays reachable in the active
+            // session (#105256): the rewrite shares no anchor with the live
+            // transcript, so grafting would drop everything before the
+            // summary. Prepend it instead (deduped by row/message id), keeping
+            // the post-compress history authoritative for overlapping rows.
             if (Array.isArray(result?.messages)) {
               updateSessionState(
                 sessionId,
-                state => ({ ...state, messages: toChatMessages(result.messages!) }),
+                state => ({
+                  ...state,
+                  messages: mergeOlderTranscriptPage(toChatMessages(result.messages!), state.messages)
+                }),
                 storedSessionId
               )
             }
+
+            // The transcript just shrank by 5-10x outside any turn (busy never
+            // flipped), so the keyed context breakdown — if already fetched —
+            // is now wrong by that factor. Bump the invalidation generation:
+            // the statusbar gauge refetches immediately instead of serving the
+            // pre-compression figure until the session is switched (#94001).
+            invalidateContextBreakdown(sessionId)
 
             const usage = { ...result?.usage, ...result?.info?.usage }
 
@@ -1293,6 +1325,18 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           return
+        }
+
+        // Shared metrics count each command the user typed exactly once, here, whether the desktop
+        // handles it locally or on the gateway (which no longer counts slash.exec itself). An alias
+        // re-dispatch (recordInput=false) and programmatic calls (typed=false) are not user input.
+        if (recordInput && options?.typed !== false) {
+          const metricsSessionId = sessionHint || activeSessionIdRef.current
+
+          void requestGateway('shared_metrics.slash_command', {
+            command: name,
+            ...(metricsSessionId ? { session_id: metricsSessionId } : {})
+          }).catch(() => undefined)
         }
 
         const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }

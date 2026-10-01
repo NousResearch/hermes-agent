@@ -11,7 +11,6 @@ from contextlib import contextmanager, suppress
 import logging
 import os
 import signal
-import subprocess
 import time
 from pathlib import Path
 
@@ -27,17 +26,11 @@ def _detect_gpu_vendor() -> str | None:
     """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
     probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
     vulkan/cpu); anything else defers to select_backend's fallback ladder."""
-    from hermes_cli.local_runtime.hardware import _nvidia_smi_path
+    from hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
 
-    smi = _nvidia_smi_path()
-    if smi is None:
-        return None
-    with suppress(OSError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
+    query = _cached_nvidia_gpu_query()
+    if query is not None and query.get("gpu_name"):
+        return "nvidia " + query["gpu_name"]
     return None
 
 
@@ -492,25 +485,3 @@ def _start_idle_sweeper(sup) -> None:
                 logger.debug("launch window re-plan skipped: %s", exc)
 
     threading.Thread(target=_loop, daemon=True, name="local-runtime-idle-sweep").start()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

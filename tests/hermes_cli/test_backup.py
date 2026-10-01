@@ -2126,6 +2126,162 @@ class TestRestoreCronJobsIfEmptied:
 
 
 # ---------------------------------------------------------------------------
+# Cron agent-job prompt field degradation across update (issue #82990)
+# ---------------------------------------------------------------------------
+
+class TestRestoreCronPromptFieldsIfDegraded:
+    """A writer in the update's mutation window replaced every agent-job prompt
+    with the job's own name while the count stayed identical — the count-based
+    net passed it undetected. `restore_cron_prompt_fields_if_degraded` is the
+    field-level net."""
+
+    @staticmethod
+    def _seed_jobs(path: Path, jobs):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"jobs": jobs}))
+
+    def _make_snapshot(self, hermes_home: Path, label="pre-update"):
+        from hermes_cli.backup import create_quick_snapshot
+        return create_quick_snapshot(label=label, hermes_home=hermes_home, keep=5)
+
+    def test_restores_prompts_when_count_unchanged_but_clobbered(self, tmp_path):
+        """The reported incident: 6 jobs before, 6 after, every prompt == name."""
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [
+            {"id": f"job-{i}", "name": f"Morning brief {i}",
+             "prompt": f"Read the news and write brief {i}."}
+            for i in range(6)
+        ])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # The mutation window clobbers prompts to the name; count unchanged.
+        self._seed_jobs(jobs_path, [
+            {"id": f"job-{i}", "name": f"Morning brief {i}",
+             "prompt": f"Morning brief {i}"}
+            for i in range(6)
+        ])
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["prompts"] == 6
+        assert result["snapshot_id"] == snap_id
+
+        restored = json.loads(jobs_path.read_text())
+        for i, job in enumerate(restored["jobs"]):
+            assert job["prompt"] == f"Read the news and write brief {i}."
+            # Only the prompt was touched — name still the live one.
+            assert job["name"] == f"Morning brief {i}"
+
+    def test_blank_prompt_is_restored_too(self, tmp_path):
+        """Missing/blank prompt on a live agent job is equally unusable."""
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "Cleanup", "prompt": "Clean the tmp dir."}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "Cleanup", "prompt": ""}])
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["prompts"] == 1
+        assert json.loads(jobs_path.read_text())["jobs"][0]["prompt"] == "Clean the tmp dir."
+
+    def test_no_agent_jobs_are_untouched(self, tmp_path):
+        """Script jobs have no prompt — never restored, never stomped."""
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [
+            {"id": "agent", "name": "Brief", "prompt": "Write the brief."},
+            {"id": "script", "name": "Backup", "no_agent": True, "script": "echo hi", "prompt": "Backup"},
+        ])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        self._seed_jobs(jobs_path, [
+            {"id": "agent", "name": "Brief", "prompt": "Brief"},
+            {"id": "script", "name": "Backup", "no_agent": True, "script": "echo hi", "prompt": "Backup"},
+        ])
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["prompts"] == 1
+        assert result["job_ids"] == ["agent"]
+        jobs = json.loads(jobs_path.read_text())["jobs"]
+        assert jobs[0]["prompt"] == "Write the brief."
+        assert jobs[1]["prompt"] == "Backup"  # untouched
+
+    def test_a_legitimate_user_edit_is_not_stomped(self, tmp_path):
+        """Only prompt==name or blank restores — a genuinely different prompt
+        is the user's edit during the window, not degradation."""
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "Old", "prompt": "Old prompt text."}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "New name", "prompt": "Deliberately rewritten prompt."}])
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is None
+        assert json.loads(jobs_path.read_text())["jobs"][0]["prompt"] == "Deliberately rewritten prompt."
+
+    def test_a_legit_prompt_equal_to_name_stays(self, tmp_path):
+        """A user may legitimately set prompt == name; a blank SNAPSHOT prompt
+        means the snapshot has nothing better — restore nothing."""
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        # Snapshot job had a blank prompt (hand-edited oddity).
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "Ping", "prompt": ""}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Live prompt collapsed to the name — but the snapshot has nothing to give back.
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "Ping", "prompt": "Ping"}])
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is None
+
+    def test_unknown_job_ids_are_left_alone(self, tmp_path):
+        """Jobs the snapshot does not know are new since the snapshot — theirs."""
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "A", "prompt": "A prompt."}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        self._seed_jobs(jobs_path, [
+            {"id": "a", "name": "A", "prompt": "A prompt."},
+            {"id": "new", "name": "New", "prompt": "New"},  # created during the window
+        ])
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is None
+
+    def test_healthy_file_is_untouched(self, tmp_path):
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a", "name": "A", "prompt": "A prompt."}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+        before = jobs_path.read_text()
+
+        result = restore_cron_prompt_fields_if_degraded(snap_id, hermes_home=hermes_home)
+        assert result is None
+        assert jobs_path.read_text() == before
+
+
+# ---------------------------------------------------------------------------
 # config.yaml model/provider + MoA auto-restore after silent update rewrite
 # (issue #64160)
 # ---------------------------------------------------------------------------
@@ -2660,3 +2816,38 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
     assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
     assert (tmp_path / "my-archive.zip").exists()
+
+
+def test_import_restores_the_session_store_with_its_message_uids(tmp_path, monkeypatch):
+    """A backup ships state.db as a SQLite snapshot and an import puts it back byte-for-byte: the durable
+    message ids come back with the rows."""
+    from hermes_state import SessionDB
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    _make_hermes_tree(hermes_home)
+    db = SessionDB(db_path=hermes_home / "state.db")
+    try:
+        db.create_session("s", "cli", model="m")
+        db.append_message(session_id="s", role="user", content="q")
+        db.append_message(session_id="s", role="assistant", content="a")
+        uids = [m["message_uid"] for m in db.get_messages_as_conversation("s")]
+    finally:
+        db.close()
+    assert len(uids) == 2 and all(len(u) == 32 for u in uids)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from hermes_cli.backup import run_backup, run_import
+
+    out_zip = tmp_path / "backup.zip"
+    run_backup(Namespace(output=str(out_zip)))
+    for name in ("state.db", "state.db-wal", "state.db-shm"):
+        (hermes_home / name).unlink(missing_ok=True)
+    assert run_import(Namespace(zipfile=str(out_zip), force=True)) is None
+
+    restored = SessionDB(db_path=hermes_home / "state.db")
+    try:
+        assert [m["message_uid"] for m in restored.get_messages_as_conversation("s")] == uids
+    finally:
+        restored.close()

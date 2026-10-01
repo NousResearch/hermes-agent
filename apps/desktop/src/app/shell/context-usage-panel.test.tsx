@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/compon
 import { I18nProvider } from '@/i18n'
 import type { ContextBreakdown, UsageStats } from '@/types/hermes'
 
-import { ContextUsagePanel } from './context-usage-panel'
+import { ContextMeterDetail, ContextUsagePanel } from './context-usage-panel'
 import { useContextBreakdown } from './hooks/use-context-breakdown'
 
 const usage: UsageStats = {
@@ -165,9 +165,7 @@ describe('ContextUsagePanel', () => {
     expect(screen.getByText('Loaded — truncated at the context-file limit')).toBeTruthy()
     expect(screen.getByText('Not loaded — a higher-priority context file won')).toBeTruthy()
     expect(
-      screen.getByText(
-        'These are full-file estimates before truncation, not tokens used in the context total above.'
-      )
+      screen.getByText('These are full-file estimates before truncation, not tokens used in the context total above.')
     ).toBeTruthy()
 
     const categoryList = globalThis.document.querySelector('[data-slot="context-usage-panel"] > ul')
@@ -279,5 +277,31 @@ describe('ContextUsagePanel', () => {
     ).toBeTruthy()
     expect(screen.queryByText(/full file/i)).toBeNull()
     expect(screen.queryByText(/not included in totals/i)).toBeNull()
+  })
+
+  it('reports the live compression count, zero included, and never invents one', () => {
+    const { rerender } = render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
+
+    expect(screen.queryByTestId('context-panel-compressions')).toBeNull()
+
+    for (const compressions of [0, 3]) {
+      rerender(<ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, compressions }} />)
+      expect(screen.getByTestId('context-panel-compressions').textContent).toBe(`Compressions: ${compressions}`)
+    }
+  })
+})
+
+describe('ContextMeterDetail', () => {
+  it('adds the count to the meter only once the session has compacted', () => {
+    for (const compressions of [undefined, 0]) {
+      const { container, unmount } = render(<ContextMeterDetail bar="[██░░] 47%" compressions={compressions} />)
+
+      expect(container.textContent).toBe('[██░░] 47%')
+      unmount()
+    }
+
+    render(<ContextMeterDetail bar="[██░░] 47%" compressions={2} />)
+
+    expect(screen.getByTestId('context-meter-compressions').textContent).toBe('2')
   })
 })

@@ -1,6 +1,7 @@
 import { compactNumber } from '@hermes/shared'
 import { useId, useMemo, useState } from 'react'
 
+import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { OverflowTip } from '@/components/ui/tooltip'
@@ -60,9 +61,21 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         </span>
       </div>
 
-      <p className="text-[0.6875rem] text-foreground">
-        {usage.context_estimated ? '~' : ''}
-        {copy.percentFull(contextPercent)}
+      <p className="flex items-center justify-between gap-2 text-[0.6875rem] text-foreground">
+        <span>
+          {usage.context_estimated ? '~' : ''}
+          {copy.percentFull(contextPercent)}
+        </span>
+
+        {usage.compressions !== undefined && (
+          <span
+            className="inline-flex items-center gap-1 text-muted-foreground"
+            data-testid="context-panel-compressions"
+          >
+            <Codicon aria-hidden="true" name="layers" size="0.6875rem" />
+            {t.shell.statusbar.compressions(usage.compressions)}
+          </span>
+        )}
       </p>
 
       <ContextUsageBar categories={categories} segmentTotal={segmentTotal} />
@@ -129,6 +142,26 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         </section>
       )}
     </div>
+  )
+}
+
+/** The statusbar meter's trailing `[bar] N%`, plus a quiet `layers N` once the
+ *  live session has compacted — the same glyph the sidebar puts on rows that
+ *  came from a compression, so the two read as one idea. Zero stays out of the
+ *  meter (every fresh session would carry noise); the panel shows it. */
+export function ContextMeterDetail({ bar, compressions }: { bar: string; compressions?: number }) {
+  if (!compressions) {
+    return bar
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {bar}
+      <span className="inline-flex items-center gap-0.5 tabular-nums" data-testid="context-meter-compressions">
+        <Codicon aria-hidden="true" name="layers" size="0.6875rem" />
+        {compressions}
+      </span>
+    </span>
   )
 }
 

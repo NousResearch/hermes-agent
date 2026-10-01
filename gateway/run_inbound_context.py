@@ -338,7 +338,7 @@ class GatewayInboundContextMixin:
             message_text = transcription.render(message_text)
             message_text += expanded_authored_text[len(authored_text):]
         elif _pending_stt_prepared:
-            message_text = str(getattr(event, "_gateway_pending_stt_text", "") or "")
+            message_text = str(getattr(event, "_gateway_pending_stt_text", "") or "") + expanded_authored_text[len(authored_text):]
         else:
             message_text = expanded_authored_text
         message_text = self._prefix_inbound_sender_context(event, source, message_text)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gateway.platforms.base_pending import pending_dispatch_needs_snapshot
+
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, fields
 import json
@@ -12,7 +14,7 @@ import time
 from typing import Any
 import uuid
 
-from gateway.platforms.base_pending import _PendingDispatchReservation, pending_dispatch_needs_snapshot
+from gateway.platforms.base_pending import _PendingDispatchReservation, pending_dispatch_needs_snapshot, pending_dispatch_records
 from gateway.platforms.event import MessageEvent
 
 logger = logging.getLogger(__name__)
@@ -138,10 +140,11 @@ def _capture_event(event: MessageEvent) -> dict[str, Any]:
 def flush_adapter_pending(adapter: Any, reservations: dict[str, list[_PendingDispatchReservation]]) -> set[str]:
     """Snapshot each adapter-owned session before pending stores are cleared."""
     runner = getattr(adapter, "gateway_runner", None)
-    for key, reserved in getattr(adapter, "_pending_dispatch_reservations", {}).items():
+    for key in getattr(adapter, "_pending_dispatch_reservations", {}):
         recorded = reservations.setdefault(key, [])
-        if not any(previous is reserved for previous in recorded):
-            recorded.append(reserved)
+        for reserved in pending_dispatch_records(adapter, key):
+            if not any(previous is reserved for previous in recorded):
+                recorded.append(reserved)
     pending = getattr(adapter, "_pending_messages", {})
     buffered = adapter._text_debounce_store()
     keys = set(pending) | set(buffered) | set(reservations)

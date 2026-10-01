@@ -1244,6 +1244,8 @@ export const en: Translations = {
       modelPricingTitle: 'Model Pricing',
       modelPricingDesc: 'Show input, output, and cache-read prices per million tokens in the model picker.',
       reactionsTitle: 'Message Reactions',
+      skillSuggestionsTitle: 'Skill Suggestions',
+      skillSuggestionsDesc: 'Suggest matching slash commands while you type — Tab to accept, hover to see the skill description.',
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
@@ -3845,6 +3847,7 @@ export const en: Translations = {
     commonCommands: 'Common commands',
     hotkeys: 'Hotkeys',
     helpFooter: 'opens the full panel · backspace dismisses',
+    ghostShiftTabHint: 'Shift+Tab to cycle',
     commandDescs: {
       '/help': 'Show desktop slash commands',
       '/clear': 'start a new session',
@@ -4025,6 +4028,12 @@ export const en: Translations = {
       done: 'Marked for scheduling',
       doneTip: 'Send it and the agent creates the job'
     },
+    skillStripPrefix: 'Try typing: ',
+    skillStripDismiss: 'Hide suggestions',
+    onboardingTitle: 'Welcome to Hermes Desktop',
+    onboardingLine1: 'Click here to start a conversation',
+    onboardingLine2: 'Type / to see every command · @ to reference files · /help for the full manual',
+    onboardingAck: 'Got it',
     snippets: {
       codeReview: {
         label: 'Code review',

@@ -15,33 +15,35 @@ _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
+def _account_info(force_fresh: bool = False):
+    """The profile's normalized Portal account snapshot, or None when the read itself failed."""
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        return get_nous_portal_account_info(force_fresh=force_fresh)
+    except Exception:
+        return None
+
+
 def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     """Coarse gate: entitled to the Nous Tool Gateway (paid Portal access OR a live free
     pool). Fails closed on unknown/error — never blocks startup. Callers narrow per category
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
-                        else get_nous_portal_account_info())
-        return bool(account_info.logged_in) and account_info.tool_gateway_entitled
-    except Exception:
-        return False
+    account_info = _account_info(force_fresh)
+    return bool(account_info is not None and account_info.logged_in and account_info.tool_gateway_entitled)
 
 
-def fast_search_entitled(*, force_fresh: bool = False) -> bool:
+def fast_search_entitled() -> bool:
     """Eligibility for the managed Perplexity ``search_type: "fast"`` route: a registered Portal
     identity of ANY tier, with no credit or tool-pool requirement — that route is served without
     funding checks. The anonymous guest tier is excluded: it has no Portal account behind it, so
-    it keeps the keyless ring. Fails closed on unknown/error, like
-    :func:`managed_nous_tools_enabled`."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
-                        else get_nous_portal_account_info())
-        return (bool(account_info.logged_in) and account_info.error is None
-                and not account_info.is_anonymous_tier)
-    except Exception:
-        return False
+    it keeps the keyless ring.
+
+    Unlike :func:`managed_nous_tools_enabled` this deliberately ignores ``tool_gateway_entitled``
+    (no credit requirement) and so must reject an error snapshot itself: a failed lookup is still
+    stamped ``logged_in=True``, and only ``error`` distinguishes it from a real account."""
+    account_info = _account_info()
+    return bool(account_info is not None and account_info.logged_in
+                and account_info.error is None and not account_info.is_anonymous_tier)
 
 
 def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,

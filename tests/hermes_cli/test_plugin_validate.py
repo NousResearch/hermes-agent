@@ -619,3 +619,9 @@ def test_oauth_in_a_plugin_keyed_custom_fails_admission(tmp_path):
     report = validate_plugin_dir(plugin)
 
     assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+
+
+def test_calver_requires_hermes_floor_fails_admission(tmp_path: Path) -> None:
+    report = validate_plugin_dir(_make_plugin(tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=2026.9.24"}))
+    assert not report.ok
+    assert any("CalVer" in failure for failure in report.failures)

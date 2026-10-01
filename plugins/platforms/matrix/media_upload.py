@@ -65,3 +65,24 @@ class MatrixMediaUploadMixin:
         )
         return await self._send_content_event(
             room_id, msg_content, original_target=target, verify_encryption=destination.delivery)
+
+    async def _send_content_event(
+        self, room_id: str, msg_content: dict[str, Any], *, finalize: bool = True, original_target: Optional[str] = None,
+        verify_encryption: bool = False,
+    ) -> SendResult:
+        """Send a prebuilt m.room.message payload, mapping exceptions to SendResult. Encryption
+        may have started during an upload, so the room's state is read again before sending."""
+        from .adapter import asyncio, RoomID, EventType, _matrix_send_error_kind
+
+        try:
+            encrypted = (await self._check_room_encryption(room_id) if verify_encryption
+                         else await self._synced_room_encryption(room_id))
+            if encrypted and "url" in msg_content:
+                raise ValueError("Room encryption changed during upload; plaintext attachment was not sent")
+            event_id = await asyncio.wait_for(
+                self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+            self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
+            self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
+            return SendResult(success=True, message_id=str(event_id))
+        except Exception as exc:
+            return SendResult(success=False, error=f"Matrix target '{original_target or room_id}': {exc}", error_kind=_matrix_send_error_kind(exc))

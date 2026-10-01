@@ -814,12 +814,20 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
  *  Appends and queues the target thread behind the active room drive,
  *  without redirecting a member whose inference is still in flight.
  *  Returns the thread id the message landed in. */
+/** Options for a send made ON THE USER'S BEHALF by a relay (`hermes group
+ *  send`): `via` is recorded on the user entry as provenance; the entry is
+ *  otherwise indistinguishable from one typed in the composer. */
+export interface SendToGroupChatOptions {
+  via?: string
+}
+
 export function sendToGroupChat(
   group: string,
   members: GroupMember[],
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  opts?: SendToGroupChatOptions
 ): null | string {
   const trimmed = String(text || '').trim()
 
@@ -860,11 +868,14 @@ export function sendToGroupChat(
     return room
   })
 
+  const via = String(opts?.via || '').trim()
+
   const sent = appendGroupChatEntry(
     group,
     {
       kind: 'user',
-      name: 'You'
+      name: 'You',
+      ...(via ? { via } : {})
     },
     trimmed,
     target,

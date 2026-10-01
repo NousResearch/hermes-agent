@@ -1288,11 +1288,13 @@ class _CodexStreamGuard:
         # Publish transport timeout only after the attempt-local decision is fixed, so owner
         # polling cannot observe completion in between.
         self.timed_out.set()
+        is_owner = threading.get_ident() == self._owner_tid
         if not timeout_won:
             # Owner already hard-cancelled. The OpenAI client is process-shared, so never
             # close/evict it here; wake only this attempt's stream if responses.create()
             # returned one, else rely on the bounded SDK timeout.
-            self.close_attempt_stream("cancelled attempt stream close during timeout failed")
+            if is_owner:
+                self.close_attempt_stream("cancelled attempt stream close during timeout failed")
             return
         # FD-ownership contract: only the thread driving the request may ``close()`` this
         # client's FDs. From a stranger thread (the watchdog Timer) only ``shutdown()`` is
@@ -1303,8 +1305,9 @@ class _CodexStreamGuard:
         # ``threading.Timer``, which is a stranger thread. The owning thread performs the real close in the
         # ``finally`` below, which is where the FD release belongs. See #70773.
         self.timeout_release_pending.set()
-        if threading.get_ident() == self._owner_tid:
+        if is_owner:
             _close_quietly(self._client, "client close during timeout failed")
+            self.close_attempt_stream("attempt stream close during timeout failed")
         else:
             try:
                 from agent.agent_runtime_helpers import force_close_tcp_sockets
@@ -1314,10 +1317,9 @@ class _CodexStreamGuard:
                     "deferred_close=stranger_thread)", shutdown_count)
             except Exception:
                 logger.debug("Codex auxiliary: client abort during timeout failed", exc_info=True)
-            # Socket shutdown only wakes a reader on a REAL transport; the owner may be blocked
-            # inside the SDK's event stream (or a socketless test double). Closing the
-            # attempt-owned stream releases it without touching shared FDs.
-            self.close_attempt_stream("attempt stream close during stranger-thread timeout failed")
+            # Socket shutdown wakes a reader on a real transport; the owner closes the attempt stream
+            # in its finally block. Calling close_attempt_stream() here from a stranger thread
+            # would touch shared FDs and break the ownership contract.
         # The aux client cache wraps this same client; drop the entry so the next aux call
         # doesn't reuse the dead transport and fail fast.
         try:

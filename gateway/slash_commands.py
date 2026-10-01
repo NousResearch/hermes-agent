@@ -598,7 +598,7 @@ class GatewaySlashCommandsMixin(
         commands ``_check_slash_access`` would refuse."""
         from gateway.slash_access import policy_for_runner_source
         source = event.source
-        options = {"platform": source.platform.value} if source and source.platform else {}
+        options = {"platform": source.platform.value} if source else {}
         # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
         # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)

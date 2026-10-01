@@ -63,7 +63,7 @@ def installed_skill_commands(
 
 def _write_skill(home: Path, name: str, description: str = "Research") -> None:
     directory = home / "skills" / name
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\nResearch.\n",
         encoding="utf-8",
@@ -199,28 +199,39 @@ async def test_skills_help_lists_all_installed_commands(
         (Platform.TELEGRAM, []),
     ],
 )
+@pytest.mark.parametrize("gated", [False, True])
 async def test_catalogues_omit_skills_disabled_for_the_platform(
     platform: Platform,
     disabled: list[str],
+    gated: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
+    if gated:
+        from gateway.config import GatewayConfig, PlatformConfig
+
+        runner.config = GatewayConfig(platforms={
+            platform: PlatformConfig(enabled=True, extra={"allow_admin_from": ["admin"]}),
+        })
     installed = ["research", "matrix-off", "discord-off", "model"]
     descriptions = {"research": "Pair with `/matrix-off` or `/discord-off`."}
     pages = range(1, len(gateway_help_lines()) // 10 + 2)
 
     async def catalogues(home: Path, skills: list[str], config: str) -> list[str]:
         monkeypatch.setenv("HERMES_HOME", str(home))
-        home.mkdir()
+        home.mkdir(exist_ok=True)
         (home / "config.yaml").write_text(config, encoding="utf-8")
         for name in skills:
             _write_skill(home, name, descriptions.get(name, "Research"))
         requests = [
             ("help", ""),
             ("help", "skills"),
+            ("help", "SKILL"),
+            ("help", "research"),
+            ("help", "model"),
             *[("commands", str(page)) for page in pages],
         ]
         return [
@@ -231,20 +242,20 @@ async def test_catalogues_omit_skills_disabled_for_the_platform(
         ]
 
     monkeypatch.chdir(tmp_path)
-    actual = await catalogues(
-        tmp_path / "configured",
-        installed,
+    configuration = (
         "skills:\n"
         "  platform_disabled:\n"
         "    matrix: [matrix-off, model]\n"
-        "    discord: [discord-off]\n",
+        "    discord: [discord-off]\n"
     )
+    actual = await catalogues(tmp_path / "configured", installed, configuration)
     expected = await catalogues(
         tmp_path / "reference",
         [name for name in installed if name not in disabled],
         "{}\n",
     )
-    assert actual == expected
+    repeated = await catalogues(tmp_path / "configured", installed, configuration)
+    assert (actual, repeated) == (expected, expected)
 
 
 @pytest.fixture

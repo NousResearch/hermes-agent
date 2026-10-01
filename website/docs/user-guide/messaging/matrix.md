@@ -558,6 +558,7 @@ Start with the generated command directory rather than relying on a static list:
 !commands 2        # next page
 !help              # concise command help
 !help skills       # installed skill commands
+!help model        # commands and skills that match model
 !whoami            # verify admin/user command access
 ```
 
@@ -582,9 +583,9 @@ starts with a letter.
 
 A skill whose name matches a built-in command, such as a skill named `model`,
 has no command of its own because the built-in keeps the name. `!commands` and
-`!help skills` list such a skill in a note that suggests `/skill <name>`. Hermes
-has no `skill` command on Matrix, so ask for the skill in an ordinary message
-instead.
+`!help skills` show a note that explains the collision. When slash access is
+gated, only admins see skill commands and collision notes. Hermes has no
+`skill` command on Matrix, so ask for the skill in an ordinary message.
 
 The generated directory includes every gateway-compatible built-in command and alias
 plus the skill commands that are enabled on Matrix. A skill listed under

@@ -91,7 +91,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
   ingress path calls the canonicalize seam before it derives a key: the adapter side
   (`platforms/base.py::_canonicalize` in `handle_message`, Telegram photo /
-  album routing, `_handle_message_while_active`, every `_source_session_key`, and
+  album routing and every `_source_session_key`;
+  `platforms/base_busy.py::_handle_message_while_active`; and
   `platforms/base_text_batching.py::_enqueue_text_event`) and the runner side
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound_admission.py::_hm_admit_event`). No key derivation

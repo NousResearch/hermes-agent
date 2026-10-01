@@ -67,7 +67,7 @@ export function CanonicalGroupComposerInput({ members, value, disabled, name, on
     </div>}
     <Textarea aria-activedescendant={open ? `${listId}-${active}` : undefined} aria-autocomplete="list"
       aria-controls={open ? listId : undefined} aria-label={labels.groupMessage}
-      className="field-sizing-content max-h-[min(40vh,16rem)] min-h-12 resize-none overflow-y-auto border-0 bg-transparent text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height) shadow-none focus-visible:ring-0"
+      className="field-sizing-content max-h-[min(40vh,16rem)] min-h-12 resize-none overflow-y-auto text-[length:var(--conversation-text-font-size)] leading-(--conversation-line-height)"
       disabled={disabled} onBlur={() => setToken(null)} onChange={event => { onChange(event.target.value); locate(event.target) }}
       onClick={event => locate(event.currentTarget)} onKeyDown={event => {
         if (event.nativeEvent.isComposing || event.keyCode === 229) {return}
@@ -87,6 +87,6 @@ export function CanonicalGroupComposerInput({ members, value, disabled, name, on
  return}
 
         if (event.key === 'Enter' && !event.shiftKey) {event.preventDefault(); onSubmit()}
-      }} onSelect={event => locate(event.currentTarget)} placeholder={labels.messagePlaceholder.replace('{name}', name)} ref={input} value={value} />
+      }} onSelect={event => locate(event.currentTarget)} placeholder={labels.messagePlaceholder.replace('{name}', name)} ref={input} value={value} variant="plain" />
   </div>
 }

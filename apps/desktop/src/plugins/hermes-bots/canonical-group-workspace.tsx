@@ -8,6 +8,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
+import { updateCanonicalGroupName } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
@@ -19,6 +20,7 @@ interface DriverStatus {
   running?: boolean
   working?: boolean
   blocked?: boolean
+  counts?: Record<string, number>
   pending_actions?: CanonicalPendingAction[]
 }
 interface RoomState { room: { name: string; authority_epoch?: number; members?: CanonicalRoomMember[] }; driver_status?: DriverStatus }
@@ -39,7 +41,7 @@ function sendOutcome(error: unknown): 'refused' | 'retryable' | 'unknown' {
 function roomStatus(status: DriverStatus, labels: Labels) {
   const actions = status.pending_actions || []
   const approvals = actions.filter(action => action.kind === 'approval').length
-  const stopping = actions.some(action => action.kind === 'stopping')
+  const stopping = (status.counts?.stopping ?? 0) > 0 || actions.some(action => action.kind === 'stopping')
   const attention = actions.filter(action => action.kind !== 'approval' && action.kind !== 'stopping').length
   const parts = [stopping ? labels.statusStopping : status.working ? labels.statusWorking : status.running === false ? labels.statusStopped : labels.statusIdle]
 
@@ -131,6 +133,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
       const last = seen.current.seq
       seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
       setState(snapshot)
+      updateCanonicalGroupName(binding, snapshot.room.name)
       setEvents(current => fresh ? log : [...current, ...log.filter(event => event.seq > last)])
       setReadError('')
     }
@@ -250,9 +253,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const pendingActions = state?.driver_status?.pending_actions ?? []
   const inputDisabled = !restored || busy || !!pending || !state?.driver_status
 
+  // `running` reports gateway-worker health, including while this chat is idle.
+  const canStop = Boolean(pending || busy || stopping || state?.driver_status && (state.driver_status.working ||
+    ['queued', 'running', 'stopping'].some(status => (state.driver_status?.counts?.[status] ?? 0) > 0) ||
+    pendingActions.length))
+
   return <section className="flex h-full min-h-0 flex-col" data-slot="canonical-group-chat">
     <CanonicalGroupHeader attention={state?.driver_status?.blocked || pendingActions.some(action => action.kind !== 'stopping')}
-      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} working={state?.driver_status?.working}>
+      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} visible={visible} working={state?.driver_status?.working}>
       {visible && state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))) })}
     </CanonicalGroupHeader>
     <div aria-label={labels.conversationHistory} className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-2"
@@ -291,7 +299,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
 
  if (alive.current) {setUploading(uploading)} }} />
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            <Button disabled={stopping || !state?.driver_status} loading={stopping} onClick={() => void stop()} size="xs" type="button" variant="ghost"><Codicon name="debug-stop" />{labels.stop}</Button>
+            {canStop && <Button disabled={stopping} loading={stopping} onClick={() => void stop()} size="xs" type="button" variant="ghost"><Codicon name="debug-stop" />{labels.stop}</Button>}
             <Tip label={pending ? labels.retry : labels.send}><Button aria-label={pending ? labels.retry : labels.send} className={PRIMARY_ICON_BTN}
               disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} loading={busy}
               size="icon-xs" type="submit" variant="ghost"><Codicon name={pending ? 'refresh' : 'arrow-up'} /></Button></Tip>

@@ -232,6 +232,107 @@ describe('PreviewPane console state', () => {
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
   })
 
+  it('Escape goes back only when the webview has history', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const goBack = vi.fn()
+
+    Object.assign(webview, { canGoBack: () => false, goBack, loadURL: vi.fn(async () => undefined) })
+
+    // No history yet: Escape is not claimed (the pane does not fake a back).
+    const pane = rendered.container.querySelector('aside') as HTMLElement
+
+    fireEvent.keyDown(pane, { key: 'Escape' })
+    expect(goBack).not.toHaveBeenCalled()
+
+    // After an in-page navigation there is history: Escape drives it.
+    Object.assign(webview, { canGoBack: () => true })
+
+    fireEvent.keyDown(pane, { key: 'Escape' })
+    expect(goBack).toHaveBeenCalledOnce()
+  })
+
+  it('Escape keeps its native meaning for editable surfaces inside the pane', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const goBack = vi.fn()
+
+    Object.assign(webview, { canGoBack: () => true, goBack })
+
+    // The browser bar's address input: Escape resets the draft (its own
+    // handler), and must not ALSO navigate the webview back.
+    const address = rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement
+
+    fireEvent.focus(address)
+    fireEvent.keyDown(address, { key: 'Escape' })
+    expect(goBack).not.toHaveBeenCalled()
+  })
+
+  // #120265: an external target.url change must steer the LIVE guest with
+  // loadURL(), not destroy the webview and rebuild it (which dropped JS
+  // state, cookies, form data, scroll, refs, and detached console/annotate).
+  it('reuses the live webview guest when target.url changes instead of rebuilding it', async () => {
+    const tabId = 'reuse-guest-tab'
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          tabId={tabId}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/one',
+            url: 'http://localhost:5174/one'
+          }}
+        />
+      )
+    })
+
+    const first = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    expect(first).toBeInstanceOf(HTMLElement)
+    const loadURL = vi.fn(async () => undefined)
+    Object.assign(first, { loadURL })
+
+    await act(async () => {
+      rendered.rerender(
+        <PreviewPane
+          tabId={tabId}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/two',
+            url: 'http://localhost:5174/two'
+          }}
+        />
+      )
+    })
+
+    // Same guest node: JS state, cookies, form data, scroll, and refs survive.
+    expect(rendered.container.querySelector('webview')).toBe(first)
+    // Steered with loadURL, not a src swap or a rebuild.
+    expect(loadURL).toHaveBeenCalledWith('http://localhost:5174/two')
+    expect(rendered.container.querySelector('webview')?.getAttribute('src')).toBe('http://localhost:5174/one')
+    expect((rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).value).toBe(
+      'http://localhost:5174/two'
+    )
+  })
+
   it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {
     $selectedStoredSessionId.set('session-one')
     const selectedCrop = 'data:image/png;base64,c2VsZWN0ZWQ='
@@ -697,6 +798,31 @@ describe('PreviewPane console state', () => {
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'
     })
+  })
+
+  // #101880: guest window.print() segfaults the macOS native print panel —
+  // the pane stubs print in every guest document so the panel is never built.
+  it('stubs window.print in the guest on dom-ready', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const executeJavaScript = vi.fn(async (_code: string) => undefined)
+
+    Object.assign(webview, { executeJavaScript })
+
+    act(() => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+    expect(String(executeJavaScript.mock.calls[0]?.[0])).toContain('window.print')
   })
 })
 

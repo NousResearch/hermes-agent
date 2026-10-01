@@ -47,10 +47,31 @@ class TestHermesTimeNow:
         assert offset == timedelta(hours=5, minutes=30)
 
 
+# Windows zone name in cp1252 bytes, decoded under a UTF-8 LC_CTYPE with surrogateescape (#102910).
+_ESCAPED_ZONE = "Paris, Madrid (heure d'\udce9t\udce9)"
 
 
+class TestSafeStrftime:
+    def test_valid_locale_text_is_byte_identical_to_strftime(self):
+        """The system prompt embeds this output, so healthy locales must not change a byte."""
+        from zoneinfo import ZoneInfo
+        fmt = "%a %A %b %B %d %Y %H:%M:%S %Z %z %%Z"
+        for value in (
+            datetime(2026, 7, 14, 13, 5),
+            datetime(2026, 7, 14, 13, 5, tzinfo=ZoneInfo("Europe/Paris")),
+            datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=-3), "Hora estándar de Argentina")),
+        ):
+            assert hermes_time.safe_strftime(value, fmt) == value.strftime(fmt)
 
-
+    def test_surrogate_zone_name_renders_json_safe(self):
+        import json
+        value = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), _ESCAPED_ZONE))
+        rendered = hermes_time.safe_strftime(value, "%a %Y-%m-%d %H:%M %Z %z %%Z")
+        json.dumps(rendered, ensure_ascii=False).encode("utf-8")
+        assert rendered.startswith("Tue 2026-07-14 13:05 Paris, Madrid (heure d'")
+        assert rendered.endswith(") +0200 %Z")
+        # The escaped bytes decode back through the Windows ANSI code page.
+        assert hermes_time._repair_surrogates(_ESCAPED_ZONE, "cp1252") == "Paris, Madrid (heure d'été)"
 
 
 class TestGetTimezone:
@@ -176,14 +197,14 @@ class TestGetTimezone:
 # execute_code child env — TZ injection
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="UDS not available on Windows")
+@pytest.mark.platforms("posix")  # UDS not available on Windows
 class TestCodeExecutionTZ:
     """Verify TZ env var is passed to sandboxed child process via real execute_code."""
 
     @pytest.fixture(autouse=True)
     def _import_execute_code(self, monkeypatch):
         """Lazy-import execute_code to avoid pulling in firecrawl at collection time."""
-        # Force local backend — other tests in the same xdist worker may leak
+        # Force local backend — other tests in the same process may leak
         # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
         monkeypatch.setenv("TERMINAL_ENV", "local")
         try:

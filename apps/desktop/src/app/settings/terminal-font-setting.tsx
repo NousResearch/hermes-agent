@@ -7,7 +7,6 @@ import {
   TERMINAL_FONT_SUGGESTIONS
 } from '@/app/right-sidebar/terminal/terminal-font'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
@@ -17,6 +16,7 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
+import { ComboboxInput } from './combobox-input'
 import { getNested, setNested } from './helpers'
 import { ListRow } from './primitives'
 
@@ -134,24 +134,20 @@ export function TerminalFontSetting() {
       below={
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-3">
-            <Input
+            <ComboboxInput
               aria-label={copy.terminalFontTitle}
               className="flex-1"
               disabled={draft === null}
-              list="hermes-terminal-font-families"
-              onChange={event => update(event.target.value)}
+              onChange={update}
+              options={TERMINAL_FONT_SUGGESTIONS}
               placeholder={copy.terminalFontPlaceholder}
+              renderOption={font => <span style={{ fontFamily: resolveTerminalFontFamily(font) }}>{font}</span>}
               value={value}
             />
             <Button disabled={!value || draft === null} onClick={() => update('')} size="inline" variant="text">
               {copy.terminalFontReset}
             </Button>
           </div>
-          <datalist id="hermes-terminal-font-families">
-            {TERMINAL_FONT_SUGGESTIONS.map(font => (
-              <option key={font} value={font} />
-            ))}
-          </datalist>
           <div
             aria-label={copy.terminalFontPreview}
             className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"

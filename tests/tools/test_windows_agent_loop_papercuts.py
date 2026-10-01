@@ -16,22 +16,22 @@ from hermes_cli._subprocess_compat import split_command_line
 class TestSplitCommandLine:
     """#83934 / #78293 — backslashes in Windows paths must survive splitting."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_path_backslashes_preserved(self):
         argv = split_command_line(r"sessions export C:\Users\me\Desktop\out.jsonl")
         assert argv == ["sessions", "export", r"C:\Users\me\Desktop\out.jsonl"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_quoted_path_with_spaces(self):
         argv = split_command_line(r'run "C:\Program Files\App\tool.exe" --flag')
         assert argv == ["run", r"C:\Program Files\App\tool.exe", "--flag"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_bare_hook_command_path(self):
         argv = split_command_line(r"C:\Users\u\.local\bin\dcg.exe --hook pre")
         assert argv[0] == r"C:\Users\u\.local\bin\dcg.exe"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_posix_behavior_unchanged(self):
         assert split_command_line("echo 'a b' c") == ["echo", "a b", "c"]
 
@@ -43,14 +43,14 @@ class TestSplitCommandLine:
 class TestShellHooksWindowsPaths:
     """#78293 — hook script paths with backslashes resolve correctly."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_command_script_path_keeps_backslashes(self):
         from agent.shell_hooks import _command_script_path
 
         path = _command_script_path(r"C:\hooks\guard.py --strict")
         assert path == r"C:\hooks\guard.py"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_script_is_executable_finds_real_file(self, tmp_path):
         from agent.shell_hooks import script_is_executable
 
@@ -66,7 +66,7 @@ class TestShellHooksWindowsPaths:
 class TestWindowsMarketingVersion:
     """#51755 — Windows 11 must not be reported as Windows 10."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_matches_build_number(self):
         from agent.prompt_builder import _windows_marketing_version
 
@@ -75,7 +75,40 @@ class TestWindowsMarketingVersion:
         assert _windows_marketing_version() == expected
 
 
+class TestAutocompleteDevicePaths:
+    """#42016 — a relpath ValueError on a device path must not escape the completer."""
 
+    def test_relpath_valueerror_is_skipped_not_raised(self, tmp_path, monkeypatch):
+        import os
+        import subprocess
+
+        from hermes_cli import commands_completion as cc
+
+        monkeypatch.chdir(tmp_path)
+        cwd = os.getcwd()
+        # An absolute path relpath cannot express relative to cwd (Windows: a
+        # device path such as \\.\nul, or another drive letter).
+        device = os.path.abspath(os.path.join(os.sep, "nul-device"))
+        real = os.path.join(cwd, "real.txt")
+
+        monkeypatch.setattr(cc.shutil, "which", lambda name: "/fake/rg" if name == "rg" else None)
+        monkeypatch.setattr(
+            cc.subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, f"{device}\n{real}\n", ""),
+        )
+        real_relpath = os.path.relpath
+
+        def _relpath(path, start=None):
+            # Windows raises ValueError for device paths / paths on another drive.
+            if path == device:
+                raise ValueError("path is on a different mount than start")
+            return real_relpath(path, start)
+
+        monkeypatch.setattr(cc.os.path, "relpath", _relpath)
+
+        files = cc.SlashCommandCompleter()._get_project_files()
+
+        assert files == ["real.txt"]
 
 
 class TestBrowserScreenshotPathRegex:

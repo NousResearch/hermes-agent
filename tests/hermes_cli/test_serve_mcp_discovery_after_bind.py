@@ -41,20 +41,24 @@ def test_desktop_serve_arms_mcp_discovery_only_after_ready_sentinel(monkeypatch)
         host="127.0.0.1", port=0, open_browser=False, headless=True,
         start_mcp_discovery_after_bind=True,
     )
+    # A headless `serve` announces BOTH ready tokens — neutral first, legacy
+    # second (#60772) — so the sentinel writer fires exactly twice before the
+    # deferred discovery timer is armed.
     timer = mcp_startup._mcp_discovery_deferred
-    assert order == ["sentinel"] and isinstance(timer, threading.Timer)
+    assert order == ["sentinel", "sentinel"] and isinstance(timer, threading.Timer)
     timer.cancel()
     # An agent build inside the delay window pulls discovery forward itself.
     mcp_startup.wait_for_mcp_discovery(timeout=0)
-    assert order == ["sentinel", "discovery:dashboard-mcp-discovery"]
+    assert order == ["sentinel", "sentinel", "discovery:dashboard-mcp-discovery"]
     assert mcp_startup._mcp_discovery_deferred is None
 
-    # Without the flag (dashboard / non-Desktop serve) start_server does not
-    # start discovery itself — cmd_dashboard's pre-import path still owns it.
+    # Without the flag (any headless serve) start_server does not start
+    # discovery itself — cmd_dashboard's pre-import path still owns it. The
+    # dual-token announcement is headless-wide, not discovery-specific.
     order.clear()
     _reset_discovery_state(monkeypatch)
     web_server.start_server(host="127.0.0.1", port=0, open_browser=False, headless=True)
-    assert order == ["sentinel"] and mcp_startup._mcp_discovery_deferred is None
+    assert order == ["sentinel", "sentinel"] and mcp_startup._mcp_discovery_deferred is None
 
 
 def test_deferred_discovery_fires_once_and_is_idempotent(monkeypatch):

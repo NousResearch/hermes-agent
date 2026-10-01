@@ -79,6 +79,11 @@ child with the selected profile's `HERMES_HOME`, so the conversation runs
 with that profile's model, skills, memory, and session history. Switching
 profiles starts a fresh terminal session.
 
+Hub actions (skill install/update/uninstall, MCP install, toolset setup)
+run with the target profile's own secret scope — its `.env` and configured
+secret sources — not the dashboard process's environment; this includes
+actions targeting the `default` profile from the machine dashboard.
+
 What stays per-profile and is *not* absorbed by the switcher: gateway
 processes (manage them via `hermes -p <name> gateway …`), each profile's
 session database, and cron schedulers (the Cron page already aggregates
@@ -86,13 +91,14 @@ across profiles with its own filter).
 
 ## Prerequisites
 
-The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
+FastAPI, Uvicorn, and the platform PTY helper are core Hermes dependencies.
+The `web` extra adds exact constraints for the HTTP stack. The `pty` extra is
+empty because its dependencies are already core. Standard PM setup includes
+`web` through `all`.
 
-```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"
-```
-
-The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"` includes both extras and is the easiest path if you also want messaging/voice/etc.
+If these dependencies are damaged, run `hermes pm repair` and restart Hermes.
+For source setup, use the [PM developer workflow](../../reference/package-management.md#developer-workflow).
+Messaging and voice extras are separate requests, not implied by `all`.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
@@ -153,7 +159,7 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 **Prerequisites:**
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
-- `ptyprocess` — installed by the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`, or `[all]` covers both)
+- `ptyprocess` — a core dependency on POSIX
 - POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
@@ -182,7 +188,17 @@ Set a username and password, then run the dashboard bound to a reachable address
 EnvironmentFile=%h/.hermes/.env
 ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
     --host 0.0.0.0 --port 9119 --no-open
+Restart=always
+RestartSec=10
+# Exit 78 (EX_CONFIG) is a deliberate refusal ("this host is already served by PID … on
+# another port"); parking on it beats an infinite restart loop with nothing listening.
+RestartPreventExitStatus=78
 ```
+
+One backend serves a whole host, so when `hermes dashboard` finds a live backend it cannot
+serve your typed `--host`/`--port` with, it refuses with exit 78 and names the owner. Stop that
+backend, or give the service its own dedicated server with `--isolated`. The Desktop app's own
+loopback backends never claim host ownership, so the two can coexist without either flag.
 
 with `~/.hermes/.env` containing:
 
@@ -432,7 +448,10 @@ The web dashboard exposes a REST API that the frontend consumes. You can also ca
 
 :::tip Profile-scoped endpoints
 The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
-`/api/tools/toolsets`, `/api/mcp`, and `/api/model/{info,options,auxiliary,set}` —
+`/api/tools/toolsets`, `/api/mcp`,
+`/api/model/{info,options,auxiliary,set,recommended-default}`,
+`/api/cron/{delivery-targets,blueprints}`, `/api/audio/voice-config`,
+`/api/ops/debug-share`, `/api/learning/graph`, and `/api/dashboard/plugins/hub` —
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
 `HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
@@ -517,7 +536,7 @@ Full-text search across message content. Query parameter: `q`. Returns matching 
 
 ### DELETE /api/sessions/\{session_id\}
 
-Deletes a session and its message history.
+Deletes a session and its message history. Returns `409 Conflict` if the session has an active turn lease or compression lock.
 
 ### GET /api/logs
 

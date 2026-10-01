@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from tests.docker.conftest import docker_exec_sh, start_container
 
-
 def test_puid_pgid_remaps_hermes_user(
     built_image: str, container_name: str,
 ) -> None:
@@ -47,9 +46,6 @@ def test_puid_pgid_remaps_hermes_user(
         f"hermes user cannot write to /opt/data after remap: {r.stdout}"
     )
 
-
-
-
 def test_nas_low_uid_accepted(
     built_image: str, container_name: str,
 ) -> None:
@@ -65,5 +61,3 @@ def test_nas_low_uid_accepted(
     assert r.stdout.strip() == "100", (
         f"expected hermes GID 100, got: {r.stdout.strip()}"
     )
-
-

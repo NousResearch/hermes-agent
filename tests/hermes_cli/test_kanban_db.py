@@ -51,7 +51,7 @@ def _init_git_repo(repo: Path) -> None:
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
     """Windows must use a real (non-blocking) process lock, not a no-op open.
 
@@ -59,7 +59,7 @@ def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypa
     wedged holder can never block connect() forever; a clean acquire takes the
     lock once and releases it once.
 
-    ``windows_only``: ``msvcrt`` does not exist off Windows, so faking
+    ``platforms("windows")``: ``msvcrt`` does not exist off Windows, so faking
     ``_IS_WINDOWS`` on Linux meant injecting a fake ``msvcrt`` module too —
     the test then asserted against its own stub rather than the byte-range
     locking API. Here the platform is real; only ``msvcrt.locking`` is
@@ -985,6 +985,30 @@ def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
     assert kb._is_managed_scratch_path(task_dir)
 
 
+@pytest.mark.require_symlinks
+def test_symlinked_workspaces_root_does_not_widen_scratch_cleanup(kanban_home, tmp_path):
+    """A workspaces root that is a symlink to a broad directory must not make
+    every path inside the symlink target "managed". Only paths that are
+    lexically below the root (i.e. reached through it) are scratch; a path
+    named directly inside the target is user data (#28818)."""
+    broad = tmp_path / "user-data"
+    victim = broad / "project"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("user data", encoding="utf-8")
+    ws_root = kanban_home / "kanban" / "workspaces"
+    if ws_root.is_dir() and not ws_root.is_symlink():
+        ws_root.rmdir()
+    ws_root.parent.mkdir(parents=True, exist_ok=True)
+    ws_root.symlink_to(broad, target_is_directory=True)
+
+    with kbc.connect() as conn:
+        # Legacy explicit-path scratch task pointing straight at user data.
+        t = kb.create_task(conn, title="scratch")
+        kbw.set_workspace_path(conn, t, victim)
+        assert kb.complete_task(conn, t, result="done")
+    assert (victim / "keep.txt").is_file()
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
@@ -1595,6 +1619,58 @@ def test_resolve_hermes_argv_module_actually_runs():
     )
 
 
+def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
+    """A module-form worker must carry the import context that selected it.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in the gateway,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the worker env scrub strips Hermes-owned PYTHONPATH entries, so the bare
+    ``sys.executable -m hermes_cli.main`` child died on import and the board
+    auto-blocked (#122299, #122487, #122500). The spawned env must put the
+    running install's root first on PYTHONPATH — and never for a resolved shim
+    path, which owns its own imports.
+    """
+    import os
+    import sys
+    from pathlib import Path
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    root = str(Path(kbd.__file__).resolve().parents[1])
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            self.pid = 4242
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_import_root", title="x", body=None, assignee="coder", status="ready",
+        priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="worktree", workspace_path=str(tmp_path / "ws"), claim_lock=None,
+        claim_expires=None, tenant=None, branch_name=None,
+    )
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-m", "hermes_cli.main"])
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == root
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["/opt/hermes/bin/hermes"])
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert root not in captured["env"].get("PYTHONPATH", "").split(os.pathsep)
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #
@@ -1781,6 +1857,36 @@ def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 
+def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home):
+    """The first scratch workspace materialized on an install appends a
+    ``tip_scratch_workspace`` event; later scratch tasks on the same install
+    stay silent, and non-scratch workspaces never trigger it."""
+    with kbc.connect() as conn:
+        wt = kb.create_task(conn, title="worktree task")
+        t1 = kb.create_task(conn, title="first scratch")
+        t2 = kb.create_task(conn, title="second scratch")
+
+    def _kinds(task_id):
+        with kbc.connect() as conn:
+            rows = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        return [r["kind"] for r in rows]
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, wt, "worktree")
+    assert "tip_scratch_workspace" not in _kinds(wt)
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, t1, "scratch")
+    assert _kinds(t1).count("tip_scratch_workspace") == 1
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, t2, "scratch")
+    assert "tip_scratch_workspace" not in _kinds(t2), (
+        "scratch tip re-fired on the same install"
+    )
 
 
 

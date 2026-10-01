@@ -448,7 +448,7 @@ def _read_small(path: Path) -> str:
     try:
         if not path.is_file() or path.stat().st_size > _MAX_FACT_FILE_BYTES:
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return ""
 
@@ -514,6 +514,9 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     }
 
 
+WORKSPACE_BLOCK_HEADER = "Workspace (snapshot at session start — re-check with `git` before acting on it):"
+
+
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     """Workspace snapshot for the system prompt (empty outside a workspace): git state when
     in a repo, plus project facts — so marker-only (non-git) projects still get one."""
@@ -521,7 +524,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if root is None:
         return ""
     lines = [
-        "Workspace (snapshot at session start — re-check with `git` before acting on it):",
+        WORKSPACE_BLOCK_HEADER,
         f"- Root: {root}",
     ]
     if git_root is not None:
@@ -558,34 +561,3 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if f.context_files:
         lines.append(f"- Context files: {', '.join(f.context_files)}")
     return "\n".join(lines)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def coding_system_blocks(
-    *,
-    platform: Optional[str] = None,
-    cwd: Optional[str | Path] = None,
-    config: Optional[dict[str, Any]] = None,
-    model: Optional[str] = None,
-) -> list[str]:
-    """Stable system-prompt blocks for the current posture (empty when general).
-
-    ``model`` steers the brief's edit-format nudge toward the model's family.
-    """
-    return resolve_runtime_mode(
-        platform=platform, cwd=cwd, config=config, model=model
-    ).system_blocks()
-
-_PROFILES: dict[str, ContextProfile] = {
-    GENERAL_PROFILE.name: GENERAL_PROFILE,
-    CODING_PROFILE.name: CODING_PROFILE,
-}
-
-def get_profile(name: str) -> ContextProfile:
-    """Return a registered profile, falling back to ``general``."""
-    return _PROFILES.get(name, GENERAL_PROFILE)
-# ---- END PLUGIN-COMPAT ----

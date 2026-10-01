@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent.conversation_loop import _join_truncated_parts
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────
@@ -88,6 +89,12 @@ class TestPartialStreamStubFinishReason:
         )
         assert response.choices[0].message.content == "Here's my answer so far"
         assert response.choices[0].message.tool_calls is None
+        assert getattr(response, "_clean_eof", False) is False, (
+            "A stub built after a real transport exception (RuntimeError "
+            "here) must NOT be tagged _clean_eof — that tag is reserved "
+            "for a stream that ended with no exception and no "
+            "finish_reason, a distinct failure class (#102766)."
+        )
 
 
 class TestTerminalChunkFenceException:
@@ -178,6 +185,11 @@ class TestTerminalChunkFenceException:
 
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response._clean_eof is True, (
+            "The stream ended with no exception and no finish_reason — "
+            "that is the clean-EOF class the fix for #102766 must tag "
+            "distinctly from a genuine transport drop."
+        )
 
 
 # ── Clean stream-end mid-tool-call (no exception, no finish_reason) ─────────
@@ -235,6 +247,11 @@ class TestCleanStreamEndMidToolCall:
             "Incomplete tool args must never auto-execute."
         )
         assert getattr(response, "_dropped_tool_names", None) == ["execute_code"]
+        assert response._clean_eof is True, (
+            "No exception was raised and no finish_reason ever arrived — "
+            "this is the clean-EOF class the fix for #102766 must tag "
+            "distinctly from a genuine transport drop."
+        )
 
 
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────
@@ -357,6 +374,27 @@ class TestMixedToolCallsOneDroppedOneComplete:
 
 # ── Length-continuation prompt branching ──────────────────────────────────
 
+class TestLengthContinuationAssembly:
+    def test_distinct_continuation_is_preserved(self):
+        assert _join_truncated_parts([
+            ("The first half ends here", True),
+            ("and the second half adds new information.", False),
+        ]) == (
+            "The first half ends here\n"
+            "and the second half adds new information."
+        )
+
+    def test_repeated_tail_is_trimmed_without_losing_new_text(self):
+        repeated = "A sufficiently long repeated transition sentence ends here."
+
+        assert _join_truncated_parts([
+            (f"Existing answer. {repeated}", True),
+            (f"{repeated} New inbound details remain visible.", False),
+        ]) == (
+            f"Existing answer. {repeated} New inbound details remain visible."
+        )
+
+
 
 # ── Integration: live conversation loop ───────────────────────────────────
 
@@ -398,19 +436,26 @@ class TestConversationLoopPartialStreamContinuation:
         from tests.agent.test_run_agent import _mock_response, _mock_assistant_msg
 
         # First API call: the partial-stream stub (length on partial-stream-stub id).
+        repeated_tail = (
+            "**Conclusion**: the project remains on standby until the stable "
+            "release. Nothing changes."
+        )
         partial_stub = SimpleNamespace(
             id=PARTIAL_STREAM_STUB_ID,
             model="test/model",
             choices=[SimpleNamespace(
                 index=0,
-                message=_mock_assistant_msg(content="The first half of "),
+                message=_mock_assistant_msg(
+                    content=f"The first half of the answer is forty-two.\n\n{repeated_tail}"
+                ),
                 finish_reason=FINISH_REASON_LENGTH,
             )],
             usage=None,
         )
-        # Second API call: model continues with the rest, clean stop.
+        # Second API call: the model restarts from the complete-looking tail
+        # even though the nudge said not to repeat it, then stops cleanly.
         continuation = _mock_response(
-            content="the answer is forty-two.", finish_reason="stop",
+            content=repeated_tail, finish_reason="stop",
         )
 
         loop_agent.client.chat.completions.create.side_effect = [
@@ -447,6 +492,27 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+        assert result["final_response"].count(repeated_tail) == 1
+
+    def test_output_limit_continuation_preserves_intentional_repetition(self, loop_agent):
+        from tests.agent.test_run_agent import _mock_response
+
+        repeated = "This intentionally repeated sentence is longer than thirty-two characters."
+        first = _mock_response(
+            content=f"First copy: {repeated}", finish_reason=FINISH_REASON_LENGTH,
+        )
+        continuation = _mock_response(content=repeated, finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [first, continuation]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("repeat this sentence twice")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"].count(repeated) == 2
 
 
 class TestContentFilterStallActivatesFallback:
@@ -1032,3 +1098,121 @@ class TestMergedFinishChunkSurvivesSSEGuard:
         assert response.id != PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "Hello."
+
+
+class TestRouterRewriteTruncationMessageIsHonest:
+    """Regression for #91717: the invalid-JSON truncation detector (the
+    secondary path that fires when the primary finish_reason='length' handler
+    was bypassed) must NOT blame the output-length limit when the model never
+    reported one.
+
+    Scenario: after a transport timeout, OpenRouter's router delivers a retry
+    whose finish_reason is rewritten from 'length' to 'tool_calls', and whose
+    tool-call arguments are cut off mid-JSON. The old code hardcoded
+    'Response truncated due to output length limit', misleading operators into
+    tuning max_tokens / switching models when the real cause is transport /
+    router corruption.
+    """
+
+    def _router_rewrite_response(self):
+        # finish_reason='tool_calls' (NOT 'length') + truncated JSON args
+        # ('{"cmd": "ls' — no closing brace), on a normal generation id (not
+        # the partial-stream stub). This bypasses the length handler and lands
+        # in the invalid-JSON truncation detector.
+        msg = SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="call_1", type="function",
+                function=SimpleNamespace(name="terminal", arguments='{"cmd": "ls'),
+            )],
+            reasoning_content=None,
+        )
+        return SimpleNamespace(
+            id="gen-router-rewrite-xyz",
+            model="deepseek/deepseek-v4-flash",
+            choices=[SimpleNamespace(
+                index=0, message=msg, finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+
+    def test_router_rewrite_truncation_does_not_claim_output_length_limit(
+        self, loop_agent,
+    ):
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = (
+            lambda *a, **kw: self._router_rewrite_response()
+        )
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("list the files")
+
+        final = result["final_response"] or ""
+        error = result["error"] or ""
+
+        # The misleading output-length-limit label must be gone: finish_reason
+        # was 'tool_calls', never 'length'.
+        assert "output length limit" not in final, (
+            "Router-rewrite / transport truncation must not be reported as an "
+            "output-length limit (#91717)."
+        )
+        assert "output length limit" not in error
+        # The honest message names the real suspect (raw finish_reason stays in the diagnostic log).
+        assert "finish_reason" not in final
+        assert (
+            "transport" in final or "router" in final
+        ), "Honest message must point at transport/router corruption."
+        # Recovery invariants preserved: incomplete tool args never execute.
+        assert result["completed"] is False
+        assert result["partial"] is True
+
+    def _genuine_length_truncated_tool_call(self):
+        # finish_reason='length' (the model truly hit its output cap) with a
+        # tool call whose JSON args are cut off. On a normal generation id, so
+        # it is NOT treated as a partial-stream network stub. After the loop
+        # exhausts its truncated-tool-call retries this lands on the primary
+        # length handler's tool-call path (scenario 1 in the issue's table).
+        msg = SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="call_1", type="function",
+                function=SimpleNamespace(name="terminal", arguments='{"cmd": "ls'),
+            )],
+            reasoning_content=None,
+        )
+        return SimpleNamespace(
+            id="gen-real-length",
+            model="test/model",
+            choices=[SimpleNamespace(index=0, message=msg, finish_reason="length")],
+            usage=None,
+        )
+
+    def test_genuine_length_truncation_keeps_output_limit_wording(self, loop_agent):
+        """The primary length handler (finish_reason='length', real
+        output-cap exhaustion) must keep the accurate 'output length limit'
+        wording — scenario 1 in the issue's table is correct and must not
+        regress from the honest-message fix."""
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = (
+            lambda *a, **kw: self._genuine_length_truncated_tool_call()
+        )
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("run a long command")
+
+        blob = (result.get("final_response") or "") + (result.get("error") or "")
+        assert "output length limit" in blob, (
+            "A genuine finish_reason='length' truncation must still reference "
+            "the output length limit — the honest-message fix must not blank "
+            "out the accurate case (#91717 scenario 1)."
+        )

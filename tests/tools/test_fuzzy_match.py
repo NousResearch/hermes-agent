@@ -229,6 +229,28 @@ class TestUnicodeNormalized:
         assert new == expected, f"Got {new!r}"
 
 
+    def test_equal_boundary_inside_expansion_keeps_region_text(self):
+        """An edit boundary falling inside a multi-char expansion (em-dash ->
+        '--') must snap to the expansion, not copy text from the region start.
+
+        SequenceMatcher splits old/new so that the second equal block begins
+        at the expansion's second '-': a norm index with no direct original
+        position. The old fallback (position 0) spliced the whole region text
+        into the replacement, duplicating it after every edit.
+        """
+        content = "value = x\u2014y\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "value = x--y", "value = x-@-y")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "value = x\u2014@\u2014y\n", f"Got {new!r}"
+
+        # Same boundary class for a 3-char expansion (ellipsis -> '...').
+        new, count, strategy, err = fuzzy_find_and_replace("a\u2026b\n", "a...b", "a..X.b")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "a\u2026X\u2026b\n", f"Got {new!r}"
+
 
 class TestUnicodeSpaceAndMinusNormalized:
     """Space-separator family + Unicode minus normalization.
@@ -373,6 +395,49 @@ class TestEscapeDriftGuard:
         assert count == 1
 
 
+class TestNewlineLiteralDrift:
+    """A line break escaped one extra time arrives as literal backslash + n.
+    The escape_normalized / context_aware strategies still match it, and
+    new_string's literal \\n would be written verbatim, corrupting the file."""
+
+    def _assert_rejected(self, content, old_string, new_string, **kw):
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string, **kw)
+        assert count == 0
+        assert err is not None and "Escape-drift" in err
+        assert new == content
+
+    def test_drifted_line_break_rejected(self):
+        self._assert_rejected(
+            'def greet():\n    print("hi")\n',
+            'def greet():\\n    print("hi")',
+            'def greet():\\n    print("hello")')
+
+    def test_legitimate_backslash_n_in_code_applies(self):
+        """Non-exact match (indent differs) on code that really contains "\\n"."""
+        content = 'def greet():\n    print("hi\\n")\n    return 1\n'
+        new, count, _, err = fuzzy_find_and_replace(
+            content,
+            'def greet():\n  print("hi\\n")\n  return 1',
+            'def greet():\n  print("hello\\n")\n  return 1')
+        assert err is None and count == 1
+        assert 'print("hello\\n")' in new
+
+    def test_drift_next_to_legitimate_backslash_n_rejected(self):
+        """One drifted line break plus a "\\n" the code really has: the
+        file-side literal must not mask the drifted one."""
+        self._assert_rejected(
+            'def greet():\n    message = build_greeting_message("hi\\n")\n    return message\n',
+            'def greet():\\n    message = build_greeting_message("hi\\n")\n    return message',
+            'def greet():\\n    message = build_greeting_message("hello\\n")\n    return message')
+
+    def test_drift_rejected_under_replace_all(self):
+        self._assert_rejected(
+            "x = 1\ny = 2\n\nx = 1\ny = 2\n",
+            "x = 1\\ny = 2",
+            "x = 1\\ny = 3",
+            replace_all=True)
+
+
 class TestFindClosestLines:
     def setup_method(self):
         from tools.fuzzy_match import find_closest_lines
@@ -490,15 +555,17 @@ class TestEscapeNormalizedNewString:
         assert "\\t" not in new
 
     def test_carriage_return_in_new_string_unescaped(self):
-        """File has real CR, model sends literal \\r in new_string."""
+        """File has real CR, model sends literal \\r in new_string. Line breaks
+        stay real: a literal \\n alongside would be newline drift, which
+        TestNewlineLiteralDrift covers."""
         content = "line1\r\nline2\r\n"
-        old_string = "line1\\r\\nline2\\r\\n"
-        new_string = "replaced\\r\\n"
+        old_string = "line1\\r\nline2\\r\n"
+        new_string = "replaced\\r\n"
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
         assert strategy == "escape_normalized"
-        assert "replaced\r" in new
+        assert "replaced\r\n" in new
 
     def test_newline_in_new_string_NOT_unescaped(self):
         """``\\n`` is intentionally left alone — newlines serialize correctly

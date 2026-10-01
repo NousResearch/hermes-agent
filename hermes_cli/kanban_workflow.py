@@ -1,22 +1,24 @@
 """Kanban board workflow: the one definition of columns, traits and transitions.
 
 Groundwork for user-defined columns and workflow per board (issue #54818). Target model —
-``tasks.status`` holds a board-defined column key; kernel behavior attaches to
-column *traits*, and kernel events resolve to a column through per-column *edges*
-with a board-wide default, so an automatic transition never has to guess.
+``tasks.status`` holds a board-defined column key and kernel behavior attaches to
+column *traits*, not to status names.
 
-Phase 0 (this module): ``DEFAULT_WORKFLOW`` writes today's hardcoded behavior down
-as data, and the scattered status copies (``VALID_STATUSES``, ``BOARD_COLUMNS``, the
-agent-tool enum, CLI icons) derive from it. The kernel does not consult traits or
-edges yet; ``tests/hermes_cli/test_kanban_workflow.py`` pins them to the kernel's real
-behavior so the later phases that switch the kernel over cannot drift silently.
+Phase 0 (this module): ``DEFAULT_WORKFLOW`` writes today's columns and manual move
+matrix down as data, and the scattered status copies (``VALID_STATUSES``,
+``BOARD_COLUMNS``, the agent-tool enum, CLI icons) derive from it. The kernel does not
+consult traits yet. Automatic (kernel-driven) transitions are deliberately NOT modelled
+here: the kernel has ~20 conditional status writes (block routing, crash/reclaim return,
+parent reopen, import, ...) and that model is designed with the kernel switch, so this
+module never publishes a partial contract. ``tests/plugins/test_kanban_workflow_matrix.py``
+pins ``manual`` to the live dashboard API in both directions.
 
 Pure data + stdlib only: ``kanban_db`` imports this module, never the reverse.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Iterator, Mapping, Optional
 
@@ -38,18 +40,6 @@ TRAITS = frozenset({
     DECOMPOSE, WAIT_PARENTS, HOLD_TIME, DISPATCH_IMPLEMENT, CLAIMED, HOLD_HUMAN, DISPATCH_REVIEW, TERMINAL,
 })
 
-# --- Kernel events that move a card without a human choosing the target -----------------
-EV_CLAIM = "claim"                # dispatcher claims the card
-EV_COMPLETE = "complete"          # worker/human completes
-EV_BLOCK = "block"                # worker/human blocks
-EV_SCHEDULE = "schedule"          # parked on a time gate
-EV_REVIEW = "review"              # implementer hands off for review
-EV_CHANGES = "changes"            # reviewer requests changes
-EV_PARENTS_DONE = "parents_done"  # last open parent is satisfied
-
-EVENTS = frozenset({EV_CLAIM, EV_COMPLETE, EV_BLOCK, EV_SCHEDULE, EV_REVIEW, EV_CHANGES, EV_PARENTS_DONE})
-
-
 @dataclass(frozen=True)
 class Column:
     """One board column. ``key`` is stable (stored in ``tasks.status``); ``label`` is display-only."""
@@ -61,16 +51,13 @@ class Column:
     # Offered as a drag/menu target in board UIs. False for columns a card normally
     # reaches only through a verb with extra input (reviewer, wake time) or the kernel.
     drag_target: bool = True
-    # Per-column event edges; an event missing here falls back to ``Workflow.defaults``.
-    on: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True)
 class Workflow:
-    """Columns (board order), default event edges, and the manual move allow-list."""
+    """Columns (board order) and the manual move allow-list."""
 
     columns: tuple
-    defaults: Mapping[str, str]
     # Manual moves (drag, PATCH status) a human may request: ``src -> {dst}``. Archive is
     # always allowed and not listed. Allowed != guaranteed: verbs still apply their own
     # gates (parents open, completion evidence).
@@ -92,19 +79,18 @@ class Workflow:
             raise ValueError(f"unknown kanban workflow trait {trait!r}")
         return tuple(c.key for c in self.columns if trait in c.traits)
 
-    def on_event(self, key: str, event: str) -> str:
-        """Column a card in ``key`` moves to when the kernel emits ``event``."""
-        if event not in EVENTS:
-            raise ValueError(f"unknown kanban workflow event {event!r}")
+    def _require(self, key: str) -> Column:
         col = self.column(key)
-        if col is not None and event in col.on:
-            return col.on[event]
-        return self.defaults[event]
+        if col is None:
+            raise ValueError(f"unknown kanban workflow column {key!r}")
+        return col
 
     def can_move(self, src: str, dst: str) -> bool:
         """True when a human may request ``src -> dst`` (archive always allowed)."""
+        self._require(src)
         if dst == ARCHIVED:
             return True
+        self._require(dst)
         return dst in self.manual.get(src, frozenset())
 
     def to_dict(self) -> dict:
@@ -112,16 +98,15 @@ class Workflow:
         return {
             "columns": [
                 {"key": c.key, "label": c.label, "icon": c.icon, "traits": sorted(c.traits),
-                 "drag_target": c.drag_target, "on": dict(c.on)}
+                 "drag_target": c.drag_target}
                 for c in self.columns
             ],
-            "defaults": dict(self.defaults),
             "manual": {src: sorted(dsts) for src, dsts in self.manual.items()},
             "archived": ARCHIVED,
         }
 
     def validate(self) -> None:
-        """Raise ``ValueError`` on an inconsistent workflow (unknown keys, dead-end events)."""
+        """Raise ``ValueError`` on an inconsistent workflow (duplicate/unknown keys, no terminal)."""
         keys = self.keys()
         if len(set(keys)) != len(keys):
             raise ValueError(f"duplicate column keys: {keys}")
@@ -132,15 +117,6 @@ class Workflow:
             unknown = c.traits - TRAITS
             if unknown:
                 raise ValueError(f"column {c.key!r}: unknown traits {sorted(unknown)}")
-            for ev, dst in c.on.items():
-                if ev not in EVENTS or dst not in known:
-                    raise ValueError(f"column {c.key!r}: bad edge {ev!r} -> {dst!r}")
-        missing = EVENTS - set(self.defaults)
-        if missing:
-            raise ValueError(f"no default column for events {sorted(missing)}")
-        for ev, dst in self.defaults.items():
-            if dst not in known:
-                raise ValueError(f"default edge {ev!r} -> unknown column {dst!r}")
         for src, dsts in self.manual.items():
             if src not in known or not set(dsts) <= known:
                 raise ValueError(f"manual moves from {src!r} reference unknown columns")
@@ -159,7 +135,7 @@ def _frozen_manual(table: Mapping[str, tuple]) -> Mapping[str, frozenset]:
 # Today's board, written down. Column order = dashboard order. ``drag_target=False``
 # mirrors the desktop's LOCKED_COLUMNS (review needs a reviewer, scheduled a wake time,
 # running is kernel-only). The manual table is the measured PATCH /tasks/{id} matrix on
-# a parentless task; ``test_kanban_workflow.py`` re-measures it against the live code.
+# a parentless task; ``test_kanban_workflow_matrix.py`` re-measures it against the live API.
 DEFAULT_WORKFLOW = Workflow(
     columns=(
         _col("triage", "Triage", "◇", DECOMPOSE),
@@ -171,15 +147,6 @@ DEFAULT_WORKFLOW = Workflow(
         _col("review", "Review", "◎", DISPATCH_REVIEW, drag_target=False),
         _col("done", "Done", "✓", TERMINAL),
     ),
-    defaults=MappingProxyType({
-        EV_CLAIM: "running",
-        EV_COMPLETE: "done",
-        EV_BLOCK: "blocked",
-        EV_SCHEDULE: "scheduled",
-        EV_REVIEW: "review",
-        EV_CHANGES: "ready",
-        EV_PARENTS_DONE: "ready",
-    }),
     manual=_frozen_manual({
         "triage": ("todo", "ready"),
         "todo": ("triage", "scheduled", "ready"),

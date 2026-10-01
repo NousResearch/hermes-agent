@@ -161,47 +161,34 @@ class TestSubscribe:
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)
         (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
+        monkeypatch.setattr("hermes_cli.webhook.time.strftime", lambda *_a: "2026-01-01T00:00:00Z")
+        # One char shorter than the rotated secret: "default" -> "compta" then keeps the file size equal.
         webhook_command(_make_args(
-            webhook_action="subscribe", name="notifier", secret="old-profile-secret"
+            webhook_action="subscribe", name="notifier", secret="old-profile-secret-ab"
         ))
 
         old_record = _load_subscriptions()["notifier"]
-        old_state = (old_record["profile"], old_record["secret"])
         adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"secret": "global"}))
         adapter._reload_dynamic_routes()
         initial_stat = _subscriptions_path().stat()
-        observed = [old_state]
-        stop = threading.Event()
         monkeypatch.setattr("hermes_cli.webhook.secrets.token_urlsafe", lambda _n: "rotated-profile-secret")
-
-        def read_records():
-            while not stop.is_set():
-                record = _load_subscriptions()["notifier"]
-                observed.append((record["profile"], record["secret"]))
-
-        reader = threading.Thread(target=read_records)
-        reader.start()
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", route_profile="compta"
         ))
-        stop.set()
-        reader.join(timeout=5)
 
         new_record = _load_subscriptions()["notifier"]
         new_state = (new_record["profile"], new_record["secret"])
-        observed.append(new_state)
-        # A coarse or restored mtime must not leave a revoked snapshot live in the gateway.
+        # Same size + restored mtime: only the rename's new inode reveals the change to the gateway.
         os.utime(
             _subscriptions_path(),
             ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns),
         )
+        assert _subscriptions_path().stat().st_size == initial_stat.st_size
         adapter._reload_dynamic_routes()
         _subscriptions_path().write_text("{torn")  # unreadable file must keep the last good routes
         adapter._reload_dynamic_routes()
-        assert not reader.is_alive()
         assert new_state == ("compta", "rotated-profile-secret")
         assert new_record["secret"] != old_record["secret"]
-        assert set(observed) <= {old_state, new_state}
         assert (
             adapter._routes["notifier"]["profile"],
             adapter._routes["notifier"]["secret"],

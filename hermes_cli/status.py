@@ -17,8 +17,9 @@ from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMA
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
-    _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
+from hermes_cli.status_auth import (  # section renderers + the --short provider list
+    _connected_provider_labels, _render_api_keys, _render_apikey_providers,
+    _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
 
 
@@ -144,15 +145,20 @@ def _render_header(ctx):
         _banner((paused,), Colors.YELLOW, Colors.BOLD)
 
 
+def _load_ctx_config(ctx) -> None:
+    """Load config.yaml into the shared context (fail-soft)."""
+    try:
+        ctx.config = load_config()
+    except Exception:
+        ctx.config = {}
+
+
 def _render_environment(ctx):
     _section("Environment")
     _kv("Project:", PROJECT_ROOT)
     _kv("Python:", sys.version.split()[0])
     _kv_flag(".env file:", get_env_path().exists(), "exists", "not found")
-    try:
-        ctx.config = load_config()
-    except Exception:
-        ctx.config = {}
+    _load_ctx_config(ctx)
     _kv("Model:", _configured_model_label(ctx.config))
     _kv("Provider:", _effective_provider_label())
 
@@ -255,19 +261,23 @@ def _load_json(path: Path, encoding: str = "utf-8"):
         return json.load(f)
 
 
-def _render_cron(ctx):
-    _section("Scheduled Jobs")
+def _cron_summary() -> str:
+    """``N active, M total`` jobs line, shared by the full and short status renderers."""
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if not jobs_file.exists():
-        _kv("Jobs:", 0)
-        return
+        return "0"
     try:
         # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors may leave a UTF-8 BOM
         # that plain utf-8 json.load rejects.
         jobs = _load_json(jobs_file, "utf-8-sig").get("jobs", [])
-        _kv("Jobs:", f"{sum(1 for j in jobs if j.get('enabled', True))} active, {len(jobs)} total")
+        return f"{sum(1 for j in jobs if j.get('enabled', True))} active, {len(jobs)} total"
     except Exception:
-        _kv("Jobs:", "(error reading jobs file)")
+        return "(error reading jobs file)"
+
+
+def _render_cron(ctx):
+    _section("Scheduled Jobs")
+    _kv("Jobs:", _cron_summary())
 
 
 def _render_sessions(ctx):
@@ -351,6 +361,77 @@ def _render_footer(ctx):
     print()
 
 
+def _short_gateway_value():
+    """``(running, text)`` for the short gateway row; ``(None, "unknown")`` when unavailable."""
+    try:
+        from hermes_cli.gateway import (
+            get_gateway_runtime_snapshot, named_profile_served_by_running_multiplexer)
+        snapshot = get_gateway_runtime_snapshot()
+        # A satellite profile has no gateway.pid of its own; the default multiplexer is
+        # its live process (same rule as the full Gateway Service section).
+        if not snapshot.running and named_profile_served_by_running_multiplexer():
+            return True, "running (via the default-profile multiplexer)"
+        return (True, "running") if snapshot.running else (False, "stopped")
+    except Exception:
+        return None, "unknown"
+
+
+def _short_platform_configured(entry) -> bool:
+    """Plugin platform configured? Prefer the ``is_connected`` hook over the deps probe.
+
+    ``check_fn`` is a passive dependency probe that reads True for every bundled plugin,
+    so it must never override a configured-credentials verdict (same rule as ``hermes
+    setup`` and the #102183 fix).
+    """
+    try:
+        if entry.is_connected is not None:
+            from gateway.config import PlatformConfig
+            return bool(entry.is_connected(PlatformConfig(enabled=True)))
+        return bool(entry.check_fn())
+    except Exception:
+        return False
+
+
+def _short_platform_names() -> list:
+    """Configured messaging platform names: env table plus plugin-registry entries."""
+    names = []
+    for name, (token_var, _home_var) in _PLATFORMS.items():
+        if os.getenv(token_var, ""):
+            names.append(name)
+    try:
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            if _short_platform_configured(entry):
+                names.append(entry.label)
+    except Exception:
+        pass
+    return names
+
+
+def _render_short(ctx):
+    """Compact ``hermes status --short``: model, providers, gateway, platforms, jobs."""
+    _banner(("☤ Hermes Agent status (short)",), Colors.BOLD)
+    paused = _estop_status_line()
+    if paused:
+        _banner((paused,), Colors.YELLOW, Colors.BOLD)
+    _load_ctx_config(ctx)
+    _kv("Model:", _configured_model_label(ctx.config))
+    _kv("Provider:", _effective_provider_label())
+    try:
+        labels = _connected_provider_labels(ctx)
+    except Exception:
+        labels = []
+    _kv("Providers:", ", ".join(dict.fromkeys(labels)) if labels else "none connected")
+    running, gateway_text = _short_gateway_value()
+    if running is None:
+        _kv("Gateway:", gateway_text)
+    else:
+        _kv_flag("Gateway:", running, gateway_text, "stopped")
+    names = _short_platform_names()
+    _kv("Platforms:", ", ".join(dict.fromkeys(names)) if names else "none configured")
+    _kv("Jobs:", _cron_summary())
+
+
 # Print order of `hermes status`; each renderer takes the shared _StatusContext.
 _SECTIONS = (
     _render_header, _render_environment, _render_api_keys, _render_auth_providers, _render_nous_gateway,
@@ -364,5 +445,8 @@ def show_status(args):
     # for the later Nous Tool Gateway section.
     ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,
                           nous_inference_present=False, nous_account_info=None)
+    if getattr(args, 'short', False):
+        _render_short(ctx)
+        return
     for render in _SECTIONS:
         render(ctx)

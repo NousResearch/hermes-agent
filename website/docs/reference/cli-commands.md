@@ -742,11 +742,12 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 ## `hermes status`
 
 ```bash
-hermes status [--all] [--deep]
+hermes status [--short] [--all] [--deep]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--short` | Compact summary: model, providers, gateway, platforms, jobs. |
 | `--all` | Show all details in a shareable redacted format. |
 | `--deep` | Run deeper checks that may take longer. |
 

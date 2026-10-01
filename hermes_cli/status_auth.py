@@ -202,4 +202,106 @@ def _render_apikey_providers(ctx):
         _status._row("LM Studio", ok, msg, 16, " ")
 
 
+def _env_has_usable_secret(name: str) -> bool:
+    """True when ``name`` resolves (.env preferred) to a non-placeholder credential."""
+    from hermes_cli.auth import has_usable_secret
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    value = get_env_value_prefer_dotenv(name) or ""
+    return bool(value) and has_usable_secret(value)
+
+
+def _any_usable_env(names) -> bool:
+    return any(_env_has_usable_secret(name) for name in names)
+
+
+def _connected_provider_labels(ctx) -> list[str]:
+    """Labels of providers with usable credentials, for the compact ``--short`` summary.
+
+    Registry-driven so new API-key rows, OAuth blocks, plugin providers and custom
+    endpoints surface without touching the short renderer. Read-only and cheap by
+    design: env presence checks plus refresh-free auth getters (no subprocesses, no
+    network, no model discovery).
+    """
+    labels: list[str] = []
+    import hermes_cli.auth as auth
+
+    # Nous Portal: the refresh-free local snapshot, same as the full Auth Providers section.
+    try:
+        nous_status = auth.get_nous_auth_status_local() or {}
+        if nous_status.get("logged_in"):
+            labels.append("Nous Portal")
+        elif nous_status.get("free_tier"):
+            labels.append("Nous Portal (free tier)")
+    except Exception:
+        pass
+
+    # Built-in OAuth rows: the same refresh-free getters the full section uses.
+    for name, getter, _hint, _rows in _OAUTH_BLOCKS:
+        try:
+            status = getattr(auth, getter)() or {}
+        except Exception:
+            continue
+        if status.get("logged_in"):
+            labels.append(name)
+
+    # Plugin-mirrored OAuth providers: their status lives in the credential pool.
+    try:
+        import hermes_cli.auth_plugin_providers as plugin_providers
+        for pid, pconfig in list(auth.PROVIDER_REGISTRY.items()):
+            if pid not in plugin_providers.PLUGIN_MIRRORED_PROVIDERS:
+                continue
+            if not str(pconfig.auth_type or "").startswith("oauth"):
+                continue
+            try:
+                status = plugin_providers.get_plugin_oauth_auth_status(pid) or {}
+            except Exception:
+                continue
+            if status.get("logged_in"):
+                labels.append(pconfig.name)
+    except Exception:
+        pass
+
+    # API-key inference providers: registry rows, deduped by ``ProviderConfig.id``
+    # (alias keys share the row object). ``copilot`` is skipped: its cheap env vars are
+    # misleading, the real check runs the copilot_auth token path, and the full status
+    # never shows it either.
+    try:
+        seen_ids = set()
+        model_cfg = ctx.config.get("model") if isinstance(ctx.config.get("model"), dict) else {}
+        pointer_provider = str(model_cfg.get("provider") or "").strip().lower()
+        pointer_key_env = str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
+        for pconfig in list(auth.PROVIDER_REGISTRY.values()):
+            if pconfig.id in seen_ids:
+                continue
+            seen_ids.add(pconfig.id)
+            if pconfig.auth_type != "api_key" or pconfig.id == "copilot" or not pconfig.api_key_env_vars:
+                continue
+            env_vars = list(pconfig.api_key_env_vars)
+            if pointer_key_env and pointer_provider == pconfig.id:
+                env_vars.append(pointer_key_env)
+            if _any_usable_env(env_vars):
+                labels.append(pconfig.name)
+    except Exception:
+        pass
+
+    # OpenRouter is deliberately outside PROVIDER_REGISTRY (#109397): its own rung.
+    try:
+        if _env_has_usable_secret("OPENROUTER_API_KEY"):
+            labels.append("OpenRouter")
+    except Exception:
+        pass
+
+    # Configured custom endpoints (``providers:`` / legacy ``custom_providers:``).
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        for entry in get_compatible_custom_providers(ctx.config or None):
+            name = str((entry or {}).get("name") or "").strip()
+            if name:
+                labels.append(name)
+    except Exception:
+        pass
+
+    return labels
+
+
 import hermes_cli.status as _status  # noqa: E402  (bottom: hermes_cli.status imports this module)

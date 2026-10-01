@@ -1,7 +1,7 @@
 name: gbrain-retrieval-reflex
 repo: https://github.com/aean0x/hermes-gbrain-retrieval-reflex
-sha: d54ae4b80463ce7ec9d6a7919cbe4cce13bd89d4
-description: "Ambient context from a GBrain instance: volunteer_context then a hybrid-query fallback, merged and injected before each turn."
+sha: 78516ca629588612ebfc0a7ca86944fbb63d7dd8
+description: "pre_llm_call hook plugin, enabled with `hermes plugins enable`: injects ambient context from a GBrain instance before each turn (volunteer_context, then a hybrid-query fallback). Not a `memory.provider`. Silent no-op when GBrain is unreachable or no token is set."
 maintainer: aean0x
 tier: community
 category: memory

@@ -84,6 +84,28 @@ async def test_lease_expiry_racing_prepares_and_atomic_failure(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_authorization_after_background_preparation_refuses_acceptance(tmp_path, monkeypatch):
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner)
+        def revoke_after_copy(*args, **kwargs):
+            result = prepare_hosted_input(*args, **kwargs)
+            rpc.authorizer = lambda *args: False
+            return result
+        monkeypatch.setattr('gateway.hosted_room_input_preparation.prepare_hosted_input', revoke_after_copy)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            await rpc._submit(dict(task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1,
+                prompt='read', attachments=[item for item, _ in bound], on_terminal=lambda value: None))
+        with db._read_ctx() as conn:
+            assert conn.execute('SELECT count(*) FROM session_admissions').fetchone()[0] == 0
+            assert conn.execute('SELECT count(*) FROM input_custody_refs').fetchone()[0] == 0
+        db._execute_write(lambda conn: conn.execute('UPDATE input_custody_preparations SET expires_at=0'))
+        assert collect_working_copies(db, epoch=owner.epoch)['removed'] == 1
+    finally:
+        close(db, tmp_path)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('named', [False, True])
 async def test_mixed_inputs_reconstruct_from_exact_refs_without_staging(tmp_path, monkeypatch, named):
     from gateway.hosted_room_input_preparation import reconstruct_accepted_payload

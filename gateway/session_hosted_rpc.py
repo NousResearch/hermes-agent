@@ -137,6 +137,9 @@ class HostedRoomAuthorityRPC:
         from gateway.hosted_room_input_preparation import prepare_hosted_input
         prepared = await asyncio.to_thread(prepare_hosted_input, self, request_id=request_id,
             prompt=params['prompt'], attachments=params.get('attachments'))
+        # Preparation may outlive the dispatch decision (including Stop).
+        if self.authorizer('submit', task, generation) is not True:
+            raise RuntimeStoreError('permission_denied')
         receipt = await self.authority.submit(self.principal, Submission(
             request_id, self.ref, prepared.payload, 'queue'), _input_custody=prepared.handle)
         self.callbacks[receipt.admission_id] = params['on_terminal']

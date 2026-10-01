@@ -548,6 +548,9 @@ from cron.executions import (
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
 
+# Archive text for a run whose agent produced no reply (nothing is delivered for it).
+NO_RESPONSE_PLACEHOLDER = "(No response generated)"
+
 # Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
 # report that merely quotes the token cannot turn a healthy run into a failed one.
 CRON_FAILURE_MARKER = "[CRON_FAILURE]"
@@ -2030,7 +2033,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
 
         final_response = repair_explicit_computer_use_media_paths(
             final_response, result.get("messages", []))
-    if final_response.strip() == "(No response generated)":
+    if final_response.strip() == NO_RESPONSE_PLACEHOLDER:
         final_response = ""
     # The "⚠️ No reply" turn-completion explainer would be delivered as a cron warning; detect it
     # via the same formatter and treat as empty so cron stays silent on abnormal empty turns.
@@ -2538,7 +2541,7 @@ def run_job(
             # agent-declared failure marker keep their first-line/whole-response contract.
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
+        logged_response = final_response if final_response else NO_RESPONSE_PLACEHOLDER
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)

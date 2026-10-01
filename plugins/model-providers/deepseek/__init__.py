@@ -4,8 +4,8 @@ V4 defaults to thinking ON when ``extra_body.thinking`` is unset, and then
 requires ``reasoning_content`` to be echoed back on later turns (HTTP 400 after
 the first tool call otherwise). This profile sets ``thinking`` explicitly and
 maps effort onto DeepSeek's ``reasoning_effort``; V3 models are left untouched.
-Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped in
-``hermes_cli.model_normalize`` before reaching here.
+Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped by
+this profile's canonical model-ID normalization hook.
 """
 
 from typing import Any
@@ -13,6 +13,7 @@ from typing import Any
 from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, thinking_toggle_extras
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import normalize_deepseek_id
 
 
 # Version-less canonical ids for thinking-capable DeepSeek models. The 2026-09 Flash
@@ -24,6 +25,9 @@ _THINKING_CAPABLE_IDS: frozenset[str] = frozenset({"deepseek-flash"})
 
 class DeepSeekProfile(ProviderProfile):
     """DeepSeek — extra_body.thinking + top-level reasoning_effort."""
+
+    def normalize_model_id(self, model: str, *, known_ids=()) -> str:
+        return normalize_deepseek_id(self, model)
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -47,6 +51,7 @@ deepseek = DeepSeekProfile(
     name="deepseek", aliases=("deepseek-chat", "deep-seek"), env_vars=("DEEPSEEK_API_KEY",), display_name="DeepSeek",
     description="DeepSeek — native DeepSeek API", signup_url="https://platform.deepseek.com/",
     fallback_models=("deepseek-v4-pro", "deepseek-flash"), base_url="https://api.deepseek.com/v1",
+    base_url_env_var="DEEPSEEK_BASE_URL",
     default_aux_model="deepseek-flash",
     # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
     # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".

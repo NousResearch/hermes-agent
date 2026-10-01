@@ -359,7 +359,7 @@ def _transcribe_deepinfra(
     api_key = _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         return _error_result("DEEPINFRA_API_KEY not set")
-    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
+    from application_deepinfra_catalog import deepinfra_base_url, deepinfra_model_ids
     # ``stt.deepinfra: null`` in YAML yields None, not {} — coalesce.
     base_url = deepinfra_base_url(_get_stt_section(_load_stt_config(), "deepinfra"))
     model_name = model_name or next(iter(deepinfra_model_ids("stt")), None)

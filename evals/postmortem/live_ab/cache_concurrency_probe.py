@@ -157,8 +157,14 @@ MODEL = ARGS.model or ("claude-fable-5.1" if PROVIDER == "anthropic" else "anthr
 if ARGS.wire:
     API_MODE = "chat_completions" if ARGS.wire == "chat" else "anthropic_messages"
 elif PROVIDER == "nous":
-    from hermes_cli.providers import nous_api_mode
-    API_MODE = nous_api_mode(MODEL)
+    from providers.routing import InvocationRequest, resolve_invocation_route
+    from hermes_cli.config import load_config_readonly
+    _nous_cfg = (load_config_readonly().get("nous") or {})
+    API_MODE = resolve_invocation_route(InvocationRequest(
+        provider="nous",
+        model=MODEL,
+        route_options={"anthropic_wire": str(_nous_cfg.get("anthropic_wire") or "chat")},
+    )).api_mode
 else:
     API_MODE = "chat_completions" if PROVIDER == "openrouter" else "anthropic_messages"
 if API_MODE == "chat_completions": Completions.create = patched_create

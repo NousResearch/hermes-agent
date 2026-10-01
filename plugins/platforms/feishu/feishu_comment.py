@@ -451,8 +451,9 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
     runtime_kwargs = _resolve_runtime_agent_kwargs()
     try:
         if not model and runtime_kwargs.get("provider"):  # fall back to the provider's default model
-            from hermes_cli.models import get_default_model_for_provider
-            model = get_default_model_for_provider(runtime_kwargs["provider"])
+            from gateway.model_runtime_facts import provider_default_model
+
+            model = provider_default_model(runtime_kwargs["provider"])
     except Exception:
         pass
     # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches the

@@ -45,8 +45,7 @@ class TestUnhandledAuthTypeDedup:
         ac._LOGGED_UNHANDLED_AUTHTYPE_KEYS.clear()
 
     def test_unhandled_auth_type_logs_debug_once_not_warning(self, caplog, monkeypatch):
-        import hermes_cli.auth as auth
-        from hermes_cli.auth import ProviderConfig
+        from hermes_cli.provider_auth import ProviderConfig
 
         # A registered provider whose auth_type matches no handled branch →
         # the terminal "unhandled auth_type" fall-through.
@@ -55,9 +54,10 @@ class TestUnhandledAuthTypeDedup:
             name="Bogus",
             auth_type="totally_unhandled_scheme",
         )
-        patched = dict(auth.PROVIDER_REGISTRY)
-        patched["bogus_authtype"] = bogus
-        monkeypatch.setattr(auth, "PROVIDER_REGISTRY", patched)
+        monkeypatch.setattr(
+            ac, "get_provider_config",
+            lambda provider: bogus if provider == "bogus_authtype" else None,
+        )
 
         with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
             client, model = resolve_provider_client("bogus_authtype", "")

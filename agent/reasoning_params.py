@@ -68,9 +68,9 @@ def unset_reasoning_default(agent) -> dict | None:
     if not default:
         return None
     try:
-        from agent.models_dev import get_model_capabilities
+        from agent.models_dev import query_model_metadata
 
-        caps = get_model_capabilities(provider, model, allow_network=False)
+        caps = query_model_metadata(provider, model, allow_network=False)
     except Exception:
         caps = None
     if caps is not None and caps.supports_reasoning is False:
@@ -93,7 +93,7 @@ class ReasoningParamsMixin:
             return True
         if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                from models.metadata.github import github_model_reasoning_efforts
 
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
@@ -109,21 +109,21 @@ class ReasoningParamsMixin:
         # Live-catalog metadata first (OpenRouter /v1/models supported_parameters) — the static prefix
         # allowlist repeatedly went stale one vendor at a time. Unknown falls back to the static list.
         try:
-            from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
+            from models.metadata.reasoning import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
             caps = openrouter_model_reasoning_capabilities(self.model)
             if caps is None:
                 warm_openrouter_reasoning_caps_async()  # cache cold — warm in the background, never block
         except Exception:
             caps = None
         if caps is not None:
-            return bool(caps.get("supports_reasoning"))
+            return bool(caps.supported)
         model = (self.model or "").lower()
         return any(model.startswith(prefix) for prefix in _OPENROUTER_REASONING_PREFIXES)
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """LM Studio's published reasoning ``allowed_options`` (gate + clamp so toggle models don't 400 on ``high``)."""
         try:
-            from hermes_cli.models_local import lmstudio_model_reasoning_options
+            from models.metadata.local import lmstudio_model_reasoning_options
         except Exception:
             return []
         return _cached_probe(self, "_lm_reasoning_opts_cache", lmstudio_model_reasoning_options, [], bool)
@@ -131,7 +131,7 @@ class ReasoningParamsMixin:
     def _ollama_supports_thinking_cached(self) -> bool:
         """True only if Ollama's ``/api/show`` declares the ``thinking`` capability."""
         try:
-            from hermes_cli.models_local import ollama_model_supports_thinking
+            from models.metadata.local import ollama_model_supports_thinking
         except Exception:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
@@ -139,7 +139,7 @@ class ReasoningParamsMixin:
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
-            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
+            from models.metadata.github import clamp_github_reasoning_effort, github_model_reasoning_efforts
         except Exception:
             return None
 

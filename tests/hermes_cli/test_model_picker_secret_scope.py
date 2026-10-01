@@ -64,7 +64,6 @@ class TestSwitchModelKeyEnvScope:
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
         )
-        monkeypatch.setattr(ms, "resolve_alias", lambda *a, **k: None)
         result = ms.switch_model(
             "some-model",
             current_provider="openrouter",
@@ -126,7 +125,6 @@ class TestPickerKeyEnvDotenv:
             return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime)
-        monkeypatch.setattr(ms, "resolve_alias", lambda *a, **k: None)
         monkeypatch.setattr(mv, "validate_requested_model", _fake_validate)
 
         ms.switch_model(

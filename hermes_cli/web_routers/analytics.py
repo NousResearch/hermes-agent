@@ -202,8 +202,8 @@ def _fold_session_only_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, An
 def _model_capabilities(provider: str, model_name: str) -> dict:
     """models.dev capability metadata for the card; {} when unknown or lookup fails."""
     try:
-        from agent.models_dev import get_model_capabilities
-        mc = get_model_capabilities(provider=provider, model=model_name)
+        from agent.models_dev import query_model_metadata
+        mc = query_model_metadata(provider=provider, model=model_name)
     except Exception:
         return {}
     if mc is None:

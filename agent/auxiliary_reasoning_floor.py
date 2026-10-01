@@ -90,11 +90,16 @@ def _catalog_marks_mandatory(provider: Optional[str], base_url: Optional[str], m
     process."""
     provider_norm = str(provider or "").strip().lower()
     host = (urlparse(base_url or "").hostname or "").lower()
-    from hermes_cli import models_reasoning_caps as caps_mod
+    from models.metadata import (
+        nous_model_reasoning_capabilities,
+        openrouter_model_reasoning_capabilities,
+        warm_nous_reasoning_caps_async,
+        warm_openrouter_reasoning_caps_async,
+    )
     if provider_norm == "openrouter" or host == "openrouter.ai" or host.endswith(".openrouter.ai"):
-        lookup, warm = caps_mod.openrouter_model_reasoning_capabilities, caps_mod.warm_openrouter_reasoning_caps_async
+        lookup, warm = openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
     elif provider_norm in _NOUS_PROVIDERS:
-        lookup, warm = caps_mod.nous_model_reasoning_capabilities, caps_mod.warm_nous_reasoning_caps_async
+        lookup, warm = nous_model_reasoning_capabilities, warm_nous_reasoning_caps_async
     else:
         return False
     try:
@@ -103,7 +108,7 @@ def _catalog_marks_mandatory(provider: Optional[str], base_url: Optional[str], m
             warm()
     except Exception:
         return False
-    return bool(caps and caps.get("mandatory"))
+    return bool(caps and caps.mandatory)
 
 
 def known_reasoning_floor(

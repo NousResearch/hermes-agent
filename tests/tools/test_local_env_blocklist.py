@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.provider_auth import iter_provider_configs
 from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal  # noqa: F401
 from tools.environments import local
 from tools.environments import local_pythonpath as pp
@@ -66,10 +67,9 @@ def _running_site():
 
 
 def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
-    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import OPTIONAL_ENV_VARS
     blocked = set(STATIC_BLOCKED)
-    for config in PROVIDER_REGISTRY.values():
+    for config in iter_provider_configs():
         blocked.update(config.api_key_env_vars)
         if config.base_url_env_var:
             blocked.add(config.base_url_env_var)
@@ -1041,16 +1041,14 @@ class TestBlocklistCoverage:
 
 
     def test_registry_vars_are_in_blocklist(self):
-        """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
+        """Every api_key_env_var and base_url_env_var from the live provider projection
         must appear in the blocklist — ensures no drift.
 
         CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
         by the user's Claude Code install, not Hermes (#55878).
         """
-        from hermes_cli.auth import PROVIDER_REGISTRY
-
         exempt = {"CLAUDE_CODE_OAUTH_TOKEN"}
-        for pconfig in PROVIDER_REGISTRY.values():
+        for pconfig in iter_provider_configs():
             for var in pconfig.api_key_env_vars:
                 if var in exempt:
                     continue

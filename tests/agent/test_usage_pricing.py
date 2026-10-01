@@ -364,7 +364,7 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
     direct Gemini and Vertex routes — a model pickable via the aggregators but
     ``unknown`` to Google-route accounting is a catalog/pricing drift.
     """
-    from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from models.catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",
@@ -877,7 +877,7 @@ def _anthropic_usage(speed=None):
 
 
 def test_anthropic_fast_mode_responses_price_from_the_fast_rate_row():
-    from agent.model_metadata import _ANTHROPIC_FAST_MODE_MODELS
+    from models.metadata.context import _ANTHROPIC_FAST_MODE_MODELS
     from agent.usage_pricing import _ANTHROPIC_FAST_MODE_PRICING
 
     # Every model the fast-mode gate sends ``speed`` to has a fast rate and a standard rate.

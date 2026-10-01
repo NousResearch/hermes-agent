@@ -69,7 +69,7 @@ def test_exhausted_pool_provider_is_not_authenticated(monkeypatch):
 
 def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     """Legacy token-style auth-store values have no parsed pool entries."""
-    from hermes_cli.model_switch_providers import _credential_pool_is_usable
+    from application_provider_discovery import _credential_pool_is_usable
 
     monkeypatch.setattr(
         "agent.credential_pool.load_pool",
@@ -90,7 +90,7 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
     """The interactive picker must include providers whose credential pool
     entries are all exhausted, so the user can still switch to a different
     model under the same provider."""
-    from hermes_cli.model_switch_providers import list_picker_providers
+    from application_provider_discovery import list_picker_providers
 
     _patch_opencode_pool(monkeypatch, available=False)
     providers = list_picker_providers(

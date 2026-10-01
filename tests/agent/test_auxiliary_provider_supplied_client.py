@@ -57,25 +57,19 @@ def _probe_profile(cls, name: str) -> ProviderProfile:
 
 @pytest.fixture
 def registered(monkeypatch):
-    """Register provider profiles for one test on copies of both registries.
+    """Register provider profiles for one test on an isolated canonical registry.
 
-    Mirrors the import-time synthesis ``hermes_cli.auth`` performs for plugin ``api_key``
-    profiles, which is what routes them into ``_resolve_api_key_branch`` in the first place.
     """
-    import hermes_cli.auth as _auth
-    from hermes_cli.auth_plugin_providers import register_plugin_provider
     from agent import secret_scope as _secret_scope
 
-    _providers._discover_providers()
-    monkeypatch.setattr(_providers, "_REGISTRY", dict(_providers._REGISTRY))
-    monkeypatch.setattr(_providers, "_ALIASES", dict(_providers._ALIASES))
-    monkeypatch.setattr(_providers, "_PROVIDER_LIST_CACHE", None)
-    monkeypatch.setattr(_auth, "PROVIDER_REGISTRY", dict(_auth.PROVIDER_REGISTRY))
+    _providers.discovery.ensure_process_discovered()
+    monkeypatch.setattr(_providers.registry, "_REGISTRY", dict(_providers.registry._REGISTRY))
+    monkeypatch.setattr(_providers.registry, "_ALIASES", dict(_providers.registry._ALIASES))
+    monkeypatch.setattr(_providers.registry, "_PROVIDER_LIST_CACHE", None)
     scope_token = _secret_scope.set_secret_scope({_PROBE_ENV_VAR: _PROBE_KEY})
 
     def _register(profile: ProviderProfile) -> None:
         _providers.register_provider(profile)
-        register_plugin_provider(profile)
 
     yield _register
     _secret_scope.reset_secret_scope(scope_token)

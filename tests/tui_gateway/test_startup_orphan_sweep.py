@@ -17,7 +17,7 @@ import types
 
 from hermes_state import SessionDB
 from tui_gateway import entry, server
-from hermes_cli import model_switch_providers
+import application_picker_prewarm as picker_prewarm
 
 
 IDLE_S = 6 * 3600
@@ -252,6 +252,6 @@ class TestEntryAndWsWiring:
         monkeypatch.setattr(entry, "write_json", lambda _payload: True)
         monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
 
-        monkeypatch.setattr(model_switch_providers, "prewarm_picker_cache_async", lambda: None)
+        monkeypatch.setattr(picker_prewarm, "prewarm_picker_cache_async", lambda: None)
 
         entry.main()  # must not raise

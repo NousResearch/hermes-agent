@@ -1154,10 +1154,11 @@ class _CountingCtxLen:
 
 def _trim(messages, *, window=1000, reserve=None, cache=None, counting=None,
           monkeypatch=None):
-    from agent import model_metadata, moa_loop
+    from agent import moa_loop
+    from models.metadata import context as model_context
 
     stub = counting or _CountingCtxLen(window)
-    monkeypatch.setattr(model_metadata, "get_model_context_length", stub)
+    monkeypatch.setattr(model_context, "get_model_context_length", stub)
     return moa_loop._trim_messages_for_reference(
         messages,
         {"provider": "openrouter", "model": "small-window"},

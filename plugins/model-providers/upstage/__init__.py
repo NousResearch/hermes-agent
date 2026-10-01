@@ -49,8 +49,8 @@ class UpstageProfile(ProviderProfile):
 
 upstage = UpstageProfile(
     name="upstage", aliases=("solar",), display_name="Upstage Solar", description="Upstage (Solar API)",
-    signup_url="https://console.upstage.ai/api-keys", env_vars=("UPSTAGE_API_KEY", "UPSTAGE_BASE_URL"),
-    base_url="https://api.upstage.ai/v1", auth_type="api_key",
+    signup_url="https://console.upstage.ai/api-keys", env_vars=("UPSTAGE_API_KEY",),
+    base_url="https://api.upstage.ai/v1", base_url_env_var="UPSTAGE_BASE_URL", auth_type="api_key",
     # No default_aux_model: auxiliary tasks use the main model. [0] is the setup default.
     fallback_models=("solar-pro3",),
 )

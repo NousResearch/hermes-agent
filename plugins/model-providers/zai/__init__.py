@@ -10,6 +10,7 @@ from typing import Any
 from agent import reasoning_effort as re_
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import MatchingPrefixModelIdsMixin
 
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 # Alias spellings seen on relays (Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).
@@ -42,7 +43,7 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | Non
     return clamped if clamped in efforts else floor
 
 
-class ZaiProfile(ProviderProfile):
+class ZaiProfile(MatchingPrefixModelIdsMixin, ProviderProfile):
     """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
 
     def build_api_kwargs_extras(
@@ -69,7 +70,9 @@ zai = ZaiProfile(
     env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), display_name="Z.AI (GLM)",
     description="Z.AI / GLM — Zhipu AI models", signup_url="https://z.ai/",
     fallback_models=("glm-5.2", "glm-5", "glm-4-9b"), base_url="https://api.z.ai/api/paas/v4",
+    base_url_env_var="GLM_BASE_URL",
     default_aux_model="glm-4.5-flash",
+    default_vision_model_id="glm-5.3-flash",
 )
 
 register_provider(zai)

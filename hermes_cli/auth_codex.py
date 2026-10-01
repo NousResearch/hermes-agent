@@ -25,8 +25,8 @@ from hermes_cli.auth_constants import (
     CODEX_OAUTH_USER_AGENT, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
 from utils import env_float
 
-if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
-    from hermes_cli.auth import ProviderConfig
+if TYPE_CHECKING:
+    from hermes_cli.provider_auth import ProviderConfig
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
@@ -72,17 +72,18 @@ def _codex_base_url() -> str:
 
 
 def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
-    """Base URL the chat route sends a pooled Codex credential to — the same rule
-    ``runtime_provider._pool_entry_mode_and_url`` applies (``HERMES_CODEX_BASE_URL`` > ``model.base_url``
-    while the row still carries the canonical URL > the row's own URL). A pooled gateway key belongs to
-    that host only; composing it with the ambient default sends it to chatgpt.com (#121486)."""
+    """Base URL the chat route sends a pooled Codex credential to — the same endpoint
+    binding rule as runtime-provider resolution (``HERMES_CODEX_BASE_URL`` > ``model.base_url``
+    while the row still carries the canonical URL > the row's own URL). Protocol selection remains
+    exclusively owned by :mod:`providers.routing`. A pooled gateway key belongs to that host only;
+    composing it with the ambient default sends it to chatgpt.com (#121486)."""
     base = _stripped(entry_base_url).rstrip("/")
     try:
         from hermes_cli.config import load_config_readonly
-        from hermes_cli.runtime_provider import _pool_entry_mode_and_url
+        from hermes_cli.runtime_provider import _pool_entry_route_base_url
         model_cfg = load_config_readonly().get("model")
-        return _pool_entry_mode_and_url(
-            "openai-codex", None, model_cfg if isinstance(model_cfg, dict) else {}, "", base)[1]
+        return _pool_entry_route_base_url(
+            "openai-codex", None, model_cfg if isinstance(model_cfg, dict) else {}, base)
     except Exception:
         logger.debug("Codex pool route base resolution failed", exc_info=True)
         # Profile-scoped override only (never the raw process env: a multiplexed sibling's gateway).

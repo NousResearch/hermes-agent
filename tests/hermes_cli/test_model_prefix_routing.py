@@ -47,7 +47,8 @@ class TestVendorPrefixRouting:
         """A user-named ``ollama`` block must not be rewritten to ``custom``."""
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
         monkeypatch.setattr(models, "_configured_provider_ids", lambda: {"ollama"})
-        assert models._PROVIDER_ALIASES.get("ollama") == "custom"  # precondition
+        from providers import normalize_provider
+        assert normalize_provider("ollama") == "custom"  # precondition
         detected = models.detect_provider_for_model("ollama/qwen3.5:4b", "anthropic")
         assert detected == ("ollama", "qwen3.5:4b")
 
@@ -74,12 +75,12 @@ class TestVendorPrefixRouting:
         detected = models.detect_provider_for_model("deepseek/deepseek-chat", "anthropic")
         assert detected == ("openrouter", "deepseek/deepseek-chat")
 
-    def test_bare_model_detection_unchanged(self, monkeypatch):
+    def test_retired_model_id_uses_canonical_deepseek_identity(self, monkeypatch):
         from hermes_cli import models_detect
         monkeypatch.setattr(models_detect, "provider_has_credentials", lambda p: p == "deepseek")
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
         detected = models.detect_provider_for_model("deepseek-chat", "anthropic")
-        assert detected == ("deepseek", "deepseek-chat")
+        assert detected == ("deepseek", "deepseek-flash")
 
 
 class TestDictModelAliases:
@@ -99,7 +100,7 @@ class TestDictModelAliases:
         }
         aliases = self._load_with(monkeypatch, cfg)
         da = aliases["localqwen"]
-        assert (da.model, da.provider) == ("qwen3.5:4b", "custom")
+        assert (da.ref.model, da.ref.provider) == ("qwen3.5:4b", "custom")
 
     def test_dict_entry_with_base_url(self, monkeypatch):
         cfg = {
@@ -115,8 +116,8 @@ class TestDictModelAliases:
         }
         aliases = self._load_with(monkeypatch, cfg)
         da = aliases["qwen"]
-        assert (da.model, da.provider, da.base_url) == (
-            "qwen3.5:4b", "ollama", "http://localhost:11434/v1",
+        assert (da.ref.model, da.ref.provider, da.base_url) == (
+            "qwen3.5:4b", "custom", "http://localhost:11434/v1",
         )
 
     def test_dict_entry_without_provider_uses_model_provider(self, monkeypatch):
@@ -128,7 +129,7 @@ class TestDictModelAliases:
         }
         aliases = self._load_with(monkeypatch, cfg)
         da = aliases["bare"]
-        assert (da.model, da.provider) == ("some-model", "openrouter")
+        assert (da.ref.model, da.ref.provider) == ("some-model", "openrouter")
 
     def test_string_entries_still_parse(self, monkeypatch):
         cfg = {
@@ -138,7 +139,7 @@ class TestDictModelAliases:
         }
         aliases = self._load_with(monkeypatch, cfg)
         da = aliases["ds-flash"]
-        assert (da.model, da.provider) == ("deepseek-v4-flash", "deepseek")
+        assert (da.ref.model, da.ref.provider) == ("deepseek-v4-flash", "deepseek")
 
     def test_model_aliases_block_keeps_priority_over_model_aliases(self, monkeypatch):
         cfg = {
@@ -150,4 +151,4 @@ class TestDictModelAliases:
             },
         }
         aliases = self._load_with(monkeypatch, cfg)
-        assert aliases["shared"].model == "from-top-block"
+        assert aliases["shared"].ref.model == "from-top-block"

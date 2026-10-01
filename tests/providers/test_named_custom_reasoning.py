@@ -20,9 +20,9 @@ def test_named_custom_route_keeps_final_reasoning_effort():
 def test_named_custom_fallback_does_not_override_registered_routes(monkeypatch):
     import providers
     get_provider_profile("custom")
-    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
-    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
-    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(providers.registry, "_REGISTRY", dict(providers.registry._REGISTRY))
+    monkeypatch.setattr(providers.registry, "_ALIASES", dict(providers.registry._ALIASES))
+    monkeypatch.setattr(providers.registry, "_PROVIDER_LIST_CACHE", None)
     dedicated = ProviderProfile(name="custom:fixture")
     register_provider(dedicated)
     assert get_provider_profile("custom:fixture") is dedicated

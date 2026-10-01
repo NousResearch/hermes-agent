@@ -74,7 +74,7 @@ commandcode = CommandCodeProfile(
     name="commandcode", aliases=("commandcode-chat",), api_mode="chat_completions",
     # Same key as the anthropic profile; distinct base-URL override vars so each
     # profile renders its own card on the desktop Keys tab (rows keyed by env var).
-    env_vars=("COMMANDCODE_API_KEY", "COMMANDCODE_BASE_URL"),
+    env_vars=("COMMANDCODE_API_KEY",), base_url_env_var="COMMANDCODE_BASE_URL",
     display_name="CommandCode", description="CommandCode — 20+ models via OpenAI-compatible API",
     signup_url="https://commandcode.ai/", base_url=_COMMANDCODE_BASE, models_url=_COMMANDCODE_MODELS_URL,
     fallback_models=(
@@ -87,7 +87,7 @@ commandcode = CommandCodeProfile(
 
 commandcode_anthropic = CommandCodeAnthropicProfile(
     name="commandcode-anthropic", aliases=("commandcode-claude",), api_mode="anthropic_messages",
-    env_vars=("COMMANDCODE_API_KEY", "COMMANDCODE_ANTHROPIC_BASE_URL"),
+    env_vars=("COMMANDCODE_API_KEY",), base_url_env_var="COMMANDCODE_ANTHROPIC_BASE_URL",
     display_name="CommandCode (Anthropic)",
     description="CommandCode — Claude models via Anthropic Messages API",
     signup_url="https://commandcode.ai/", base_url=_COMMANDCODE_BASE, models_url=_COMMANDCODE_MODELS_URL,

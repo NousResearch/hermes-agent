@@ -10,6 +10,7 @@ The regression that matters most is the leak: assert on the credential the
 endpoint probe is actually handed, not just on the returned struct.
 """
 
+from models import ModelRef
 import pytest
 
 
@@ -153,7 +154,7 @@ class TestDirectAliasApiKeyHelper:
         monkeypatch.setenv("THETA_API_KEY", "sk-from-env")
         from hermes_cli.model_switch import DirectAlias, direct_alias_api_key
 
-        alias = DirectAlias("theta-1", "custom", ALIAS_HOST, **entry)
+        alias = DirectAlias(ModelRef("custom", "theta-1"), ALIAS_HOST, **entry)
         assert direct_alias_api_key(alias) == expected
 
 
@@ -465,7 +466,7 @@ class TestCredentialPrecedenceIsExplicit:
         monkeypatch.setenv("THETA_API_KEY", "sk-from-key-env")
         from hermes_cli.model_switch import DirectAlias, direct_alias_api_key
 
-        alias = DirectAlias("theta-1", "custom", ALIAS_HOST,
+        alias = DirectAlias(ModelRef("custom", "theta-1"), ALIAS_HOST,
                             "sk-literal", "THETA_API_KEY")
         assert direct_alias_api_key(alias) == "sk-literal"
 
@@ -474,7 +475,7 @@ class TestCredentialPrecedenceIsExplicit:
         monkeypatch.setenv("FALLBACK", "sk-from-key-env")
         from hermes_cli.model_switch import DirectAlias, direct_alias_api_key
 
-        alias = DirectAlias("theta-1", "custom", ALIAS_HOST,
+        alias = DirectAlias(ModelRef("custom", "theta-1"), ALIAS_HOST,
                             "${PRIMARY}", "FALLBACK")
         assert direct_alias_api_key(alias) == "sk-from-template"
 
@@ -482,7 +483,7 @@ class TestCredentialPrecedenceIsExplicit:
         monkeypatch.setenv("FALLBACK", "sk-from-key-env")
         from hermes_cli.model_switch import DirectAlias, direct_alias_api_key
 
-        alias = DirectAlias("theta-1", "custom", ALIAS_HOST, "   ", "FALLBACK")
+        alias = DirectAlias(ModelRef("custom", "theta-1"), ALIAS_HOST, "   ", "FALLBACK")
         assert direct_alias_api_key(alias) == "sk-from-key-env"
 
 
@@ -561,7 +562,7 @@ class TestAliasCacheIsProfileScoped:
 
         theta = self._load(monkeypatch, b)["theta"]
         assert theta.api_key == "sk-PROFILE-B-SECRET"
-        assert theta.model == "b-model"
+        assert theta.ref.model == "b-model"
         assert theta.base_url == "https://b.example.com/v1"
 
     def test_alias_absent_from_the_second_profile_does_not_persist(
@@ -639,7 +640,7 @@ class TestOneShotUsesTheSameHostInvariant:
         from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        alias = DirectAlias("c", provider, "https://evil.test/v1")
+        alias = DirectAlias(ModelRef(provider, "c"), "https://evil.test/v1")
         requested, explicit_key = direct_alias_runtime_request(alias)
         runtime = resolve_runtime_provider(
             requested=requested,
@@ -654,21 +655,21 @@ class TestOneShotUsesTheSameHostInvariant:
         from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
 
         assert direct_alias_runtime_request(
-            DirectAlias("c", "anthropic", "")
+            DirectAlias(ModelRef("anthropic", "c"), "")
         ) == ("anthropic", None)
 
     def test_url_bearing_alias_is_forced_to_custom(self):
         from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
 
         assert direct_alias_runtime_request(
-            DirectAlias("c", "anthropic", "https://evil.test/v1")
+            DirectAlias(ModelRef("anthropic", "c"), "https://evil.test/v1")
         ) == ("custom", None)
 
     def test_declared_key_is_carried_through(self, monkeypatch):
         from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
 
         assert direct_alias_runtime_request(
-            DirectAlias("c", "anthropic", "https://evil.test/v1", "sk-own")
+            DirectAlias(ModelRef("anthropic", "c"), "https://evil.test/v1", "sk-own")
         ) == ("custom", "sk-own")
 
 
@@ -731,7 +732,7 @@ class TestOneshotPassesAliasCredential:
         monkeypatch.setattr(
             ms,
             "DIRECT_ALIASES",
-            {"theta": DirectAlias("theta-1", "custom", ALIAS_HOST, "sk-theta-ALIAS")},
+            {"theta": DirectAlias(ModelRef("custom", "theta-1"), ALIAS_HOST, "sk-theta-ALIAS")},
         )
         monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
 

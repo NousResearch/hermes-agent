@@ -133,7 +133,7 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     """True when *model* is a Nous free-tier model, using ONLY local data: (1) ``:free`` suffix — canonical
     Nous free SKU marker; (2) ``stealth/`` prefix — stealth-preview SKUs are free without the suffix
     (naming-convention trust: a PAID ``stealth/`` model would wrongly suppress the banner); (3) a PEEK into
-    ``hermes_cli.models``' pricing cache (filled by the model picker; a miss never fetches). Fail-open to
+    ``application_model_pricing``'s pricing cache (filled by the model picker; a miss never fetches). Fail-open to
     False (depleted notice still shows): a wrong warning is recoverable noise; hiding it masks a real block."""
     if not model:
         return False
@@ -147,8 +147,8 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     if _is_nous_welcome_route(base_url):
         return True
     try:
-        from hermes_cli.models import _is_model_free
-        from hermes_cli.models_pricing import peek_cached_pricing
+        from models.metadata.pricing import _is_model_free
+        from application_model_pricing import peek_cached_pricing
 
         pricing = peek_cached_pricing(base_url)  # owns the /v1-suffix and auth-state key details
         return bool(pricing) and _is_model_free(model, pricing)
@@ -433,7 +433,7 @@ def _warm_nous_pricing_cache() -> None:
     an EMPTY catalog and a subscription-billed model — which spends no credits — still draws the
     depleted banner. Fail-open: a miss leaves the peek exactly as it was."""
     try:
-        from hermes_cli.models_pricing import get_pricing_for_provider
+        from application_model_pricing import get_pricing_for_provider
 
         get_pricing_for_provider("nous")
     except Exception:
@@ -452,7 +452,8 @@ def rewarm_pricing_before_depleted_notice(agent) -> bool:
     base_url = getattr(agent, "base_url", "") or ""
     if getattr(agent, "provider", "") != "nous" or not base_url:
         return False
-    from hermes_cli.models_pricing import peek_cached_pricing, pricing_fetch_suppressed
+    from application_model_pricing import peek_cached_pricing
+    from application_model_pricing import pricing_fetch_suppressed
 
     if peek_cached_pricing(base_url) or pricing_fetch_suppressed(base_url):
         return False

@@ -93,7 +93,7 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
         seen.update(kwargs)
         return []
 
-    with patch("hermes_cli.model_switch.list_authenticated_providers", _capture):
+    with patch("application_provider_discovery.list_authenticated_providers", _capture):
         inventory.build_aux_picker_rows()
 
     assert seen.get("for_picker") is True

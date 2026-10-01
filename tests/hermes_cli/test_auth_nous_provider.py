@@ -1,5 +1,9 @@
 """Regression tests for Nous OAuth refresh and inference JWT interactions."""
 
+import application_model_pricing
+import models.metadata.pricing as models_metadata_pricing
+from hermes_cli.provider_auth import get_provider_config
+
 import base64
 import json
 import logging
@@ -434,7 +438,7 @@ class TestLoginNousSkipKeepsCurrent:
         import hermes_cli.auth as auth_mod
         import hermes_cli.auth_nous as auth_nous
         import hermes_cli.models as models_mod
-        from hermes_cli import models_pricing
+        import application_model_pricing as models_pricing
         import hermes_cli.nous_subscription as ns
 
         fake_auth_state = {
@@ -457,7 +461,7 @@ class TestLoginNousSkipKeepsCurrent:
             auth_mod, "_prompt_model_selection",
             lambda *a, **kw: prompt_returns,
         )
-        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda p: {})
+        monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", lambda p: {})
         free_tier_calls = []
 
         def _check_nous_free_tier(**kwargs):
@@ -466,7 +470,7 @@ class TestLoginNousSkipKeepsCurrent:
 
         monkeypatch.setattr(models_mod, "check_nous_free_tier", _check_nous_free_tier)
         monkeypatch.setattr(
-            models_mod, "partition_nous_models_by_tier",
+            models_metadata_pricing, "partition_nous_models_by_tier",
             lambda ids, p, free_tier=False: (ids, []),
         )
         monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
@@ -476,7 +480,7 @@ class TestLoginNousSkipKeepsCurrent:
         """User picks Skip → config.yaml untouched, Nous creds still saved."""
         import argparse
         import hermes_yaml as yaml
-        from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
+        from hermes_cli.auth import _login_nous
 
         hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
@@ -487,7 +491,7 @@ class TestLoginNousSkipKeepsCurrent:
             portal_url=None, inference_url=None, client_id=None, scope=None,
             no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
         )
-        _login_nous(args, PROVIDER_REGISTRY["nous"])
+        _login_nous(args, get_provider_config("nous"))
 
         # config.yaml model section must be unchanged
         cfg_after = yaml.safe_load(config_path.read_text())
@@ -507,7 +511,7 @@ class TestLoginNousSkipKeepsCurrent:
         """User picks a Nous model → provider flips to nous with that model."""
         import argparse
         import hermes_yaml as yaml
-        from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
+        from hermes_cli.auth import _login_nous
 
         hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
@@ -520,7 +524,7 @@ class TestLoginNousSkipKeepsCurrent:
             portal_url=None, inference_url=None, client_id=None, scope=None,
             no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
         )
-        _login_nous(args, PROVIDER_REGISTRY["nous"])
+        _login_nous(args, get_provider_config("nous"))
 
         cfg_after = yaml.safe_load(config_path.read_text())
         assert cfg_after["model"]["provider"] == "nous"
@@ -534,7 +538,7 @@ class TestLoginNousSkipKeepsCurrent:
         instead of leaving it as nous."""
         import argparse
         import hermes_yaml as yaml
-        from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
+        from hermes_cli.auth import _login_nous
 
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -550,7 +554,7 @@ class TestLoginNousSkipKeepsCurrent:
             portal_url=None, inference_url=None, client_id=None, scope=None,
             no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
         )
-        _login_nous(args, PROVIDER_REGISTRY["nous"])
+        _login_nous(args, get_provider_config("nous"))
 
         auth_path = hermes_home / "auth.json"
         auth_after = json.loads(auth_path.read_text())

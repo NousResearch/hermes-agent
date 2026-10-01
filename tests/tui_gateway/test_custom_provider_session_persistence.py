@@ -27,8 +27,17 @@ import json
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import hermes_cli.runtime_provider as rp
 from hermes_state import SessionDB
+
+
+@pytest.fixture(autouse=True)
+def _bind_canonical_tui_config_to_mocked_profile(monkeypatch):
+    """Old runtime-provider test stubs must also feed the TUI's new config owner."""
+    from tui_gateway import server
+    monkeypatch.setattr(server, "_load_cfg", lambda: rp.load_config())
 
 MIMO_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 MIMO_KEY = "sk-mimo-entry-key"
@@ -112,7 +121,8 @@ def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
     # Keep credential-pool resolution off the developer's real HERMES home.
     monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
 
-    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "unused"}}
+    fake_cfg = {**config, "agent": {"system_prompt": ""}}
+    fake_cfg.setdefault("model", {"default": "unused"})
     with (
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
         patch("tui_gateway.server._get_db", return_value=MagicMock()),
@@ -612,9 +622,8 @@ class TestFollowProfileConfigRuntimeOverrides:
         known = set(server._sessions)
         try:
             with (
-                patch("hermes_cli.model_switch.parse_model_flags", return_value=("glm-5.1", None, False, False, None)),
-                patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
-                patch("hermes_cli.model_switch.switch_model", return_value=result),
+                patch("application_model_command_request.resolve_model_persistence", return_value=False),
+                patch("tui_gateway.model_switch_resolution.resolve_tui_model_switch", return_value=result),
                 server._profile_build_scope(secondary),
             ):
                 server._apply_model_switch("sid-live", live, "glm-5.1")
@@ -896,5 +905,3 @@ class TestRuntimeModelConfigDropsStaleKeys:
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
-
-

@@ -29,7 +29,7 @@ class TestXiaomiAliases:
         assert resolve_provider(alias) == "xiaomi"
 
     def test_normalize_provider_models_py(self):
-        from hermes_cli.models import normalize_provider
+        from providers import normalize_provider
         assert normalize_provider("mimo") == "xiaomi"
         assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
@@ -114,7 +114,7 @@ class TestXiaomiModelCatalog:
         names are data that changes with upstream releases and doesn't
         belong in tests.
         """
-        from hermes_cli.models import _PROVIDER_MODELS
+        from models.catalog_static import _PROVIDER_MODELS
         assert "xiaomi" in _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["xiaomi"]) >= 1
 
@@ -156,20 +156,13 @@ class TestXiaomiModelCatalog:
 class TestXiaomiNormalization:
     """Model name normalization — Xiaomi is a direct provider."""
 
-    def test_lowercase_subset_of_matching_prefix(self):
-        """_LOWERCASE_MODEL_PROVIDERS must be a subset of _MATCHING_PREFIX_STRIP_PROVIDERS.
 
-        Otherwise the .lower() code path is unreachable dead code — the
-        provider check at line 422 gates entry to the block.
-        """
-        from hermes_cli.model_normalize import (
-            _LOWERCASE_MODEL_PROVIDERS,
-            _MATCHING_PREFIX_STRIP_PROVIDERS,
-        )
-        assert _LOWERCASE_MODEL_PROVIDERS.issubset(_MATCHING_PREFIX_STRIP_PROVIDERS), (
-            f"_LOWERCASE_MODEL_PROVIDERS has entries not in _MATCHING_PREFIX_STRIP_PROVIDERS: "
-            f"{_LOWERCASE_MODEL_PROVIDERS - _MATCHING_PREFIX_STRIP_PROVIDERS}"
-        )
+
+
+    def test_owned_prefix_is_stripped_before_lowercasing(self):
+        from models import normalize_model_id
+
+        assert normalize_model_id("xiaomi", "xiaomi/MiMo-V2.5-Pro") == "mimo-v2.5-pro"
 
     @pytest.mark.parametrize("input_name,expected", [
         ("MiMo-V2.5-Pro", "mimo-v2.5-pro"),
@@ -177,8 +170,8 @@ class TestXiaomiNormalization:
     ])
     def test_normalize_lowercases_mixed_case(self, input_name, expected):
         """Xiaomi's API requires lowercase model IDs — mixed case from docs must be lowered."""
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider(input_name, "xiaomi")
+        from models import normalize_model_id
+        result = normalize_model_id("xiaomi", input_name)
         assert result == expected
 
 # =============================================================================
@@ -190,7 +183,7 @@ class TestXiaomiURLMapping:
 
     def test_infer_from_regional_urls(self):
         """Regional token-plan endpoints should also resolve to xiaomi."""
-        from agent.model_metadata import _infer_provider_from_url
+        from models.metadata.context import _infer_provider_from_url
         assert _infer_provider_from_url("https://token-plan-ams.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-cn.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-sgp.xiaomimimo.com/v1") == "xiaomi"

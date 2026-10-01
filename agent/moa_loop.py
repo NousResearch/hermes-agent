@@ -420,7 +420,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
 
     Failures are cached too so a flaky metadata source is not re-probed per reference.
     """
-    from agent.model_metadata import get_model_context_length
+    from models.metadata.context import get_model_context_length
 
     model = str(slot.get("model") or "")
     provider = str(runtime.get("provider") or slot.get("provider") or "")

@@ -153,7 +153,7 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
     }
 
     with patch(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         return_value={"service_tier": "priority"},
     ):
         route = gateway_run.GatewayRunner._resolve_turn_agent_config(
@@ -280,7 +280,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     tier_box = {"tier": "priority"}
     runner._resolve_session_service_tier = lambda *a, **k: tier_box["tier"]
     with patch(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         return_value={"service_tier": "priority"},
     ):
         result = await run_turn()

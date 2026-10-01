@@ -64,36 +64,20 @@ def _state() -> Any:
 
 
 def _base_url() -> str:
-    """Router base URL: profile ``.env`` first (scope-aware), plain os.environ as the fallback."""
-    try:
-        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
-    except Exception:
-        prefer_dotenv = None
-    for resolve in filter(None, (prefer_dotenv, os.environ.get)):
-        try:
-            value = str(resolve("RAMP_ROUTER_BASE_URL") or "").strip().rstrip("/")
-        except Exception:
-            value = ""
-        if value:
-            return value
-    return ROUTER_DEFAULT_BASE_URL
+    """Use the registered profile's declared, profile-scoped endpoint fact."""
+    from application_provider_environment import scoped_endpoint_override
+
+    return scoped_endpoint_override("router") or ROUTER_DEFAULT_BASE_URL
 
 
 def _resolve_api_key() -> str:
-    """Router key (documented var, then alias), preferring dotenv; plain os.environ
-    is the fallback when the dotenv resolver is unavailable or raises."""
-    try:
-        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
-    except Exception:
-        prefer_dotenv = None
-    for resolve in filter(None, (prefer_dotenv, os.environ.get)):
-        for var in ("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY"):
-            try:
-                value = str(resolve(var) or "").strip()
-            except Exception:
-                value = ""
-            if value:
-                return value
+    """Documented key then alias, using the active profile's authoritative secret scope."""
+    from application_provider_secret_inputs import scoped_key_env
+
+    for var in ("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY"):
+        key = scoped_key_env(var)
+        if key:
+            return key
     return ""
 
 
@@ -291,8 +275,8 @@ router = RouterProfile(
     display_name="Ramp Router",
     description="Ramp Router (router.com) — routes each request to the cheapest model that clears your quality bar",
     signup_url="https://app.router.com/keys",
-    env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY", "RAMP_ROUTER_BASE_URL"), base_url=_base_url(),
-    auth_type="api_key",
+    env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY"),
+    base_url=ROUTER_DEFAULT_BASE_URL, base_url_env_var="RAMP_ROUTER_BASE_URL", auth_type="api_key",
     # Router attributes coding-agent clients by UA prefix; its WAF rejects default UAs.
     default_headers={"User-Agent": f"Hermes-Agent/{get_version_info().base_version}"},
     supports_vision=True, default_aux_model="gpt-5.4-mini",

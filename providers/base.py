@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 if TYPE_CHECKING:
     from agent.account_usage import AccountUsageSnapshot
@@ -46,6 +46,11 @@ class ProviderProfile:
     name: str
     api_mode: str = "chat_completions"
     aliases: tuple = ()
+    is_aggregator: bool = False
+    # None means routing aggregation follows is_aggregator. Set explicitly when
+    # a multi-model provider exposes a flat first-party namespace rather than
+    # routing arbitrary upstream provider/model pairs.
+    is_routing_aggregator: bool | None = None
 
     # ── Human-readable metadata ───────────────────────────────
     display_name: str = ""       # e.g. "GMI Cloud" — shown in picker/labels
@@ -53,8 +58,11 @@ class ProviderProfile:
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
     # ── Auth & endpoints ─────────────────────────────────────
+    # Credential variables only. Endpoint overrides belong exclusively in
+    # base_url_env_var; consumers must never infer their role from a suffix.
     env_vars: tuple = ()
     base_url: str = ""
+    base_url_env_var: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
@@ -138,12 +146,43 @@ class ProviderProfile:
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
     # empty = use main model
+    fallback_aux_model: str = ""  # model used only by a provider fallback lane
+    default_vision_model_id: str = ""
+    rejects_vision_input: bool = False
 
     # Per-model metadata in the canonical model_overrides schema. Partial entries
     # patch catalog metadata; explicit user overrides still win. Exact model IDs.
     model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def resolve_route_policy(
+        self, model: str, base_url: str = "", *, options: dict[str, Any] | None = None
+    ) -> str | None:
+        """Return a pure provider/model-specific API-mode requirement, if any.
+
+        ``options`` contains already-read, non-secret route policy supplied by
+        the application boundary. Implementations must not perform network or
+        configuration I/O.
+        """
+        return None
+
+    def __post_init__(self) -> None:
+        if self.base_url_env_var and self.base_url_env_var in self.env_vars:
+            raise ValueError(
+                f"{self.name}: base_url_env_var must not also appear in credential env_vars"
+            )
+
+    def normalize_model_id(
+        self, model: str, *, known_ids: Iterable[str] = ()
+    ) -> str:
+        """Return this provider's canonical model ID.
+
+        The model domain calls this hook after provider identity is resolved.
+        Implementations must be pure and may inspect only caller-supplied
+        candidate IDs; catalogue discovery belongs outside this seam.
+        """
+        return str(model or "").strip()
 
     def fetch_account_usage(
         self, *, base_url: str | None = None, api_key: str | None = None
@@ -157,7 +196,7 @@ class ProviderProfile:
         """
         return None
 
-    def resolve_aux_model(self, *, vision: bool = False) -> str:
+    def resolve_aux_model(self, *, vision: bool = False, force_refresh: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".
 
         ``default_aux_model`` is a hardcoded id in source, so it rots: when the
@@ -169,8 +208,10 @@ class ProviderProfile:
 
         Contract: cheap to call (implementations must cache — this runs on
         client-resolution paths), never raises, and returns "" when it has no
-        answer so the caller falls through to ``default_aux_model``.
+        answer so the caller falls through to ``default_aux_model``. ``force_refresh``
+        requests fresh provider data when an implementation supports it.
         """
+        del vision, force_refresh
         return ""
 
     def get_hostname(self) -> str:
@@ -249,10 +290,10 @@ class ProviderProfile:
         Keeps provider-specific vision discovery inside the provider's plugin
         instead of a name-check branch in shared vision resolution.
 
-        Default: None (no provider-specific vision model — the caller falls
-        back to the user's chat model or the aggregator chain).
+        Default: the declarative default_vision_model_id when configured,
+        otherwise None so the caller falls back to the user's chat model or aggregator chain.
         """
-        return None
+        return self.default_vision_model_id or None
 
     def get_model_context_length(self, model: str) -> int | None:
         """Provider-qualified context bound; explicit user overrides take precedence."""
@@ -409,7 +450,7 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            from hermes_cli.chat_catalog import chat_catalog_ids
+            from models.catalog_chat import chat_catalog_ids
 
             return chat_catalog_ids(items)
         except Exception as exc:

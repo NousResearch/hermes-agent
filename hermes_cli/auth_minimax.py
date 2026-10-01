@@ -19,8 +19,8 @@ from hermes_cli.auth_constants import (
     _FORM_JSON_HEADERS, _minimax_err, httpx,
 )
 
-if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
-    from hermes_cli.auth import ProviderConfig
+if TYPE_CHECKING:
+    from hermes_cli.provider_auth import ProviderConfig
 logger = logging.getLogger("hermes_cli.auth")
 
 _MINIMAX_OAUTH_ERROR_BODY_LIMIT = 16 * 1024
@@ -166,8 +166,14 @@ def _minimax_save_auth_state(auth_state: Dict[str, Any]) -> None:
 
 def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, timeout_seconds: float = 15.0) -> Dict[str, Any]:
     """Run MiniMax OAuth flow, persist tokens, return auth state dict."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, _can_open_graphical_browser, _is_remote_session, _minimax_pkce_pair, _minimax_request_user_code, _minimax_save_auth_state, _print_device_code_instructions
-    pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+    from hermes_cli.auth import (
+        _can_open_graphical_browser, _is_remote_session, _minimax_pkce_pair,
+        _minimax_request_user_code, _minimax_save_auth_state, _print_device_code_instructions)
+    from hermes_cli.provider_auth import get_provider_config
+
+    pconfig = get_provider_config("minimax-oauth")
+    if pconfig is None:
+        raise AuthError("MiniMax OAuth provider profile is unavailable.", provider="minimax-oauth")
     if region == "cn":
         portal_base_url = pconfig.extra["cn_portal_base_url"]
         inference_base_url = pconfig.extra["cn_inference_base_url"]

@@ -18,75 +18,78 @@ def test_explicit_client_kwargs_injects_command_for_any_external_process_profile
     assert kwargs["args"] == ["--acp", "--stdio"]
 
 
-def _routing_agent(provider: str, base_url: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        provider=provider, base_url=base_url, model="gpt-5.4", api_mode="chat_completions",
-        _get_transport=lambda: None, _is_azure_openai_url=lambda: False, _is_openrouter_url=lambda: False,
-        _is_direct_openai_url=lambda: base_url.startswith("https://api.openai.com"),
-        _provider_model_requires_responses_api=lambda model, provider=None: False, _transport_cache={})
+def _route(provider: str, base_url: str, model: str = "gpt-5.4"):
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
+    return resolve_invocation_route(InvocationRequest(
+        provider=provider,
+        base_url=base_url,
+        model=model,
+    ))
 
 
 def test_responses_upgrade_is_skipped_by_acp_scheme_not_vendor_slug(monkeypatch):
-    """The Responses auto-upgrade guard keys on the ``acp://`` scheme alone: every external-process
-    provider on an ACP marker keeps chat_completions (bundled and out-of-tree alike), while a direct
-    OpenAI URL is upgraded whatever the slug — the vendor literal carried no behaviour of its own."""
-    from agent.agent_init import _finalize_routing
+    """ACP schemes are external-process routes; the same slug on an HTTP OpenAI URL is not."""
+    monkeypatch.setattr("providers.routing._get_profile", lambda _name: None)
 
-    monkeypatch.setattr("hermes_cli.anon_auth.pin_model_for_route", lambda provider, base_url, model: model)
-    for provider, base_url in (("copilot-acp", "acp://copilot"), ("acme-acp", "acp://acme"),
-                               ("acme-acp", "acp+tcp://127.0.0.1:9000")):
-        agent = _routing_agent(provider, base_url)
-        _finalize_routing(agent, None, None)
-        assert agent.api_mode == "chat_completions", (provider, base_url)
+    for provider, base_url in (
+        ("copilot-acp", "acp://copilot"),
+        ("acme-acp", "acp://acme"),
+        ("acme-acp", "acp+tcp://127.0.0.1:9000"),
+    ):
+        route = _route(provider, base_url)
+        assert route.api_mode == "chat_completions", (provider, base_url)
+        assert route.runtime_kind == "external_process", (provider, base_url)
 
-    upgraded = _routing_agent("acme-acp", "https://api.openai.com/v1")
-    _finalize_routing(upgraded, None, None)
+    upgraded = _route("acme-acp", "https://api.openai.com/v1")
     assert upgraded.api_mode == "codex_responses"
+    assert upgraded.runtime_kind == "http"
 
 
 def test_responses_upgrade_is_skipped_for_external_process_profile_on_any_base_url(monkeypatch):
-    """An ``<X>_ACP_BASE_URL`` override may carry an https marker, so the ACP guard must also key on
-    the profile's ``external_process`` auth_type — an ACP client never speaks the Responses API."""
-    from agent.agent_init import _finalize_routing
+    """An external-process profile keeps chat semantics even when its marker is an HTTPS URL."""
     from providers.base import ProviderProfile
 
-    profile = ProviderProfile(name="copilot-acp", auth_type="external_process")
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == "copilot-acp" else None)
-    monkeypatch.setattr("hermes_cli.anon_auth.pin_model_for_route", lambda provider, base_url, model: model)
+    process_profile = ProviderProfile(name="acme-acp", auth_type="external_process")
 
-    agent = _routing_agent("copilot-acp", "https://proxy.example.invalid/v1")
-    agent._provider_model_requires_responses_api = lambda model, provider=None: True
-    _finalize_routing(agent, None, None)
-    assert agent.api_mode == "chat_completions"
+    def profile_for(name):
+        return process_profile if name == "acme-acp" else None
 
-    plain = _routing_agent("acme-http", "https://proxy.example.invalid/v1")
-    plain._provider_model_requires_responses_api = lambda model, provider=None: True
-    _finalize_routing(plain, None, None)
+    monkeypatch.setattr("providers.routing._get_profile", profile_for)
+
+    process_route = _route("acme-acp", "https://proxy.example.invalid/v1", "gpt-5.6")
+    assert process_route.api_mode == "chat_completions"
+    assert process_route.runtime_kind == "external_process"
+
+    plain = _route("acme-http", "https://proxy.example.invalid/v1", "gpt-5.6")
     assert plain.api_mode == "codex_responses"
+    assert plain.runtime_kind == "http"
 
 
 def test_fallback_activation_keeps_external_process_provider_on_chat_completions(monkeypatch):
-    """GPT-5 fallback activation re-derives api_mode through ``_provider_model_requires_responses_api``;
-    an external-process (ACP) facade has no ``responses`` surface, so the predicate must decline for
-    any such profile — the bundled copilot-acp and an out-of-tree one alike (#65842, #107754)."""
+    """Fallback route projection uses the same canonical external-process/model policy."""
     from agent.chat_completion_helpers import _fallback_api_mode_resolved
     from providers.base import ProviderProfile
-    from run_agent import AIAgent
 
-    profiles = {name: ProviderProfile(name=name, auth_type="external_process") for name in ("copilot-acp", "acme-acp")}
-    monkeypatch.setattr("providers.get_provider_profile", profiles.get)
-    agent = SimpleNamespace(
-        _is_azure_openai_url=lambda url: False, _is_direct_openai_url=lambda url: False,
-        _provider_model_requires_responses_api=AIAgent._provider_model_requires_responses_api)
+    profiles = {
+        name: ProviderProfile(name=name, auth_type="external_process")
+        for name in ("copilot-acp", "acme-acp")
+    }
+    monkeypatch.setattr("providers.routing._get_profile", profiles.get)
+    agent = SimpleNamespace()
 
     for provider in profiles:
-        assert _fallback_api_mode_resolved(agent, provider, "gpt-5.6", "https://proxy.example.invalid/v1") == "chat_completions", provider
-    assert _fallback_api_mode_resolved(agent, "acme-http", "gpt-5.6", "https://proxy.example.invalid/v1") == "codex_responses"
+        assert _fallback_api_mode_resolved(
+            agent, provider, "gpt-5.6", "https://proxy.example.invalid/v1"
+        ) == "chat_completions", provider
+
+    assert _fallback_api_mode_resolved(
+        agent, "acme-http", "gpt-5.6", "https://proxy.example.invalid/v1"
+    ) == "codex_responses"
 
 
 def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
-    """Streaming is disabled for every ACP provider, keyed on the profile — not on the ``acp://``
-    marker alone and not on one vendor's slug."""
+    """Streaming is disabled for every ACP provider, keyed on the profile — not one vendor slug."""
     from agent.turn_api_call import _should_stream
     from providers.base import ProviderProfile
 

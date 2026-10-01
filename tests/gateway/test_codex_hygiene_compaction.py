@@ -54,7 +54,8 @@ class LiveCodexAgent:
     """
 
     def __init__(self, mode="hermes", session=None):
-        self.api_mode = "codex_app_server"
+        self.api_mode = "codex_responses"
+        self.runtime_kind = "app_server"
         self.codex_app_server_auto_compaction = mode
         self.session_id = "sess-1"
         self.platform = "telegram"

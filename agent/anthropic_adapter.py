@@ -206,7 +206,7 @@ def _forbids_sampling_params(model: str) -> bool:
 def _supports_fast_mode(model: str) -> bool:
     """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5 / Opus 5.5, Claude API only).
     The list lives in ``agent.model_metadata`` so the wire gate and the ``/fast`` toggle agree."""
-    from agent.model_metadata import is_anthropic_fast_mode_model
+    from models.metadata.context import is_anthropic_fast_mode_model
 
     return is_anthropic_fast_mode_model(model)
 

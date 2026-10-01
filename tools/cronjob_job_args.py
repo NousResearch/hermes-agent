@@ -327,7 +327,7 @@ def _validate_cron_base_url(
             has_named_custom_provider,
             resolve_requested_provider,
             _get_named_custom_provider)
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.provider_auth import get_provider_config
         from utils import base_url_host_matches, base_url_hostname
     except Exception:
         return f"Unable to validate base_url override for provider {prov!r}; refused."
@@ -351,7 +351,7 @@ def _validate_cron_base_url(
         resolved = resolve_requested_provider(prov)
     except Exception:
         resolved = prov
-    pconfig = PROVIDER_REGISTRY.get(resolved) if isinstance(resolved, str) else None
+    pconfig = get_provider_config(resolved) if isinstance(resolved, str) else None
     known_host = base_url_hostname(getattr(pconfig, "inference_base_url", "") if pconfig else "")
     if known_host and base_url_host_matches(bu, known_host):
         return None

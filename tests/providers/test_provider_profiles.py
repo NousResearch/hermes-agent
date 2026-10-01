@@ -1,4 +1,5 @@
 """Tests for the provider module registry and profiles."""
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 from providers import get_provider_profile
 
@@ -152,19 +153,19 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
 
     def test_cn_variants_resolve_in_auth_registry(self, monkeypatch):
         """The reporter's exact failure site: ``auth.resolve_provider()`` only
-        consults PROVIDER_REGISTRY (auto-extended from provider profiles,
+        consults live provider projection (auto-extended from provider profiles,
         hermes_cli/auth.py:461-490) and raised
         "Unknown provider 'alibaba-coding-plan-cn'" (hermes_cli/auth.py:1937)
         even though the models.dev catalog advertised the id — the
         resolve_provider_full() catalog chain covers only the CLI --provider
         path, not the credential/runtime path."""
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+        from hermes_cli.auth import resolve_provider
         monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
         monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "sk-test")
         monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "sk-test")
         for pid in ("alibaba-cn", "alibaba-coding-plan-cn",
                     "alibaba-token-plan", "alibaba-token-plan-cn"):
-            assert pid in PROVIDER_REGISTRY, f"{pid} missing from PROVIDER_REGISTRY"
+            config = get_provider_config(pid)
+            assert config is not None, f"{pid} missing from live provider projection"
             assert resolve_provider(pid) == pid
-            assert (PROVIDER_REGISTRY[pid].inference_base_url
-                    == get_provider_profile(pid).base_url)
+            assert config.inference_base_url == get_provider_profile(pid).base_url

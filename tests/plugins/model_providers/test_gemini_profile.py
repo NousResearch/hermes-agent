@@ -22,6 +22,6 @@ def test_native_gemini_auxiliary_default_is_in_curated_catalog(gemini_profile):
     model-generation bumps: it does not pin either side to a frozen
     model-name string, only to the invariant that they never drift apart.
     """
-    from hermes_cli.models import _PROVIDER_MODELS
+    from models.catalog_static import _PROVIDER_MODELS
 
     assert gemini_profile.default_aux_model in _PROVIDER_MODELS["gemini"]

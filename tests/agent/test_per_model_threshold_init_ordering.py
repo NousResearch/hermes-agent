@@ -61,7 +61,7 @@ def test_plugin_engine_gets_model_thresholds_before_initial_update_model():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
+        patch("models.metadata.context.get_model_context_length", return_value=1_000_000),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),

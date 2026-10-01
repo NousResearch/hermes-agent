@@ -2,7 +2,7 @@
 
 Named custom providers are represented as ``custom:<name>`` slugs everywhere
 else in the codebase (``runtime_provider.py``, ``model_switch.py``), but
-``_KNOWN_PROVIDER_NAMES`` only lists the bare ``"custom"`` bucket. Before this
+``_known_provider_names()`` only lists the bare ``"custom"`` bucket. Before this
 fix, persisting a main-slot assignment for a named custom provider (e.g. a
 LiteLLM proxy fronting Ollama, registered as ``custom:litellm``) together with
 a slash-bearing model id (``ollama/glm-5.2``) was indistinguishable from the
@@ -17,7 +17,7 @@ to re-test. What's tested here is the fallback safety net for when that
 resolution comes up empty (typo, config drift, entry removed) -- a
 ``custom:<name>`` slug must still not be misread as a stray analytics vendor
 prefix and reassigned to openrouter, even though it isn't in
-``_KNOWN_PROVIDER_NAMES`` either.
+``_known_provider_names()`` either.
 """
 
 from unittest.mock import patch

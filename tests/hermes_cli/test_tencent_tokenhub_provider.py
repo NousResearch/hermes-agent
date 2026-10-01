@@ -1,9 +1,9 @@
 """Tests for Tencent TokenHub provider support (Hy4 preview)."""
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 import pytest
 
 from hermes_cli.auth import (
-    PROVIDER_REGISTRY,
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
@@ -41,14 +41,14 @@ class TestTencentTokenhubAliases:
         assert resolve_provider(alias) == "tencent-tokenhub"
 
     def test_normalize_provider_models_py(self):
-        from hermes_cli.models import normalize_provider
+        from providers import normalize_provider
         assert normalize_provider("tencent") == "tencent-tokenhub"
         assert normalize_provider("tokenhub") == "tencent-tokenhub"
         assert normalize_provider("tencent-cloud") == "tencent-tokenhub"
         assert normalize_provider("tencentmaas") == "tencent-tokenhub"
 
     def test_normalize_provider_providers_py(self):
-        from hermes_cli.providers import normalize_provider
+        from providers import normalize_provider
         assert normalize_provider("tencent") == "tencent-tokenhub"
         assert normalize_provider("tokenhub") == "tencent-tokenhub"
         assert normalize_provider("tencent-cloud") == "tencent-tokenhub"
@@ -70,7 +70,7 @@ class TestTencentTokenhubCredentials:
         monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
         creds = resolve_api_key_provider_credentials("tencent-tokenhub")
         assert creds["api_key"] == "sk-test-12345678"
-        assert creds["base_url"] == PROVIDER_REGISTRY["tencent-tokenhub"].inference_base_url
+        assert creds["base_url"] == get_provider_config("tencent-tokenhub").inference_base_url
 
     def test_openrouter_key_does_not_make_tokenhub_configured(self, monkeypatch):
         """OpenRouter users should NOT see tencent-tokenhub as configured."""
@@ -84,7 +84,7 @@ class TestTencentTokenhubCredentials:
 # =============================================================================
 
 # =============================================================================
-# CANONICAL_PROVIDERS (hermes model picker)
+# Live provider catalog (hermes model picker)
 # =============================================================================
 
 # =============================================================================
@@ -103,8 +103,8 @@ class TestTencentTokenhubNormalization:
     @pytest.mark.parametrize("empty_input", ["", None, "   "])
     def test_normalize_empty_and_none(self, empty_input):
         """None, empty, and whitespace-only inputs return empty string."""
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider(empty_input, "tencent-tokenhub")
+        from models import normalize_model_id
+        result = normalize_model_id("tencent-tokenhub", empty_input)
         assert result == "" or result.strip() == ""
 
 # =============================================================================
@@ -130,7 +130,7 @@ class TestTencentTokenhubContextLength:
     """
 
     def test_hy3_preview_has_registered_context_length(self):
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
         assert isinstance(ctx, int)
         assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
@@ -166,11 +166,12 @@ class TestTencentTokenhubContextLength:
 class TestTencentTokenhubApiMode:
     """Verify determine_api_mode routes tencent-tokenhub correctly."""
 
-    def test_determine_api_mode_via_alias(self):
-        from hermes_cli.providers import determine_api_mode
-        mode = determine_api_mode("tencent")
+
+    def test_route_api_mode_via_alias(self):
+        from providers.routing import InvocationRequest, resolve_invocation_route
+        mode = resolve_invocation_route(InvocationRequest(provider="tencent")).api_mode
         assert mode == "chat_completions"
 
 # =============================================================================
-# _KNOWN_PROVIDER_NAMES (models.py)
+# _known_provider_names() (models.py)
 # =============================================================================

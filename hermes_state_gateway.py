@@ -778,7 +778,7 @@ class SessionGatewayMixin:
     def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as
         JSON string or parsed dict). Precedence: nested ``gateway_runtime`` (gateway sync /
-        CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode`` (TUI), then
+        CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode``/``runtime_kind`` (TUI), then
         ``billing_provider`` so sessions that never ran ``/model`` still restore the
         provider that served them. Empty dict on parse failure — resume uses ambient config."""
         from hermes_state import _BARE_BILLING_PROVIDERS
@@ -795,7 +795,7 @@ class SessionGatewayMixin:
         # merge, but gateway_runtime is replaced whole (not deep-merged), so None survives here.
         if isinstance(runtime, dict) and runtime.get("provider"):
             return {k: v for k, v in runtime.items() if v is not None}
-        top_level = {key: raw.get(key) for key in ("provider", "base_url", "api_mode") if raw.get(key)}
+        top_level = {key: raw.get(key) for key in ("provider", "base_url", "api_mode", "runtime_kind") if raw.get(key)}
         if top_level:
             return top_level
         # billing_provider is COALESCE-written on the first accounted API call — the only durable

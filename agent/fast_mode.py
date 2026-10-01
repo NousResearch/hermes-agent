@@ -45,7 +45,7 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
     ``speed`` for a model this session learned has no fast capacity."""
     overrides = dict(getattr(agent, "request_overrides", None) or {})
     if getattr(agent, "service_tier", None) in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0):
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from models.metadata.fast_mode import resolve_fast_mode_overrides
         base_url = getattr(agent, "base_url", None)
         if getattr(agent, "api_mode", None) == "anthropic_messages":
             base_url = getattr(agent, "_anthropic_base_url", None) or base_url

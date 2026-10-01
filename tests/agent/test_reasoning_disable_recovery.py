@@ -137,7 +137,7 @@ def _recover(agent, message):
     classified = classify_api_error(err, provider="custom", model=agent.model)
     assert classified.reason == FailoverReason.reasoning_mandatory
     retry = TurnRetryState()
-    with patch("hermes_cli.models_reasoning_caps.refresh_reasoning_caps_async", lambda provider: None):
+    with patch("models.metadata.reasoning.refresh_reasoning_caps_async", lambda provider: None):
         retry_now, _ = recover_after_classification(
             agent, err, classified, retry, status_code=400, error_context={}, messages=[], api_messages=[],
         )

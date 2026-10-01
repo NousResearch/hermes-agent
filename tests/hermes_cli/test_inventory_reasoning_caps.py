@@ -11,18 +11,30 @@ invite a picker filter that hides working levels.
 
 import hermes_cli.inventory as inv
 import hermes_cli.models as models_mod
-from hermes_cli import models_reasoning_caps
+import models.metadata.reasoning as reasoning_metadata
+from models.metadata.types import ReasoningMetadata
+
+
+def _to_metadata(value):
+    if not isinstance(value, dict):
+        return value
+    efforts = value.get("supported_efforts")
+    return ReasoningMetadata(
+        supported=value.get("supports_reasoning"),
+        supported_efforts=None if efforts is None else tuple(efforts),
+        mandatory=value.get("mandatory"),
+    )
 
 
 def _patch_catalog(monkeypatch, caps_by_model, *, provider="nous"):
     """Point the Nous/OpenRouter catalog readers at a fixed capability map."""
     monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
-    monkeypatch.setattr(models_reasoning_caps, "warm_nous_reasoning_caps_async", lambda: None)
-    monkeypatch.setattr(models_reasoning_caps, "warm_openrouter_reasoning_caps_async", lambda: None)
+    monkeypatch.setattr(reasoning_metadata, "warm_nous_reasoning_caps_async", lambda: None)
+    monkeypatch.setattr(reasoning_metadata, "warm_openrouter_reasoning_caps_async", lambda: None)
     monkeypatch.setattr(
-        models_reasoning_caps,
+        reasoning_metadata,
         f"{provider}_model_reasoning_capabilities",
-        lambda model, **kw: caps_by_model.get(model),
+        lambda model, **kw: _to_metadata(caps_by_model.get(model)),
     )
 
 
@@ -144,12 +156,12 @@ def test_openrouter_uses_its_own_catalog(monkeypatch):
 def test_catalog_failure_never_breaks_the_picker(monkeypatch):
     """A raising catalog reader degrades to "unknown", not to a broken payload."""
     monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
-    monkeypatch.setattr(models_reasoning_caps, "warm_nous_reasoning_caps_async", lambda: None)
+    monkeypatch.setattr(reasoning_metadata, "warm_nous_reasoning_caps_async", lambda: None)
 
     def _boom(model, **kw):
         raise RuntimeError("catalog exploded")
 
-    monkeypatch.setattr(models_reasoning_caps, "nous_model_reasoning_capabilities", _boom)
+    monkeypatch.setattr(reasoning_metadata, "nous_model_reasoning_capabilities", _boom)
     rows = [{"slug": "nous", "models": ["deepseek/deepseek-v4-pro"]}]
     inv._apply_capabilities(rows)
 

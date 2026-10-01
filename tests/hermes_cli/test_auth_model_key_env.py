@@ -4,7 +4,7 @@ The Desktop settings UI persists a registry provider's API key as a credential
 pointer — ``model.key_env`` in config.yaml → the env var in ``$HERMES_HOME/.env``
 (e.g. ``HERMES_CUSTOM_LMSTUDIO_API_KEY``) — while keeping ``model.provider`` on
 the registry id. Before the fix, ``_resolve_api_key_provider_secret`` consulted
-only ``PROVIDER_REGISTRY[...].api_key_env_vars``, silently ignored the UI-saved
+only ``live provider projection[...].api_key_env_vars``, silently ignored the UI-saved
 key, and lmstudio fell through to its no-auth placeholder (``dummy-lm-api-key``),
 producing an opaque 401 against auth-enabled LM Studio servers.
 """

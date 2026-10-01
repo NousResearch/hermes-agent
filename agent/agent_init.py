@@ -28,9 +28,7 @@ from agent.iteration_budget import IterationBudget, normalize_budget_warning_rat
 from agent.memory_manager import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
-)
+from models.metadata.context import MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
@@ -38,7 +36,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli.route_identity import normalize_route_base_url
+from providers import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
@@ -83,22 +81,19 @@ def _provider_default_routes(provider: str) -> set[str]:
             routes.add(route)
 
     with suppress(Exception):
-        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
-        overlay = HERMES_OVERLAYS.get(provider)
-        provider_def = get_provider(provider, allow_network=False)
-        add(getattr(overlay, "base_url_override", ""))
-        add(getattr(provider_def, "base_url", ""))
-
-    with suppress(Exception):
         from providers import get_provider_profile
         add(getattr(get_provider_profile(provider), "base_url", ""))
 
     with suppress(Exception):
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
-        for provider_id, config in PROVIDER_REGISTRY.items():
-            if normalize_registry_provider(normalize_model_provider(provider_id)) == provider:
+        from agent.models_dev import get_provider_info
+        add(getattr(get_provider_info(provider, allow_network=False), "api", ""))
+
+    with suppress(Exception):
+        from hermes_cli.provider_auth import iter_provider_configs
+        from providers import normalize_provider
+        for config in iter_provider_configs():
+            provider_id = config.id
+            if normalize_provider(provider_id) == provider:
                 add(getattr(config, "inference_base_url", ""))
 
     if provider == "gemini":
@@ -121,16 +116,12 @@ def _context_route_mismatch(
     if not configured_provider:
         return False
     try:
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        configured_provider = normalize_model_provider(configured_provider)
-        active_provider = normalize_model_provider(active_provider)
+        from providers import normalize_provider
+        configured_provider = normalize_provider(configured_provider)
+        active_provider = normalize_provider(active_provider)
     except Exception:
         configured_provider = configured_provider.lower()
         active_provider = active_provider.lower()
-    with suppress(Exception):
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
-        configured_provider = normalize_registry_provider(configured_provider)
-        active_provider = normalize_registry_provider(active_provider)
 
     if active_route:
         configured_routes = _provider_default_routes(configured_provider)
@@ -320,15 +311,15 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
 
 
 def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
+    checkpoint_required: bool, runtime_kind: Optional[str]
 ) -> None:
     """Fail closed at init: the codex app-server compacts its own thread without a truthful
     pre-compaction boundary (default "native" mode), so a required checkpoint can't be
     guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
+    if checkpoint_required and runtime_kind == "app_server":
         raise RuntimeError(
             "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
+            "is incompatible with the codex_app_server runtime: the codex "
             "agent compacts its own thread without a truthful pre-compaction "
             "transcript boundary, so a required pre-compress checkpoint "
             "cannot be guaranteed. Disable compression.checkpoint_required "
@@ -365,65 +356,7 @@ class CompressionSettings(SimpleNamespace):
     """Parsed ``compression`` config section (see ``_parse_compression_config``)."""
 
 
-_EXPLICIT_API_MODES = {
-    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
-}
-
-
-def _resolve_api_mode(agent, api_mode, provider_name, base_url):
-    """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
-    from hermes_cli.providers import is_actual_route
-    from agent.transports import registered_api_modes
-    host, url = agent._base_url_hostname, agent._base_url_lower
-    if is_actual_route(agent.provider, base_url):
-        agent.api_mode = "chat_completions"
-    elif api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
-        # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
-        # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
-        agent.api_mode = api_mode
-    elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
-        agent.api_mode = "codex_responses"
-    elif provider_name is None and host == "chatgpt.com" and "/backend-api/codex" in url:
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-    elif provider_name is None and host == "api.x.ai":
-        agent.api_mode = "codex_responses"
-        agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and host == "api.anthropic.com"):
-        agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
-    elif url.rstrip("/").endswith("/anthropic"):
-        # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
-        agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
-    ):
-        agent.api_mode = "bedrock_converse"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
-        # AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
-        agent.api_mode = nous_api_mode(agent.model)
-    else:
-        # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
-        # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
-        # URL-driven, not provider-name-driven: `providers.meta` may point anywhere.
-        try:
-            # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai base_url)
-            # intentionally falls through to chat_completions here. The wire protocol for Meta is URL-driven
-            # BY DESIGN, not provider-name-driven, because user config `providers.meta` may point at any
-            # OpenAI-compatible endpoint, and forcing `codex_responses` on the provider name alone would
-            # break custom endpoints named "meta" that do not host the Responses API. See #63425.
-            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
-            _mandated = _host_mandated_api_mode(base_url or "")
-        except Exception:
-            _mandated = None
-        agent.api_mode = _mandated if _mandated is not None else "chat_completions"
-
-
-def _finalize_routing(agent, api_mode, credential_pool):
-    from hermes_cli.providers import is_actual_route
+def _finalize_routing(agent, route, credential_pool):
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -454,49 +387,22 @@ def _finalize_routing(agent, api_mode, credential_pool):
             start_nous_auth_keepalive()
 
     with suppress(Exception):
-        from hermes_cli.model_normalize import (
-            _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-        )
+        from models.catalog_static import static_provider_model_ids
+        from models import normalize_model_id
+        from providers import is_aggregator
 
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
-            agent.model = normalize_model_for_provider(agent.model, agent.provider)
+        if not is_aggregator(agent.provider):
+            agent.model = normalize_model_id(
+                agent.provider,
+                agent.model,
+                known_ids=static_provider_model_ids(agent.provider),
+            )
 
     # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
     # swap can change the route later, so ``_swap_credential`` applies the same helper again.
     from hermes_cli.anon_auth import pin_model_for_route
     agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
 
-    # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
-    # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
-    # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
-    # exceptions live in _provider_model_requires_responses_api.
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
-
-    _base_lower = str(agent.base_url or "").lower()
-    if (
-        # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
-        # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
-        # client handles its own routing and does not implement the Responses API surface. Keyed on the
-        # `acp://` scheme AND the profile's external_process auth_type (an `<X>_ACP_BASE_URL` override
-        # can carry an https marker), not one vendor, so every ACP client is covered. When api_mode was explicitly
-        # provided, respect it — the user knows what their endpoint supports (#10473). Exception: Azure
-        # OpenAI serves gpt-5.x on /chat/completions and does NOT support the Responses API — skip the
-        # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
-        api_mode is None
-        and agent.api_mode == "chat_completions"
-        and not is_actual_route(agent.provider, agent.base_url)
-        and not _base_lower.startswith(("acp://", "acp+tcp://"))
-        and not _is_external_process_provider(agent.provider)
-        and not agent._is_azure_openai_url()
-        and (
-            agent._is_direct_openai_url()
-            or agent._provider_model_requires_responses_api(agent.model, provider=agent.provider)
-        )
-    ):
-        agent.api_mode = "codex_responses"
-        # Invalidate the eager-warmed transport cache — api_mode changed after the warm.
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
 
     # Pre-warm the OpenRouter metadata cache (1h TTL) off-thread so the first pricing estimate
     # doesn't block. Process-level Event guard: an unguarded spawn leaks a thread per message.
@@ -808,9 +714,9 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the
     # provider profile's auth_type, not one vendor slug, so out-of-tree external_process
     # plugin providers get the same launch path as the built-in copilot-acp (#102421).
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from providers import is_external_process_provider
 
-    if _is_external_process_provider(agent.provider):
+    if is_external_process_provider(agent.provider, base_url):
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
     _headers_for = _host_default_headers_factory(base_url)
@@ -838,7 +744,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
-        from hermes_cli.providers import is_actual_route, normalize_provider
+        from providers import is_actual_route, normalize_provider
         effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
         if is_actual_route(effective_provider):
             agent.provider = normalize_provider(effective_provider)
@@ -976,7 +882,7 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
             return
-    from hermes_cli.providers import is_actual_route
+    from providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"
         if hasattr(agent, "_transport_cache"):
@@ -1040,7 +946,7 @@ _HOST_DEFAULT_HEADERS: List[tuple[str, Callable[[Any, str], Dict[str, str]]]] = 
     ("integrate.api.nvidia.com",
      _lazy_headers("agent.auxiliary_client", "build_nvidia_nim_headers", pass_base=True)),
     ("api.routermint.com", _lazy_headers("agent.client_lifecycle", "_routermint_headers")),
-    ("githubcopilot.com", _lazy_headers("hermes_cli.models", "copilot_default_headers")),
+    ("githubcopilot.com", _lazy_headers("providers.github", "copilot_request_headers")),
     ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
     ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
     ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
@@ -1549,7 +1455,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
     _refuse_checkpoint_required_on_codex_app_server(
-        checkpoint_required, getattr(agent, "api_mode", None)
+        checkpoint_required, getattr(agent, "runtime_kind", None)
     )
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
@@ -1728,11 +1634,16 @@ def _scope_context_length_to_default_runtime(
     _active_runtime_model = agent.model
     if _configured_default_model:
         with suppress(Exception):
-            from hermes_cli.model_normalize import normalize_model_for_provider
-            _configured_default_runtime_model = normalize_model_for_provider(
-                _configured_default_model, agent.provider
+            from models.catalog_static import static_provider_model_ids
+            from models import normalize_model_id
+
+            _known_model_ids = static_provider_model_ids(agent.provider)
+            _configured_default_runtime_model = normalize_model_id(
+                agent.provider, _configured_default_model, known_ids=_known_model_ids
             )
-            _active_runtime_model = normalize_model_for_provider(agent.model, agent.provider)
+            _active_runtime_model = normalize_model_id(
+                agent.provider, agent.model, known_ids=_known_model_ids
+            )
     _configured_base_url = _configured_default_base_url(_agent_cfg, _model_cfg, _custom_providers)
     _active_base_url = _active_route_url(agent, base_url)
     _route_mismatch = _context_route_mismatch(
@@ -1987,7 +1898,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         # External engines own compaction policy: the host compression threshold (including the Codex
         # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
         # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length, provider=agent.provider,
@@ -2104,8 +2015,8 @@ def _warn_nonagentic_hermes_model(agent):
     if agent.quiet_mode or (agent.platform or "cli") == "cli":
         return
     with suppress(Exception):
-        from hermes_cli.model_switch import _check_hermes_model_warning
-        _hermes_warn = _check_hermes_model_warning(agent.model or "")
+        from agent.model_warnings import nous_hermes_non_agentic_warning
+        _hermes_warn = nous_hermes_non_agentic_warning(agent.model or "")
         if _hermes_warn:
             _user_msg = (
                 "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
@@ -2374,6 +2285,7 @@ _CALLBACK_PARAMS = (
 
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
+    runtime_kind: str = None,
     acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
     args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
     enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
@@ -2435,19 +2347,34 @@ def init_agent(
     # Skips the end-of-turn review fork (~30K tokens/event); one switch for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
-    # Effective base URL for feature detection (prompt caching, reasoning, etc.)
-    from hermes_cli.providers import is_actual_route
-    if is_actual_route(provider, base_url):
-        from hermes_cli.auth import normalize_actual_base_url
-        base_url = normalize_actual_base_url(base_url)
-    agent.base_url = base_url or ""
+    # Route identity and wire mode are resolved once, before any client or transport is built.
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-    agent.provider = provider_name or ""
-    agent.requested_provider = (
+    requested_provider_name = (
         requested_provider.strip().lower()
         if isinstance(requested_provider, str) and requested_provider.strip()
-        else agent.provider
+        else provider_name or ""
     )
+    route = resolve_invocation_route(InvocationRequest(
+        provider=provider_name or "",
+        model=agent.model,
+        base_url=base_url or "",
+        explicit_api_mode=api_mode,
+        configured_api_mode=None,
+        configured_provider=provider_name,
+        openai_runtime="codex_app_server" if runtime_kind == "app_server" else None,
+        requested_provider=requested_provider_name,
+    ))
+    agent._invocation_route = route
+    agent.provider = route.provider
+    agent.model = route.model
+    agent.base_url = route.base_url
+    agent.api_mode = route.api_mode
+    agent.runtime_kind = route.runtime_kind
+    agent.is_routing_aggregator = route.is_routing_aggregator
+    agent._route_source = route.source
+    agent.requested_provider = requested_provider_name
     agent.capabilities = {
         key: value for key, value in (capabilities or {}).items()
         if isinstance(key, str) and isinstance(value, bool)
@@ -2455,8 +2382,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    _resolve_api_mode(agent, api_mode, provider_name, base_url)
-    _finalize_routing(agent, api_mode, credential_pool)
+    _finalize_routing(agent, route, credential_pool)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:
@@ -2481,7 +2407,7 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
-    _build_client(agent, api_key, base_url, fallback_model)
+    _build_client(agent, api_key, agent.base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(

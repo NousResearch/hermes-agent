@@ -16,6 +16,8 @@ incomplete).
 
 from __future__ import annotations
 
+import models.catalog_static as models_catalog_static
+
 from unittest.mock import patch as mock_patch
 
 import pytest
@@ -56,6 +58,6 @@ class TestCuratedFallbackPreserved:
     def test_custom_proxy_keeps_curated_fallback(self):
         # A curated model absent from a custom proxy's (often incomplete)
         # listing keeps the #46850 soft-accept.
-        curated = models_mod._PROVIDER_MODELS["openai-api"][0]
+        curated = models_catalog_static._PROVIDER_MODELS["openai-api"][0]
         result = _validate(curated, "https://proxy.corp.test/v1", live=["some-other-model"])
         assert result["accepted"] is True

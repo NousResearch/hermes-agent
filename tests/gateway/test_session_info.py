@@ -101,7 +101,7 @@ class TestFormatSessionInfo:
                 }
             ],
         ), patch(
-            "agent.model_metadata.get_model_context_length",
+            "models.metadata.context.get_model_context_length",
             side_effect=lambda *args, **kwargs: (
                 kwargs.get("config_context_length")
                 if kwargs.get("config_context_length")

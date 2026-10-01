@@ -93,7 +93,7 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
 def _list_auth_returning(rows: list[dict]):
     """Patch list_authenticated_providers to return a fixed row list."""
     return patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "application_provider_discovery.list_authenticated_providers",
         return_value=rows,
     )
 
@@ -119,7 +119,7 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
 
 
 def test_include_unconfigured_appends_canonical_skeletons():
-    """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
+    """include_unconfigured=True adds live provider-catalog rows that
     list_authenticated_providers didn't emit. Skeleton rows have empty
     models and source='canonical'."""
     rows = [
@@ -132,11 +132,11 @@ def test_include_unconfigured_appends_canonical_skeletons():
         payload = build_models_payload(ctx, include_unconfigured=True)
     # All canonical providers other than openrouter should appear as
     # skeleton rows.
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.provider_catalog import provider_slugs
 
     seen_slugs = {r["slug"] for r in payload["providers"]}
-    for entry in CANONICAL_PROVIDERS:
-        assert entry.slug in seen_slugs, f"missing {entry.slug}"
+    for slug in provider_slugs():
+        assert slug in seen_slugs, f"missing {slug}"
     # Skeletons have empty models and source='canonical'.
     skeletons = [r for r in payload["providers"]
                  if r.get("source") == "canonical"]
@@ -339,9 +339,9 @@ def test_canonical_order_uses_slug_not_is_user_defined_flag():
     canonical providers configured via the keyed schema get demoted to
     the tail.
     """
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.provider_catalog import provider_slugs
 
-    canonical_slug = CANONICAL_PROVIDERS[2].slug  # any canonical
+    canonical_slug = provider_slugs()[2]  # any canonical
     rows = [
         # A truly-custom row (correct: is_user_defined=True)
         {"slug": "custom:Ollama", "name": "Ollama", "models": [],
@@ -595,7 +595,7 @@ def test_list_authenticated_providers_refresh_busts_cache():
 def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_path, monkeypatch):
     """Custom-provider metadata stays constant-read as its model count grows (#119048).
 
-    ``get_model_capabilities`` and ``get_model_info`` deliberately stay real:
+    ``query_model_metadata`` and ``get_model_info`` deliberately stay real:
     each lookup resolves ``providers.lab.catalog_provider`` before consulting
     the seeded models.dev catalog.  Removing snapshot threading from that
     path makes the larger payload re-open config.yaml once per lookup.
@@ -641,14 +641,14 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     snapshot = config_module.load_config_readonly()
     baseline = [
         (
-            models_dev.get_model_capabilities("custom:lab", model),
+            models_dev.query_model_metadata("custom:lab", model),
             models_dev.get_model_info("custom:lab", model),
         )
         for model in models
     ]
     snapshot_result = [
         (
-            models_dev.get_model_capabilities("custom:lab", model, config=snapshot),
+            models_dev.query_model_metadata("custom:lab", model, config=snapshot),
             models_dev.get_model_info("custom:lab", model, config=snapshot),
         )
         for model in models
@@ -679,7 +679,7 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
             _list_auth_returning(_rows(model_ids)),
             patch("hermes_cli.inventory._local_runtime_row", return_value=None),
             patch("hermes_cli.inventory._moa_provider_row", return_value=None),
-            patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
+            patch("models.metadata.fast_mode.model_supports_fast_mode", return_value=False),
             patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
             patch.object(models_dev, "_cfg_get", side_effect=counted_cfg_get),
             patch.object(

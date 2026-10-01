@@ -20,10 +20,10 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     resolve_provider,
 )
-from hermes_cli.models import normalize_provider as normalize_model_provider
+from providers import normalize_provider as normalize_model_provider
 from hermes_cli.models import provider_model_ids
-from hermes_cli.providers import determine_api_mode
-from hermes_cli.providers import normalize_provider as normalize_overlay_provider
+from providers.routing import InvocationRequest, endpoint_api_mode, resolve_invocation_route
+from providers import normalize_provider as normalize_overlay_provider
 from providers import get_provider_profile
 
 def _clear_actual_env(monkeypatch):
@@ -57,7 +57,7 @@ def test_actual_aliases_and_profile_metadata():
     assert normalize_model_provider("actualcomputer") == "actual"
     assert resolve_provider("actual-computer") == "actual"
     assert _normalize_aux_provider("aci") == "actual"
-    assert determine_api_mode("actual", "https://api.actual.inc") == "chat_completions"
+    assert resolve_invocation_route(InvocationRequest(provider="actual", base_url="https://api.actual.inc")).api_mode == "chat_completions"
 
 def test_actual_base_url_normalization():
     assert (
@@ -160,17 +160,19 @@ def test_actual_runtime_ignores_legacy_mode_environment(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 def test_actual_hostname_detection_repairs_custom_responses_route():
-    from hermes_cli.providers import is_actual_route
+    from providers import is_actual_route
 
     base_url = "https://api.actual.inc/v1"
 
-    assert rp._detect_api_mode_for_url(base_url) == "chat_completions"
-    assert rp._fallback_api_mode("custom", base_url) == "chat_completions"
-    assert rp._resolve_plain_custom_api_mode({}, base_url) == "chat_completions"
-    assert (
-        rp._resolve_plain_custom_api_mode({"api_mode": "codex_responses"}, base_url)
-        == "chat_completions"
-    )
+    assert endpoint_api_mode(base_url) == "chat_completions"
+    assert resolve_invocation_route(InvocationRequest(provider="custom", base_url=base_url)).api_mode == "chat_completions"
+    configured = resolve_invocation_route(InvocationRequest(
+        provider="custom",
+        base_url=base_url,
+        configured_provider="custom",
+        configured_api_mode="codex_responses",
+    ))
+    assert configured.api_mode == "chat_completions"
     for unrelated_url in (
         "https://api.actual.inc.example/v1",
         "https://proxy.example/api.actual.inc/v1",
@@ -531,14 +533,16 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
     assert response == "ok"
     assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
 
-def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
-    from run_agent import AIAgent
+
+def test_actual_routing_keeps_chat_completions_for_any_model():
+    from providers.routing import InvocationRequest, resolve_invocation_route
 
     for model in ("qwen3.8-27b-Q4_K_M", "zai-org/GLM-5.3", "gpt-5.4"):
-        assert not AIAgent._provider_model_requires_responses_api(
-            model,
+        route = resolve_invocation_route(InvocationRequest(
             provider=" Actual ",
-        )
+            model=model,
+        ))
+        assert route.api_mode == "chat_completions"
 
 def test_actual_agent_init_repairs_stale_responses_mode():
     from run_agent import AIAgent

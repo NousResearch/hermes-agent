@@ -11,7 +11,6 @@ from urllib.request import urlopen
 
 import pytest
 
-import hermes_cli.auth
 import providers
 from hermes_cli import auth_oauth_pkce_plugin as pkce
 from hermes_cli.auth_constants import AuthError
@@ -52,8 +51,7 @@ def test_pkce_handler_add_status_refresh_logout_against_fake_idp(idp, monkeypatc
     # Registered like a real plugin so the credential pool finds ``refresh_credential`` through the seam.
     register_provider(ProviderProfile(name=PROVIDER, auth_type="oauth_external", base_url="https://example.invalid/v1",
                                       auth_handler=handler, refresh_credential=refresh))
-    request.addfinalizer(lambda: (providers._REGISTRY.pop(PROVIDER, None),
-                                  hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
+    request.addfinalizer(lambda: providers.registry._REGISTRY.pop(PROVIDER, None))
     args = SimpleNamespace(provider=PROVIDER, no_browser=False)
 
     assert handler("add", args) is True
@@ -118,8 +116,7 @@ def test_spent_refresh_token_is_grant_dead_and_marks_the_pool_row_dead(idp, monk
     register_provider(ProviderProfile(name=PROVIDER, auth_type="oauth_external",
                                       base_url="https://example.invalid/v1",
                                       auth_handler=handler, refresh_credential=refresh))
-    request.addfinalizer(lambda: (providers._REGISTRY.pop(PROVIDER, None),
-                                  hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
+    request.addfinalizer(lambda: providers.registry._REGISTRY.pop(PROVIDER, None))
     args = SimpleNamespace(provider=PROVIDER, no_browser=False)
     assert handler("add", args) is True
     rows = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"][PROVIDER]
@@ -152,10 +149,9 @@ def test_alias_login_stores_the_row_under_the_canonical_profile_name(idp, monkey
         base_url="https://example.invalid/v1",
         auth_handler=handler, refresh_credential=pkce.pkce_refresh_credential(cfg)))
     request.addfinalizer(lambda: (
-        providers._REGISTRY.pop(PROVIDER, None),
-        providers._ALIASES.pop(alias, None),
-        hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None),
-        hermes_cli.auth.PROVIDER_REGISTRY.pop(alias, None)))
+        providers.registry._REGISTRY.pop(PROVIDER, None),
+        providers.registry._ALIASES.pop(alias, None),
+        providers.registry._ALIASES.pop(alias, None)))
     args = SimpleNamespace(provider=alias, no_browser=False)
     assert handler("add", args) is True
     pool = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]

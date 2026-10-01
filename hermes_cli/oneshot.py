@@ -421,9 +421,9 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
             choice.provider, choice.model = detected
         return choice
 
-    choice.model = direct.model
-    choice.provider = direct.provider
-    # Resolve through the SAME owner the interactive `/model` path uses: passing `direct.provider`
+    choice.model = direct.ref.model
+    choice.provider = direct.ref.provider
+    # Resolve through the SAME owner the interactive `/model` path uses: passing `direct.ref.provider`
     # with a URL-bearing alias would let a label like `anthropic` keep the alias's base_url yet
     # fall back to the live vendor token — a bearer credential crossing an origin boundary. The
     # helper forces bare `custom` for URL-bearing aliases and carries the alias's own key.
@@ -576,7 +576,7 @@ def _run_agent(
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
-            api_mode=runtime.get("api_mode"),
+            api_mode=runtime.get("api_mode"), runtime_kind=runtime.get("runtime_kind"),
             model=choice.model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,

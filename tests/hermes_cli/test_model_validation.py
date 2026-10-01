@@ -1,11 +1,31 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, curated_models_for_provider, fetch_api_models, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_model_ids
+from hermes_cli.models import curated_models_for_provider
+from hermes_cli.models import fetch_api_models
+from hermes_cli.models import probe_api_models
+from hermes_cli.models import provider_model_ids
+from providers import (
+    normalize_opencode_model_id,
+    normalize_provider,
+    opencode_provider_family,
+)
+from providers.routing import InvocationRequest, resolve_invocation_route
 from hermes_cli.models_local import fetch_lmstudio_models
 from hermes_cli.models_validate import validate_requested_model
+
+
+def _route_api_mode(provider: str, model: str) -> str:
+    family = opencode_provider_family(provider)
+    route_provider = family or provider
+    route_model = normalize_opencode_model_id(family, model) if family else model
+    return resolve_invocation_route(
+        InvocationRequest(provider=route_provider, model=route_model)
+    ).api_mode
 
 
 # -- helpers -----------------------------------------------------------------
@@ -33,15 +53,6 @@ def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
         return validate_requested_model(model, provider, **kw)
 
 
-# -- parse_model_input -------------------------------------------------------
-
-class TestParseModelInput:
-    def test_plain_model_keeps_current_provider(self):
-        provider, model = parse_model_input("anthropic/claude-sonnet-4.5", "openrouter")
-        assert provider == "openrouter"
-        assert model == "anthropic/claude-sonnet-4.5"
-
-
 # -- curated_models_for_provider ---------------------------------------------
 
 class TestCuratedModelsForProvider:
@@ -53,7 +64,7 @@ class TestCuratedModelsForProvider:
         with patch("hermes_cli.models.provider_model_ids", return_value=["m-live"]):
             assert curated_models_for_provider("nous") == [("m-live", "")]
         with patch("hermes_cli.models.provider_model_ids", return_value=[]), patch.dict(
-            "hermes_cli.models._PROVIDER_MODELS", {"nous": ["m-static"]}
+            "models.catalog_static._PROVIDER_MODELS", {"nous": ["m-static"]}
         ):
             assert curated_models_for_provider("nous") == [("m-static", "")]
 
@@ -183,10 +194,12 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()) as mock_urlopen:
+        from models.catalog_github import reset_github_model_catalog_cache
+        reset_github_model_catalog_cache()
+        with patch("models.catalog_github._fetch_json", return_value=json.loads(_Resp().read())) as mock_urlopen:
             probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
 
-        assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
+        assert mock_urlopen.call_args[0][0] == "https://api.githubcopilot.com/models"
         assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6"]
         assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
         assert probe["used_fallback"] is False
@@ -196,82 +209,82 @@ class TestCopilotNormalization:
 
     def test_copilot_api_mode_gpt5_uses_responses(self):
         """GPT-5+ models should use Responses API (matching opencode)."""
-        assert copilot_model_api_mode("gpt-5.4") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.4-mini") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.3-codex") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.2-codex") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
+        assert _route_api_mode("copilot", "gpt-5.4") == "codex_responses"
+        assert _route_api_mode("copilot", "gpt-5.4-mini") == "codex_responses"
+        assert _route_api_mode("copilot", "gpt-5.3-codex") == "codex_responses"
+        assert _route_api_mode("copilot", "gpt-5.2-codex") == "codex_responses"
+        assert _route_api_mode("copilot", "gpt-5.2") == "codex_responses"
 
 
     def test_opencode_go_api_modes_match_docs(self):
-        assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "glm-5") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "glm-5.1") == "chat_completions"
+        assert _route_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"
+        assert _route_api_mode("opencode-go", "glm-5") == "chat_completions"
+        assert _route_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
+        assert _route_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
+        assert _route_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
+        assert _route_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
         # All Qwen models on Go route via /v1/messages (Go endpoint table).
-        assert opencode_model_api_mode("opencode-go", "qwen3.7-plus") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go", "qwen3.6-plus") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "qwen3.7-plus") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "qwen3.6-plus") == "anthropic_messages"
         # DeepSeek / MiMo on Go are OpenAI-compatible chat completions.
-        assert opencode_model_api_mode("opencode-go", "deepseek-v4-pro") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "mimo-v2.5") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "deepseek-v4-pro") == "chat_completions"
+        assert _route_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
+        assert _route_api_mode("opencode-go", "mimo-v2.5") == "chat_completions"
+        assert _route_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
+        assert _route_api_mode("opencode-go", "glm-5.2") == "chat_completions"
+        assert _route_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
         # Union Alpha is exposed through /v1/messages on both relays.
-        assert opencode_model_api_mode("opencode-go", "union-alpha") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/union-alpha") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "union-alpha") == "anthropic_messages"
+        assert _route_api_mode("opencode-zen", "opencode-zen/union-alpha") == "anthropic_messages"
         # GPT models on Go are Responses-only (Go endpoint table).
-        assert opencode_model_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
+        assert _route_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
+        assert _route_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
         # Muse Spark on Go is Responses-only. chat/completions returns HTTP 503.
-        assert opencode_model_api_mode("opencode-go", "muse-spark-1.2-contributor") == "codex_responses"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/muse-spark-1.2-contributor") == "codex_responses"
-        assert opencode_model_api_mode("opencode-go", "muse-spark-1.2") == "codex_responses"
+        assert _route_api_mode("opencode-go", "muse-spark-1.2-contributor") == "codex_responses"
+        assert _route_api_mode("opencode-go", "opencode-go/muse-spark-1.2-contributor") == "codex_responses"
+        assert _route_api_mode("opencode-go", "muse-spark-1.2") == "codex_responses"
         # Zen serves the standard Muse Spark variant on /v1/responses too.
-        assert opencode_model_api_mode("opencode-zen", "muse-spark-1.2") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/muse-spark-1.2") == "codex_responses"
+        assert _route_api_mode("opencode-zen", "muse-spark-1.2") == "codex_responses"
+        assert _route_api_mode("opencode-zen", "opencode-zen/muse-spark-1.2") == "codex_responses"
         # Grok models route via /v1/responses on both Zen and Go
         # (Zen/Go endpoint tables).
-        assert opencode_model_api_mode("opencode-go", "grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "grok-4.6") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "grok-build-0.1") == "codex_responses"
+        assert _route_api_mode("opencode-go", "grok-4.5") == "codex_responses"
+        assert _route_api_mode("opencode-go", "opencode-go/grok-4.5") == "codex_responses"
+        assert _route_api_mode("opencode-zen", "grok-4.6") == "codex_responses"
+        assert _route_api_mode("opencode-zen", "grok-4.5") == "codex_responses"
+        assert _route_api_mode("opencode-zen", "grok-build-0.1") == "codex_responses"
         # Ox Alpha (x-preview-f-free) on Zen is OpenAI-compatible
         # chat/completions per the Zen endpoint table.
-        assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
+        assert _route_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
+        assert _route_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
-        assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
+        assert _route_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
+        assert _route_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
-        assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
+        assert _route_api_mode("opencode-go", "hy3") == "chat_completions"
         # New Go models keep their family routing: GLM chat/completions,
         # Qwen anthropic_messages.
-        assert opencode_model_api_mode("opencode-go", "glm-5.3") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "glm-5.3-flash") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
+        assert _route_api_mode("opencode-go", "glm-5.3") == "chat_completions"
+        assert _route_api_mode("opencode-go", "glm-5.3-flash") == "chat_completions"
+        assert _route_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
         # Custom opencode-go-* providers route according to opencode-go rules
         # (family-prefix providers, issue #85589).
-        assert opencode_model_api_mode("opencode-go-bridge", "grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("opencode-go-bridge", "opencode-go-bridge/grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("opencode-go-bridge", "minimax-m2.5") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go-bridge", "deepseek-v4-flash") == "chat_completions"
+        assert _route_api_mode("opencode-go-bridge", "grok-4.5") == "codex_responses"
+        assert _route_api_mode("opencode-go-bridge", "opencode-go-bridge/grok-4.5") == "codex_responses"
+        assert _route_api_mode("opencode-go-bridge", "minimax-m2.5") == "anthropic_messages"
+        assert _route_api_mode("opencode-go-bridge", "deepseek-v4-flash") == "chat_completions"
         # Case-insensitive provider ID handling (e.g. OpenCode-Go-Bridge).
-        assert opencode_model_api_mode("OpenCode-Go-Bridge", "grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("OpenCode-Go-Bridge", "minimax-m2.5") == "anthropic_messages"
+        assert _route_api_mode("OpenCode-Go-Bridge", "grok-4.5") == "codex_responses"
+        assert _route_api_mode("OpenCode-Go-Bridge", "minimax-m2.5") == "anthropic_messages"
         # Custom opencode-zen-* providers route according to opencode-zen rules.
-        assert opencode_model_api_mode("opencode-zen-custom", "claude-3-5-sonnet") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen-custom", "gpt-5") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen-custom", "grok-4.5") == "codex_responses"
-        assert opencode_model_api_mode("OpenCode-Zen-Custom", "claude-3-7-sonnet") == "anthropic_messages"
+        assert _route_api_mode("opencode-zen-custom", "claude-3-5-sonnet") == "anthropic_messages"
+        assert _route_api_mode("opencode-zen-custom", "gpt-5") == "codex_responses"
+        assert _route_api_mode("opencode-zen-custom", "grok-4.5") == "codex_responses"
+        assert _route_api_mode("OpenCode-Zen-Custom", "claude-3-7-sonnet") == "anthropic_messages"
 
 
 class TestNormalizeOpencodeBaseUrl:
@@ -285,7 +298,7 @@ class TestNormalizeOpencodeBaseUrl:
     """
 
     def test_strips_v1_for_anthropic_messages(self):
-        from hermes_cli.models import normalize_opencode_base_url
+        from providers import normalize_opencode_base_url
         assert normalize_opencode_base_url(
             "opencode-go", "anthropic_messages", "https://opencode.ai/zen/go/v1"
         ) == "https://opencode.ai/zen/go"
@@ -295,7 +308,7 @@ class TestNormalizeOpencodeBaseUrl:
 
 
     def test_non_opencode_provider_untouched(self):
-        from hermes_cli.models import normalize_opencode_base_url
+        from providers import normalize_opencode_base_url
         assert normalize_opencode_base_url(
             "openrouter", "chat_completions", "https://openrouter.ai/api"
         ) == "https://openrouter.ai/api"
@@ -325,7 +338,7 @@ class TestNormalizeOpencodeBaseUrlFamilyPath:
         ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", "https://opencode.ai/zen/go?x=1"),
     ])
     def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
-        from hermes_cli.models import normalize_opencode_base_url
+        from providers import normalize_opencode_base_url
         assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
 
@@ -339,29 +352,29 @@ class TestAzureFoundryModelApiMode:
     """
 
     def test_gpt5_family_uses_responses(self):
-        assert azure_foundry_model_api_mode("gpt-5") == "codex_responses"
-        assert azure_foundry_model_api_mode("gpt-5.3") == "codex_responses"
-        assert azure_foundry_model_api_mode("gpt-5.4") == "codex_responses"
-        assert azure_foundry_model_api_mode("gpt-5-codex") == "codex_responses"
-        assert azure_foundry_model_api_mode("gpt-5.3-codex") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "gpt-5") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "gpt-5.3") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "gpt-5.4") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "gpt-5-codex") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "gpt-5.3-codex") == "codex_responses"
         # gpt-5-mini exceptions are Copilot-specific; Azure deploys the whole
         # gpt-5 family on Responses API uniformly.
-        assert azure_foundry_model_api_mode("gpt-5-mini") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "gpt-5-mini") == "codex_responses"
 
     def test_codex_family_uses_responses(self):
-        assert azure_foundry_model_api_mode("codex") == "codex_responses"
-        assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "codex") == "codex_responses"
+        assert _route_api_mode("azure-foundry", "codex-mini") == "codex_responses"
 
 
     def test_gpt4_family_returns_none(self):
         """GPT-4, GPT-4o, etc. speak chat completions on Azure."""
-        assert azure_foundry_model_api_mode("gpt-4") is None
-        assert azure_foundry_model_api_mode("gpt-4o") is None
-        assert azure_foundry_model_api_mode("gpt-4o-pure") is None
-        assert azure_foundry_model_api_mode("gpt-4o-mini") is None
-        assert azure_foundry_model_api_mode("gpt-4-turbo") is None
-        assert azure_foundry_model_api_mode("gpt-4.1") is None
-        assert azure_foundry_model_api_mode("gpt-3.5-turbo") is None
+        assert _route_api_mode("azure-foundry", "gpt-4") == "chat_completions"
+        assert _route_api_mode("azure-foundry", "gpt-4o") == "chat_completions"
+        assert _route_api_mode("azure-foundry", "gpt-4o-pure") == "chat_completions"
+        assert _route_api_mode("azure-foundry", "gpt-4o-mini") == "chat_completions"
+        assert _route_api_mode("azure-foundry", "gpt-4-turbo") == "chat_completions"
+        assert _route_api_mode("azure-foundry", "gpt-4.1") == "chat_completions"
+        assert _route_api_mode("azure-foundry", "gpt-3.5-turbo") == "chat_completions"
 
 
 # -- validate — format checks -----------------------------------------------
@@ -680,9 +693,9 @@ class TestValidateRequestedModelNousPortalRecommendations:
 
         with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
              patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
-             patch("hermes_cli.models.fetch_nous_recommended_models", side_effect=_fetch_portal), \
-             patch("hermes_cli.models._resolve_nous_portal_url", return_value="https://portal.nousresearch.com"), \
-             patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
+             patch("application_nous_recommendations.fetch_recommended_models", side_effect=_fetch_portal), \
+             patch("application_nous_recommendations.portal_base_url", return_value="https://portal.nousresearch.com"), \
+             patch("models.catalog_detection._model_in_provider_catalog", return_value=False):
             return validate_requested_model(model, "nous")
 
     def test_free_portal_recommendation_accepted(self):
@@ -747,8 +760,8 @@ class TestValidateRequestedModelNousPortalRecommendations:
         }
         with patch("hermes_cli.models.fetch_api_models", return_value=["some/other-model"]), \
              patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
-             patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal, \
-             patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
+             patch("application_nous_recommendations.fetch_recommended_models") as mock_portal, \
+             patch("models.catalog_detection._model_in_provider_catalog", return_value=False):
             result = validate_requested_model("inclusionai/ling-3.0-flash:free", "openrouter")
         mock_portal.assert_not_called()
         assert result["accepted"] is False
@@ -811,7 +824,7 @@ class TestProfileCatalogAuthoritative:
             models_url="https://relay.example.invalid/catalog",
             fallback_models=("plan/model-1",),
         )
-        monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+        monkeypatch.setitem(providers.registry._REGISTRY, profile.name, profile)
         return profile
 
     def test_model_only_in_generic_listing_is_rejected(self, relay_profile):
@@ -954,12 +967,12 @@ def test_picker_payload_omits_ids_the_validator_rejects_for_whitespace():
     ctx = ConfigContext(
         current_provider="anthropic", current_model="claude-opus-4.6",
         current_base_url="", user_providers={}, custom_providers=[])
-    with patch("hermes_cli.model_switch.list_authenticated_providers", return_value=rows), \
+    with patch("application_provider_discovery.list_authenticated_providers", return_value=rows), \
          patch("hermes_cli.inventory._local_runtime_row", return_value=None), \
          patch("hermes_cli.inventory._moa_provider_row", return_value=None):
         payload = build_models_payload(ctx)
     by_slug = {row["slug"]: row["models"] for row in payload["providers"]}
     assert "claude opus" not in by_slug["anthropic"]
-    assert "claude-opus-4.6" in by_slug["anthropic"]
+    assert "claude-opus-4-6" in by_slug["anthropic"]
     assert "Go reasoning" in by_slug["omniroute"]
     assert "Meta Llama 3.1 8B" in by_slug["lmstudio"]

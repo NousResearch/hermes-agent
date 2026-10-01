@@ -47,8 +47,8 @@ def portal():
 
 def fetch_in_new_process(home, base, *, force=False):
     result = subprocess.run(
-        [sys.executable, "-c", "from hermes_cli.models import fetch_nous_recommended_models; "
-         "import json, sys; print(json.dumps(fetch_nous_recommended_models(sys.argv[1], force_refresh=sys.argv[2] == 'True')))",
+        [sys.executable, "-c", "from models.catalog_nous_recommendations import fetch_recommended_models; "
+         "import json, sys; print(json.dumps(fetch_recommended_models(sys.argv[1], force_refresh=sys.argv[2] == 'True')))",
          base, str(force)],
         cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, "HERMES_HOME": str(home)},
@@ -110,14 +110,14 @@ def test_disk_cache_is_scoped_to_home_and_portal(tmp_path, portal):
     assert len(requests) == 3
 
     # The same process can switch profiles under the multiplex gateway too.
-    from hermes_cli.models import fetch_nous_recommended_models, _nous_recommended_cache
+    from models.catalog_nous_recommendations import fetch_recommended_models, reset_cache
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    _nous_recommended_cache.clear()
+    reset_cache()
     for home, expected in [(a, first), (b, {"paidRecommendedModels": [{"modelName": "model-2"}]}), (a, first)]:
         token = set_hermes_home_override(home)
         try:
-            assert fetch_nous_recommended_models(base) == expected
+            assert fetch_recommended_models(base) == expected
         finally:
             reset_hermes_home_override(token)
     assert len(requests) == 3
-    _nous_recommended_cache.clear()
+    reset_cache()

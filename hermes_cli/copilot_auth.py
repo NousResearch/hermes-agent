@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from providers.github import COPILOT_EDITOR_VERSION
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -218,7 +219,7 @@ _jwt_cache: dict[str, tuple[str, float, Optional[str]]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 # Exchange endpoint and headers (matching VS Code / Copilot CLI)
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
-_EDITOR_VERSION = "vscode/1.104.1"
+
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
 
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
@@ -458,7 +459,7 @@ def _exchange_copilot_token_locked(
     req = urllib.request.Request(
         _TOKEN_EXCHANGE_URL, method="GET",
         headers={"Authorization": f"token {raw_token}", "User-Agent": _EXCHANGE_USER_AGENT,
-                 "Accept": "application/json", "Editor-Version": _EDITOR_VERSION})
+                 "Accept": "application/json", "Editor-Version": COPILOT_EDITOR_VERSION})
     data = _fetch_exchange_with_retry(req, timeout, fp)
     api_token = data.get("token", "")
     if not api_token:
@@ -497,15 +498,3 @@ def get_copilot_api_token(raw_token: str) -> tuple[str, Optional[str]]:
     except Exception as exc:
         logger.debug("Copilot token exchange failed, using raw token: %s", exc)
         return raw_token, None
-
-
-def copilot_request_headers(
-    *, is_agent_turn: bool = True, is_vision: bool = False) -> dict[str, str]:
-    """Build the standard headers for Copilot API requests."""
-    headers: dict[str, str] = {"Editor-Version": _EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
-                               "Copilot-Integration-Id": "vscode-chat",
-                               "Openai-Intent": "conversation-edits",
-                               "x-initiator": "agent" if is_agent_turn else "user"}
-    if is_vision:
-        headers["Copilot-Vision-Request"] = "true"
-    return headers

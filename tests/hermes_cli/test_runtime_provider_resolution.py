@@ -8,6 +8,60 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_runtime_projects_one_canonical_route_with_credentials(monkeypatch):
+    class Request:
+        def __init__(self, **values):
+            self.__dict__.update(values)
+
+    seen = {}
+
+    def resolve_route(request):
+        seen["request"] = request
+        return SimpleNamespace(
+            provider=request.provider,
+            model=request.model,
+            base_url=request.base_url,
+            api_mode="codex_responses",
+            runtime_kind=SimpleNamespace(value="http"),
+            is_routing_aggregator=True,
+            source="endpoint",
+        )
+
+    monkeypatch.setattr(
+        rp,
+        "_routing_contract",
+        lambda: (Request, lambda raw: str(raw).lower(), resolve_route),
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "default": "model-from-config",
+            "provider": "demo",
+            "api_mode": "responses",
+            "openai_runtime": "",
+        },
+    )
+
+    runtime = rp._runtime(
+        "demo",
+        None,
+        "https://example.test/v1",
+        "credential",
+        source="pool:demo",
+    )
+
+    assert seen["request"].provider == "demo"
+    assert seen["request"].model == "model-from-config"
+    assert seen["request"].configured_api_mode == "responses"
+    assert runtime["provider"] == "demo"
+    assert runtime["api_mode"] == "codex_responses"
+    assert runtime["runtime_kind"] == "http"
+    assert runtime["is_routing_aggregator"] is True
+    assert runtime["source"] == "pool:demo"
+    assert runtime["route_source"] == "endpoint"
+
+
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
     """A saved provider must not resolve as another authenticated provider."""
     monkeypatch.setattr(
@@ -78,7 +132,6 @@ def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeyp
     monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
     monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
                         lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
-    monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
 
     resolved = rp.resolve_runtime_provider(requested="copilot", target_model="gpt-4.1")
@@ -810,15 +863,19 @@ def test_codex_app_server_opt_in_routes_only_named_custom_providers(monkeypatch)
 
     resolved = rp.resolve_runtime_provider(requested="custom:my-gateway")
     assert (resolved["provider"], resolved["requested_provider"], resolved["api_mode"]) == (
-        "custom", "custom:my-gateway", "codex_app_server")
+        "custom", "custom:my-gateway", "chat_completions")
+    assert resolved["runtime_kind"] == "app_server"
     assert resolved["api_key"] == "test-key"  # Hermes' own aux/fallback client keeps the credential
 
     anonymous = rp.resolve_runtime_provider(requested="custom", explicit_base_url="https://gateway.example.com/v1",
                                             explicit_api_key="k")
     assert anonymous["api_mode"] == "chat_completions"
+    assert anonymous["runtime_kind"] == "http"
 
     config["model"].pop("openai_runtime")
-    assert rp.resolve_runtime_provider(requested="custom:my-gateway")["api_mode"] == "chat_completions"
+    without_opt_in = rp.resolve_runtime_provider(requested="custom:my-gateway")
+    assert without_opt_in["api_mode"] == "chat_completions"
+    assert without_opt_in["runtime_kind"] == "http"
 
 
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
@@ -1330,8 +1387,11 @@ def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
-@pytest.mark.parametrize("model", ["qwen3.8-flash", "glm-5.3-flash"])
-def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
+@pytest.mark.parametrize("model, expected_api_mode", [
+    ("qwen3.8-flash", "anthropic_messages"),
+    ("glm-5.3-flash", "chat_completions"),
+])
+def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model, expected_api_mode):
     """#100854: an explicit ``--api-key`` must not change which OpenCode endpoint a model
     reaches. The explicit-credential rung used to derive api_mode from config instead of the
     model and skipped the /v1 normalization, so ``qwen3.8-flash`` (Anthropic-routed) was sent
@@ -1349,7 +1409,7 @@ def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
 
     assert explicit["source"] == "explicit"
     assert (explicit["api_mode"], explicit["base_url"]) == (env_key["api_mode"], env_key["base_url"])
-    assert explicit["api_mode"] == rp._models.opencode_model_api_mode("opencode-go", model)
+    assert explicit["api_mode"] == expected_api_mode
 
 
 # ------------------------------------------------------------------
@@ -2223,7 +2283,8 @@ def test_openai_runtime_codex_app_server_applies_on_every_rung(monkeypatch, rung
     resolved = rp.resolve_runtime_provider(requested="openai-codex", **kwargs)
 
     assert resolved["provider"] == "openai-codex"
-    assert resolved["api_mode"] == "codex_app_server"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["runtime_kind"] == "app_server"
 
 
 @pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
@@ -2235,7 +2296,9 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
         model_cfg["openai_runtime"] = openai_runtime
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
 
-    assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
+    resolved = rp.resolve_runtime_provider(requested="openai-codex", **kwargs)
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["runtime_kind"] == "http"
 
 
 def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
@@ -2248,7 +2311,8 @@ def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_exp
     resolved = rp.resolve_runtime_provider(requested="openai", explicit_api_key="sk-explicit")
 
     assert resolved["provider"] == "custom"  # the alias expansion itself is unchanged
-    assert resolved["api_mode"] == "codex_app_server"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["runtime_kind"] == "app_server"
 
 
 # ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────

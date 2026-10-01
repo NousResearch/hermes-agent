@@ -1690,13 +1690,15 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, turn_ctx.source)
         _cfg_model = policy.model if policy and policy.model else _resolve_gateway_model()
-        # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
-        # cached agent is evicted every turn, destroying prompt caching.
+        # Normalize through the shared lower-domain projection; otherwise cached agents
+        # are evicted every turn and prompt caching is destroyed.
         with suppress(Exception):
-            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-            _agent_provider = getattr(_agent, 'provider', '') or ''
-            if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+            from gateway.model_runtime_facts import normalize_runtime_model
+
+            _cfg_model = normalize_runtime_model(
+                getattr(_agent, "provider", "") or "",
+                _cfg_model,
+            )
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 

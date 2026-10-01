@@ -1664,7 +1664,7 @@ class GatewayInboundMixin:
         """Context length of the model this turn runs on. A global ``model.context_length`` pin
         belongs to the configured model, not a /model or channel override; custom-provider limits win."""
         from gateway.run import _load_gateway_config
-        from agent.model_metadata import get_model_context_length_async
+        from models.metadata.context import get_model_context_length_async
 
         _msg_config_ctx = None
         _msg_cfg = None

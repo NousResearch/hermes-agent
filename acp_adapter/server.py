@@ -31,7 +31,8 @@ from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
-from acp_adapter.model_catalog import build_model_state, encode_model_choice
+from acp_adapter.model_catalog import build_model_state
+from models import ModelRef, format_model_ref
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
@@ -315,54 +316,61 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         if not model:
             return None
-        choice = encode_model_choice(provider, model)
+        choice = format_model_ref(ModelRef(provider, model))
         return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
 
     def _switch_model(
         self, state: SessionState, raw_model: str, *, keep_endpoint: bool = False
     ) -> tuple[str | None, str, str]:
-        """Rebuild the session agent on a new model -> (old provider, new provider, model).
+        """Resolve and rebuild one ACP session without touching global model config.
 
-        Resolution goes through ``hermes_cli.model_switch.switch_model`` seeded with the live
-        agent route — the same catalog/alias/credential validation as CLI/gateway/TUI ``/model``
-        — so ACP never hands the session a model no provider can serve. ``provider:model`` picker
-        ids become ``--provider``. ACP never persists. ``keep_endpoint`` carries base_url/api_mode
-        over when the provider is unchanged."""
-        from hermes_cli.config import get_compatible_custom_providers, load_config
-        from hermes_cli.model_switch import switch_model
-        from hermes_cli.models import parse_model_input
+        Canonical model selection/route and acquisition happen exactly once.
+        The validated runtime is handed directly to the session agent factory,
+        including the model-specific wire mode, credential pool and endpoint.
+        """
+        from hermes_cli.config import load_config
+        from acp_adapter.model_switch_resolution import resolve_acp_model_switch
+        from models.selection import ExplicitSelectionError
 
         current_provider = getattr(state.agent, "provider", None)
-        explicit_provider, model_input = parse_model_input(raw_model, "")
-        cfg = load_config()
-        result = switch_model(
-            raw_input=model_input, explicit_provider=explicit_provider,
-            current_provider=current_provider or "openrouter", current_model=str(state.model or ""),
-            current_base_url=str(getattr(state.agent, "base_url", "") or ""),
-            current_api_key=str(getattr(state.agent, "api_key", "") or ""),
-            user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-            custom_providers=get_compatible_custom_providers(cfg))
-        if not result.success:
-            raise ModelRejected(result.error_message or f"Cannot switch to {raw_model}")
-        target_provider, new_model = result.target_provider, result.new_model
-        endpoint: dict[str, Any] = {}
-        if keep_endpoint and not (current_provider and target_provider != current_provider):
-            endpoint = {
-                "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
-            }
-        # ACP-provided MCP servers live only on the running agent's toolsets (``_register_session_mcp_servers``);
-        # a rebuild that re-derived them from config would silently drop every session MCP tool (#42719).
+        try:
+            route = resolve_acp_model_switch(
+                config=load_config(), raw_model=raw_model,
+                current_provider=current_provider or "openrouter",
+                current_model=str(state.model or ""),
+                current_base_url=str(getattr(state.agent, "base_url", "") or ""),
+                current_api_key=getattr(state.agent, "api_key", "") or "",
+                current_runtime={
+                    key: value for key, value in (
+                        ("credential_pool", getattr(state.agent, "credential_pool", None)),
+                        ("command", getattr(state.agent, "command", None)),
+                        ("args", getattr(state.agent, "args", None)),
+                        ("runtime_kind", getattr(state.agent, "runtime_kind", None)),
+                    ) if value is not None
+                },
+                keep_endpoint=keep_endpoint,
+            )
+        except (ExplicitSelectionError, ValueError) as exc:
+            raise ModelRejected(str(exc)) from exc
+
+        # MCP servers are attached to the *live* agent's toolsets, not to
+        # global configuration. Never re-derive them during a session rebuild.
         agent = self.session_manager._make_agent(
-            session_id=state.session_id, cwd=state.cwd, model=new_model,
-            requested_provider=target_provider, **endpoint,
+            session_id=state.session_id, cwd=state.cwd, model=route.model,
+            requested_provider=route.provider,
+            base_url=route.base_url, api_mode=route.api_mode,
+            resolved_runtime=route.runtime,
             enabled_toolsets=getattr(state.agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
         )
-        # Assign only after the rebuild succeeded so a failed switch leaves the session on its
-        # working model instead of a model/agent mismatch that persists via save_session.
-        state.agent, state.model = agent, new_model
-        self.session_manager.save_session(state.session_id)
-        return current_provider, target_provider, new_model
+        old_agent, old_model = state.agent, state.model
+        state.agent, state.model = agent, route.model
+        try:
+            self.session_manager.save_session(state.session_id, strict=True)
+        except Exception:
+            state.agent, state.model = old_agent, old_model
+            raise
+        return current_provider, route.provider, route.model
 
     @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:

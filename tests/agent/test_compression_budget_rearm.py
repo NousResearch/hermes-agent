@@ -98,7 +98,7 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
         patch("model_tools.get_tool_definitions", return_value=[_tool_definition()]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.get_model_context_length", return_value=256_000),
+        patch("models.metadata.context.get_model_context_length", return_value=256_000),
         patch("agent.context_compressor.get_model_context_length", return_value=256_000),
     ):
         agent = AIAgent(

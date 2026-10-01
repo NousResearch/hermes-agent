@@ -4224,6 +4224,18 @@ def test_resolve_model_strips_config_model(monkeypatch):
     assert server._resolve_model() == "nous/hermes-test"
 
 
+def test_resolve_model_uses_canonical_silent_default_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        "gateway.model_runtime_facts.provider_default_model",
+        lambda provider: "safe/default" if provider == "openrouter" else "",
+    )
+
+    assert server._resolve_model() == "safe/default"
+
+
 def _sync_test_session(**extra):
     session = {
         "agent": types.SimpleNamespace(model="old/model"),
@@ -4424,15 +4436,15 @@ def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
         error_message="",
     )
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model", lambda **kw: result
+        "tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **kw: result
     )
     monkeypatch.setattr(
-        "hermes_cli.model_switch.resolve_persist_behavior",
+        "application_model_command_request.resolve_model_persistence",
         lambda *a: pytest.fail("persist_override must bypass resolve_persist_behavior"),
     )
     monkeypatch.setattr(
-        "hermes_cli.model_switch.persist_model_selection",
-        lambda _r: pytest.fail("persist_override=False must not persist"),
+        "application_model_switch_persistence.persist_model_selection",
+        lambda *_args: pytest.fail("persist_override=False must not persist"),
     )
     monkeypatch.setattr(
         "hermes_cli.model_cost_guard.expensive_model_warning",
@@ -4460,10 +4472,6 @@ def test_startup_runtime_does_not_treat_inference_provider_as_explicit(monkeypat
     monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
-    monkeypatch.setattr(
-        "hermes_cli.models.detect_static_provider_for_model",
-        lambda model, provider: None,
-    )
 
     assert server._resolve_startup_runtime() == ("nous/hermes-test", None)
 
@@ -8739,7 +8747,7 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         lambda _model_id, **_route: {"service_tier": "priority"},
     )
 
@@ -8818,7 +8826,7 @@ def test_config_set_fast_rejects_unsupported_model(monkeypatch):
         server, "_write_config_key", lambda path, value: writes.append((path, value))
     )
     monkeypatch.setattr(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         lambda _model_id, **_route: None,
     )
 
@@ -9792,7 +9800,7 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
     agent = _Agent()
     server._sessions["sid"] = _session(agent=agent)
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+        "tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **_kwargs: result
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
@@ -9857,12 +9865,12 @@ def test_config_set_model_global_persists(monkeypatch):
         return result
 
     server._sessions["sid"] = _session(agent=_Agent())
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
+    monkeypatch.setattr("tui_gateway.model_switch_resolution.resolve_tui_model_switch", _switch_model)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     # persist_model_selection uses targeted per-key writes (#48305) so it
     # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
+    monkeypatch.setattr("application_model_switch_persistence.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
 
     resp = server.handle_request(
         {
@@ -10096,9 +10104,9 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
             assert release_old_finally.wait(timeout=10)
         return real_transfer(agent, db)
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+    monkeypatch.setattr("tui_gateway.model_switch_resolution.resolve_tui_model_switch", fake_switch_model)
     monkeypatch.setattr(
-        "hermes_cli.model_selection_guards.combined_selection_warning",
+        "application_model_selection_guards.combined_selection_warning",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr("hermes_state_registry.acquire", FakeDb)
@@ -10275,7 +10283,7 @@ def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+        "tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **_kwargs: result
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
@@ -10336,7 +10344,7 @@ def test_config_set_model_records_per_session_override_not_env(monkeypatch):
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+        "tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **_kwargs: result
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
@@ -10434,7 +10442,7 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             warning_message="",
         )
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+    monkeypatch.setattr("tui_gateway.model_switch_resolution.resolve_tui_model_switch", fake_switch_model)
 
     try:
         resp = server.handle_request(
@@ -10510,7 +10518,7 @@ def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
     monkeypatch.setenv("HERMES_MODEL", "old/model")
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
+        "tui_gateway.model_switch_resolution.resolve_tui_model_switch",
         lambda **kwargs: seen.update(kwargs) or result,
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
@@ -10541,7 +10549,7 @@ def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
 
 def test_config_set_model_once_requires_live_session(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
+        "tui_gateway.model_switch_resolution.resolve_tui_model_switch",
         lambda **_: (_ for _ in ()).throw(AssertionError("switch should not run")),
     )
 
@@ -10641,7 +10649,7 @@ def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch
     session = _session(agent=Agent())
     session["one_turn_model_restore"] = {"model": "old/model"}
     server._sessions["sid"] = session
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr("tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **_kwargs: result)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
@@ -11318,8 +11326,8 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
             injected_tokens=0,
         )
     )
-    fake_meta = types.ModuleType("agent.model_metadata")
-    fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
+    import models.metadata.context as context_metadata
+    monkeypatch.setattr(context_metadata, "get_model_context_length", lambda *args, **kwargs: 100000)
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -11327,7 +11335,6 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
-    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
 
     server.handle_request(
         {
@@ -16979,14 +16986,11 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     }
     server._sessions["save-key-session"] = _session(agent=agent)
     monkeypatch.setattr(
-        "hermes_cli.auth.PROVIDER_REGISTRY",
-        {
-            "test-provider": types.SimpleNamespace(
-                name="Test Provider",
-                auth_type="api_key",
-                api_key_env_vars=(env_var,),
-            )
-        },
+        "hermes_cli.provider_auth.get_provider_config",
+        lambda slug: types.SimpleNamespace(
+            id="test-provider", name="Test Provider", auth_type="api_key",
+            api_key_env_vars=(env_var,),
+        ) if slug == "test-provider" else None,
     )
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
     save_credential = Mock()
@@ -17024,8 +17028,13 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     a key saved for another profile (``profile`` param) must leave the launch record alone."""
     from hermes_cli import free_tier_bootstrap as fb
 
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", {"test-provider": types.SimpleNamespace(
-        name="Test Provider", auth_type="api_key", api_key_env_vars=("TEST_PROVIDER_API_KEY",))})
+    monkeypatch.setattr(
+        "hermes_cli.provider_auth.get_provider_config",
+        lambda slug: types.SimpleNamespace(
+            id="test-provider", name="Test Provider", auth_type="api_key",
+            api_key_env_vars=("TEST_PROVIDER_API_KEY",),
+        ) if slug == "test-provider" else None,
+    )
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
     monkeypatch.setattr("hermes_cli.credential_lifecycle.save_provider_env_credential", Mock())
     monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))

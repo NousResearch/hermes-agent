@@ -11,7 +11,8 @@ import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_cli.route_identity import normalize_route_base_url
+from providers import normalize_route_base_url
+from providers.routing import canonicalize_api_mode
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.config")
@@ -33,34 +34,9 @@ def _warn_once_per_provider(provider_key: str, signature: str, msg: str, *args: 
     logger.warning(msg, *args)
 
 
-# Values accepted by earlier releases (and natural spellings) → canonical transport names consumed
-# by agent_init. Without this map an unrecognized api_mode was silently ignored and the transport
-# fell through to hostname-based guessing, so ``api_mode: openai`` could flip to
-# ``codex_responses`` after an update and break the provider.
-_API_MODE_ALIASES = {
-    # See #66543.
-    "openai": "chat_completions",
-    "openai_chat": "chat_completions",
-    "openai-chat": "chat_completions",
-    "chat-completions": "chat_completions",
-    "chatcompletions": "chat_completions",
-    "responses": "codex_responses",
-    "openai_responses": "codex_responses",
-    "openai-responses": "codex_responses",
-    "anthropic": "anthropic_messages",
-    "anthropic-messages": "anthropic_messages",
-    "messages": "anthropic_messages",
-    "bedrock": "bedrock_converse",
-    "bedrock-converse": "bedrock_converse"}
-
+# Legacy spellings are normalized by the canonical route domain at config ingestion.
 _FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
-
-
-def _canonical_api_mode(api_mode: str) -> str:
-    """Map alias ``api_mode`` spellings to canonical transport names (unknown pass through)."""
-    cleaned = api_mode.strip()
-    return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
 
 
 def coerce_provider_id(value: Any) -> str:
@@ -238,7 +214,7 @@ def _normalize_custom_provider_entry(
     if key_env and entry.get("api_key_env") and not entry.get("key_env"):
         normalized["api_key_env"] = key_env
     api_mode = _stripped("api_mode", "transport")
-    _put("api_mode", _canonical_api_mode(api_mode) if api_mode else "")
+    _put("api_mode", canonicalize_api_mode(api_mode) if api_mode else "")
     _put("model", _stripped("model", "default_model"))
     # Catalogued vendor whose models this endpoint resells (metadata lookups only, never routing).
     _put("catalog_provider", _stripped("catalog_provider"))
@@ -404,7 +380,7 @@ def get_custom_provider_api_mode(
         for field in ("api_mode", "transport"):
             value = entry.get(field)
             if isinstance(value, str) and value.strip():
-                return _canonical_api_mode(value)
+                return canonicalize_api_mode(value)
     return ""
 
 

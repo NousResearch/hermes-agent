@@ -34,7 +34,7 @@ _LEARNED_BY_HOME: Dict[str, Dict[str, int]] = {}
 
 
 def _cache_path():
-    from agent.model_metadata import _cache_file
+    from models.metadata.context import _cache_file
 
     return _cache_file("image_token_costs.json")
 
@@ -46,7 +46,7 @@ def _key(model: Any, base_url: Any) -> str:
 
 
 def _read_cache() -> Dict[str, int]:
-    from agent.model_metadata import _load_json_dict
+    from models.metadata.context import _load_json_dict
 
     return {k: v for k, v in _load_json_dict(_cache_path()).items()
             if isinstance(v, int) and _MIN_PLAUSIBLE <= v <= _MAX_PLAUSIBLE}

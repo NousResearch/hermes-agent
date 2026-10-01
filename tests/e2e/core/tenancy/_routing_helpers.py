@@ -11,6 +11,7 @@ every credential/endpoint env var stripped, and only these fake hosts configured
 """
 
 from __future__ import annotations
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 import json
 import os
@@ -246,10 +247,10 @@ def inference_hosts() -> frozenset[str]:
     """
     from urllib.parse import urlparse
 
-    from hermes_cli.auth import PROVIDER_REGISTRY
+
     from hermes_constants import OPENROUTER_BASE_URL
 
-    urls = [getattr(p, "inference_base_url", "") or "" for p in PROVIDER_REGISTRY.values()] + [OPENROUTER_BASE_URL]
+    urls = [getattr(p, "inference_base_url", "") or "" for p in iter_provider_configs()] + [OPENROUTER_BASE_URL]
     return frozenset(h for h in (urlparse(u).hostname for u in urls) if h and h not in {"127.0.0.1", "localhost"})
 
 

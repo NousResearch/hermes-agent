@@ -75,14 +75,14 @@ class TestDeletedProfileTombstone:
 
     def test_late_reasoning_caps_save_does_not_recreate_deleted_home(self, profile_env):
         """A daemon retaining a deleted profile context must not recreate its cache tree."""
-        from hermes_cli import models_reasoning_caps
+        from models.metadata import reasoning as reasoning_metadata
 
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         _delete("worker")
 
         token = set_hermes_home_override(profile_dir)
         try:
-            models_reasoning_caps._save_reasoning_caps_disk(
+            reasoning_metadata._save_reasoning_caps_disk(
                 "https://example.test/v1/models",
                 {"example/model": {"supports_reasoning": True}},
             )

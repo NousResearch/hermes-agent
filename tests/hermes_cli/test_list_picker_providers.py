@@ -18,8 +18,8 @@ network or auth state is required.
 import pytest
 from hermes_cli import model_switch
 import hermes_cli.models as models_mod
-import hermes_cli.model_switch_providers as hermes_cli_model_switch_providers
-from hermes_cli import model_switch_providers
+import application_provider_discovery as hermes_cli_model_switch_providers
+import application_provider_discovery as model_switch_providers
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +101,7 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_providers", lambda: [])
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
 
@@ -144,7 +144,7 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
 #
 # A single Kimi credential used to surface TWO picker rows: the alias slug
 # "kimi" (emitted by the PROVIDER_TO_MODELS_DEV pass) plus its canonical
-# "kimi-coding" (re-emitted by the CANONICAL_PROVIDERS cross-check pass),
+# "kimi-coding" (re-emitted by the live-catalog cross-check pass),
 # both backed by the same kimi-for-coding models.dev provider. The picker
 # must list each authenticated credential exactly once, under the CANONICAL
 # slug ("kimi-coding") — matching list_authenticated_providers' other alias
@@ -152,18 +152,17 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
 # test_overlay_slug_resolution.py).
 
 
-def _stub_kimi_discovery(monkeypatch, *, canonical):
+def _stub_kimi_discovery(monkeypatch, *, slugs):
     """Isolate list_authenticated_providers to the Kimi alias family.
 
-    Restricts the models.dev map / catalog / overlays / canonical list to
+    Restricts the models.dev map / catalog / overlays / live provider list to
     just the Kimi entries and stubs the model-id fetch so discovery stays
-    offline and deterministic. ``canonical`` is the CANONICAL_PROVIDERS list
-    the 2b cross-check pass should iterate.
+    offline and deterministic. ``slugs`` is the live-catalog order the 2b
+    cross-check pass should iterate.
     """
     import agent.models_dev as md
     import hermes_cli.models as hm
-    import hermes_cli.models_catalog_static as hermes_cli_models_catalog_static
-    from hermes_cli import models_catalog_static
+    import hermes_cli.provider_catalog as provider_catalog
 
     kimi_map = {
         "kimi": "kimi-for-coding",
@@ -183,9 +182,8 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
         name = "Kimi For Coding"
 
     monkeypatch.setattr(md, "get_provider_info", lambda _pid: _PInfo())
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
-    monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
-    monkeypatch.setattr(hermes_cli_models_catalog_static, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_providers", lambda: [])
+    monkeypatch.setattr(provider_catalog, "provider_slugs", lambda: list(slugs))
     monkeypatch.setattr(hm, "cached_provider_model_ids",
                         lambda *a, **k: ["kimi-k2.6", "kimi-k2.5"])
     monkeypatch.setattr(hm, "clear_provider_models_cache", lambda *a, **k: None)
@@ -193,13 +191,7 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
 
 def test_single_kimi_credential_yields_one_canonical_row(monkeypatch):
     """One Kimi key yields a single row under the canonical 'kimi-coding' slug."""
-    import hermes_cli.models as hm
-    from hermes_cli import models_catalog_static
-
-    _stub_kimi_discovery(
-        monkeypatch,
-        canonical=[models_catalog_static.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc")],
-    )
+    _stub_kimi_discovery(monkeypatch, slugs=["kimi-coding"])
     monkeypatch.setenv("KIMI_API_KEY", "sk-test-kimi")
 
     rows = model_switch.list_authenticated_providers(max_models=10)
@@ -221,16 +213,7 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     Negative-control guard: the de-dup must collapse only the alias/canonical
     pair that share a credential, not legitimately distinct providers.
     """
-    import hermes_cli.models as hm
-    from hermes_cli import models_catalog_static
-
-    _stub_kimi_discovery(
-        monkeypatch,
-        canonical=[
-            models_catalog_static.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc"),
-            models_catalog_static.ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)", "desc"),
-        ],
-    )
+    _stub_kimi_discovery(monkeypatch, slugs=["kimi-coding", "kimi-coding-cn"])
     monkeypatch.setenv("KIMI_API_KEY", "sk-test-kimi")
     monkeypatch.setenv("KIMI_CN_API_KEY", "sk-test-kimi-cn")
 

@@ -1,12 +1,10 @@
 """Tests for OpenRouter variant tag preservation in model switching.
 
-Regression test for GitHub PR #6088 / Discord report: OpenRouter model IDs
-with variant suffixes like ``:free``, ``:extended``, ``:fast`` were being
-mangled by the colon-to-slash conversion in model_switch.py Step c.
+Regression coverage for colon-bearing model IDs and qualified model refs.
 
-The fix: Step c now skips colon→slash conversion when the model name already
-contains a forward slash (i.e. is already in ``vendor/model`` format), since
-the colon is a variant tag, not a vendor separator.
+Variant suffixes on slash-qualified model IDs remain part of the model ID.
+A leading ``provider:model`` form is parsed as model identity only when the
+left side is a known provider; unknown prefixes remain native model IDs.
 """
 import pytest
 from unittest.mock import patch
@@ -18,23 +16,25 @@ from hermes_cli.model_switch import switch_model
 _MOCK_VALIDATION = {"accepted": True, "persist": True, "recognized": True, "message": None}
 
 
-def _run_switch(raw_input: str, current_provider: str = "openrouter") -> str:
-    """Run switch_model with mocked dependencies, return the resolved model name."""
-    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
-         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+def _run_switch_result(raw_input: str, current_provider: str = "openrouter"):
+    """Run switch_model with network/catalog dependencies mocked."""
+    with patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={"api_key": "test", "base_url": "", "api_mode": "chat_completions"}), \
          patch("hermes_cli.models_validate.validate_requested_model", return_value=_MOCK_VALIDATION), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
-         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
-         patch("hermes_cli.models.detect_provider_for_model", return_value=None):
+         patch("hermes_cli.model_switch.query_model_metadata", return_value=None):
         result = switch_model(
             raw_input=raw_input,
             current_provider=current_provider,
             current_model="anthropic/claude-sonnet-4.6",
         )
         assert result.success, f"switch_model failed: {result.error_message}"
-        return result.new_model
+        return result
+
+
+def _run_switch(raw_input: str, current_provider: str = "openrouter") -> str:
+    return _run_switch_result(raw_input, current_provider).new_model
 
 
 class TestVariantTagPreservation:
@@ -49,24 +49,21 @@ class TestVariantTagPreservation:
         """Models already in vendor/model:tag format must not have their tag mangled."""
         assert _run_switch(model) == expected
 
-    def test_legacy_colon_format_converts_to_slash(self):
-        """Legacy vendor:model (no slash) should still be converted to vendor/model."""
-        result = _run_switch("nvidia:nemotron-3-super-120b-a12b")
-        assert result == "nvidia/nemotron-3-super-120b-a12b"
+    def test_known_provider_colon_is_a_qualified_model_ref(self):
+        result = _run_switch_result("nvidia:nemotron-3-super-120b-a12b")
+        assert result.target_provider == "nvidia"
+        assert result.new_model == "nvidia/nemotron-3-super-120b-a12b"
 
 
 
 
 class TestColonFormOffAggregators:
-    """``provider:model`` must resolve exactly like ``provider/model`` on a non-aggregator
-    current provider (#9748); an Ollama-style tag whose left side is not a provider is untouched."""
+    """Known provider prefixes are identity; unknown prefixes remain model-native."""
 
-    def test_known_provider_colon_matches_slash_form(self):
-        with patch("hermes_cli.model_switch.resolve_provider_full", return_value=None):
-            colon = _run_switch("Alibaba:qwen3.6-plus", current_provider="alibaba")
-            slash = _run_switch("Alibaba/qwen3.6-plus", current_provider="alibaba")
-        assert colon == slash
+    def test_known_provider_colon_selects_that_provider(self):
+        result = _run_switch_result("Alibaba:qwen3.6-plus", current_provider="anthropic")
+        assert result.target_provider == "alibaba"
+        assert result.new_model == "qwen3.6-plus"
 
     def test_non_provider_left_side_keeps_colon(self):
-        with patch("hermes_cli.model_switch.resolve_provider_full", return_value=None):
-            assert _run_switch("qwen3.5:4b", current_provider="alibaba") == "qwen3.5:4b"
+        assert _run_switch("qwen3.5:4b", current_provider="alibaba") == "qwen3.5:4b"

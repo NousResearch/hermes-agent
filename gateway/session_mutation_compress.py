@@ -40,7 +40,7 @@ async def prepare_compress(authority, live, payload, prepared):
     if options.get('checkpoint_required'):
         raise RuntimeStoreError('compression_checkpoint_required')
     model, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
-    if runtime.get('api_mode') == 'codex_app_server':
+    if runtime.get('runtime_kind') == 'app_server':
         raise RuntimeStoreError('runtime_coordination_required')
     history = authority.db.get_messages_as_conversation(snapshot['target'])
     messages = [m for m in history if m.get('role') in {'user', 'assistant', 'tool'}]

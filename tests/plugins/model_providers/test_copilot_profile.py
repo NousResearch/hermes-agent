@@ -35,7 +35,7 @@ def copilot_profile():
 
 def _patch_efforts(monkeypatch, efforts):
     """Stub the catalog lookup the profile and main-agent path call for supported efforts."""
-    import hermes_cli.models as models_mod
+    import models.metadata.github as models_mod
     monkeypatch.setattr(
         models_mod, "github_model_reasoning_efforts", lambda model: list(efforts)
     )
@@ -112,12 +112,12 @@ class TestCopilotOfflineAstraEfforts:
         ("gpt-6-astra-pro", []),  # speed-tier / unknown suffixes stay off the Astra ladder
     ])
     def test_offline_fallback_uses_exact_astra_slugs(self, model, expected):
-        from hermes_cli.models import github_model_reasoning_efforts
+        from models.metadata.github import github_model_reasoning_efforts
 
         assert github_model_reasoning_efforts(model, catalog=[]) == expected
 
     def test_structured_catalog_beats_offline_fallback(self):
-        from hermes_cli.models import github_model_reasoning_efforts
+        from models.metadata.github import github_model_reasoning_efforts
 
         catalog = [{"id": "gpt-6-astra", "capabilities": {
             "type": "chat", "supports": {"reasoning_effort": ["low", "high"]}}}]
@@ -138,3 +138,11 @@ def test_main_agent_github_clamp_never_escalates(monkeypatch, effort, expected):
     _patch_efforts(monkeypatch, ["minimal", "low", "medium", "high"])
     agent = SimpleNamespace(model="gpt-5.4", reasoning_config={"enabled": True, "effort": effort})
     assert ReasoningParamsMixin._github_models_reasoning_extra_body(agent) == {"effort": expected}
+
+class TestCopilotRoutePolicy:
+    def test_gpt5_uses_responses_except_gpt5_mini(self, copilot_profile):
+        assert copilot_profile.resolve_route_policy("gpt-5.5") == "codex_responses"
+        assert copilot_profile.resolve_route_policy("gpt-5-mini") is None
+
+    def test_non_gpt_models_leave_the_profile_default_in_charge(self, copilot_profile):
+        assert copilot_profile.resolve_route_policy("claude-opus-4.8") is None

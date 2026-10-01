@@ -266,13 +266,13 @@ class SessionManager:
         self._schedule_git_metadata(state, self._claim_cwd_generation(state))
         return state
 
-    def save_session(self, session_id: str) -> None:
+    def save_session(self, session_id: str, *, strict: bool = False) -> None:
         """Persist a session; called by the server after prompt completion,
         history-mutating slash commands, and model switches."""
         with self._lock:
             state = self._sessions.get(session_id)
         if state is not None:
-            self._persist(state)
+            self._persist(state, strict=strict)
 
     def end_all_sessions(self, end_reason: str = "acp_disconnect") -> int:
         """Stamp ``ended_at`` on every live session (#118216).
@@ -340,7 +340,7 @@ class SessionManager:
                 logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
-    def _persist(self, state: SessionState) -> None:
+    def _persist(self, state: SessionState, *, strict: bool = False) -> None:
         """Create/update the session record, then sync the live message set."""
         db = self._get_db()
         if db is None:
@@ -365,6 +365,8 @@ class SessionManager:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
                 except Exception:
+                    if strict:
+                        raise
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
                 # The create branch above is not the live path: an agent that owns
                 # persistence to this same DB flushes the transcript incrementally,
@@ -399,6 +401,8 @@ class SessionManager:
             db.replace_messages(state.session_id, state.history, active_only=True)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
+            if strict:
+                raise
 
     def _claim_cwd_generation(self, state: SessionState) -> Optional[int]:
         """Write the cwd column and return its new git-metadata generation.
@@ -494,7 +498,8 @@ class SessionManager:
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
-                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
+                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+                    resolved_runtime: dict | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
         them from config (fresh session)."""
         if self._agent_factory is not None:
@@ -537,8 +542,10 @@ class SessionManager:
         }
         resolve_error: Exception | None = None
         try:
-            runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            runtime = (resolved_runtime if resolved_runtime is not None else
+                       resolve_runtime_provider(
+                           requested=requested_provider or config_provider,
+                           target_model=(model or default_model) or None))
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

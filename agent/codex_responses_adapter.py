@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Ty
 
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-from hermes_cli.route_identity import normalize_route_base_url
+from providers import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ _CROSS_ISSUER_WARN_EMITTED = False
 def _wire_model_identity(model: Any) -> Optional[str]:
     """Canonical Responses wire model stamped on encrypted reasoning: blobs are sealed to the issuing
     model too, so a same-endpoint model switch must not replay them (HTTP 400)."""
-    from agent.model_metadata import strip_codex_context_variant_suffix
+    from models.metadata.context import strip_codex_context_variant_suffix
 
     return str(strip_codex_context_variant_suffix(model or "")).strip() or None
 

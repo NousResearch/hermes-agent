@@ -804,6 +804,12 @@ include = [
   "tools.*",
   "hermes_cli",
   "hermes_cli.*",
+  "profiles",
+  "profiles.*",
+  "runtime",
+  "runtime.*",
+  "storage",
+  "storage.*",
   "gateway",
   "gateway.*",
   "tui_gateway",
@@ -815,12 +821,12 @@ include = [
   "plugins.*",
   "providers",
   "providers.*",
+  "models",
+  "models.*",
   "hermes_platform",
   "hermes_platform.*",
   "pm",
   "pm.*",
-  "tools",
-  "tools.*",
 ]
 
 [tool.setuptools.package-data]

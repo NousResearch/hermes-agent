@@ -19,7 +19,7 @@ def _clear_local_ctx_probe_cache():
     to return different responses for the same (model, base_url), a stale
     cache entry would leak across cases — clear it before and after each test.
     """
-    import agent.model_metadata as _mm
+    import models.metadata.context as _mm
 
     _mm._LOCAL_CTX_PROBE_CACHE.clear()
     yield
@@ -43,7 +43,7 @@ class TestQueryLocalContextLengthOllama:
 
     def test_ollama_parameters_num_ctx(self):
         """Falls back to num_ctx in parameters string when model_info lacks context_length."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         show_resp = self._make_resp(200, {
             "model_info": {},
@@ -57,7 +57,7 @@ class TestQueryLocalContextLengthOllama:
         client_mock.post.return_value = show_resp
         client_mock.get.return_value = models_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="ollama"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("some-model", "http://localhost:11434/v1")
 
@@ -66,7 +66,7 @@ class TestQueryLocalContextLengthOllama:
 
     def test_ollama_show_404_falls_through(self):
         """When /api/show returns 404, falls through to /v1/models/{model}."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         show_resp = self._make_resp(404, {})
         model_detail_resp = self._make_resp(200, {"max_model_len": 65536})
@@ -77,7 +77,7 @@ class TestQueryLocalContextLengthOllama:
         client_mock.post.return_value = show_resp
         client_mock.get.return_value = model_detail_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="ollama"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("some-model", "http://localhost:11434/v1")
 
@@ -95,7 +95,7 @@ class TestQueryLocalContextLengthVllm:
 
     def test_vllm_max_model_len(self):
         """Reads max_model_len from /v1/models/{model} response."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(200, {"id": "omnicoder-9b", "max_model_len": 100000})
         list_resp = self._make_resp(404, {})
@@ -106,7 +106,7 @@ class TestQueryLocalContextLengthVllm:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.return_value = detail_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="vllm"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("omnicoder-9b", "http://localhost:8000/v1")
 
@@ -114,7 +114,7 @@ class TestQueryLocalContextLengthVllm:
 
     def test_vllm_context_length_key(self):
         """Reads context_length from /v1/models/{model} response."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(200, {"id": "some-model", "context_length": 32768})
 
@@ -124,7 +124,7 @@ class TestQueryLocalContextLengthVllm:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.return_value = detail_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="vllm"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("some-model", "http://localhost:8000/v1")
 
@@ -144,7 +144,7 @@ class TestQueryLocalContextLengthVllm:
         key, the resolver returns the ``_CONTEXT_LENGTH_KEYS`` value, never
         the ``_MAX_COMPLETION_KEYS`` one.
         """
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(200, {
             "type": "model",
@@ -159,7 +159,7 @@ class TestQueryLocalContextLengthVllm:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.return_value = detail_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="vllm"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("some-model", "http://localhost:8000/v1")
 
@@ -174,7 +174,7 @@ class TestQueryLocalContextLengthVllm:
         fixing only the detail branch would leave the identical bug reachable
         whenever the per-model describe endpoint 404s.
         """
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_miss = self._make_resp(404, {})
         list_resp = self._make_resp(200, {"data": [
@@ -188,7 +188,7 @@ class TestQueryLocalContextLengthVllm:
         # first GET is /v1/models/{model} (miss), second is /v1/models (list)
         client_mock.get.side_effect = [detail_miss, list_resp]
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="vllm"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("some-model", "http://localhost:8000/v1")
 
@@ -204,7 +204,7 @@ class TestQueryLocalContextLengthVllm:
         than a frozen key list) keeps the guard correct as the vocabulary
         grows, and fails if a probe branch ever re-hardcodes its own keys.
         """
-        from agent import model_metadata as mm
+        import models.metadata.context as mm
 
         assert "max_tokens" in mm._MAX_COMPLETION_KEYS
         assert "max_tokens" not in mm._CONTEXT_LENGTH_KEYS
@@ -230,7 +230,7 @@ class TestQueryLocalContextLengthModelsList:
 
     def test_models_list_max_model_len(self):
         """Finds context length for model in /v1/models list."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -253,7 +253,7 @@ class TestQueryLocalContextLengthModelsList:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
 
@@ -263,7 +263,7 @@ class TestQueryLocalContextLengthModelsList:
         """Returns None when the model is absent from a multi-model /v1/models
         list. (Single-model servers are accepted even when the configured name
         doesn't match the reported id — see the llama.cpp tests below.)"""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -286,7 +286,7 @@ class TestQueryLocalContextLengthModelsList:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
 
@@ -299,7 +299,7 @@ class TestQueryLocalContextLengthModelsList:
         The sole model should be accepted and meta.n_ctx read, instead of
         returning None and falling back to a family default (e.g. qwen=131072).
         """
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -324,7 +324,7 @@ class TestQueryLocalContextLengthModelsList:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("qwen3.6-35b", "http://localhost:8080")
 
@@ -333,7 +333,7 @@ class TestQueryLocalContextLengthModelsList:
     def test_models_list_llamacpp_prefers_runtime_n_ctx_over_train(self):
         """Runtime n_ctx (256000) is preferred over n_ctx_train (262144),
         since the server can only actually serve the runtime value."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -353,7 +353,7 @@ class TestQueryLocalContextLengthModelsList:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("m", "http://localhost:8080")
 
@@ -367,20 +367,20 @@ class TestContextLengthFromModelPayload:
 
 
     def test_prefers_max_model_len_over_max_tokens(self):
-        from agent.model_metadata import _context_length_from_model_payload
+        from models.metadata.context import _context_length_from_model_payload
 
         payload = {"id": "local-model", "max_model_len": 131072, "max_tokens": 4096}
         assert _context_length_from_model_payload(payload) == 131072
 
     def test_falls_back_to_max_tokens_when_no_input_window_field(self):
-        from agent.model_metadata import _context_length_from_model_payload
+        from models.metadata.context import _context_length_from_model_payload
 
         # Some OpenAI-compat servers only expose max_tokens for the window.
         payload = {"id": "odd-server", "max_tokens": 65536}
         assert _context_length_from_model_payload(payload) == 65536
 
     def test_returns_none_for_empty_payload(self):
-        from agent.model_metadata import _context_length_from_model_payload
+        from models.metadata.context import _context_length_from_model_payload
 
         assert _context_length_from_model_payload({}) is None
         assert _context_length_from_model_payload(None) is None  # type: ignore[arg-type]
@@ -398,7 +398,7 @@ class TestQueryLocalContextLengthAnthropicProxy:
         return resp
 
     def test_models_list_prefers_max_input_tokens(self):
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -433,7 +433,7 @@ class TestQueryLocalContextLengthAnthropicProxy:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length(
                 "claude-fable-5", "http://127.0.0.1:47821"
@@ -445,7 +445,7 @@ class TestQueryLocalContextLengthAnthropicProxy:
         )
 
     def test_model_detail_prefers_max_input_tokens(self):
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(200, {
             "type": "model",
@@ -460,7 +460,7 @@ class TestQueryLocalContextLengthAnthropicProxy:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.return_value = detail_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length(
                 "claude-fable-5", "http://127.0.0.1:47821/v1"
@@ -500,7 +500,7 @@ class TestQueryLocalContextLengthLmStudio:
 
     def test_lmstudio_exact_key_match(self):
         """Resolves loaded ctx when key matches exactly."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         native_resp = self._make_resp(200, {
             "models": [
@@ -516,7 +516,7 @@ class TestQueryLocalContextLengthLmStudio:
             self._make_resp(404, {}),
         )
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="lm-studio"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length(
                 "nvidia/nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
@@ -529,7 +529,7 @@ class TestQueryLocalContextLengthLmStudio:
 
 
     def test_lmstudio_native_api_base_url_is_not_doubled(self):
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         native_resp = self._make_resp(200, {
             "models": [
@@ -546,7 +546,7 @@ class TestQueryLocalContextLengthLmStudio:
             self._make_resp(404, {}),
         )
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="lm-studio"), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("publisher/model-a", "http://localhost:1234/api/v1")
 
@@ -556,7 +556,7 @@ class TestQueryLocalContextLengthLmStudio:
 
 class TestDetectLocalServerTypeAuth:
     def test_passes_bearer_token_to_probe_requests(self):
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata.context import detect_local_server_type
 
         resp = MagicMock()
         resp.status_code = 200
@@ -575,7 +575,7 @@ class TestDetectLocalServerTypeAuth:
         }
 
     def test_native_api_base_url_is_not_doubled(self):
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata.context import detect_local_server_type
 
         resp = MagicMock()
         resp.status_code = 200
@@ -598,7 +598,7 @@ class TestDetectLocalServerTypeLocalhostIPv4:
 
     def test_localhost_resolved_to_ipv4(self):
         """Probes should use 127.0.0.1, not localhost, to avoid IPv6 timeout."""
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata.context import detect_local_server_type
 
         resp = MagicMock()
         resp.status_code = 200
@@ -618,7 +618,7 @@ class TestDetectLocalServerTypeLocalhostIPv4:
 
     def test_non_localhost_urls_unchanged(self):
         """Non-localhost URLs should not be modified."""
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata.context import detect_local_server_type
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -646,7 +646,7 @@ class TestFetchEndpointModelMetadataLmStudio:
         return resp
 
     def test_uses_native_models_endpoint_only(self):
-        from agent.model_metadata import fetch_endpoint_model_metadata
+        from models.metadata.context import fetch_endpoint_model_metadata
 
         native_resp = self._make_resp(
             {
@@ -663,7 +663,7 @@ class TestFetchEndpointModelMetadataLmStudio:
             }
         )
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="lm-studio"), \
              patch("agent.model_metadata_http.get", return_value=native_resp) as mock_get:
             result = fetch_endpoint_model_metadata(
                 "http://localhost:1234/v1",
@@ -680,7 +680,7 @@ class TestFetchEndpointModelMetadataLmStudio:
         assert result["Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
 
     def test_native_api_base_url_is_not_doubled(self):
-        from agent.model_metadata import fetch_endpoint_model_metadata
+        from models.metadata.context import fetch_endpoint_model_metadata
 
         native_resp = self._make_resp(
             {
@@ -696,7 +696,7 @@ class TestFetchEndpointModelMetadataLmStudio:
             }
         )
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+        with patch("models.metadata.context.detect_local_server_type", return_value="lm-studio"), \
              patch("agent.model_metadata_http.get", return_value=native_resp) as mock_get:
             result = fetch_endpoint_model_metadata(
                 "http://localhost:1234/api/v1",
@@ -712,7 +712,7 @@ class TestQueryLocalContextLengthNetworkError:
 
     def test_connection_error_returns_none(self):
         """Returns None when the server is unreachable."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -720,7 +720,7 @@ class TestQueryLocalContextLengthNetworkError:
         client_mock.post.side_effect = Exception("Connection refused")
         client_mock.get.side_effect = Exception("Connection refused")
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
@@ -738,20 +738,20 @@ class TestGetModelContextLengthLocalFallback:
 
     def test_local_endpoint_stale_cache_reconciled_from_live_probe(self):
         """Stale disk cache must yield to a live local max_model_len probe."""
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
 
         model = "NousResearch/Hermes-3-Llama-3.1-70B"
         base = "http://192.168.1.50:8000/v1"
 
-        with patch("agent.model_metadata.get_cached_context_length", return_value=131072), \
-             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
-             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
-             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
-             patch("agent.model_metadata._is_custom_endpoint", return_value=False), \
-             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
-             patch("agent.model_metadata._query_local_context_length", return_value=32768), \
-             patch("agent.model_metadata._invalidate_cached_context_length") as mock_invalidate, \
-             patch("agent.model_metadata.save_context_length") as mock_save:
+        with patch("models.metadata.context.get_cached_context_length", return_value=131072), \
+             patch("models.metadata.context.fetch_endpoint_model_metadata", return_value={}), \
+             patch("models.metadata.context.fetch_model_metadata", return_value={}), \
+             patch("models.metadata.context._query_ollama_api_show", return_value=None), \
+             patch("models.metadata.context._is_custom_endpoint", return_value=False), \
+             patch("models.metadata.context.is_local_endpoint", return_value=True), \
+             patch("models.metadata.context._query_local_context_length", return_value=32768), \
+             patch("models.metadata.context._invalidate_cached_context_length") as mock_invalidate, \
+             patch("models.metadata.context.save_context_length") as mock_save:
             result = get_model_context_length(model, base, provider="custom")
 
         assert result == 32768
@@ -762,13 +762,13 @@ class TestGetModelContextLengthLocalFallback:
 
     def test_local_endpoint_server_returns_none_falls_back_to_2m(self):
         """When local server returns None, still falls back to 2M probe tier."""
-        from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
+        from models.metadata.context import get_model_context_length, CONTEXT_PROBE_TIERS
 
-        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
-             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
-             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
-             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
-             patch("agent.model_metadata._query_local_context_length", return_value=None):
+        with patch("models.metadata.context.get_cached_context_length", return_value=None), \
+             patch("models.metadata.context.fetch_endpoint_model_metadata", return_value={}), \
+             patch("models.metadata.context.fetch_model_metadata", return_value={}), \
+             patch("models.metadata.context.is_local_endpoint", return_value=True), \
+             patch("models.metadata.context._query_local_context_length", return_value=None):
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result == CONTEXT_PROBE_TIERS[0]
@@ -776,11 +776,11 @@ class TestGetModelContextLengthLocalFallback:
 
     def test_cached_result_skips_local_query(self):
         """Cached context length is returned without querying the local server."""
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
 
-        with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
-             patch("agent.model_metadata.is_local_endpoint", return_value=False), \
-             patch("agent.model_metadata._query_local_context_length") as mock_query:
+        with patch("models.metadata.context.get_cached_context_length", return_value=65536), \
+             patch("models.metadata.context.is_local_endpoint", return_value=False), \
+             patch("models.metadata.context._query_local_context_length") as mock_query:
             result = get_model_context_length(
                 "omnicoder-9b", "https://api.example.com/v1"
             )
@@ -803,7 +803,7 @@ class TestLocalContextProbeTTLCache:
         return resp
 
     def test_second_call_within_ttl_does_not_reprobe(self):
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         show_resp = self._make_resp(200, {"model_info": {"llama.context_length": 32768}})
         models_resp = self._make_resp(404, {})
@@ -813,7 +813,7 @@ class TestLocalContextProbeTTLCache:
         client_mock.post.return_value = show_resp
         client_mock.get.return_value = models_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama") as detect, \
+        with patch("models.metadata.context.detect_local_server_type", return_value="ollama") as detect, \
              patch("httpx.Client", return_value=client_mock):
             first = _query_local_context_length("m", "http://localhost:11434/v1")
             second = _query_local_context_length("m", "http://localhost:11434/v1")
@@ -824,7 +824,7 @@ class TestLocalContextProbeTTLCache:
         assert detect.call_count == 1
 
     def test_different_key_still_probes(self):
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         show_resp = self._make_resp(200, {"model_info": {"llama.context_length": 32768}})
         models_resp = self._make_resp(404, {})
@@ -834,7 +834,7 @@ class TestLocalContextProbeTTLCache:
         client_mock.post.return_value = show_resp
         client_mock.get.return_value = models_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama") as detect, \
+        with patch("models.metadata.context.detect_local_server_type", return_value="ollama") as detect, \
              patch("httpx.Client", return_value=client_mock):
             _query_local_context_length("m1", "http://localhost:11434/v1")
             _query_local_context_length("m2", "http://localhost:11434/v1")
@@ -845,7 +845,7 @@ class TestLocalContextProbeTTLCache:
     def test_none_result_not_cached(self):
         """A failed probe (None) must NOT be memoized — a retry within the TTL
         window must re-probe so a server that comes up mid-startup is caught."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         # First probe: server unreachable -> detect returns None, all queries miss -> None.
         fail_resp = self._make_resp(404, {})
@@ -855,7 +855,7 @@ class TestLocalContextProbeTTLCache:
         client_mock.post.return_value = fail_resp
         client_mock.get.return_value = fail_resp
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None) as detect, \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None) as detect, \
              patch("httpx.Client", return_value=client_mock):
             first = _query_local_context_length("m", "http://localhost:11434/v1")
             # Retry within TTL must re-probe (None was not cached).
@@ -889,7 +889,7 @@ class TestQueryLocalContextLengthMaxTokensNotContext:
         resolves — max_tokens is preserved as an explicit last-resort fallback
         because some servers report nothing else. It must only ever win when
         no genuine context-window key is present."""
-        from agent.model_metadata import _query_local_context_length
+        from models.metadata.context import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -914,7 +914,7 @@ class TestQueryLocalContextLengthMaxTokensNotContext:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("mystery-model", "http://127.0.0.1:8080/v1")
 
@@ -936,7 +936,7 @@ class TestReconcileSelfHealsPoisonedCache:
         return resp
 
     def test_poisoned_cache_entry_rewritten_upward(self):
-        from agent.model_metadata import _reconcile_local_cached_context_length
+        from models.metadata.context import _reconcile_local_cached_context_length
 
         model = "deepseek-v4-flash"
         base = "http://127.0.0.1:8080/v1"
@@ -944,12 +944,12 @@ class TestReconcileSelfHealsPoisonedCache:
         real_window = 1048576  # context_size the fixed probe now reports
 
         with patch(
-            "agent.model_metadata._query_local_context_length",
+            "models.metadata.context._query_local_context_length",
             return_value=real_window,
         ), patch(
-            "agent.model_metadata._invalidate_cached_context_length"
+            "models.metadata.context._invalidate_cached_context_length"
         ) as mock_invalidate, patch(
-            "agent.model_metadata.save_context_length"
+            "models.metadata.context.save_context_length"
         ) as mock_save:
             result = _reconcile_local_cached_context_length(model, base, poisoned)
 
@@ -961,7 +961,7 @@ class TestReconcileSelfHealsPoisonedCache:
         """Full path: live endpoint serves the issue's payload
         (context_size 1048576 + max_tokens 393216); reconcile must overwrite
         the poisoned 393216 cache entry with 1048576."""
-        from agent.model_metadata import _reconcile_local_cached_context_length
+        from models.metadata.context import _reconcile_local_cached_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
@@ -987,10 +987,10 @@ class TestReconcileSelfHealsPoisonedCache:
         client_mock.post.return_value = self._make_resp(404, {})
         client_mock.get.side_effect = side_effect
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock), \
-             patch("agent.model_metadata._invalidate_cached_context_length") as mock_invalidate, \
-             patch("agent.model_metadata.save_context_length") as mock_save:
+             patch("models.metadata.context._invalidate_cached_context_length") as mock_invalidate, \
+             patch("models.metadata.context.save_context_length") as mock_save:
             result = _reconcile_local_cached_context_length(
                 "deepseek-v4-flash", "http://127.0.0.1:8080/v1", 393216
             )
@@ -1017,7 +1017,7 @@ class TestDetectLocalServerTypeSkipsHostedProviders:
         ],
     )
     def test_public_hosts_get_no_probe_local_hosts_do(self, base_url, expect_requests):
-        import agent.model_metadata as mm
+        import models.metadata.context as mm
 
         calls = []
 

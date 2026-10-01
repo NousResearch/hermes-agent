@@ -1,5 +1,11 @@
 """Tests for the hermes_cli models module."""
 
+import application_model_pricing
+import hermes_cli.models_local as hermes_cli_models_local
+import models.catalog_static as models_catalog_static
+
+from models import ModelRef
+
 import json
 import pytest
 import time
@@ -8,12 +14,13 @@ from threading import Thread
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
-from hermes_cli.models import (
-    OPENROUTER_MODELS, fetch_openrouter_models, detect_provider_for_model,
-    partition_nous_models_by_tier,
-    check_nous_free_tier, union_with_portal_free_recommendations,
-    union_with_portal_paid_recommendations,
-)
+from models.catalog_static import OPENROUTER_MODELS
+from hermes_cli.models import fetch_openrouter_models
+from hermes_cli.models import detect_provider_for_model
+from models.metadata.pricing import partition_nous_models_by_tier
+from hermes_cli.models import check_nous_free_tier
+from hermes_cli.models import union_with_portal_free_recommendations
+from hermes_cli.models import union_with_portal_paid_recommendations
 import hermes_cli.models as _models_mod
 from hermes_cli import models_local
 from hermes_cli import models_validate
@@ -26,7 +33,7 @@ class TestFetchOpenRouterModels:
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
         # Pin the remote manifest out too — otherwise the fallback silently
         # depends on whatever the deployed catalog currently contains.
-        with patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=None), \
+        with patch("models.catalog_runtime.curated_openrouter", return_value=()), \
              patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
@@ -63,7 +70,7 @@ class TestFetchOpenRouterModels:
 
         # Include the image-only id in the curated list so it has a chance to be surfaced.
         monkeypatch.setattr(
-            _models_mod,
+            models_catalog_static,
             "OPENROUTER_MODELS",
             [
                 ("anthropic/claude-opus-4.6", ""),
@@ -73,7 +80,7 @@ class TestFetchOpenRouterModels:
         )
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
         with (
-            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("models.catalog_runtime.curated_openrouter", return_value=()),
             patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
         ):
             models = fetch_openrouter_models(force_refresh=True)
@@ -91,7 +98,7 @@ class TestOpenRouterToolSupportHelper:
 
     def test_empty_supported_parameters_list_drops_model(self):
         """Explicit empty list → no tools → drop."""
-        from hermes_cli.models import _openrouter_model_supports_tools
+        from models.catalog_projection import _openrouter_model_supports_tools
         assert _openrouter_model_supports_tools(
             {"id": "x", "supported_parameters": []}
         ) is False
@@ -147,17 +154,20 @@ class TestPartitionNousModelsByTier:
 
     def test_free_tier_default_prefers_a_free_model_over_a_subscription_billed_one(self, monkeypatch):
         import hermes_cli.models as m
-        from hermes_cli import models_pricing as mp
+        import application_model_selection_defaults as defaults
+        import application_model_pricing as mp
         pricing = {"openai/gpt-5.4": {**self._PAID, "billing_mode": "subscription"}, "free/model": self._FREE}
         monkeypatch.setattr(m, "get_curated_nous_model_ids", lambda: list(pricing))
         monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: True)
-        monkeypatch.setattr(m, "union_with_portal_free_recommendations", lambda ids, pr, url="", **kw: (ids, pr))
-        monkeypatch.setattr(m, "get_preferred_silent_default_model", lambda provider="": "not/listed")
-        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: pricing)
-        monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
-        assert m.recommended_nous_default_model()["model"] == "free/model"
+        monkeypatch.setattr("application_nous_recommendations.fetch_recommended_models", lambda *a, **kw: {})
+        monkeypatch.setattr(defaults, "preferred_silent_default_model", lambda provider="": "not/listed")
+        monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", lambda slug, **kw: pricing)
+        monkeypatch.setattr(application_model_pricing, "nous_policy_allowed_ids", lambda **kw: None)
+        selection, _ = defaults.select_nous_recommended_default()
+        assert defaults.selected_model_id(selection) == "free/model"
         del pricing["free/model"]
-        assert m.recommended_nous_default_model()["model"] == "openai/gpt-5.4"
+        selection, _ = defaults.select_nous_recommended_default()
+        assert defaults.selected_model_id(selection) == "openai/gpt-5.4"
 
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
@@ -192,7 +202,7 @@ class TestUnionWithPortalFreeRecommendations:
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
+            "application_nous_recommendations.fetch_recommended_models",
             return_value=self._payload(["qwen/qwen3.6-plus"]),
         ):
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
@@ -211,7 +221,7 @@ class TestUnionWithPortalFreeRecommendations:
         curated = ["a"]
         pricing = {"a": self._PAID}
         with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
+            "application_nous_recommendations.fetch_recommended_models",
             side_effect=RuntimeError("network down"),
         ):
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
@@ -246,7 +256,7 @@ class TestUnionWithPortalPaidRecommendations:
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
+            "application_nous_recommendations.fetch_recommended_models",
             return_value=self._payload(["openai/gpt-5.4", "openai/gpt-5.5"]),
         ):
             ids, _ = union_with_portal_paid_recommendations(curated, pricing, "")
@@ -336,7 +346,7 @@ class TestCheckNousFreeTierCache:
 
 
 class TestNousRecommendedModels:
-    """Tests for fetch_nous_recommended_models + get_nous_recommended_aux_model."""
+    """Tests for Portal recommendation acquisition and provider-owned selection."""
 
     _SAMPLE_PAYLOAD = {
         "paidRecommendedModels": [],
@@ -354,10 +364,14 @@ class TestNousRecommendedModels:
     }
 
     def setup_method(self):
-        _models_mod._nous_recommended_cache.clear()
+        from models.catalog_nous_recommendations import reset_cache
+
+        reset_cache()
 
     def teardown_method(self):
-        _models_mod._nous_recommended_cache.clear()
+        from models.catalog_nous_recommendations import reset_cache
+
+        reset_cache()
 
     def _mock_urlopen(self, payload):
         """Return a context-manager mock mimicking urllib.request.urlopen()."""
@@ -370,44 +384,46 @@ class TestNousRecommendedModels:
         return cm
 
     def test_fetch_caches_per_portal_url(self):
-        from hermes_cli.models import fetch_nous_recommended_models
+        from application_nous_recommendations import fetch_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
-            a = fetch_nous_recommended_models("https://portal.example.com")
-            b = fetch_nous_recommended_models("https://portal.example.com")
+        with patch("hermes_cli.urllib_security.open_credentialed_url", return_value=mock_cm) as mock_urlopen:
+            a = fetch_recommended_models("https://portal.example.com")
+            b = fetch_recommended_models("https://portal.example.com")
         assert a == self._SAMPLE_PAYLOAD
         assert b == self._SAMPLE_PAYLOAD
         assert mock_urlopen.call_count == 1  # second call served from cache
 
 
     def test_paid_tier_prefers_paid_recommendation(self):
-        """Paid-tier users should get the paid model when it's populated."""
-        from hermes_cli.models import get_nous_recommended_aux_model
+        """Provider-domain selection prefers paid recommendations when available."""
+        from providers.nous_recommendations import recommended_aux_model
         payload = {
             "paidRecommendedCompactionModel": {"modelName": "anthropic/claude-opus-4.7"},
             "freeRecommendedCompactionModel": {"modelName": "google/gemini-3-flash-preview"},
             "paidRecommendedVisionModel": {"modelName": "openai/gpt-5.4"},
             "freeRecommendedVisionModel": {"modelName": "google/gemini-3-flash-preview"},
         }
-        with patch("hermes_cli.models.fetch_nous_recommended_models", return_value=payload):
-            text = get_nous_recommended_aux_model(vision=False, free_tier=False)
-            vision = get_nous_recommended_aux_model(vision=True, free_tier=False)
+        text = recommended_aux_model(payload, vision=False, free_tier=False)
+        vision = recommended_aux_model(payload, vision=True, free_tier=False)
         assert text == "anthropic/claude-opus-4.7"
         assert vision == "openai/gpt-5.4"
 
 
     def test_tier_detection_error_defaults_to_paid(self):
-        """If tier detection raises, assume paid so we don't downgrade silently."""
-        from hermes_cli.models import get_nous_recommended_aux_model
+        """Nous provider defaults to paid semantics when tier acquisition fails."""
+        import model_tools  # noqa: F401 -- trigger provider discovery
+        from providers import get_provider_profile
+
         payload = {
             "paidRecommendedCompactionModel": {"modelName": "paid-model"},
             "freeRecommendedCompactionModel": {"modelName": "free-model"},
         }
         with (
-            patch("hermes_cli.models.fetch_nous_recommended_models", return_value=payload),
+            patch("application_nous_recommendations.fetch_recommended_models", return_value=payload),
+            patch("application_nous_recommendations.portal_base_url", return_value="https://portal.example.com"),
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
-            assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+            assert get_provider_profile("nous").resolve_aux_model(vision=False) == "paid-model"
 
 
 class TestCodexSoftAcceptPlausibilityGate:
@@ -590,7 +606,7 @@ class TestLocalOllamaModelDiscovery:
 
     def test_runtime_error_from_config_load_does_not_escape_ollama_helpers(self):
         """Managed-mode config failures should degrade to defaults, not crash pickers."""
-        from hermes_cli.models import _get_ollama_base_url
+        from hermes_cli.models_local import _get_ollama_base_url
         from hermes_cli.models_local import should_use_ollama_native_catalog
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad home")), patch(
@@ -1251,7 +1267,8 @@ class TestLocalOllamaModelDiscovery:
         ) is True
 
     def test_ollama_host_environment_forms_are_normalized(self, monkeypatch):
-        from hermes_cli.models import _get_ollama_base_url, _root_for_ollama_native_api
+        from hermes_cli.models_local import _get_ollama_base_url
+        from hermes_cli.models import _root_for_ollama_native_api
 
         monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
         assert _root_for_ollama_native_api(_get_ollama_base_url()) == "http://0.0.0.0:11434"
@@ -1294,7 +1311,7 @@ class TestLocalOllamaModelDiscovery:
             ), patch.object(models, "_save_provider_models_cache"), patch.object(
                 models, "_credential_fingerprint", return_value="same"
             ), patch.object(models, "provider_model_ids", return_value=[]), patch.object(
-                models, "_get_ollama_base_url", return_value=base_url
+                hermes_cli_models_local, "_get_ollama_base_url", return_value=base_url
             ), patch.object(models_local, "_get_ollama_request_headers", return_value={}):
                 assert models.cached_provider_model_ids("ollama") == []
         finally:
@@ -1314,7 +1331,7 @@ class TestLocalOllamaModelDiscovery:
             ), patch.object(models, "_save_provider_models_cache"), patch.object(
                 models, "_credential_fingerprint", return_value="same"
             ), patch.object(models, "provider_model_ids", return_value=[]), patch.object(
-                models, "_get_ollama_base_url", return_value=base_url
+                hermes_cli_models_local, "_get_ollama_base_url", return_value=base_url
             ), patch.object(models_local, "_get_ollama_request_headers", return_value={}):
                 assert models.cached_provider_model_ids("ollama") == ["stale:model"]
         finally:
@@ -1369,8 +1386,7 @@ class TestLocalOllamaModelDiscovery:
         base_url = "https://ollama.internal/v1"
         original_aliases = dict(model_switch.DIRECT_ALIASES)
         model_switch.DIRECT_ALIASES.clear()
-        model_switch.DIRECT_ALIASES["remote-qwen"] = model_switch.DirectAlias(
-            model="qwen3:1.7b", provider="ollama", base_url=base_url
+        model_switch.DIRECT_ALIASES["remote-qwen"] = model_switch.DirectAlias(ModelRef(provider="custom:ollama", model="qwen3:1.7b"), base_url=base_url
         )
         try:
             with patch.object(model_switch, "get_model_info", return_value=None), patch(
@@ -1402,8 +1418,7 @@ class TestLocalOllamaModelDiscovery:
 
         original_aliases = dict(model_switch.DIRECT_ALIASES)
         model_switch.DIRECT_ALIASES.clear()
-        model_switch.DIRECT_ALIASES["other-qwen"] = model_switch.DirectAlias(
-            model="qwen3:1.7b", provider="ollama", base_url="https://other.internal/v1"
+        model_switch.DIRECT_ALIASES["other-qwen"] = model_switch.DirectAlias(ModelRef(provider="custom:ollama", model="qwen3:1.7b"), base_url="https://other.internal/v1"
         )
         try:
             with patch.object(model_switch, "get_model_info", return_value=None), patch(
@@ -1450,8 +1465,8 @@ class TestOpenRouterCatalogDiskCache:
             return payload["data"], {m["id"]: m for m in payload["data"]}
 
         monkeypatch.setattr(_models_mod, "_fetch_live_catalog_index", fake_index)
-        monkeypatch.setattr("hermes_cli.model_catalog.get_curated_openrouter_models",
-                            lambda: [("a/one", "")])
+        monkeypatch.setattr("models.catalog_runtime.curated_openrouter",
+                            lambda *_args, **_kwargs: (("a/one", ""),))
 
     def test_fresh_snapshot_serves_cold_process_without_network(self, monkeypatch, tmp_path):
         calls = []

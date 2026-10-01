@@ -15,14 +15,17 @@ from __future__ import annotations
 import re
 from typing import Optional, Sequence
 
+from models.metadata.reasoning import (
+    ASTRA_MODEL_IDS,
+    CODEX_ASTRA_EFFORTS,
+    EFFORT_LADDER,
+    clamp_effort,
+    is_astra_model,
+)
+
 #: Matches ``k3`` as a delimited token (``k3``, ``k3-256k``, ``kimi-k3-cot``), never K2-era names (``kimi-k2.6``).
 # From #76427 by @ruizanthony.
 _KIMI_K3_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
-
-# Canonical low→high ordering for nearest-level clamping. Includes "none" so an explicit
-# disable can be clamped when a provider publishes it as a level. ``ultra`` is Hermes-internal
-# (the Codex product tier): no wire accepts it, every declared set stops at ``max``.
-EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 #: Widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -31,10 +34,6 @@ OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium
 #: both (clamps to low); ``max`` is gpt-5.6 / gpt-6-tier only (legacy = 5.5 and older).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
-# GPT-6 Astra is account-gated and its Responses API accepts no disable/minimal
-# wire level; callers normalize those requests to ``low`` at the transport boundary.
-CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
-ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
 #: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
 GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
 DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
@@ -87,13 +86,6 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 
-def is_astra_model(model: Optional[str]) -> bool:
-    """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
-    The single home for the slug set: picker gating, effort vocabulary and the request sanitizer all
-    key off it, so a new Astra alias is one edit."""
-    return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
-
-
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     if is_astra_model(model):
@@ -115,39 +107,6 @@ def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """
     m = (model or "").strip().lower().split("/")[-1]
     return KIMI_K3_EFFORTS if _KIMI_K3_SLUG_RE.search(m) else KIMI_K2_EFFORTS
-
-
-def clamp_effort(
-    effort: Optional[str], supported: Optional[Sequence[str]], overrides: Optional[dict[str, str]] = None,
-) -> Optional[str]:
-    """Clamp a requested reasoning effort onto a wire's supported levels.
-
-    ``overrides`` (a declared vendor mapping, e.g. Kimi K3 ``medium → high``) is consulted
-    first. Otherwise the request passes through unchanged when it is supported, when the
-    supported set is unknown/empty, or when it isn't a recognized ladder level (custom
-    providers may use bespoke names). Else the **nearest weaker** supported level is returned
-    so a clamp never escalates cost; when nothing weaker exists, the weakest supported level
-    (the provider's floor is the closest honest match). Monotonic: a stronger request never
-    resolves weaker than a weaker request would.
-    """
-    requested = str(effort or "").strip().lower()
-    if not requested or not supported:
-        return effort
-    supported_norm = [lvl for lvl in (str(s).strip().lower() for s in supported) if lvl in EFFORT_LADDER]
-    if not supported_norm or requested in supported_norm:
-        return effort
-    if overrides and overrides.get(requested) in supported_norm:
-        return overrides[requested]
-    if requested not in EFFORT_LADDER:
-        return effort
-    # "none" disables reasoning — never a degradation target for an enabled ask
-    # (clamping "minimal" to "none" would silently switch thinking off).
-    candidates = [level for level in supported_norm if level != "none"]
-    if not candidates:
-        return effort
-    requested_idx = EFFORT_LADDER.index(requested)
-    below = [level for level in candidates if EFFORT_LADDER.index(level) < requested_idx]
-    return max(below, key=EFFORT_LADDER.index) if below else min(candidates, key=EFFORT_LADDER.index)
 
 
 def route_supported_efforts(provider: Optional[str], model: Optional[str]) -> tuple[str, ...]:

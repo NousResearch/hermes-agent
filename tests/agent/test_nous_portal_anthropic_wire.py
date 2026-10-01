@@ -21,17 +21,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import runtime_provider as rp
-from hermes_cli import providers as _providers
-from hermes_cli.providers import nous_api_mode
+from providers.routing import InvocationRequest, resolve_invocation_route
+
+
+def _route_mode(model: str, wire: str = "native", base_url: str = "") -> str:
+    return resolve_invocation_route(InvocationRequest(
+        provider="nous",
+        model=model,
+        base_url=base_url,
+        route_options={"anthropic_wire": wire},
+    )).api_mode
 
 
 @pytest.fixture(autouse=True)
 def _native_wire_selected(monkeypatch):
-    """These contracts describe the native wire, which is now opt-in (``nous.anthropic_wire:
-    native``; default ``chat`` since 2026-09-06, see ``nous_api_mode``). Select it here so the
-    wire keeps working for the flip-back; the default's own contract is in
-    ``test_nous_anthropic_wire_default.py``."""
-    monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "native")
+    """Supply the already-read native-wire policy at the application boundary."""
+    config = {"nous": {"anthropic_wire": "native"}}
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
 
 PORTAL_URL = "https://inference-api.nousresearch.com/v1"
 # Staging / preview hosts used via NOUS_INFERENCE_BASE_URL — not the prod
@@ -55,34 +62,22 @@ class TestApiModeRouting:
         ],
     )
     def test_anthropic_prefixed_models_use_the_messages_wire(self, model):
-        assert nous_api_mode(model) == "anthropic_messages"
+        assert _route_mode(model) == "anthropic_messages"
 
 
     def test_a_claude_model_without_the_vendor_prefix_is_not_rerouted(self):
         """Portal ids carry the vendor prefix. A bare ``claude-*`` slug is not a
         Portal Anthropic id, so it must not be pushed onto the native wire."""
-        assert nous_api_mode("claude-opus-4.8") == "chat_completions"
+        assert _route_mode("claude-opus-4.8") == "chat_completions"
 
     def test_determine_api_mode_honors_the_model_for_nous(self):
         """Callers that skip resolve_runtime_provider (fallback, switch_model
         empty-mode path) must still land Claude on Messages — the Hermes
         overlay alone advertises openai_chat for every Nous model."""
-        from hermes_cli.providers import determine_api_mode
-
-        assert (
-            determine_api_mode(
-                "nous",
-                PORTAL_URL,
-                model="anthropic/claude-opus-4.8",
-            )
-            == "anthropic_messages"
-        )
-        assert (
-            determine_api_mode("nous", PORTAL_URL, model="hermes-4-405b")
-            == "chat_completions"
-        )
+        assert _route_mode("anthropic/claude-opus-4.8", base_url=PORTAL_URL) == "anthropic_messages"
+        assert _route_mode("hermes-4-405b", base_url=PORTAL_URL) == "chat_completions"
         # No model → historical OpenAI-wire default (safer than guessing).
-        assert determine_api_mode("nous", PORTAL_URL) == "chat_completions"
+        assert _route_mode("", base_url=PORTAL_URL) == "chat_completions"
 
 
 class TestRuntimeResolution:
@@ -90,7 +85,7 @@ class TestRuntimeResolution:
 
     @pytest.fixture(autouse=True)
     def _stub_portal_credentials(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", lambda: {"nous": {"anthropic_wire": "native"}})
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
         monkeypatch.setattr(rp, "load_pool", lambda p: SimpleNamespace(
             has_credentials=lambda: False,
@@ -474,19 +469,13 @@ class TestAuxiliaryDualWire:
 
         token = set_conversation_context("sess-sticky-aux")
         try:
-            # Alias spelling + profile stubbed out so the fallback path is the
-            # one under test (profile success already covers session_id).
-            with patch(
-                "providers.get_provider_profile",
-                side_effect=ImportError("no profile"),
-            ):
-                kwargs = _build_call_kwargs(
-                    "nous-portal",
-                    "anthropic/claude-opus-4.8",
-                    [{"role": "user", "content": "hi"}],
-                    max_tokens=64,
-                    base_url=PORTAL_URL,
-                )
+            kwargs = _build_call_kwargs(
+                "nous-portal",
+                "anthropic/claude-opus-4.8",
+                [{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                base_url=PORTAL_URL,
+            )
         finally:
             reset_conversation_context(token)
 

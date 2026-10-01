@@ -84,7 +84,7 @@ async def test_picker_path_runs_provider_listing_off_the_event_loop(_isolated_co
         return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
                  "models": ["gpt-x"], "total_models": 1}]
 
-    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    monkeypatch.setattr("gateway.model_picker_inventory.model_provider_rows", _fake_list_picker_providers)
     runner = _make_runner()
     runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
     monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
@@ -109,7 +109,7 @@ async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_e
         return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
                  "models": ["gpt-x"], "total_models": 1}]
 
-    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    monkeypatch.setattr("gateway.model_picker_inventory.model_provider_rows", _fake_list_picker_providers)
     runner = _make_runner()
     runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
     monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
@@ -117,6 +117,19 @@ async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_e
 
     assert await runner._handle_model_command(_make_event()) is None
     assert seen, "listing never ran"
-    flags = {k: seen[0].get(k) for k in ("non_blocking_catalogs", "probe_custom_providers", "probe_current_custom_provider")}
-    assert flags == {"non_blocking_catalogs": True, "probe_custom_providers": False,
-                     "probe_current_custom_provider": True}, flags
+    listing = seen[0]["listing"]
+    flags = {
+        k: listing.get(k)
+        for k in (
+            "non_blocking_catalogs",
+            "probe_custom_providers",
+            "probe_current_custom_provider",
+        )
+    }
+    assert flags == {
+        "non_blocking_catalogs": True,
+        "probe_custom_providers": False,
+        "probe_current_custom_provider": True,
+    }, flags
+    assert seen[0]["interactive"] is True
+    assert seen[0]["refresh"] is False

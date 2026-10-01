@@ -73,7 +73,7 @@ def _runner(monkeypatch, tmp_path):
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100_000,
     )
     return runner

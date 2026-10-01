@@ -295,7 +295,7 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
     """Prompt for a model under an already-authenticated provider (then its reasoning effort),
     save to aux."""
     from hermes_cli.auth import _prompt_model_selection
-    from hermes_cli.models_pricing import get_pricing_for_provider
+    from application_model_pricing import get_pricing_for_provider
     display_name = _aux_task_display_name(task)
     try:
         pricing = get_pricing_for_provider(provider_slug) or {}
@@ -417,8 +417,8 @@ _CUSTOM_API_MODE_ANSWERS = {answer: value for value, _, _, answers in _CUSTOM_AP
 
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
     """Prompt for a custom provider API mode: an explicit mode string, or None for auto-detect."""
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
-    detected_mode = _detect_api_mode_for_url(base_url)
+    from providers.routing import endpoint_api_mode
+    detected_mode = endpoint_api_mode(base_url)
     default_mode = str(current_api_mode or "").strip().lower() or detected_mode or ""
 
     _say("", "Select API compatibility mode:")
@@ -658,11 +658,11 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
     from hermes_constants import VALID_REASONING_EFFORTS
     slug = (provider or "").strip().lower()
     if slug == "copilot":
-        from hermes_cli.models import github_model_reasoning_efforts
+        from models.metadata.github import github_model_reasoning_efforts
         return github_model_reasoning_efforts(model) or None
     try:
-        from agent.models_dev import get_model_capabilities
-        meta = get_model_capabilities(slug, model)
+        from agent.models_dev import query_model_metadata
+        meta = query_model_metadata(slug, model)
     except Exception:
         meta = None
     if meta is not None and meta.supports_reasoning is False:
@@ -810,7 +810,7 @@ def _run_anthropic_oauth_flow(save_env_value):
 def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
     """Saved custom providers keyed by slug, with raw ``${ENV}`` refs preserved."""
     from hermes_cli.config import get_compatible_custom_providers, read_raw_config
-    from hermes_cli.providers import custom_provider_slug
+    from providers import custom_provider_slug
 
     # Raw (un-expanded) templates keyed by identity. ``get_compatible_custom_providers(
     # read_raw_config())`` is deliberately bypassed: its normalize step ``urlparse()``s
@@ -881,21 +881,27 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     fold into display groups (PROVIDER_GROUPS): a group row's ``members`` drive a sub-picker, leaf
     rows have ``members == []``; saved custom providers and trailing actions stay flat. Honors
     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
-    from hermes_cli.models_catalog_static import group_providers, provider_group_for_slug
-    canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+    from application_provider_groups import group_providers, provider_group_for_slug
+    from hermes_cli.provider_catalog import provider_entries
+    from providers import get_provider_profile
+    entries = provider_entries()
+    canonical_descs = {p.slug: p.tui_desc for p in entries}
     _cli_excluded = {
         str(p).strip().lower()
         for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
         if p}
     if _cli_excluded:
         # A canonical provider is hidden if its slug OR any alias is excluded.
-        _names_for: dict[str, set[str]] = {_p.slug: {_p.slug.lower()} for _p in CANONICAL_PROVIDERS}
-        for _alias, _canon in _PROVIDER_ALIASES.items():
-            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded]
+        _names_for: dict[str, set[str]] = {}
+        for _p in entries:
+            profile = get_provider_profile(_p.slug)
+            _names_for[_p.slug] = {
+                _p.slug.lower(),
+                *(str(alias or "").strip().lower() for alias in getattr(profile, "aliases", ()) or ()),
+            }
+        _visible_slugs = [p.slug for p in entries if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded]
     else:
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        _visible_slugs = [p.slug for p in entries]
 
     # The active provider's group when grouped, otherwise the active slug itself.
     active_group = provider_group_for_slug(active) if active else ""
@@ -924,7 +930,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
             if slug == "nous":
                 # Same free-tier rule as the gateway/TUI pickers: relabel for a guest, hide
                 # when nous.guest is off, untouched for a real account.
-                from hermes_cli.model_switch_providers import _free_tier_nous_row
+                from application_provider_discovery import _free_tier_nous_row
                 tier_row = _free_tier_nous_row({"name": label, "models": []})
                 if tier_row is None:
                     continue

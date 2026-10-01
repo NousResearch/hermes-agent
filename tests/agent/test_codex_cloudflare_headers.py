@@ -96,7 +96,7 @@ class TestCodexCloudflareHeaders:
         wire — not just the shared helper."""
         import sys
 
-        from agent import model_metadata
+        from models.metadata import context as model_metadata
         from agent.auxiliary_client import _codex_cloudflare_headers
         from hermes_cli import codex_models
 

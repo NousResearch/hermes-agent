@@ -24,15 +24,15 @@ def _agent(**kw):
 
 def test_codex_native_auto_compaction_gate():
     assert _codex_native_auto_compaction(
-        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="native")
+        SimpleNamespace(api_mode="codex_responses", runtime_kind="app_server", codex_app_server_auto_compaction="native")
     )
     assert _codex_native_auto_compaction(
-        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="OFF")
+        SimpleNamespace(api_mode="codex_responses", runtime_kind="app_server", codex_app_server_auto_compaction="OFF")
     )
     assert not _codex_native_auto_compaction(
-        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="hermes")
+        SimpleNamespace(api_mode="codex_responses", runtime_kind="app_server", codex_app_server_auto_compaction="hermes")
     )
-    assert not _codex_native_auto_compaction(SimpleNamespace(api_mode="chat_completions"))
+    assert not _codex_native_auto_compaction(SimpleNamespace(api_mode="chat_completions", runtime_kind="http"))
 
 def test_disabled_compression_rearms_overflow_warn_when_under_window():
     agent = _agent()

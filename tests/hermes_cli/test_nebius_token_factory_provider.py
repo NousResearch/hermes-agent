@@ -6,11 +6,9 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     resolve_provider,
 )
-from hermes_cli.model_normalize import normalize_model_for_provider
-from hermes_cli.models import (
-    normalize_provider,
-    provider_model_ids,
-)
+from models import normalize_model_id
+from hermes_cli.models import provider_model_ids
+from providers import normalize_provider
 
 
 def test_nebius_aliases_resolve(monkeypatch):
@@ -177,11 +175,7 @@ def test_nebius_transport_emits_top_level_reasoning_effort():
 
 def test_nebius_model_normalization_strips_canonical_and_alias_prefixes():
     model = "Qwen/Qwen3.5-397B-A17B-fast"
-    assert normalize_model_for_provider(
-        f"nebius-token-factory/{model}", "nebius-token-factory"
-    ) == model
-    assert normalize_model_for_provider(f"nebius/{model}", "nebius-token-factory") == model
-    assert normalize_model_for_provider(f"nebius/{model}", "nebius") == model
-    assert normalize_model_for_provider(
-        "openai/gpt-oss-120b-fast", "nebius-token-factory"
-    ) == "openai/gpt-oss-120b-fast"
+    assert normalize_model_id("nebius-token-factory", f"nebius-token-factory/{model}") == model
+    assert normalize_model_id("nebius-token-factory", f"nebius/{model}") == model
+    assert normalize_model_id("nebius", f"nebius/{model}") == model
+    assert normalize_model_id("nebius-token-factory", "openai/gpt-oss-120b-fast") == "openai/gpt-oss-120b-fast"

@@ -128,7 +128,7 @@ class TestOllamaCloudModelPicker:
 class TestOllamaCloudMergedDiscovery:
     def test_merges_live_and_models_dev(self, tmp_path, monkeypatch):
         """Live API models appear first, models.dev additions fill gaps."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_cli.models_local import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -155,7 +155,7 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_falls_back_to_models_dev_without_api_key(self, tmp_path, monkeypatch):
         """Without API key, only models.dev results are returned."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_cli.models_local import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
@@ -177,7 +177,7 @@ class TestOllamaCloudMergedDiscovery:
         live-only ids, and makes the next probing call serve the trimmed list for an hour."""
         import json
         import time
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_cli.models_local import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -228,7 +228,7 @@ class TestOllamaCloudModelsDev:
 class TestOllamaCloudProvidersNew:
 
     def test_alias_resolves(self):
-        from hermes_cli.providers import normalize_provider as np
+        from providers import normalize_provider as np
         assert np("ollama") == "custom"  # bare "ollama" = local
         assert np("ollama-cloud") == "ollama-cloud"
 
@@ -245,7 +245,7 @@ class TestOllamaCloudSuffixStripping:
 
     def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
         """Live API returns clean ID; mdev has :cloud variant — result has exactly one entry."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_cli.models_local import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")

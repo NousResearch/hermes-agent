@@ -22,6 +22,7 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+from hermes_cli.provider_auth import get_provider_config
 from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
@@ -31,7 +32,6 @@ from agent.credential_persistence import (
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    PROVIDER_REGISTRY,
     SINGLE_USE_REFRESH_POOL_PROVIDERS,
     _auth_store_lock,
     _codex_access_token_is_expiring,
@@ -671,7 +671,7 @@ def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
     entry_url = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
     if not isinstance(entry_url, str) or not entry_url:
         return True
-    from hermes_cli.route_identity import normalize_route_base_url
+    from providers import normalize_route_base_url
     return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
 
 
@@ -2712,7 +2712,7 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
             # enterprise-only models -> HTTP 400 on every turn. Surface it once.
             if api_token == token and not enterprise_base_url:
                 _warn_copilot_raw_degradation_once(token)
-        pconfig = PROVIDER_REGISTRY.get(seed.provider)
+        pconfig = get_provider_config(seed.provider)
         seed.upsert(source_name, {
             "auth_type": AUTH_TYPE_API_KEY,
             "access_token": api_token,
@@ -2936,7 +2936,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                 _warn_env_ingestion_once(provider, env_var)
         return seed.result
 
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = get_provider_config(provider)
     if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
         return seed.result
 

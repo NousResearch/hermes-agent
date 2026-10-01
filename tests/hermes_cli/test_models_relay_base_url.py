@@ -1,5 +1,7 @@
 """`model.base_url` relays must be probed instead of the vendor's canonical host (#121387)."""
 
+import models.catalog_static as models_catalog_static
+
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +10,7 @@ import hermes_cli.models as models
 
 
 class _RecordingProfile:
+    name = "deepseek"
     auth_type = "api_key"
     fallback_models = []
 
@@ -123,7 +126,7 @@ def test_a_failed_relay_probe_never_falls_back_to_the_vendor_host(monkeypatch, p
         providers,
         "get_provider_profile",
         lambda name: SimpleNamespace(
-            auth_type="api_key", fetch_models=_probe, fallback_models=[]
+            name="deepseek", auth_type="api_key", fetch_models=_probe, fallback_models=[]
         ),
     )
     monkeypatch.setattr(models, "_api_key_credentials", lambda name: (None, None))
@@ -135,7 +138,7 @@ def test_a_failed_relay_probe_never_falls_back_to_the_vendor_host(monkeypatch, p
     monkeypatch.setattr(models, "_PROVIDER_CATALOG_FETCHERS", {"deepseek": _egress})
     monkeypatch.setattr(models, "_profile_live_catalog", _egress)
     monkeypatch.setattr(models, "_merge_with_models_dev", _egress)
-    monkeypatch.setattr(models, "_PROVIDER_MODELS", {"deepseek": ["curated-local"]})
+    monkeypatch.setattr(models_catalog_static, "_PROVIDER_MODELS", {"deepseek": ["curated-local"]})
 
     # Degrades locally to the curated list, with no vendor egress at all.
     assert models.provider_model_ids("deepseek") == ["curated-local"]

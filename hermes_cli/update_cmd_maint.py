@@ -1021,8 +1021,10 @@ def _run_post_update_maintenance(
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
+        from hermes_cli.catalog_context import catalog_cache_path
+        from models.catalog_seed import seed_cache_from_checkout
+
+        if seed_cache_from_checkout(_m().PROJECT_ROOT, catalog_cache_path()):
             print("  ✓ Model catalog cache refreshed from checkout")
 
     # Drop the cached live plugin catalog under every profile: the checkout is shared, so a

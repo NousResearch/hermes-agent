@@ -147,7 +147,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 
 - `hermes_cli/auth.py` 中的 `PROVIDER_REGISTRY`
 - `hermes_cli/models.py` 中的 `_PROVIDER_LABELS`
-- `hermes_cli/auth.py` 和 `hermes_cli/models.py` 中的 `_PROVIDER_ALIASES`
+- 规范 `ProviderProfile` 声明中的 `aliases=(...)`
 - `hermes_cli/main.py` 中的 CLI `--provider` 选项
 - setup / 模型选择分支
 - 辅助模型默认值
@@ -166,7 +166,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 - `api_key_env_vars`
 - 可选的 `base_url_env_var`
 
-同时在 `_PROVIDER_ALIASES` 中添加别名。
+只在 `ProviderProfile.aliases` 中声明一次 provider 别名；认证、模型解析和 picker 会投影这一规范声明。
 
 使用现有 provider 作为模板：
 
@@ -191,9 +191,8 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 典型修改：
 
 - `_PROVIDER_MODELS`
-- `_PROVIDER_LABELS`
-- `_PROVIDER_ALIASES`
-- `list_available_providers()` 中的 provider 显示顺序
+- provider 的 `ProviderProfile` 展示元数据和 `aliases=(...)`
+- 必要时调整 provider 展示顺序
 - 如果 provider 支持实时 `/models` 获取，则修改 `provider_model_ids()`
 
 如果 provider 提供实时模型列表，优先使用它，并将 `_PROVIDER_MODELS` 保留为静态回退。
@@ -386,7 +385,7 @@ python hermes setup
 如果 provider 是标准 chat completions，使用此清单。
 
 - [ ] 在 `hermes_cli/auth.py` 中添加 `ProviderConfig`
-- [ ] 在 `hermes_cli/auth.py` 和 `hermes_cli/models.py` 中添加别名
+- [ ] 只在 provider 的 `ProviderProfile` 中声明别名
 - [ ] 在 `hermes_cli/models.py` 中添加模型目录
 - [ ] 在 `hermes_cli/runtime_provider.py` 中添加运行时分支
 - [ ] 在 `hermes_cli/main.py` 中添加 CLI 接线（setup.py 自动继承）
@@ -442,8 +441,8 @@ provider 路由等字段只属于支持它们的 provider。
 
 如果你在寻找 provider 涉及的所有位置，搜索以下符号：
 
-- `PROVIDER_REGISTRY`
-- `_PROVIDER_ALIASES`
+- `ProviderProfile`
+- `ProviderProfile.aliases`
 - `_PROVIDER_MODELS`
 - `resolve_runtime_provider`
 - `_model_flow_`

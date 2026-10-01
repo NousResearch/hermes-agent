@@ -839,7 +839,7 @@ class TestLiteLLMOpenAIWire:
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     @pytest.mark.parametrize(
-        "api_mode", ["codex_responses", "bedrock_converse", "codex_app_server"]
+        "api_mode", ["codex_responses", "bedrock_converse"]
     )
     def test_litellm_claude_on_other_transports_does_not_cache(self, api_mode):
         # The grant is scoped to chat_completions. Other transports carry

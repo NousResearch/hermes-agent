@@ -32,4 +32,4 @@ def test_resume_drops_previous_providers_endpoint(tmp_path, row_origin):
     desktop = _stored_session_runtime_overrides(row)["model_override"]
     assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, None)
     assert stored_session_route(row, current_model="openai/gpt-6-luna", current_provider="nous") == (
-        "gpt-6-luna-900k", "openai-codex", None, None, True)
+        "gpt-6-luna-900k", "openai-codex", None, None, None, True)

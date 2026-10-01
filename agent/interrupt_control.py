@@ -74,7 +74,7 @@ def _ic_slot(agent, lock_attr: str, slot: str):
 
 def _ic_codex_method(agent, name: str):
     """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
-    if getattr(agent, "api_mode", None) != "codex_app_server":
+    if getattr(agent, "runtime_kind", None) != "app_server":
         return None
     method = getattr(getattr(agent, "_codex_session", None), name, None)
     return method if callable(method) else None

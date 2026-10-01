@@ -6,12 +6,15 @@ Portal's ``recommended-models`` endpoint; neither source is authenticated.
 
 from __future__ import annotations
 
+import application_model_pricing
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
+
 import argparse
 
 import pytest
 
 import hermes_cli.models as models_mod
-from hermes_cli import models_pricing
+import application_model_pricing as models_pricing
 
 CURATED = ["vendor/allowed", "vendor/blocked"]
 ALLOWED = {"vendor/allowed"}
@@ -19,13 +22,13 @@ ALLOWED = {"vendor/allowed"}
 @pytest.fixture
 def policy(monkeypatch):
     """An org whose policy admits only ``vendor/allowed``."""
-    monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: ALLOWED)
+    monkeypatch.setattr(application_model_pricing, "nous_policy_allowed_ids", lambda **_k: ALLOWED)
     return ALLOWED
 
 @pytest.fixture
 def no_policy(monkeypatch):
     """An unrestricted org — lists must come through untouched."""
-    monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: None)
+    monkeypatch.setattr(application_model_pricing, "nous_policy_allowed_ids", lambda **_k: None)
 
 class TestLoginNous:
 
@@ -61,7 +64,7 @@ class TestLoginNous:
             },
         )
         monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: list(CURATED))
-        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda _p: {})
+        monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", lambda _p: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_k: None)
         monkeypatch.setattr(
             models_mod,
@@ -80,7 +83,7 @@ class TestLoginNous:
             portal_url=None, inference_url=None, client_id=None, scope=None,
             no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
         )
-        auth_mod._login_nous(args, auth_mod.PROVIDER_REGISTRY["nous"])
+        auth_mod._login_nous(args, auth_mod.get_provider_config("nous"))
         return seen
 
     def test_hidden_model_is_not_offered(self, monkeypatch, tmp_path, policy):
@@ -96,7 +99,7 @@ class TestModelSwitchPicker:
 
     def _rows(self, monkeypatch):
         import hermes_cli.auth as auth_mod
-        import hermes_cli.model_switch as ms
+        import application_provider_discovery as ms
 
         monkeypatch.setattr(
             auth_mod,
@@ -104,7 +107,7 @@ class TestModelSwitchPicker:
             lambda *a, **k: {"providers": {"nous": {"access_token": "tok"}}},
         )
         monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: list(CURATED))
-        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda _p: {})
+        monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", lambda _p: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_k: None)
         monkeypatch.setattr(
             models_mod,
@@ -131,7 +134,7 @@ class TestModelSwitchPicker:
         def _boom(_p):
             raise RuntimeError("portal down")
 
-        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", _boom)
+        monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", _boom)
         row = self._rows(monkeypatch)
         assert row is not None
         assert "vendor/blocked" not in row["models"]
@@ -149,7 +152,7 @@ class TestRecommendedDefaultEndpoint:
             models_mod, "get_curated_nous_model_ids",
             lambda: ["vendor/blocked", "vendor/allowed"],
         )
-        monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda _p: {})
+        monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", lambda _p: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda **_k: None)
         monkeypatch.setattr(
             models_mod,
@@ -166,10 +169,10 @@ class TestRecommendedDefaultEndpoint:
         assert self._call(monkeypatch)["model"] == "vendor/blocked"
 
 class TestAuxiliaryFastModel:
-    """``_fast_model_from_catalog`` uses the catalog's keys as a source of ids."""
+    """Fast auxiliary selection uses the fetched catalog keys as candidate ids."""
 
     def _pick(self, monkeypatch, *, catalog):
-        import agent.auxiliary_client as aux
+        from agent import auxiliary_model_resolution as aux
 
         seen: dict = {}
 
@@ -178,25 +181,22 @@ class TestAuxiliaryFastModel:
             return {mid: {} for mid in catalog}
 
         monkeypatch.setattr(
-            models_pricing, "_resolve_nous_pricing_credentials",
+            application_model_pricing, "_resolve_nous_pricing_credentials",
             lambda: ("sk-nous", "https://inference.example.com"),
         )
-        monkeypatch.setattr(models_pricing, "fetch_models_with_pricing", _fake_fetch)
-        picked = aux._fast_model_from_catalog("nous")
+        monkeypatch.setattr(application_model_pricing, "fetch_models_with_pricing", _fake_fetch)
+        picked = aux.select_provider_auxiliary_model("nous", prefer_fast=True)
         return picked, seen
 
     def test_hidden_model_is_not_selected(self, monkeypatch, policy):
-        import agent.auxiliary_client as aux
-
         monkeypatch.setattr(
-            models_pricing, "nous_policy_allowed_ids", lambda **_k: {"vendor/allowed"}
+            application_model_pricing, "nous_policy_allowed_ids",
+            lambda **_k: {"vendor/gemini-3.6-flash"},
         )
-        monkeypatch.setattr(aux, "_FAST_MODEL_FAMILIES", ("vendor/",))
-        monkeypatch.setattr(aux, "_FAST_MODEL_EXCLUDE", ())
         picked, _ = self._pick(
-            monkeypatch, catalog=["vendor/blocked", "vendor/allowed"]
+            monkeypatch, catalog=["vendor/gpt-5.4-mini", "vendor/gemini-3.6-flash"]
         )
-        assert picked == "vendor/allowed"
+        assert picked == "vendor/gemini-3.6-flash"
 
 class TestNousPrefetch:
     """The nous disk-cache entry is write-only, so prefetching it is a round
@@ -216,21 +216,22 @@ class TestAuxFallbackRespectsPolicy:
     a public recommendation and the rest are hardcoded."""
 
     def _patch(self, monkeypatch, *, allowed, recommended):
-        import agent.auxiliary_client as aux
+        from agent import auxiliary_model_resolution as aux
         import providers
 
-        monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: allowed)
+        monkeypatch.setattr(application_model_pricing, "nous_policy_allowed_ids", lambda **_k: allowed)
         monkeypatch.setattr(
-            models_pricing, "_resolve_nous_pricing_credentials",
+            application_model_pricing, "_resolve_nous_pricing_credentials",
             lambda: ("sk", "https://inference.example.com"),
         )
         # No fast-family match, so the catalog step yields nothing.
         monkeypatch.setattr(
-            models_pricing, "fetch_models_with_pricing",
+            application_model_pricing, "fetch_models_with_pricing",
             lambda **_k: {"vendor/allowed-large": {}},
         )
 
         class _Profile:
+            name = "nous"
             default_aux_model = ""
 
             def resolve_aux_model(self, **_k):
@@ -244,7 +245,7 @@ class TestAuxFallbackRespectsPolicy:
             monkeypatch, allowed={"vendor/allowed-large"},
             recommended="vendor/blocked-haiku",
         )
-        assert aux._get_aux_model_for_provider("nous", prefer_fast=True) == ""
+        assert aux.select_provider_auxiliary_model("nous", prefer_fast=True) == ""
 
     def test_allowed_recommendation_still_used(self, monkeypatch):
         aux = self._patch(
@@ -252,7 +253,7 @@ class TestAuxFallbackRespectsPolicy:
             recommended="vendor/ok-haiku",
         )
         assert (
-            aux._get_aux_model_for_provider("nous", prefer_fast=True)
+            aux.select_provider_auxiliary_model("nous", prefer_fast=True)
             == "vendor/ok-haiku"
         )
 
@@ -261,6 +262,6 @@ class TestAuxFallbackRespectsPolicy:
             monkeypatch, allowed=None, recommended="vendor/anything"
         )
         assert (
-            aux._get_aux_model_for_provider("nous", prefer_fast=True)
+            aux.select_provider_auxiliary_model("nous", prefer_fast=True)
             == "vendor/anything"
         )

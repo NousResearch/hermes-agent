@@ -27,7 +27,7 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-# DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
+# DeepInfra base URL is resolved from the shared application profile facts.
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 
 
@@ -153,7 +153,7 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
     if not api_key:
         raise ValueError("DEEPINFRA_API_KEY not set. Run `hermes setup` to configure, or set the env var directly.")
     di_config = _section(tts_config, "deepinfra")
-    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
+    from application_deepinfra_catalog import deepinfra_base_url, deepinfra_model_ids
     model = di_config.get("model")
     if not isinstance(model, str) or not model.strip():
         candidates = deepinfra_model_ids("tts")

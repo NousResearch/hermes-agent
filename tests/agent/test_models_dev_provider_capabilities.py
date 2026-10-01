@@ -9,9 +9,9 @@ from agent import models_dev
 
 
 def _isolated_registry(monkeypatch, catalog=None):
-    monkeypatch.setattr(providers, "_REGISTRY", {})
-    monkeypatch.setattr(providers, "_ALIASES", {})
-    monkeypatch.setattr(providers, "_discovered", True)
+    monkeypatch.setattr(providers.registry, "_REGISTRY", {})
+    monkeypatch.setattr(providers.registry, "_ALIASES", {})
+    monkeypatch.setattr(providers.discovery, "_discovered", True)
     monkeypatch.setattr(models_dev, "_registry_models", lambda *a, **k: catalog)
 
 
@@ -31,11 +31,11 @@ def test_declared_capabilities_reach_every_consumer_and_user_override_wins(monke
         name="fixture-provider", aliases=("fixture-alias",), model_capabilities=declaration))
 
     for name in ("fixture-provider", "fixture-alias"):
-        caps = models_dev.get_model_capabilities(name, "tier-high")
+        caps = models_dev.query_model_metadata(name, "tier-high")
         assert (caps.supports_reasoning, caps.supports_vision, caps.context_window) == (False, True, 64000)
         assert models_dev.lookup_models_dev_context(name, "tier-high") == 64000
         # Negative: an undeclared model keeps the catalog/heuristic path (catalog miss → None).
-        assert models_dev.get_model_capabilities(name, "undeclared") is None
+        assert models_dev.query_model_metadata(name, "undeclared") is None
 
     cfg = {"model": {"provider": "fixture-provider", "default": "tier-high"}}
     assert decide_image_input_mode("fixture-provider", "tier-high", cfg) == "native"
@@ -47,7 +47,7 @@ def test_declared_capabilities_reach_every_consumer_and_user_override_wins(monke
     assert rows[0]["capabilities"]["undeclared"]["reasoning"] is True
 
     overrides["fixture-provider"] = {"tier-high": {"supports_reasoning": True, "context_window": 96000}}
-    caps = models_dev.get_model_capabilities("fixture-provider", "tier-high")
+    caps = models_dev.query_model_metadata("fixture-provider", "tier-high")
     assert (caps.supports_reasoning, caps.supports_vision, caps.context_window) == (True, True, 96000)
     assert models_dev.lookup_models_dev_context("fixture-provider", "tier-high") == 96000
     assert declaration == original
@@ -65,10 +65,10 @@ def test_partial_plugin_metadata_preserves_unknowns_and_catalog_fields(monkeypat
         "known": {"context_window": 64000},
         "unknown": {"context_window": 48000},
     }))
-    known = models_dev.get_model_capabilities("fixture-provider", "known")
+    known = models_dev.query_model_metadata("fixture-provider", "known")
     assert (known.context_window, known.max_output_tokens) == (64000, 4000)
     assert known.supports_reasoning is True and known.supports_vision is True
-    unknown = models_dev.get_model_capabilities("fixture-provider", "unknown")
+    unknown = models_dev.query_model_metadata("fixture-provider", "unknown")
     assert unknown.context_window == 48000
     assert unknown.supports_reasoning is None and unknown.supports_vision is None
     assert catalog == original

@@ -156,7 +156,8 @@ def test_endpoint_model_catalog_memo_is_keyed_by_credential(two_homes, monkeypat
     key must not be served to B from the in-memory memo (the disk memo already lives per home)."""
     from contextlib import contextmanager
     import httpx
-    import agent.model_metadata as mm
+    import models.metadata.context as mm
+    from agent import model_metadata_http
 
     a, b = two_homes
     mm._endpoint_model_metadata_cache.clear()
@@ -168,7 +169,7 @@ def test_endpoint_model_catalog_memo_is_keyed_by_credential(two_homes, monkeypat
         yield httpx.Response(200, request=httpx.Request("GET", url),
                              json={"data": [{"id": f"model-for-{who}", "context_length": 1}]})
 
-    monkeypatch.setattr(mm.model_metadata_http, "stream", stream)
+    monkeypatch.setattr(model_metadata_http, "stream", stream)
     with _scoped(a):
         assert set(mm.fetch_endpoint_model_metadata("http://gw.example/v1", api_key="key-A")) == {"model-for-A"}
     with _scoped(b):

@@ -177,21 +177,25 @@ def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready:
 
 def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str, str, bool, bool, str]:
     """Normalize /model flags → (model_input, explicit_provider, one_turn, persist_global, reasoning_effort)."""
-    from hermes_cli.model_switch import (
-        MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL, MODEL_SWITCH_ERROR_TEXT, parse_model_switch_args,
-        resolve_persist_behavior)
+    from application_model_command_request import (
+        ERROR_TEXT, parse_model_command, resolve_model_persistence,
+    )
 
-    f = parse_model_switch_args(raw_input) if parsed_flags is None else parsed_flags
-    model_input, explicit_provider, is_global_flag, is_session, one_turn = (
-        f.model_input, f.explicit_provider, f.is_global, f.is_session, f.is_once)
-    # Conflict validation is the shared parser's; surface it with the canonical copy.
+    f = parse_model_command(raw_input) if parsed_flags is None else parsed_flags
+    model_input = getattr(f, "target", getattr(f, "model_input", ""))
+    explicit_provider, is_global_flag, is_session, one_turn = (
+        f.explicit_provider, f.is_global, f.is_session, f.is_once)
     for code in getattr(f, "errors", ()):
-        raise ValueError(MODEL_SWITCH_ERROR_TEXT[code])
+        raise ValueError(ERROR_TEXT[code])
     if is_global_flag and one_turn:
-        raise ValueError(MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL])
+        raise ValueError(ERROR_TEXT["once_with_global"])
     if persist_override is None:
-        persist_override = resolve_persist_behavior(
-            is_global_flag, is_session, is_once=one_turn, explicit_provider=explicit_provider)
+        from hermes_cli.config import load_config
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+        persist_override = resolve_model_persistence(cfg, f)
     if not model_input:
         raise ValueError("model value required")
     return model_input, explicit_provider, one_turn, persist_override, getattr(f, "reasoning_effort", "") or ""
@@ -219,7 +223,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
 def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) -> None:
     """Fold the context-compression preflight warning into ``result`` (best-effort)."""
     try:
-        from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+        from application_model_switch_preflight import merge_preflight_compression_warning
         cfg_ctx = None
         mc = cfg.get("model", {}) if isinstance(cfg, dict) else None
         if isinstance(mc, dict) and mc.get("context_length") is not None:
@@ -231,16 +235,23 @@ def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) ->
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
 
-def _expensive_model_confirm(result, current_base_url: str, current_api_key, agent=None) -> dict | None:
+def _expensive_model_confirm(result, current_base_url: str, current_api_key, agent=None,
+                             config: dict | None = None) -> dict | None:
     """Deferred-confirm response when the selection guards flag the target model (or, with a live
     ``agent``, the switch itself — large cached context), else None."""
     try:
-        from hermes_cli.model_selection_guards import (
+        from application_model_selection_guards import (
             combined_selection_warning, selection_context_for_agent)
+        mc = config.get("model", {}) if isinstance(config, dict) else {}
+        configured_threshold = mc.get("switch_context_confirm_tokens", 100_000) if isinstance(mc, dict) else 100_000
+        try:
+            threshold = max(0, int(configured_threshold))
+        except (TypeError, ValueError):
+            threshold = 100_000
         warning = combined_selection_warning(
             result.new_model, provider=result.target_provider, base_url=result.base_url or current_base_url,
             api_key=result.api_key or current_api_key, model_info=result.model_info,
-            selection_context=selection_context_for_agent(agent))
+            selection_context=selection_context_for_agent(agent), context_threshold=threshold)
     except Exception:
         warning = None
     if warning is None:
@@ -282,7 +293,7 @@ def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
     persist_override: bool | None = None) -> dict:
-    from hermes_cli.model_switch import switch_model
+    from tui_gateway.model_switch_resolution import resolve_tui_model_switch
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
     agent = session.get("agent")
@@ -290,7 +301,7 @@ def _apply_model_switch(
         raise ValueError("/model --once requires a live session")
     current_provider, current_model, current_base_url, current_api_key = _current_model_runtime(
         agent, explicit_provider)
-    # User-defined providers let switch_model resolve named custom endpoints
+    # User-defined providers supply application facts for canonical selection
     # (e.g. "ollama-launch") and validate against saved model lists.
     user_provs = custom_provs = cfg = None
     with contextlib.suppress(Exception):
@@ -298,18 +309,18 @@ def _apply_model_switch(
         cfg = load_config()
         user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
-    result = switch_model(
+    result = resolve_tui_model_switch(
         raw_input=model_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=persist_global,
         explicit_provider=explicit_provider, user_providers=user_provs,
-        custom_providers=custom_provs)
+        custom_providers=custom_provs, config=cfg)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:
-        confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
+        confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent, cfg)
         if confirm is not None:
             return confirm
     records_composer_override = (
@@ -340,8 +351,9 @@ def _apply_model_switch(
             "model": result.new_model, "provider": result.target_provider,
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
-        from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
+        from application_model_switch_persistence import persist_model_selection
+        from hermes_constants import get_hermes_home
+        persist_model_selection(result, Path(get_hermes_home()) / "config.yaml")
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     return {
@@ -467,7 +479,7 @@ def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
     if not model:
         return None
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
+        from application_model_selection_guards import combined_selection_warning
         warning = combined_selection_warning(model, provider=provider or None)
     except Exception:
         return None

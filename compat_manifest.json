@@ -3741,18 +3741,6 @@
    "target": "hermes_constants"
   },
   {
-   "facade": "hermes_cli.local_runtime.capabilities",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "hermes_cli.local_runtime.capabilities",
-   "name": "urllib",
-   "kind": "import",
-   "target": "urllib.request"
-  },
-  {
    "facade": "hermes_cli.local_runtime.catalog",
    "name": "find_variant",
    "kind": "restored-def",
@@ -3942,13 +3930,13 @@
    "facade": "hermes_cli.model_switch",
    "name": "list_picker_providers",
    "kind": "moved-lazy",
-   "target": "hermes_cli.model_switch_providers"
+   "target": "application_provider_discovery"
   },
   {
    "facade": "hermes_cli.model_switch",
    "name": "prewarm_picker_cache_async",
    "kind": "moved-lazy",
-   "target": "hermes_cli.model_switch_providers"
+   "target": "application_picker_prewarm"
   },
   {
    "facade": "hermes_cli.model_switch",
@@ -3972,13 +3960,13 @@
    "facade": "hermes_cli.models",
    "name": "PROVIDER_GROUPS",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_catalog_static"
+   "target": "application_provider_groups"
   },
   {
    "facade": "hermes_cli.models",
    "name": "ProviderEntry",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_catalog_static"
+   "target": "hermes_cli.provider_catalog"
   },
   {
    "facade": "hermes_cli.models",
@@ -3996,7 +3984,7 @@
    "facade": "hermes_cli.models",
    "name": "compute_sale_discount",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "models.metadata.pricing"
   },
   {
    "facade": "hermes_cli.models",
@@ -4008,7 +3996,7 @@
    "facade": "hermes_cli.models",
    "name": "fetch_ai_gateway_pricing",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
@@ -4020,7 +4008,7 @@
    "facade": "hermes_cli.models",
    "name": "fetch_models_with_pricing",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
@@ -4032,7 +4020,7 @@
    "facade": "hermes_cli.models",
    "name": "get_cached_nous_inference_base_url",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
@@ -4044,13 +4032,13 @@
    "facade": "hermes_cli.models",
    "name": "get_pricing_for_provider",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
    "name": "group_providers",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_catalog_static"
+   "target": "application_provider_groups"
   },
   {
    "facade": "hermes_cli.models",
@@ -4068,7 +4056,7 @@
    "facade": "hermes_cli.models",
    "name": "lmstudio_model_reasoning_options",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_local"
+   "target": "models.metadata.local"
   },
   {
    "facade": "hermes_cli.models",
@@ -4086,13 +4074,13 @@
    "facade": "hermes_cli.models",
    "name": "nous_policy_allowed_ids",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
    "name": "ollama_model_supports_thinking",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_local"
+   "target": "models.metadata.local"
   },
   {
    "facade": "hermes_cli.models",
@@ -4110,13 +4098,13 @@
    "facade": "hermes_cli.models",
    "name": "peek_cached_pricing",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
    "name": "pricing_cache_scope",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "application_model_pricing"
   },
   {
    "facade": "hermes_cli.models",
@@ -4134,7 +4122,7 @@
    "facade": "hermes_cli.models",
    "name": "provider_group_for_slug",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_catalog_static"
+   "target": "application_provider_groups"
   },
   {
    "facade": "hermes_cli.models",
@@ -4146,7 +4134,7 @@
    "facade": "hermes_cli.models",
    "name": "restrict_to_nous_policy",
    "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
+   "target": "models.catalog_policy"
   },
   {
    "facade": "hermes_cli.models",

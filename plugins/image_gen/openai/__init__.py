@@ -51,9 +51,9 @@ def _named_endpoint(name: str) -> Tuple[str, str]:
     """``(base_url, api_key)`` of the user-declared custom endpoint *name* (``providers:`` /
     ``custom_providers:``), so image generation reuses a chat endpoint's URL and credential without
     duplicating the key into OpenAI variables (#83080). Unknown name → ``("", "")`` with a warning."""
-    from hermes_cli.runtime_provider import _get_named_custom_provider
+    from agent.configured_provider_resolution import get_configured_provider_entry
 
-    entry = _get_named_custom_provider(name)
+    entry = get_configured_provider_entry(name)
     if not entry:
         logger.warning("image_gen.openai.provider %r matches no custom endpoint in providers:", name)
         return "", ""

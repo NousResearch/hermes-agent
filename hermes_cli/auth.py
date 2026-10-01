@@ -1,6 +1,6 @@
 """Multi-provider authentication system for Hermes Agent.
 
-- ``ProviderConfig`` / ``PROVIDER_REGISTRY`` describe every known inference provider.
+- Provider auth configuration is projected live from canonical provider profiles.
 - The auth store (``~/.hermes/auth.json``) holds per-provider state, the credential pool and
   suppression markers; ``_auth_store_lock`` / ``_load_auth_store`` / ``_save_auth_store`` are the
   only I/O primitives (cross-process flock, atomic 0o600 writes).
@@ -22,7 +22,7 @@ import time
 import webbrowser  # noqa: F401  (tests patch auth_mod.webbrowser.open; same module object)
 
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +30,13 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_cli.provider_auth import (
+    AUTH_COMMAND_EXCLUDED_PROVIDER_IDS,
+    ProviderConfig,
+    get_provider_config,
+    iter_auto_detect_provider_configs,
+)
+from providers import normalize_provider as normalize_provider_identity
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -116,167 +123,26 @@ try:
 except Exception:
     msvcrt = None
 
-def is_actual_local_base_url(base_url: str) -> bool:
-    """Return True for Actual's loopback local API endpoint."""
-    try:
-        host = (urlparse(base_url or "").hostname or "").lower().rstrip(".")
-    except Exception:
-        return False
-    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+# Re-export the canonical Actual endpoint facts for existing auth consumers.
+# Auth owns credentials and local no-auth eligibility, not URL interpretation.
+from providers.route_identity import is_actual_local_base_url, normalize_actual_base_url
 
 
-def normalize_actual_base_url(base_url: str) -> str:
-    """Return Actual's OpenAI-compatible base URL (hosted api.actual.inc or the loopback local server;
-    both expose a /v1 surface for the selected OpenAI-compatible transport)."""
-    url = str(base_url or "").strip().rstrip("/")
-    if not url:
-        return DEFAULT_ACTUAL_BASE_URL
-    try:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        path = parsed.path.rstrip("/")
-    except Exception:
-        return url
-    if path in {"", "/"} and (host == "api.actual.inc" or is_actual_local_base_url(url)):
-        return url + "/v1"
-    return url
-
-
-# ── Provider Registry ───────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class ProviderConfig:
-    """Describes a known inference provider."""
-    id: str
-    name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", "api_key", ...
-    portal_base_url: str = ""
-    inference_base_url: str = ""
-    client_id: str = ""
-    scope: str = ""
-    extra: Dict[str, Any] = field(default_factory=dict)
-    api_key_env_vars: tuple = ()  # API-key providers: env vars to check, in priority order
-    base_url_env_var: str = ""  # optional env var overriding the base URL
-
-
-def _api_key_provider(
-    id: str, name: str, inference_base_url: str, api_key_env_vars: tuple,
-    base_url_env_var: str = "", auth_type: str = "api_key") -> ProviderConfig:
-    """Compact constructor for the common env-var-keyed provider shape."""
-    return ProviderConfig(
-        id=id, name=name, auth_type=auth_type, inference_base_url=inference_base_url,
-        api_key_env_vars=api_key_env_vars, base_url_env_var=base_url_env_var)
-
-
-# Registry rows in priority order (resolve_provider() scans api_key rows in this order). A tuple
-# row is ``_api_key_provider(id, name, inference_base_url, api_key_env_vars[, base_url_env_var
-# [, auth_type]])``; OAuth / bespoke rows are full ``ProviderConfig`` objects.
-_REGISTRY_ROWS: Tuple[Any, ...] = (
-    ProviderConfig(
-        "nous", "Nous Portal", "oauth_device_code", portal_base_url=DEFAULT_NOUS_PORTAL_URL,
-        inference_base_url=DEFAULT_NOUS_INFERENCE_URL, client_id=DEFAULT_NOUS_CLIENT_ID,
-        scope=DEFAULT_NOUS_SCOPE),
-    ProviderConfig("openai-codex", "OpenAI Codex", "oauth_external", inference_base_url=DEFAULT_CODEX_BASE_URL),
-    ("openai-api", "OpenAI API", "https://api.openai.com/v1", ("OPENAI_API_KEY",), "OPENAI_BASE_URL"),
-    ProviderConfig(
-        "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",
-        inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
-    ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
-    ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
-    ("copilot", "GitHub Copilot", DEFAULT_GITHUB_MODELS_BASE_URL,
-     ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), "COPILOT_API_BASE_URL"),
-    ProviderConfig(
-        "copilot-acp", "GitHub Copilot ACP", "external_process",
-        inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL, base_url_env_var="COPILOT_ACP_BASE_URL"),
-    ("gemini", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta",
-     ("GOOGLE_API_KEY", "GEMINI_API_KEY"), "GEMINI_BASE_URL"),
-    ("zai", "Z.AI / GLM", "https://api.z.ai/api/paas/v4",
-     ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "GLM_BASE_URL"),
-    # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat); sk-kimi- (Kimi Code)
-    # keys are auto-redirected to api.kimi.com/coding by _resolve_kimi_base_url().
-    ("kimi-coding", "Kimi / Moonshot", "https://api.moonshot.ai/v1",
-     ("KIMI_API_KEY", "KIMI_CODING_API_KEY"), "KIMI_BASE_URL"),
-    ("kimi-coding-cn", "Kimi / Moonshot (China)", "https://api.moonshot.cn/v1", ("KIMI_CN_API_KEY",)),
-    ("stepfun", "StepFun Step Plan", STEPFUN_STEP_PLAN_INTL_BASE_URL, ("STEPFUN_API_KEY",), "STEPFUN_BASE_URL"),
-    ("arcee", "Arcee AI", "https://api.arcee.ai/api/v1", ("ARCEEAI_API_KEY",), "ARCEE_BASE_URL"),
-    ("gmi", "GMI Cloud", "https://api.gmi-serving.com/v1", ("GMI_API_KEY",), "GMI_BASE_URL"),
-    ("actual", "Actual Computer", DEFAULT_ACTUAL_BASE_URL, ("ACTUAL_API_KEY",), "ACTUAL_BASE_URL"),
-    ("minimax", "MiniMax", "https://api.minimax.io/anthropic", ("MINIMAX_API_KEY",), "MINIMAX_BASE_URL"),
-    ProviderConfig(
-        "minimax-oauth", "MiniMax (OAuth \u00b7 minimax.io)", "oauth_minimax",
-        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE, inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
-        client_id=MINIMAX_OAUTH_CLIENT_ID, scope=MINIMAX_OAUTH_SCOPE,
-        extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
-               "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE}),
-    # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key despite auth_type="api_key": `claude setup-token`
-    # yields an `sk-ant-oat01…` OAuth token (401s as x-api-key, 429s as bare Bearer). It stays in
-    # this tuple because the tuple doubles as the credential-DISCOVERY list
-    # (agent/credential_pool.py builds its env scan from it); the adapter routes it down the OAuth
-    # path by prefix. Only ANTHROPIC_API_KEY and ANTHROPIC_TOKEN are usable as literal API keys.
-    ("anthropic", "Anthropic", "https://api.anthropic.com",
-     ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "ANTHROPIC_BASE_URL"),
-    ("alibaba", "Qwen Cloud", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-     ("DASHSCOPE_API_KEY",), "DASHSCOPE_BASE_URL"),
-    ("alibaba-coding-plan", "Alibaba Cloud (Coding Plan)", "https://coding-intl.dashscope.aliyuncs.com/v1",
-     ("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"), "ALIBABA_CODING_PLAN_BASE_URL"),
-    ("minimax-cn", "MiniMax (China)", "https://api.minimaxi.com/anthropic", ("MINIMAX_CN_API_KEY",),
-     "MINIMAX_CN_BASE_URL"),
-    ("deepseek", "DeepSeek", "https://api.deepseek.com/v1", ("DEEPSEEK_API_KEY",), "DEEPSEEK_BASE_URL"),
-    ("xai", "xAI", "https://api.x.ai/v1", ("XAI_API_KEY",), "XAI_BASE_URL"),
-    ("nvidia", "NVIDIA NIM", "https://integrate.api.nvidia.com/v1", ("NVIDIA_API_KEY",), "NVIDIA_BASE_URL"),
-    ("ai-gateway", "Vercel AI Gateway", "https://ai-gateway.vercel.sh/v1", ("AI_GATEWAY_API_KEY",),
-     "AI_GATEWAY_BASE_URL"),
-    ("opencode-zen", "OpenCode Zen", "https://opencode.ai/zen/v1", ("OPENCODE_ZEN_API_KEY",),
-     "OPENCODE_ZEN_BASE_URL"),
-    # OpenCode Go mixes API surfaces by model (GLM/Kimi: OpenAI chat under /v1; MiniMax and
-    # Qwen 3.7: Anthropic Messages under /v1/messages). Keep the base at /v1; api_mode is per-model.
-    ("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ("OPENCODE_GO_API_KEY",),
-     "OPENCODE_GO_BASE_URL"),
-    ("kilocode", "Kilo Code", "https://api.kilo.ai/api/gateway", ("KILOCODE_API_KEY",), "KILOCODE_BASE_URL"),
-    ("huggingface", "Hugging Face", "https://router.huggingface.co/v1", ("HF_TOKEN",), "HF_BASE_URL"),
-    ("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", ("XIAOMI_API_KEY",), "XIAOMI_BASE_URL"),
-    ("tencent-tokenhub", "Tencent TokenHub", "https://tokenhub.tencentmaas.com/v1", ("TOKENHUB_API_KEY",),
-     "TOKENHUB_BASE_URL"),
-    ("tencent-tokenplan", "Tencent TokenPlan", "https://api.lkeap.cloud.tencent.com/plan/anthropic",
-     ("TOKENPLAN_API_KEY",), "TOKENPLAN_BASE_URL"),
-    ("ollama-cloud", "Ollama Cloud", DEFAULT_OLLAMA_CLOUD_BASE_URL, ("OLLAMA_API_KEY",), "OLLAMA_BASE_URL"),
-    ("bedrock", "AWS Bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com", (), "BEDROCK_BASE_URL",
-     "aws_sdk"),
-    # No static inference_base_url: Vertex's endpoint is computed per request from project_id +
-    # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
-    ("vertex", "Google Vertex AI", "", (), "", "vertex"),
-    ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
-PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
-    p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
-}
-# The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
-BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
-
-# ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
-# module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so
-# a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
-# rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
 from hermes_cli.config import (  # noqa: E402
     atomic_config_write, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
-# Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
-# auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
-from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
-
-sync_plugin_provider_registry()
+from hermes_cli.auth_plugin_providers import get_plugin_oauth_auth_status  # noqa: E402
 
 
 def get_anthropic_key() -> str:
     """First usable Anthropic credential (``.env`` preferred over a stale shell export), or ``""``.
 
-    Order mirrors ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``.
-
-    Checks both the ``.env`` file and the process environment, preferring ``~/.hermes/.env`` so a deliberate
-    key rotation isn't shadowed by a stale shell export (matches the api-key resolution path — see #20591).
+    Checks both the ``.env`` file and the process environment, preferring ``~/.hermes/.env``.
     """
     from hermes_cli.config import get_env_value_prefer_dotenv
-    env_vars = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
+
+    config = get_provider_config("anthropic")
+    env_vars = config.api_key_env_vars if config is not None else ()
     return next((v for v in (get_env_value_prefer_dotenv(var) or "" for var in env_vars) if v), "")
 
 
@@ -856,13 +722,18 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return _registry_lookup(normalized) is not None or normalized in SERVICE_PROVIDER_NAMES
+    config = get_provider_config(normalized)
+    return (
+        (config is not None and config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS)
+        or normalized in SERVICE_PROVIDER_NAMES
+    )
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
     normalized = (provider_id or "").strip().lower()
-    if normalized in PROVIDER_REGISTRY:
-        return PROVIDER_REGISTRY[normalized].name
+    config = get_provider_config(normalized)
+    if config is not None:
+        return config.name
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
@@ -1222,15 +1093,11 @@ def _env_secret(name: str) -> bool:
 def _explicit_env_credentials_present(normalized: str) -> bool:
     """True when the user has pasted an explicit credential env var for *normalized*.
 
-    Falls back to the models.dev ``ProviderDef`` (same shape) for non-registry providers such as
-    openrouter. AWS SDK providers are checked via explicit env vars only — NOT boto3's chain, so
-    ambient EC2 IMDS / SSO profiles never auto-surface."""
-    pconfig = PROVIDER_REGISTRY.get(normalized)
+    Uses the live provider projection. AWS SDK providers are checked via explicit env vars only —
+    NOT boto3's chain, so ambient EC2 IMDS / SSO profiles never auto-surface."""
+    pconfig = get_provider_config(normalized)
     if pconfig is None:
-        from hermes_cli.providers import get_provider
-        pconfig = get_provider(normalized)
-        if not pconfig:
-            return False
+        return False
     if pconfig.auth_type == "api_key":
         return any(_env_secret(v) for v in pconfig.api_key_env_vars if v not in _IMPLICIT_ENV_VARS)
     if pconfig.auth_type == "aws_sdk":
@@ -1374,62 +1241,6 @@ def _refuse_env_adoption_if_config_corrupt() -> None:
         code="corrupt_config")
 
 
-# Provider aliases accepted by resolve_provider(). Plugin-declared aliases
-# (plugins/model-providers/<name>/) are layered on at call time; this hardcoded
-# table remains authoritative for existing names.
-_PROVIDER_ALIASES: Dict[str, str] = {
-    "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-    "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-    "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
-    "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
-    "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
-    "step": "stepfun", "stepfun-coding-plan": "stepfun",
-    "arcee-ai": "arcee", "arceeai": "arcee",
-    "gmi-cloud": "gmi", "gmicloud": "gmi",
-    "actual-computer": "actual", "actualcomputer": "actual", "aci": "actual",
-    "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-    "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
-    "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
-    "alibaba_coding_plan": "alibaba-coding-plan",
-    "claude": "anthropic", "claude-code": "anthropic",
-    "github": "copilot", "github-copilot": "copilot",
-    "github-models": "copilot", "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-    "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
-    "opencode": "opencode-zen", "zen": "opencode-zen",
-    "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
-    "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
-    "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
-    "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
-    "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
-    "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
-    "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
-    "go": "opencode-go", "opencode-go-sub": "opencode-go",
-    "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
-    "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
-    "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
-    # Local server aliases — route through the generic custom provider
-    "local": "custom",
-    "ollama": "custom", "ollama_cloud": "ollama-cloud",
-    "vllm": "custom", "llamacpp": "custom",
-    "llama.cpp": "custom", "llama-cpp": "custom"}
-
-
-def _plugin_aliases() -> Dict[str, str]:
-    """``_PROVIDER_ALIASES`` extended with aliases declared in plugins/model-providers/<name>/."""
-    aliases = dict(_PROVIDER_ALIASES)
-    try:
-        from providers import list_providers as _lp
-        for _pp in _lp():
-            for _alias in _pp.aliases:
-                aliases.setdefault(_alias, _pp.name)
-    except Exception:
-        pass
-    return aliases
-
-
 def _scoped_key_env_reader() -> Callable[[str], str]:
     """Scope-aware key reader for provider auto-detection.
 
@@ -1483,7 +1294,7 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
             from hermes_cli.anon_auth import guest_enabled, has_guest
             if has_guest() and (skip_free_tier or not guest_enabled()):
                 return None  # the free tier is off (or being discounted), so a guest is not a login
-        if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
+        if _maybe and get_provider_config(_maybe) is not None and get_auth_status(_maybe).get("logged_in"):
             return _maybe
     except Exception as e:
         logger.debug("Could not pre-read active auth provider: %s", e)
@@ -1506,12 +1317,10 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
-        provider = _plugin_aliases().get(provider, provider)
+        provider = normalize_provider_identity(provider)
         if provider == "custom" or provider.startswith("custom:"):
             return model_cfg, "custom"
-        # openrouter is absent from PROVIDER_REGISTRY on purpose, so it needs its own rung (#109397);
-        # a non-openrouter base_url under it is a deliberate mirror (#10622), not a contradiction.
-        if provider == "openrouter" or provider in PROVIDER_REGISTRY:
+        if get_provider_config(provider) is not None:
             return model_cfg, provider
         # Bare ``providers:`` name (the ``custom:<name>`` intent spelled without the prefix); reuse the
         # runtime's own lookup so disabled / endpoint-less entries stay excluded.
@@ -1532,33 +1341,19 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         return None, None
 
 
-# API-key providers never auto-selected from env: GitHub tokens are commonly present for repo/tool
-# access and must not hijack inference; LM Studio is a local server whose availability isn't
-# implied by LM_API_KEY (may be offline; no-auth setup uses a placeholder). Both need an explicit
-# choice.
-_NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio"})
-
-
 def _env_key_auto_detected(
     scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
-    """First registry api_key provider (registry order) with a usable env key, warning when it
-    preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
-    for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
-            continue
+    """First policy-ordered API-key provider with a usable env key."""
+    for pconfig in iter_auto_detect_provider_configs():
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(scoped_key_env(env_var)):
-                if oauth_active and oauth_active != pid:
+                if oauth_active and oauth_active != pconfig.id:
                     logger.warning(
-                        # An exported API key now wins over a logged-in OAuth provider (the #29285 fix).
-                        # Surface that so a user who deliberately uses OAuth but has a stale key in
-                        # ~/.hermes/.env isn't silently switched without knowing why.
                         "Provider resolved to %r via %s, preempting your "
                         "logged-in OAuth provider %r. If you meant to use the "
-                        "OAuth login, unset %s or set `model.provider` "
-                        "explicitly.",
-                        pid, env_var, oauth_active, env_var)
-                return pid
+                        "OAuth login, unset %s or set `model.provider` explicitly.",
+                        pconfig.id, env_var, oauth_active, env_var)
+                return pconfig.id
     return None
 
 
@@ -1584,9 +1379,9 @@ def resolve_provider(
     provider configured) See #29285.
     """
     normalized = (requested or "auto").strip().lower()
-    normalized = _plugin_aliases().get(normalized, normalized)
+    normalized = normalize_provider_identity(normalized)
 
-    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
+    if normalized == "custom" or get_provider_config(normalized) is not None:
         return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)
@@ -1986,20 +1781,17 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
-    if pconfig.id == "actual":
-        from hermes_cli.providers import normalize_provider
+    """Endpoint facts are scoped application inputs, not auth-owned policy."""
+    from application_provider_environment import scoped_endpoint_override
 
-        model = read_raw_config().get("model")
-        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
-            configured_url = str(model.get("base_url") or "").strip()
-            if configured_url:
-                return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    return scoped_endpoint_override(
+        pconfig.id, base_url_env_var=pconfig.base_url_env_var,
+    )
 
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = _registry_lookup(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
@@ -2094,7 +1886,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 
     ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
     subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
-    pconfig = _registry_lookup(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
     command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
@@ -2126,7 +1918,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
     if status_fn_name:
         return globals()[status_fn_name]()
-    pconfig = _registry_lookup(target)
+    pconfig = get_provider_config(target)
     if pconfig and pconfig.auth_type in _STATUS_BY_AUTH_TYPE:
         return globals()[_STATUS_BY_AUTH_TYPE[pconfig.auth_type]](target)
     return {"logged_in": False}
@@ -2227,9 +2019,44 @@ _API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
     "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
 
 
+def resolve_copilot_provider_credentials() -> Dict[str, Any]:
+    """Resolve Copilot API token and endpoint through the dedicated auth flow."""
+    provider_id = "copilot"
+    pconfig = get_provider_config(provider_id)
+    if not pconfig or pconfig.auth_type != "copilot":
+        raise AuthError(
+            "Provider 'copilot' is not configured for Copilot authentication.",
+            provider=provider_id, code="invalid_provider")
+
+    api_key = ""
+    key_source = ""
+    exchange_base_url = ""
+    try:
+        from hermes_cli.copilot_auth import get_copilot_api_token, resolve_copilot_token
+        raw_token, key_source = resolve_copilot_token()
+        if raw_token:
+            api_key, exchanged_base = get_copilot_api_token(raw_token)
+            exchange_base_url = str(exchanged_base or "").strip().rstrip("/")
+    except ValueError as exc:
+        logger.warning("Copilot token validation failed: %s", exc)
+    except Exception as exc:
+        logger.debug("Copilot credential resolution failed: %s", exc)
+
+    env_url = _provider_env_base_url(pconfig)
+    base_url = exchange_base_url or (
+        env_url.rstrip("/") if env_url else pconfig.inference_base_url.rstrip("/")
+    )
+    return {
+        "provider": provider_id,
+        "api_key": str(api_key or "").strip(),
+        "base_url": base_url,
+        "source": key_source or "default",
+    }
+
+
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
-    pconfig = _registry_lookup(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
@@ -2260,7 +2087,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = _registry_lookup(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
             f"Provider '{provider_id}' is not an external-process provider.",
@@ -2344,9 +2171,13 @@ def _get_config_provider() -> Optional[str]:
 
 
 def _should_reset_config_provider_on_logout(provider_id: Optional[str]) -> bool:
-    """True when logout should reset model.provider (a registry provider config.yaml selects)."""
+    """True when logout should reset model.provider for an auth-capable provider."""
     normalized = (provider_id or "").strip().lower()
-    return normalized in PROVIDER_REGISTRY and _get_config_provider() == normalized
+    return (
+        get_provider_config(normalized) is not None
+        and normalized not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS
+        and _get_config_provider() == normalized
+    )
 
 
 def _logout_default_provider_from_config() -> Optional[str]:

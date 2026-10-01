@@ -18,7 +18,7 @@ reasoning_effort into a live one that OpenAI 400s on the chat_completions path.
 from unittest.mock import patch
 
 from hermes_cli.model_switch import switch_model
-from hermes_cli.providers import host_mandated_api_mode
+from providers.routing import endpoint_api_mode
 
 _MOCK_VALIDATION = {
     "accepted": True,
@@ -34,11 +34,11 @@ def _run_openai_switch(
     current_model: str = "anthropic/claude-opus-4.8",
     explicit_provider: str = "openai-api",
     runtime_api_mode: str = "chat_completions",
+    runtime_kind: str = "http",
     runtime_base_url: str = "https://api.openai.com/v1",
 ):
     """Run switch_model with OpenAI-direct mocks and return the result."""
     with (
-        patch("hermes_cli.model_switch.resolve_alias", return_value=None),
         patch("hermes_cli.model_switch.list_provider_models", return_value=[]),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -46,6 +46,7 @@ def _run_openai_switch(
                 "api_key": "sk-test",
                 "base_url": runtime_base_url,
                 "api_mode": runtime_api_mode,
+                "runtime_kind": runtime_kind,
             },
         ),
         patch(
@@ -53,8 +54,7 @@ def _run_openai_switch(
             return_value=_MOCK_VALIDATION,
         ),
         patch("hermes_cli.model_switch.get_model_info", return_value=None),
-        patch("hermes_cli.model_switch.get_model_capabilities", return_value=None),
-        patch("hermes_cli.models.detect_provider_for_model", return_value=None),
+        patch("hermes_cli.model_switch.query_model_metadata", return_value=None),
     ):
         return switch_model(
             raw_input=raw_input,
@@ -89,16 +89,16 @@ def test_generic_endpoint_keeps_explicit_api_mode():
     """A generic (non-host-mandated) endpoint must NOT have its api_mode clobbered.
 
     Only hosts that mandate one wire protocol override a carried value; a
-    generic OpenAI-compatible relay returns None from host_mandated_api_mode,
+    generic OpenAI-compatible relay returns None from endpoint_api_mode,
     so the switch path leaves the resolver's api_mode untouched.
     """
-    assert host_mandated_api_mode("https://generic.example.com/v1") is None
+    assert endpoint_api_mode("https://generic.example.com/v1") is None
     # Lookalike / path-spoof hosts must also NOT be treated as mandated (#32243).
-    assert host_mandated_api_mode("https://api.openai.com.attacker.test/v1") is None
-    assert host_mandated_api_mode("https://proxy.test/api.openai.com/v1") is None
+    assert endpoint_api_mode("https://api.openai.com.attacker.test/v1") is None
+    assert endpoint_api_mode("https://proxy.test/api.openai.com/v1") is None
     # The real endpoints are mandated.
-    assert host_mandated_api_mode("https://api.openai.com/v1") == "codex_responses"
-    assert host_mandated_api_mode("https://api.anthropic.com") == "anthropic_messages"
+    assert endpoint_api_mode("https://api.openai.com/v1") == "codex_responses"
+    assert endpoint_api_mode("https://api.anthropic.com") == "anthropic_messages"
 
 def test_stale_chat_overridden_on_meta_direct():
     """Stale chat_completions on api.meta.ai → codex_responses (like openai direct).
@@ -115,14 +115,14 @@ def test_stale_chat_overridden_on_meta_direct():
         runtime_base_url="https://api.meta.ai/v1",
     )
     assert result.success, f"switch_model failed: {result.error_message}"
-    assert result.target_provider == "meta"
+    assert result.target_provider == "meta-ai"
     assert result.new_model == "muse-spark-1.2"
     assert result.api_mode == "codex_responses"
 
 
 def test_generic_relay_not_clobbered_on_meta_switch():
     """Generic relay does not pick up Meta mandate."""
-    assert host_mandated_api_mode("https://generic.example.com/v1") is None
+    assert endpoint_api_mode("https://generic.example.com/v1") is None
     result = _run_openai_switch(
         raw_input="some-model",
         current_provider="meta",
@@ -137,20 +137,17 @@ def test_generic_relay_not_clobbered_on_meta_switch():
     assert result.api_mode == "chat_completions"
 
 
-def test_openai_runtime_codex_app_server_survives_host_mandate():
-    """``model.openai_runtime: codex_app_server`` must survive the /model switch (#115169).
-
-    The resolver applies the opt-in after its ladder and hands ``api_mode=codex_app_server``
-    to the switch; api.openai.com's host-mandated ``codex_responses`` is a wire-protocol
-    correction for stale modes and must not overwrite the app-server runtime selection.
-    """
+def test_openai_runtime_codex_app_server_survives_as_runtime_kind():
+    """App-server selection survives /model without masquerading as an API mode."""
     result = _run_openai_switch(
         raw_input="gpt-5.6-sol",
         current_provider="openrouter",
         current_model="anthropic/claude-opus-4.8",
         explicit_provider="openai-api",
-        runtime_api_mode="codex_app_server",
+        runtime_api_mode="codex_responses",
+        runtime_kind="app_server",
     )
     assert result.success, f"switch_model failed: {result.error_message}"
     assert result.target_provider == "openai-api"
-    assert result.api_mode == "codex_app_server"
+    assert result.api_mode == "codex_responses"
+    assert result.runtime_kind == "app_server"

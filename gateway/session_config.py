@@ -3,6 +3,7 @@ import asyncio
 from functools import partial
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
@@ -137,9 +138,17 @@ async def model_options(connection, ref, params):
             ctx = load_picker_context()
             selected = provider
             if selected == 'custom':
-                from hermes_cli.runtime_provider import canonical_custom_identity
-                selected = canonical_custom_identity(base_url=base_url, config_provider=ctx.current_provider,
-                                                     model=model) or selected
+                from providers import configured_custom_identity
+                selected = configured_custom_identity(
+                    base_url=base_url,
+                    config_provider=(
+                        ctx.current_provider
+                        or os.environ.get('HERMES_INFERENCE_PROVIDER', '')
+                    ),
+                    model=model,
+                    providers=ctx.user_providers,
+                    custom_providers=ctx.custom_providers,
+                ) or selected
             return build_model_options_payload(ctx.with_overrides(current_provider=selected,
                 current_model=model, current_base_url=base_url), **{k: params[k] for k in flags & params.keys()})
     return await asyncio.to_thread(discover)

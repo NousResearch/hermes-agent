@@ -627,6 +627,7 @@ class SessionSessionsMixin:
     def update_session_model(
         self, session_id: str, model: str, provider: Optional[str] = None, *,
         base_url: Optional[str] = None, api_mode: Optional[str] = None,
+        runtime_kind: Optional[str] = None,
     ) -> None:
         """Set the model after a mid-session /model switch (unconditionally) and drop any Browser
         runtime lock (lineage markers survive).
@@ -647,7 +648,12 @@ class SessionSessionsMixin:
         if model:
             patch["model"] = model
         if provider:
-            route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
+            route = {
+                "provider": provider,
+                "base_url": base_url or None,
+                "api_mode": api_mode or None,
+                "runtime_kind": runtime_kind or None,
+            }
             patch.update(route, gateway_runtime=route)
         self._write_model_config_patch(
             session_id, patch, "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",

@@ -76,7 +76,7 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
     start) — on a warning nothing is stashed."""
     try:
-        pending_model = parsed.model_input
+        pending_model = parsed.target
     except Exception:
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
@@ -110,9 +110,9 @@ def _set_model(rid, params, key, value, session):
         return _err(rid, 4002, "model value required")
     confirmed = bool(params.get("confirm_expensive_model", False))
     if session:
-        from hermes_cli.model_switch import parse_model_switch_args
+        from application_model_command_request import parse_model_command
         sid = params.get("session_id", "")
-        parsed_flags = parse_model_switch_args(value)
+        parsed_flags = parse_model_command(value)
         if session.get("running"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
@@ -143,8 +143,8 @@ def _set_model(rid, params, key, value, session):
         # --once keeps its specific 5001; other sessionless model sets 4001 so
         # --global cannot persist profile defaults before session.create (#106397:
         # an older Desktop client sent a fresh-draft pick this way).
-        from hermes_cli.model_switch import parse_model_switch_args
-        if parse_model_switch_args(str(value)).is_once:
+        from application_model_command_request import parse_model_command
+        if parse_model_command(str(value)).is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
         else:
             # One string for every client: the Ink TUI (dashboard /chat, `hermes --tui`) has no
@@ -177,7 +177,7 @@ def _set_fast(rid, params, key, value, session):
         return _err(rid, 4002, f"unknown fast mode: {value}")
     overrides = None
     if nv == "fast":
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from models.metadata.fast_mode import resolve_fast_mode_overrides
         if agent is not None:
             target_model = getattr(agent, "model", None)
         else:  # a pre-build session may carry a picked model (desktop draft): validate against THAT

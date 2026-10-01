@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Callable
 
 from acp.schema import ModelInfo, SessionModelState
+
+from models import ModelRef, format_model_ref, parse_model_ref
+from providers import list_providers
 
 logger = logging.getLogger("acp_adapter.server")
 
@@ -23,16 +25,15 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
     Models = the entry's declared models, refreshed from the live ``/models`` listing when a
     credential exists and ``discover_models`` isn't disabled; declared models survive a failed
     discovery (some endpoints have no ``/models`` route). Slugs use the ``custom:<name>`` shape
-    ``parse_model_input``/``resolve_runtime_provider`` resolve, so choice ids round-trip."""
-    try:
-        from hermes_cli.config import (get_compatible_custom_providers, is_provider_enabled, load_config)
-        from hermes_cli.model_switch import _declared_model_ids, _entry_models_discovered, _models_config_is_allowlist
-        from hermes_cli.model_switch_providers import _NativePickerModelList, _fetch_picker_live_models
-        from hermes_cli.model_switch_providers import _discover_flag
-        from hermes_cli.models_local import should_use_ollama_native_catalog
-        from hermes_cli.providers import custom_provider_slug
-    except ImportError:
-        return []
+    canonical model identity parsing and ``resolve_runtime_provider`` resolve, so choice ids round-trip."""
+    from hermes_cli.config import get_compatible_custom_providers, is_provider_enabled, load_config
+    from models.catalog_configured import (
+        declared_model_ids, entry_models_discovered, models_config_is_allowlist,
+        discovery_enabled,
+    )
+    from models.catalog_local import classify_ollama_catalog
+    from models.catalog_endpoint import discover_endpoint_models
+    from providers import custom_provider_slug
 
     try:
         cfg = load_config()
@@ -59,36 +60,69 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         api_key = field("api_key")
         if not api_key:
             key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
-            api_key = os.environ.get(key_env, "").strip() if key_env else ""
+            # Catalogue reads must not borrow another profile's process environment.
+            from agent.secret_scope import get_secret
+            api_key = str(get_secret(key_env, "") or "").strip() if key_env else ""
 
-        models_cfg = entry.get("models")
-        declared = [m for m in dict.fromkeys([field("model"), *_declared_model_ids(models_cfg)]) if m]
+        # The compatibility view normalizes list allowlists into dict metadata.
+        # Inspect the original declaration so an explicitly pinned Ollama
+        # catalogue cannot be replaced by a successful empty native probe.
+        raw_entry = (
+            raw_providers.get(provider_key)
+            if isinstance(raw_providers, dict) and provider_key in raw_providers else None
+        )
+        if not isinstance(raw_entry, dict):
+            legacy = cfg.get("custom_providers")
+            raw_entry = next((
+                candidate for candidate in legacy
+                if isinstance(candidate, dict)
+                and str(candidate.get("name") or "").strip().lower() == name.lower()
+                and str(candidate.get("base_url") or "").strip().rstrip("/").lower()
+                == base_url.rstrip("/").lower()
+            ), None) if isinstance(legacy, list) else None
+        declaration = raw_entry if isinstance(raw_entry, dict) else entry
+        models_cfg = declaration.get("models", entry.get("models"))
+        declared = [m for m in dict.fromkeys([field("model"), *declared_model_ids(models_cfg)]) if m]
 
         native_headers = entry.get("extra_headers") or None
-        is_ollama_key = provider_key.lower() in {"ollama", "custom:ollama"}
-        is_native_ollama = should_use_ollama_native_catalog(
-            provider_key if is_ollama_key else "custom", base_url, headers=native_headers
+        native_provider = (
+            provider_key if provider_key.lower() in {"ollama", "custom:ollama"} else "custom"
         )
-        if not api_key and not declared and not is_native_ollama:
-            return None  # nothing to discover with and nothing declared: not addressable
+        may_be_ollama = classify_ollama_catalog(native_provider, base_url) != "openai"
+        if not api_key and not declared and not may_be_ollama:
+            return None  # no credential, declaration or possible native catalogue
 
         model_ids = list(declared)
         live = None
-        if _discover_flag(entry) and (api_key or is_native_ollama):
+        pinned = models_config_is_allowlist(models_cfg, entry_models_discovered(declaration))
+        if discovery_enabled(entry) and (api_key or may_be_ollama):
             try:
-                live = _fetch_picker_live_models(
-                    api_key, base_url, provider_key if is_native_ollama and is_ollama_key else "custom",
-                    _models_config_is_allowlist(models_cfg, _entry_models_discovered(entry)),
-                    headers=native_headers, timeout=1.5, api_mode=entry.get("api_mode"),
+                # Application-owned trust policy supplies its resolved verifier;
+                # the model domain owns only the network catalogue query.
+                tls_verify = None
+                if entry.get("ssl_ca_cert") or entry.get("ssl_verify") is not None:
+                    from agent.ssl_verify import resolve_httpx_verify
+                    tls_verify = resolve_httpx_verify(
+                        ca_bundle=entry.get("ssl_ca_cert"),
+                        ssl_verify=entry.get("ssl_verify"), base_url=base_url,
+                    )
+                live = discover_endpoint_models(
+                    base_url=base_url, provider=native_provider, api_key=api_key,
+                    headers=native_headers, timeout=1.5,
+                    api_mode=str(entry.get("api_mode") or ""), preserve_native_models=pinned,
+                    tls_verify=tls_verify,
                 )
             except Exception:
-                live = None
-            if isinstance(live, _NativePickerModelList):
-                model_ids = list(live)
-            elif live is not None:
-                model_ids = declared + [m for m in live if m not in declared]
+                logger.debug("Named endpoint discovery failed", exc_info=True)
+            if live is not None:
+                if not live.native_ollama and not api_key and not declared and native_provider == "custom":
+                    return None  # A native probe failed; do not invent keyless proxy admission.
+                if live.native_ollama and not pinned:
+                    model_ids = list(live.ids)
+                elif not live.native_ollama:
+                    model_ids = declared + [m for m in live.ids if m not in declared]
 
-        if not model_ids and not isinstance(live, _NativePickerModelList):
+        if not model_ids and not (live is not None and live.native_ollama and not pinned):
             return None
         return slug, name, [(mid, "") for mid in model_ids]
 
@@ -127,30 +161,6 @@ def _empty_catalog_applies(
     )
 
 
-def _choice_provider(model_id: str) -> str:
-    """Provider prefix of an encoded choice id; longest configured ``custom:`` slug wins."""
-    parts = model_id.split(":")
-    if parts[:1] == ["custom"] and len(parts) > 1:
-        from hermes_cli.models import _configured_custom_provider_ids
-
-        lowered = model_id.lower()
-        for candidate in sorted(
-            (p for p in _configured_custom_provider_ids() if p.startswith("custom:")), key=len, reverse=True,
-        ):
-            if lowered.startswith(candidate + ":"):
-                return candidate
-        return "custom"
-    return parts[0]
-
-
-def encode_model_choice(provider: str | None, model: str | None) -> str:
-    """``provider:model`` so ACP clients keep provider context."""
-    raw_model = str(model or "").strip()
-    if not raw_model:
-        return ""
-    raw_provider = str(provider or "").strip().lower()
-    return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
-
 
 @dataclass
 class _ModelCatalog:
@@ -178,8 +188,8 @@ class _ModelCatalog:
         return _semantic_provider(provider_id, self.normalize_provider)
 
     def add(self, provider_id: str, model_id: str, name: str, description: str) -> None:
-        choice_id = encode_model_choice(provider_id, model_id)
-        semantic_id = f"{self.semantic(provider_id)}:{model_id}"
+        choice_id = format_model_ref(ModelRef(provider_id, model_id))
+        semantic_id = format_model_ref(ModelRef(self.semantic(provider_id), model_id))
         if not choice_id or choice_id in self.seen_ids or semantic_id in self.seen_semantic_ids:
             return
         self.models.append(ModelInfo(model_id=choice_id, name=name, description=description))
@@ -239,7 +249,9 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.inventory import build_models_payload, load_picker_context
-    from hermes_cli.models import normalize_provider, provider_label
+    from providers import get_provider_label, normalize_provider
+
+    provider_label = get_provider_label
 
     normalized_provider = normalize_provider(provider)
     context = load_picker_context().with_overrides(
@@ -257,7 +269,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     current_base = base_url.strip().rstrip("/").lower()
     # ``build_models_payload`` represents configured ``providers:`` entries by their raw
     # config key. ACP ids must instead use the durable ``custom:<key>`` identity so the
-    # picker value round-trips through ``parse_model_input``. Only user-defined rows are
+    # picker value round-trips through canonical model identity parsing. Only user-defined rows are
     # replaced by the named catalogs: a ``providers:`` key that shadows a canonical name
     # (``providers.openrouter:`` → proxy) must leave the canonical row — and a session that
     # runs on the canonical endpoint — alone, or picking "current" re-routes to the proxy.
@@ -285,16 +297,43 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     cat.add_named_catalogs(named_catalogs, current_choice_provider)
     available_models = cat.models
 
+    known_choice_providers = {
+        str(profile.name or "").strip().lower()
+        for profile in list_providers()
+        if str(profile.name or "").strip()
+    }
+    known_choice_providers.update({
+        "custom",
+        "custom:ollama",
+        str(current_choice_provider or "").strip().lower(),
+        str(cat.current_choice_provider or "").strip().lower(),
+        *(str(slug or "").strip().lower() for slug, _label, _models in named_catalogs),
+    })
+    known_choice_providers.discard("")
+    named_custom_choice_providers = {
+        provider_id
+        for provider_id in known_choice_providers
+        if provider_id.startswith("custom:")
+    }
+
+    def choice_ref(choice_id: str) -> ModelRef:
+        return parse_model_ref(
+            choice_id,
+            "",
+            known_provider_ids=known_choice_providers,
+            named_custom_provider_ids=named_custom_choice_providers,
+        )
+
     def empty_applies(provider_id: str) -> bool:
         return _empty_catalog_applies(provider_id, cat.empty_authoritative, normalize_provider)
 
     if cat.empty_authoritative:
-        available_models = [m for m in available_models if not empty_applies(_choice_provider(m.model_id))]
+        available_models = [m for m in available_models if not empty_applies(choice_ref(m.model_id).provider)]
 
     current_is_empty = empty_applies(cat.current_choice_provider)
     if current_is_empty:
         available_models = [m for m in available_models if " • current" not in str(m.description or "")]
-    current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
+    current_model_id = "" if current_is_empty else format_model_ref(ModelRef(cat.current_choice_provider, model))
     if current_model_id and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(

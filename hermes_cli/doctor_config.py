@@ -168,11 +168,13 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
     resolve_auth = normalize = resolve_full = aliases = None
     custom_providers: list = []
     with warn_on_error(""):
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider as resolve_auth
-        known = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "moa"}
+        from hermes_cli.auth import resolve_provider as resolve_auth
+        from hermes_cli.provider_auth import iter_provider_configs
+        known = {config.id for config in iter_provider_configs()} | {"custom", "auto", "moa"}
     with warn_on_error(""):
         from hermes_cli.config import get_compatible_custom_providers
-        from hermes_cli.providers import custom_provider_aliases as aliases, normalize_provider as normalize, resolve_provider_full as resolve_full
+        from providers import custom_provider_aliases as aliases, normalize_provider as normalize
+        from hermes_cli.providers import resolve_provider_full as resolve_full
         with warn_on_error(""):
             custom_providers = get_compatible_custom_providers(cfg)
     user_providers = cfg.get("providers")
@@ -196,13 +198,14 @@ _VENDOR_SLUG_PROVIDERS = {
 
 
 def _provider_has_credentials(runtime_provider: str) -> bool:
-    """Only API-key providers in PROVIDER_REGISTRY are checked — OAuth/SDK/custom providers have their own
+    """Only API-key providers are checked here — OAuth/SDK/custom providers have their own
     checks elsewhere, and get_auth_status() returns a bare {logged_in: False} for anything it doesn't dispatch."""
     if runtime_provider == "openrouter":
         from hermes_cli.config import get_env_value
         return any(str(get_env_value(k) or "").strip() for k in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"))
-    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
-    pconfig = PROVIDER_REGISTRY.get(runtime_provider)
+    from hermes_cli.auth import get_auth_status
+    from hermes_cli.provider_auth import get_provider_config
+    pconfig = get_provider_config(runtime_provider)
     if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
         status = get_auth_status(runtime_provider) or {}
         return bool(status.get("configured") or status.get("logged_in") or status.get("api_key"))

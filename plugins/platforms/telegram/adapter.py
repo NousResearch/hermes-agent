@@ -4314,12 +4314,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _provider_get_label():
-        try:
-            from hermes_cli.providers import get_label
-        except ImportError:
-            def get_label(slug):
-                return slug
-        return get_label
+        from providers.identity import get_provider_label
+
+        return get_provider_label
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -4433,27 +4430,22 @@ class TelegramAdapter(BasePlatformAdapter):
     def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
         """Paginated top-level provider keyboard folding provider families (Kimi/Moonshot, MiniMax, xAI…)
         into one ``mpg:<gid>`` button via the shared ``group_providers`` fold; singles are ``mp:<slug>``."""
-        try:
-            from hermes_cli.models_catalog_static import group_providers
-        except Exception:
-            group_providers = None
+        from application_provider_groups import group_providers
+
         by_slug = {p.get("slug"): p for p in providers}
         buttons: list = []
-        if group_providers is not None:
-            for row in group_providers([p.get("slug") for p in providers]):
-                if row["kind"] == "group":
-                    members = [by_slug[m] for m in row["members"] if m in by_slug]
-                    count = sum(m.get("total_models", len(m.get("models", []))) for m in members)
-                    label = f"{row['label']} ▸ ({count})"
-                    if any(m.get("is_current") for m in members):
-                        label = f"✓ {label}"
-                    buttons.append(InlineKeyboardButton(label, callback_data=f"mpg:{row['group_id']}"))
-                else:
-                    p = by_slug.get(row["slug"])
-                    if p is not None:
-                        buttons.append(self._provider_button(p))
-        else:
-            buttons = [self._provider_button(p) for p in providers]
+        for row in group_providers([p.get("slug") for p in providers]):
+            if row["kind"] == "group":
+                members = [by_slug[m] for m in row["members"] if m in by_slug]
+                count = sum(m.get("total_models", len(m.get("models", []))) for m in members)
+                label = f"{row['label']} ▸ ({count})"
+                if any(m.get("is_current") for m in members):
+                    label = f"✓ {label}"
+                buttons.append(InlineKeyboardButton(label, callback_data=f"mpg:{row['group_id']}"))
+            else:
+                p = by_slug.get(row["slug"])
+                if p is not None:
+                    buttons.append(self._provider_button(p))
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
@@ -4576,7 +4568,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             idx, model_id, provider_slug, callback = sel
             try:
-                from hermes_cli.model_selection_guards import combined_selection_warning
+                from application_model_selection_guards import combined_selection_warning
                 # Pricing lookup may hit models.dev on a cache miss — keep it off the event loop.
                 warning = await asyncio.to_thread(combined_selection_warning, model_id, provider=provider_slug)
             except Exception:
@@ -4592,11 +4584,9 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
         elif data.startswith("mpg:"):  # provider group selected: show member providers
             group_id = data[4:]
-            try:
-                from hermes_cli.models_catalog_static import PROVIDER_GROUPS
-                _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
-            except Exception:
-                _label, member_slugs = "", []
+            from application_provider_groups import PROVIDER_GROUPS
+
+            _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
             by_slug = {p["slug"]: p for p in state["providers"]}
             members = [by_slug[m] for m in member_slugs if m in by_slug]
             if not members:

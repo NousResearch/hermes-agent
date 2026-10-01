@@ -68,15 +68,13 @@ def test_apply_model_switch_does_not_leak_process_env():
 
     persisted_composer_profiles = []
     with (
-        patch("hermes_cli.model_switch.parse_model_flags",
-              return_value=("glm-5.1", None, False, False, True)),
-        patch("hermes_cli.model_switch.resolve_persist_behavior",
+        patch("application_model_command_request.resolve_model_persistence",
               return_value=False),
-        patch("hermes_cli.model_switch.switch_model", return_value=_FakeResult()),
+        patch("tui_gateway.model_switch_resolution.resolve_tui_model_switch", return_value=_FakeResult()),
         patch("tui_gateway.server._emit"),
         patch("tui_gateway.server._restart_slash_worker"),
         patch("tui_gateway.server._session_info", return_value={}),
-        patch("hermes_cli.model_switch.persist_model_selection") as mock_persist,
+        patch("application_model_switch_persistence.persist_model_selection") as mock_persist,
         patch(
             "tui_gateway.server._persist_live_session_runtime",
             side_effect=lambda session: persisted_composer_profiles.append(

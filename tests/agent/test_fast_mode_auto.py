@@ -59,7 +59,7 @@ def test_bounded_fast_window_policy(monkeypatch):
     assert fast_mode.effective_request_overrides(anth)["speed"] == "fast"
 
     # unsupported routes never get fast params, in auto or static mode
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from models.metadata.fast_mode import resolve_fast_mode_overrides
 
     for provider, base_url in (
         ("openrouter", "https://openrouter.ai/api/v1"),

@@ -253,7 +253,7 @@ def lookup_context_length(model: str, base_url: str, api_key: Any = "", *,
     if not model_id:
         return None
     try:
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+        from models.metadata.context import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
     except Exception:
         return None
 

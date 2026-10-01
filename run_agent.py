@@ -150,7 +150,7 @@ from agent.vision_message_prep import VisionMessagePrepMixin
 from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import is_local_endpoint
+from models.metadata.context import is_local_endpoint
 from agent.message_sanitization import (
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
@@ -262,6 +262,7 @@ class AIAgent(
     def __init__(
         self,
         base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
+        runtime_kind: str = None,
         acp_command: str = None, acp_args: list[str] | None = None, command: str = None, args: list[str] | None = None,
         model: str = "",
         max_iterations: int = sys.maxsize,  # unlimited tool-calling iterations by default (shared with subagents)
@@ -536,7 +537,7 @@ class AIAgent(
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
             key: getattr(self, key, "") or ""
-            for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
+            for key in ("model", "provider", "requested_provider", "base_url", "api_key", "api_mode", "runtime_kind", "auth_mode", "session_id")
         }
 
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
@@ -662,36 +663,6 @@ class AIAgent(
 
     _anthropic_prompt_cache_policy = _forward("agent.agent_runtime_helpers", "anthropic_prompt_cache_policy")
     _direct_native_anthropic_tool_cache_capability = _forward("agent.agent_runtime_helpers", "_direct_native_anthropic_tool_cache_capability")
-
-    @staticmethod
-    def _model_requires_responses_api(model: str) -> bool:
-        """True for GPT-5.x, which OpenAI and OpenRouter reject on /v1/chat/completions
-        (``unsupported_api_for_model``)."""
-        return model.lower().rsplit("/", 1)[-1].startswith("gpt-5")  # strip vendor prefix ("openai/gpt-5.4")
-
-    @staticmethod
-    def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
-        """Return True when this provider/model pair should use Responses API."""
-        from hermes_cli.providers import is_actual_route
-        normalized_provider = (provider or "").strip().lower()
-        # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
-        # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
-        if normalized_provider in ("nous", "custom") or is_actual_route(provider):
-            return False
-        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
-        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
-        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
-        # external-process provider, not one vendor's names.
-        from hermes_cli.runtime_provider_backends import _is_external_process_provider
-        if _is_external_process_provider(normalized_provider):
-            return False
-        if normalized_provider == "copilot":
-            try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
-            except Exception:
-                pass  # fall back to the generic GPT-5 rule
-        return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
         """``max_completion_tokens`` for newer OpenAI families (and Azure / Copilot serving them), else

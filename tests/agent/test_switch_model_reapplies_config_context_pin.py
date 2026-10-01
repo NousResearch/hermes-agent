@@ -52,7 +52,7 @@ def _make_agent(config_context_length=None):
 
 def _switch(agent, model, provider, base_url):
     """Switch and return the ``config_context_length`` the compressor resolution ran with."""
-    with patch("agent.model_metadata.get_model_context_length", return_value=200_000) as ctx_len:
+    with patch("models.metadata.context.get_model_context_length", return_value=200_000) as ctx_len:
         agent.switch_model(model, provider, api_key="sk-new", base_url=base_url)
     return ctx_len.call_args.kwargs.get("config_context_length")
 
@@ -67,7 +67,7 @@ def test_switch_back_to_configured_default_route_restores_context_pin():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
+        patch("models.metadata.context.get_model_context_length", return_value=1_000_000),
     ):
         agent.switch_model("other-model", "openrouter", api_key="sk-new", base_url=OTHER_ROUTE)
         assert agent._config_context_length is None  # pin does not describe the other route

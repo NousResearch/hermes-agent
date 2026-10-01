@@ -234,10 +234,12 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
     concrete model, resolve that runtime and set ``routed=True``."""
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
+    parent_runtime_kind = parent_runtime.get("runtime_kind") or None
     parent = {
         "provider": agent.provider, "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
-        "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
+        "api_mode": parent_api_mode,
+        "runtime_kind": "http" if parent_runtime_kind == "app_server" else parent_runtime_kind,
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
@@ -931,7 +933,8 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     kwargs: Dict[str, Any] = {
         "model": rt.get("model") or agent.model, "max_iterations": max_iterations, "quiet_mode": True,
         "platform": agent.platform, "provider": rt.get("provider") or agent.provider,
-        "api_mode": rt.get("api_mode"), "base_url": rt.get("base_url") or None,
+        "api_mode": rt.get("api_mode"), "runtime_kind": rt.get("runtime_kind"),
+        "base_url": rt.get("base_url") or None,
         "api_key": rt.get("api_key") or None, "credential_pool": rt.get("credential_pool"),
         "request_overrides": rt.get("request_overrides") or {}, "parent_session_id": agent.session_id,
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None),

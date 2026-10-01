@@ -101,7 +101,8 @@ class TestCreateSession:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda requested=None: {
                 "provider": requested,
-                "api_mode": "codex_app_server",
+                "api_mode": "codex_responses",
+                "runtime_kind": "app_server",
                 "base_url": "https://example.invalid",
                 "api_key": "test-key",
             },
@@ -246,7 +247,7 @@ class TestCreateSession:
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openai-codex"}})
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {
-            "provider": "openai-codex", "api_mode": "codex_app_server", "api_key": "test-key", "credential_pool": sentinel_pool,
+            "provider": "openai-codex", "api_mode": "codex_responses", "runtime_kind": "app_server", "api_key": "test-key", "credential_pool": sentinel_pool,
         })
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
         monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)

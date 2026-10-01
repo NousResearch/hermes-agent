@@ -25,7 +25,7 @@ TOKEN = "local-eval-token-not-a-secret"
 
 def rows_worker():
     from hermes_cli.config import load_config
-    from hermes_cli.model_switch_providers import (
+    from application_provider_discovery import (
         _PickerBuild, _lap_custom_provider_rows, _lap_user_provider_rows,
     )
     cfg = load_config()

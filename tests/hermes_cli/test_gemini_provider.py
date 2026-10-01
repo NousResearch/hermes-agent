@@ -4,8 +4,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
-from hermes_cli.models import normalize_provider
-from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
+from models import normalize_model_id
+from providers import normalize_provider, vendor_for_model
 from agent.models_dev import list_agentic_models
 
 
@@ -92,11 +92,11 @@ class TestGeminiModelNormalization:
 
 
     def test_gemma_vendor_detection(self):
-        assert detect_vendor("gemma-4-31b-it") == "google"
+        assert vendor_for_model("gemma-4-31b-it") == "google"
 
 
     def test_gemma_aggregator_prepends_vendor(self):
-        result = normalize_model_for_provider("gemma-4-31b-it", "openrouter")
+        result = normalize_model_id("openrouter", "gemma-4-31b-it")
         assert result == "google/gemma-4-31b-it"
 
 

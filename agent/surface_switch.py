@@ -114,7 +114,7 @@ def stage_surface_switch_note(agent: Any, prompt: str, conversation_history: Any
     MoA and codex_app_server turns never stamp the ``api_content`` sidecar, so the note could not
     be read back and would be re-sent every turn; those modes keep the stored prompt and skip the
     note entirely."""
-    if getattr(agent, "provider", None) == "moa" or getattr(agent, "api_mode", None) == "codex_app_server":
+    if getattr(agent, "provider", None) == "moa" or getattr(agent, "runtime_kind", None) == "app_server":
         return False
     current = str(getattr(agent, "platform", "") or "").strip()
     if not current:

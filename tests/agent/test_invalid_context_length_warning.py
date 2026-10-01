@@ -13,7 +13,7 @@ def _build_agent(model_cfg, custom_providers=None, model=None):
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("agent.model_metadata.get_model_context_length", return_value=128_000),
+        patch("models.metadata.context.get_model_context_length", return_value=128_000),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),

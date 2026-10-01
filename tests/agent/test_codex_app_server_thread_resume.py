@@ -48,7 +48,7 @@ class _WireClient:
 
 def _agent(db, **kwargs):
     from run_agent import AIAgent
-    agent = AIAgent(api_key="stub", base_url="https://stub.invalid", provider="openai", api_mode="codex_app_server",
+    agent = AIAgent(api_key="stub", base_url="https://stub.invalid", provider="openai", api_mode="codex_responses", runtime_kind="app_server",
                     quiet_mode=True, skip_context_files=True, skip_memory=True, session_db=db, session_id=SID, **kwargs)
     agent._spawn_background_review = lambda **kw: None
     return agent

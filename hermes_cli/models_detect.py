@@ -28,7 +28,8 @@ def current_provider_catalog_match(model_name: str, current_provider: str) -> Op
     Goes through :func:`hermes_cli.models.cached_provider_model_ids` (1h TTL, stale-while-
     revalidate) so a model switch does not block on a cold ``/v1/models`` round-trip in the
     common case; a fetch failure yields an empty catalog and the ladder continues unchanged."""
-    from hermes_cli.models import cached_provider_model_ids, normalize_provider
+    from hermes_cli.models import cached_provider_model_ids
+    from providers import normalize_provider
 
     provider = (current_provider or "").strip().lower()
     if provider in _SKIP or provider.startswith("custom:") or normalize_provider(provider) in _SKIP:
@@ -42,33 +43,6 @@ def current_provider_catalog_match(model_name: str, current_provider: str) -> Op
         return None
     return next((mid for mid in catalog if mid.lower() == wanted), None) or next(
         (mid for mid in catalog if "/" in mid and mid.split("/", 1)[1].lower() == wanted), None)
-
-
-def current_provider_owns_vendor(model_name: str, current_provider: str) -> bool:
-    """True when *model_name* belongs to the vendor a single-vendor first-party provider natively
-    serves (``gpt-6-astra`` on ``openai-codex``, ``grok-4.6`` on ``xai-oauth``).
-
-    A first-party session plus that vendor's own id is a selection, not a guess: when the live
-    catalog could not confirm the id (fetch failed, static fallback lags an early-access rollout)
-    the answer is "stay and let the vendor accept or reject it", never "a reseller lists it, so
-    switch there". Aggregators, custom endpoints and multi-vendor resellers (nvidia, alibaba, ...)
-    have no single native vendor and are skipped."""
-    from hermes_cli.model_normalize import detect_vendor
-    from hermes_cli.models import _AGGREGATOR_PROVIDERS, _PROVIDER_MODELS, normalize_provider
-
-    provider = (current_provider or "").strip().lower()
-    if provider in _SKIP or provider.startswith("custom:"):
-        return False
-    normalized = normalize_provider(provider)
-    if normalized in _SKIP or normalized in _AGGREGATOR_PROVIDERS:
-        return False
-    vendor = detect_vendor(model_name or "")
-    if not vendor:
-        return False
-    # An id the classifier cannot place (Bedrock ``us.anthropic.claude-…``) is evidence the
-    # provider is NOT single-vendor; only a fully classified, single-vendor catalog owns the name.
-    native = {detect_vendor(mid) for mid in _PROVIDER_MODELS.get(normalized, ())}
-    return native == {vendor}
 
 
 def provider_has_credentials(provider: str) -> bool:

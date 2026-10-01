@@ -2,8 +2,10 @@
 
 import pytest
 
-from hermes_cli.providers import determine_api_mode, host_mandated_api_mode
-from hermes_cli import runtime_provider as rp
+from providers.routing import InvocationRequest, endpoint_api_mode, resolve_invocation_route
+
+def _mode(provider: str, base_url: str, model: str = "") -> str:
+    return resolve_invocation_route(InvocationRequest(provider=provider, base_url=base_url, model=model)).api_mode
 
 class TestHostMandatedMetaResponses:
     @pytest.mark.parametrize(
@@ -20,7 +22,7 @@ class TestHostMandatedMetaResponses:
         ],
     )
     def test_host_mandated_meta_returns_codex_responses(self, url):
-        assert host_mandated_api_mode(url) == "codex_responses"
+        assert endpoint_api_mode(url) == "codex_responses"
 
     @pytest.mark.parametrize(
         "url",
@@ -37,7 +39,7 @@ class TestHostMandatedMetaResponses:
         ],
     )
     def test_host_mandated_meta_rejects_spoofs(self, url):
-        assert host_mandated_api_mode(url) != "codex_responses"
+        assert endpoint_api_mode(url) != "codex_responses"
         # Must be None for generic/unrelated hosts (contract: no clobber)
         if url in (
             "https://generic.example.com/v1",
@@ -47,32 +49,32 @@ class TestHostMandatedMetaResponses:
             "https://api.meta.ai.attacker.test/v1",
             "https://proxy.test/api.meta.ai/v1",
         ):
-            assert host_mandated_api_mode(url) is None
+            assert endpoint_api_mode(url) is None
 
     def test_determine_api_mode_meta_via_named_custom(self):
-        assert determine_api_mode("meta", "https://api.meta.ai/v1") == "codex_responses"
-        assert determine_api_mode("custom", "https://api.meta.ai/v1") == "codex_responses"
-        assert determine_api_mode("generic", "https://generic.example.com/v1") == "chat_completions"
+        assert _mode("meta", "https://api.meta.ai/v1") == "codex_responses"
+        assert _mode("custom", "https://api.meta.ai/v1") == "codex_responses"
+        assert _mode("generic", "https://generic.example.com/v1") == "chat_completions"
 
     def test_determine_api_mode_meta_with_trailing_slash(self):
-        assert determine_api_mode("meta", "https://api.meta.ai/v1/") == "codex_responses"
+        assert _mode("meta", "https://api.meta.ai/v1/") == "codex_responses"
 
     def test_runtime_detect_meta(self):
-        assert rp._detect_api_mode_for_url("https://api.meta.ai/v1") == "codex_responses"
-        assert rp._detect_api_mode_for_url("https://api.meta.ai/v1/chat/completions") == "codex_responses"
-        assert rp._detect_api_mode_for_url("https://API.META.AI/v1") == "codex_responses"
+        assert endpoint_api_mode("https://api.meta.ai/v1") == "codex_responses"
+        assert endpoint_api_mode("https://api.meta.ai/v1/chat/completions") == "codex_responses"
+        assert endpoint_api_mode("https://API.META.AI/v1") == "codex_responses"
 
     def test_runtime_detect_meta_rejects_spoofs(self):
-        assert rp._detect_api_mode_for_url("https://api.meta.ai.attacker.test/v1") is None
-        assert rp._detect_api_mode_for_url("https://proxy.test/api.meta.ai/v1") is None
-        assert rp._detect_api_mode_for_url("https://meta.ai/v1") is None
-        assert rp._detect_api_mode_for_url("https://generic.example.com/v1") is None
+        assert endpoint_api_mode("https://api.meta.ai.attacker.test/v1") is None
+        assert endpoint_api_mode("https://proxy.test/api.meta.ai/v1") is None
+        assert endpoint_api_mode("https://meta.ai/v1") is None
+        assert endpoint_api_mode("https://generic.example.com/v1") is None
 
     def test_fallback_api_mode_meta(self):
-        assert rp._fallback_api_mode("meta", "https://api.meta.ai/v1", "muse-spark-1.2") == "codex_responses"
-        assert rp._fallback_api_mode("custom", "https://api.meta.ai/v1", "muse-spark-1.2") == "codex_responses"
+        assert _mode("meta", "https://api.meta.ai/v1", "muse-spark-1.2") == "codex_responses"
+        assert _mode("custom", "https://api.meta.ai/v1", "muse-spark-1.2") == "codex_responses"
         # generic still chat
-        assert rp._fallback_api_mode("custom", "https://generic.example.com/v1", "muse-spark-1.2") == "chat_completions"
+        assert _mode("custom", "https://generic.example.com/v1", "muse-spark-1.2") == "chat_completions"
 
 class TestMetaConfigRoundtrip:
     def test_providers_meta_api_mode_roundtrip(self):

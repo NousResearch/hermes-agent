@@ -3,7 +3,7 @@ check inherit the right window instead of the ``glm`` 202,752 catch-all (#97398,
 from types import SimpleNamespace
 
 from agent import conversation_compression as cc
-from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, get_model_context_length
+from models.metadata.context import DEFAULT_CONTEXT_LENGTHS, get_model_context_length
 from hermes_cli.config_providers import get_custom_provider_context_length
 
 
@@ -30,7 +30,7 @@ def test_feasibility_check_inherits_main_window_when_aux_is_the_main_model(monke
     monkeypatch.setattr(aux, "_resolve_task_provider_model", lambda task: ("auto", None, None, None, None))
     client = SimpleNamespace(base_url="https://relay.example/v1/", api_key="k")
     monkeypatch.setattr(aux, "get_text_auxiliary_client", lambda task, main_runtime=None: (client, "uncatalogued-relay-model"))
-    import agent.model_metadata as mm
+    import models.metadata.context as mm
     monkeypatch.setattr(mm, "get_model_context_length", lambda *a, **k: 128_000)
     agent = SimpleNamespace(
         compression_enabled=True, model="uncatalogued-relay-model", base_url="https://relay.example/v1", provider="custom",

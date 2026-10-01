@@ -200,7 +200,7 @@ def real_loop(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-empty-exit"
-    with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+    with patch("agent.process_bootstrap.OpenAI"), patch("models.metadata.context.fetch_model_metadata", return_value={}):
         agent = AIAgent(
             api_key="test-key", base_url=f"{_DEAD_LOCAL}/v1", model="test/model", quiet_mode=True,
             skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], session_db=db, session_id=sid,

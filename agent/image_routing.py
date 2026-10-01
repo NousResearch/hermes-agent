@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+# Managed llama.cpp intentionally accepts only these native image formats. This
+# is request/MIME policy, not model capability metadata.
+ACCEPTED_IMAGE_MIMES = frozenset({"image/png", "image/jpeg"})
 
 
 # Extensions extract_image_refs() auto-attaches. Documents/archives are excluded:
@@ -133,9 +136,41 @@ def _custom_provider_entries(cfg: Dict[str, Any], names: Iterable[str]) -> Itera
 
 
 def _custom_provider_list(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Dict entries of the legacy ``custom_providers`` list (empty when absent/malformed)."""
     raw = cfg.get("custom_providers")
-    return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+    return [entry for entry in raw if isinstance(entry, dict)] if isinstance(raw, list) else []
+
+
+def _vision_override_patches(
+    cfg: Optional[Dict[str, Any]],
+    provider: str,
+    model: str,
+    *,
+    requested_provider: str = "",
+):
+    """Translate route-bound config into explicit and configured sparse facts."""
+    from models.metadata.types import ModelMetadataPatch
+
+    if not isinstance(cfg, dict):
+        return None, None
+    model_cfg = _dict_or_empty(cfg.get("model"))
+    top = _coerce_capability_bool(model_cfg.get("supports_vision"))
+    explicit = ModelMetadataPatch(supports_vision=top) if top is not None else None
+
+    candidates: List[str] = []
+    for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
+        candidates.append(candidate)
+        if candidate.lower().startswith("custom:") and candidate[len("custom:"):]:
+            candidates.append(candidate[len("custom:"):])
+    candidates = list(dict.fromkeys(candidates))
+
+    providers_cfg = _dict_or_empty(cfg.get("providers"))
+    model_maps = [_dict_or_empty(providers_cfg.get(name)).get("models") for name in candidates]
+    model_maps += [entry.get("models") for entry in _custom_provider_entries(cfg, candidates)]
+    for models_cfg in model_maps:
+        value = _model_supports_vision_override(models_cfg, model)
+        if value is not None:
+            return explicit, ModelMetadataPatch(supports_vision=value)
+    return explicit, None
 
 
 def _supports_vision_override(
@@ -145,32 +180,13 @@ def _supports_vision_override(
     *,
     requested_provider: str = "",
 ) -> Optional[bool]:
-    """Resolve user-declared vision capability from config.yaml; None when unset.
-
-    First hit wins: ``model.supports_vision`` → ``providers.<p>.models.<model>``
-    → legacy ``custom_providers[].models.<model>``. Named custom providers are
-    rewritten to ``provider="custom"`` at runtime while config keeps the user's
-    name under ``model.provider``, so the requested, runtime and config
-    identities are all tried, plus the bare ``<name>`` of any ``custom:<name>``.
-    """
-    if not isinstance(cfg, dict):
-        return None
-    model_cfg = _dict_or_empty(cfg.get("model"))
-    top = _coerce_capability_bool(model_cfg.get("supports_vision"))
-    if top is not None:
-        return top
-
-    candidates: List[str] = []
-    for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
-        candidates.append(candidate)
-        if candidate.startswith("custom:") and candidate[len("custom:"):]:
-            candidates.append(candidate[len("custom:"):])
-    candidates = list(dict.fromkeys(candidates))
-
-    providers_cfg = _dict_or_empty(cfg.get("providers"))
-    model_maps = [_dict_or_empty(providers_cfg.get(p)).get("models") for p in candidates]
-    model_maps += [entry.get("models") for entry in _custom_provider_entries(cfg, candidates)]
-    return next((v for v in (_model_supports_vision_override(m, model) for m in model_maps) if v is not None), None)
+    """Translate caller-owned config into the legacy scalar answer."""
+    explicit, configured = _vision_override_patches(
+        cfg, provider, model, requested_provider=requested_provider,
+    )
+    if explicit is not None:
+        return explicit.supports_vision
+    return configured.supports_vision if configured is not None else None
 
 
 def _resolve_inference_value(
@@ -235,24 +251,6 @@ def _resolve_inference_api_key(cfg: Optional[Dict[str, Any]], provider: str) -> 
     return _resolve_inference_value(cfg, provider, "api_key", runtime_ok=lambda _: True)
 
 
-def _should_probe_ollama_vision(provider: str, base_url: str, api_key: str = "") -> bool:
-    """True when the active provider likely fronts a local Ollama server. Fingerprint
-    probing is only valid for LOCAL endpoints: remote OpenAI-compatible APIs (sglang,
-    vLLM) expose Ollama-compat routes that can misidentify, and probing them without
-    an api_key returns 401 on every leg."""
-    if _clean_str(provider).lower() == "ollama":
-        return True
-    if not base_url:
-        return False
-    try:
-        from agent.model_metadata import detect_local_server_type, is_local_endpoint
-
-        # Forward the key: an unauthorized probe can never produce a positive verdict.
-        return bool(is_local_endpoint(base_url)) and detect_local_server_type(base_url, api_key=api_key) == "ollama"
-    except Exception:
-        return False
-
-
 def _coerce_mode(raw: Any) -> str:
     """Normalize a config value into one of the valid modes (default ``auto``)."""
     mode = raw.strip().lower() if isinstance(raw, str) else ""
@@ -271,62 +269,6 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     )
 
 
-def _probe_managed_runtime(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
-    """Managed local runtime verdict: the server receiving the image is the authority
-    on whether it can see (its /props reports modalities). Cloud catalogs have never
-    heard of a local GGUF, so without this every local model reads as text-only and
-    screenshots detour to a cloud auxiliary."""
-    from hermes_cli.local_runtime.capabilities import is_managed_provider, managed_model_supports_vision
-
-    managed = is_managed_provider(provider, _resolve_inference_base_url(cfg, provider) or "")
-    return managed_model_supports_vision(model) if managed else None
-
-
-def _probe_models_dev(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
-    """models.dev catalog verdict. ``allow_network=True`` on purpose: this runs only
-    when an image needs routing, and the text-only-main guard depends on catalog
-    data — a cold cache returning "unknown" would reintroduce attempting the call.
-    The fetch is cached (4h TTL) and backoff-limited."""
-    from agent.models_dev import get_model_capabilities
-
-    # allow_network=True on purpose: vision-capability lookup runs when an image actually needs routing (not
-    # per turn), and the #31179 text-only-main guard depends on catalog data — a cold cache returning
-    # "unknown" would fall back to attempting the call and reintroduce the bug. This preserves the
-    # historical network-on-cold-cache behavior for this one path; the fetch is cached (4h TTL) and
-    # backoff-limited after failures.
-    if (provider or "").strip().lower() == "openai-codex":
-        # A VALID Codex ``-900k`` picker variant is a Hermes-side alias of its base slug; the catalog
-        # only knows the base, so look that up. The runtime model id stays untouched (the transport
-        # owns wire normalization) and ineligible ``-900k`` strings pass through unchanged (#102189).
-        from agent.model_metadata import strip_codex_context_variant_suffix
-
-        model = strip_codex_context_variant_suffix(model)
-    caps = get_model_capabilities(provider, model, allow_network=True)
-    return None if caps is None else caps.supports_vision
-
-
-def _probe_ollama(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
-    """Ollama ``/api/show`` verdict for local endpoints (see :func:`_should_probe_ollama_vision`)."""
-    base_url = _resolve_inference_base_url(cfg, provider)
-    if not base_url and _clean_str(provider).lower() == "ollama":
-        base_url = "http://localhost:11434/v1"
-    api_key = _resolve_inference_api_key(cfg, provider)
-    if not _should_probe_ollama_vision(provider, base_url, api_key=api_key):
-        return None
-    from agent.model_metadata import query_ollama_supports_vision
-
-    return query_ollama_supports_vision(model, base_url, api_key=api_key)
-
-
-# Capability probes after the config override, in priority order; each returns
-# True/False or None (unknown → next probe). Exceptions are logged and treated as None.
-_VISION_PROBES: Tuple[Tuple[str, Callable[..., Optional[bool]]], ...] = (
-    ("managed-runtime caps lookup", _probe_managed_runtime),
-    ("caps lookup", _probe_models_dev),
-    ("ollama vision probe", _probe_ollama),
-)
-
-
 def _lookup_supports_vision(
     provider: str,
     model: str,
@@ -334,16 +276,7 @@ def _lookup_supports_vision(
     *,
     requested_provider: str = "",
 ) -> Optional[bool]:
-    """Return True/False if vision capability can be resolved, None if unknown.
-
-    Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe → registered
-    ``ProviderProfile.supports_vision`` declaration).
-    """
-    # Named custom providers are canonicalized to ``provider="custom"``; the
-    # original name lives in the context-local main runtime. Borrow it only on an
-    # exact provider+model match so background/auxiliary lookups never take
-    # another turn's identity.
+    """Ask the canonical metadata domain for the active route's vision fact."""
     if (
         not requested_provider
         and _runtime_main("provider").lower() == _clean_str(provider).lower()
@@ -351,21 +284,25 @@ def _lookup_supports_vision(
     ):
         requested_provider = _runtime_main("requested_provider")
 
-    override = _supports_vision_override(cfg, provider, model, requested_provider=requested_provider)
-    if override is not None:
-        return override
-    if not provider or not model:
-        return None
+    explicit, configured = _vision_override_patches(
+        cfg, provider, model, requested_provider=requested_provider,
+    )
+    from agent.model_capability_sources import default_capability_sources
+    from models import ModelRef
+    from models.metadata import ModelMetadataContext, resolve_supports_vision
 
-    for label, probe in _VISION_PROBES:
-        try:
-            verdict = probe(provider, model, cfg)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("image_routing: %s failed for %s:%s — %s", label, provider, model, exc)
-            continue
-        if verdict is not None:
-            return verdict
-    return None
+    return resolve_supports_vision(
+        ModelRef(provider, model),
+        context=ModelMetadataContext(
+            base_url=_resolve_inference_base_url(cfg, provider),
+            api_key=_resolve_inference_api_key(cfg, provider),
+            route_provider=provider,
+            allow_network=True,
+            explicit=explicit,
+            configured=configured,
+        ),
+        sources=default_capability_sources(),
+    )
 
 
 def decide_image_input_mode(
@@ -485,9 +422,9 @@ def _accepted_mimes() -> frozenset:
     confabulates a description), so its narrower set transcodes those here."""
     try:
         from agent.auxiliary_client import _runtime_main_value
-        from hermes_cli.local_runtime.capabilities import ACCEPTED_IMAGE_MIMES, is_managed_provider
+        from agent.model_capability_sources import is_managed_route
 
-        if is_managed_provider(str(_runtime_main_value("provider") or ""), str(_runtime_main_value("base_url") or "")):
+        if is_managed_route(str(_runtime_main_value("provider") or ""), str(_runtime_main_value("base_url") or "")):
             return ACCEPTED_IMAGE_MIMES
     except Exception:  # noqa: BLE001 — best-effort narrowing only
         pass

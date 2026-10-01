@@ -26,8 +26,8 @@ from hermes_cli.auth_constants import (
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     _nous_err, httpx)
 
-if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
-    from hermes_cli.auth import ProviderConfig
+if TYPE_CHECKING:
+    from hermes_cli.provider_auth import ProviderConfig
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
@@ -1354,10 +1354,14 @@ def _nous_device_code_login(
     on_verification: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY, _coerce_ttl_seconds, _is_remote_session, _optional_base_url,
+        _coerce_ttl_seconds, _is_remote_session, _optional_base_url,
         _poll_for_token, _print_device_code_instructions, _request_device_code,
         _tls_state_from_verify, format_auth_error, refresh_nous_oauth_from_state)
-    pconfig = PROVIDER_REGISTRY["nous"]
+    from hermes_cli.provider_auth import get_provider_config
+
+    pconfig = get_provider_config("nous")
+    if pconfig is None:
+        raise AuthError("Nous provider profile is unavailable.", provider="nous")
     portal_base_url = (
         portal_base_url or os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
         or pconfig.portal_base_url).rstrip("/")
@@ -1444,10 +1448,13 @@ def step_up_nous_billing_scope(
     model picker.
     """
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY, _nous_device_code_login, _save_active_provider_state,
-        get_provider_auth_state)
+        _nous_device_code_login, _save_active_provider_state, get_provider_auth_state)
+    from hermes_cli.provider_auth import get_provider_config
+
     prior = get_provider_auth_state("nous") or {}
-    pconfig = PROVIDER_REGISTRY["nous"]
+    pconfig = get_provider_config("nous")
+    if pconfig is None:
+        raise AuthError("Nous provider profile is unavailable.", provider="nous")
     # Step-up scope: existing scopes (if any) + billing:manage, deduped, order-stable. Falls back
     # to the standard inference+billing set.
     _raw_scope = prior.get("scope")
@@ -1476,18 +1483,14 @@ def _pick_nous_model_after_login(
     runtime_key = auth_state.get("agent_key") or auth_state.get("access_token")
     if not isinstance(runtime_key, str) or not runtime_key:
         raise _nous_err("No runtime API key available to fetch models", "invalid_token")
-    from hermes_cli.models import (
-        get_curated_nous_model_ids,
-        check_nous_free_tier,
-        partition_nous_models_by_tier,
-        union_with_portal_free_recommendations,
-        union_with_portal_paid_recommendations,
-    )
-    from hermes_cli.models_pricing import (
-        get_pricing_for_provider,
-        nous_policy_allowed_ids,
-        restrict_to_nous_policy,
-    )
+    from hermes_cli.models import get_curated_nous_model_ids
+    from hermes_cli.models import check_nous_free_tier
+    from models.metadata.pricing import partition_nous_models_by_tier
+    from hermes_cli.models import union_with_portal_free_recommendations
+    from hermes_cli.models import union_with_portal_paid_recommendations
+    from application_model_pricing import get_pricing_for_provider
+    from application_model_pricing import nous_policy_allowed_ids
+    from models.catalog_policy import restrict_to_nous_policy
     model_ids = get_curated_nous_model_ids()
     _portal = auth_state.get("portal_base_url", "")
     print()

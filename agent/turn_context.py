@@ -204,7 +204,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         # same ``x-opencode-session`` affinity as the turn it belongs to (#112717).
         main_runtime = {
             k: getattr(agent, k, None)
-            for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
+            for k in ("model", "provider", "requested_provider", "base_url", "api_key", "api_mode", "session_id")
         }
         # See #19027.
         upgrade = maybe_auto_title(
@@ -1147,7 +1147,7 @@ def build_turn_context(
                 agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
                 preflight_compressed=compaction.compressed,
             )
-        elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+        elif not moa_active and getattr(agent, "runtime_kind", None) != "app_server":
             _stamp_api_content_sidecar(
                 agent, messages, current_turn_user_idx, ext_prefetch_cache,
                 plugin_user_context, preflight_compressed=compaction.compressed,

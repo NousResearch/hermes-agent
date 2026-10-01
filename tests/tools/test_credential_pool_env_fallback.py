@@ -19,7 +19,7 @@ def _make_pconfig(provider_id="deepseek", env_vars=None):
     """Create a minimal ProviderConfig for testing.
 
     Default provider_id is 'deepseek' because it's a real api_key provider
-    in PROVIDER_REGISTRY (needed for _seed_from_env's generic path).
+    in live provider projection (needed for _seed_from_env's generic path).
     """
     from hermes_cli.auth import ProviderConfig
     return ProviderConfig(

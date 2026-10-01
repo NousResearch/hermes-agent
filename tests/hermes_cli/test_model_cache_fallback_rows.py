@@ -6,6 +6,8 @@ surface served the wrong list until the TTL lapsed.
 
 from __future__ import annotations
 
+import models.catalog_static as models_catalog_static
+
 import time
 from unittest.mock import patch
 
@@ -79,4 +81,4 @@ def test_copilot_catalog_marks_the_static_list_as_fallback_on_a_failed_live_fetc
         for slug in ("copilot", "copilot-acp"):
             rows = mod.provider_model_ids(slug)
             assert isinstance(rows, mod.CuratedFallbackModels), slug
-            assert rows == list(mod._PROVIDER_MODELS["copilot"])
+            assert rows == list(models_catalog_static._PROVIDER_MODELS["copilot"])

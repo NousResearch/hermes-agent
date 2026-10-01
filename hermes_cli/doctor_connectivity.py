@@ -96,7 +96,7 @@ def _build_apikey_providers_list() -> list:
         from providers import list_providers
         from providers.base import ProviderProfile as _PP
         try:
-            from hermes_cli.providers import normalize_provider as _normalize_provider
+            from providers import normalize_provider as _normalize_provider
         except Exception:  # pragma: no cover - normalization is best-effort
             def _normalize_provider(_name: str) -> str:
                 return (_name or "").strip().lower()
@@ -108,12 +108,10 @@ def _build_apikey_providers_list() -> list:
                 continue
             if {_normalize_provider(a) for a in (_pp.name, *(_pp.aliases or ()))} & _dedicated_canonical:
                 continue
-            # Key vars vs base-URL vars: the first found value goes out as Authorization: Bearer, never a URL.
-            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
-            _key_vars = tuple(v for v in _pp.env_vars if not _is_url(v))
+            _key_vars = tuple(_pp.env_vars)
             if not _key_vars:
                 continue
-            _base_var = next((v for v in _pp.env_vars if _is_url(v)), None)
+            _base_var = (_pp.base_url_env_var or "").strip() or None
             _models_url = (_pp.models_url or (_pp.base_url.rstrip("/") + "/models")) if _pp.base_url else None
             _static.append((_label, _key_vars, _models_url, _base_var, getattr(_pp, "supports_health_check", True)))
     except Exception:

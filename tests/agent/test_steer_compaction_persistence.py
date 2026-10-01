@@ -12,7 +12,7 @@ def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
     session_id = "steer-compaction"
     with (
         patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("models.metadata.context.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
             api_key="test-key",

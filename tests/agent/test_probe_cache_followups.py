@@ -17,7 +17,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_probe_cache():
     """Module-level caches must not leak between tests."""
-    from agent import model_metadata
+    from models.metadata import context as model_metadata
     model_metadata._LOCAL_CTX_PROBE_CACHE.clear()
     model_metadata._endpoint_probe_path_cache.clear()
     yield
@@ -47,7 +47,7 @@ class TestOllamaApiShowCaching:
 
     def test_failure_never_memoized(self):
         """A down server must be re-probed on the next call (startup race)."""
-        from agent.model_metadata import _query_ollama_api_show
+        from models.metadata.context import _query_ollama_api_show
 
         bad = MagicMock()
         bad.status_code = 404
@@ -88,8 +88,8 @@ class TestDetectLocalServerTypeCache:
         """Stopping Ollama and starting LM Studio on the same port must be
         re-detected once the TTL lapses — the cache is bounded, not
         process-lifetime."""
-        from agent import model_metadata
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata import context as model_metadata
+        from models.metadata.context import detect_local_server_type
         import time as _time
 
         client = self._get_client()
@@ -140,7 +140,7 @@ class TestLocalhostIPv4SiblingSites:
     def test_rewrite_is_host_only_not_substring(self):
         """A URL that merely EMBEDS 'http://localhost' in its path/query must
         not be corrupted — only the URL's own host is rewritten."""
-        from agent.model_metadata import _localhost_to_ipv4
+        from models.metadata.context import _localhost_to_ipv4
 
         proxied = "https://proxy.example.com/route?upstream=http://localhost:11434"
         assert _localhost_to_ipv4(proxied) == proxied
@@ -150,7 +150,7 @@ class TestLocalhostIPv4SiblingSites:
         )
 
     def test_ollama_api_show_probes_ipv4(self):
-        from agent.model_metadata import _query_ollama_api_show
+        from models.metadata.context import _query_ollama_api_show
 
         client = _client_mock(_mock_show_response(131072))
         with patch("httpx.Client", return_value=client):
@@ -161,7 +161,7 @@ class TestLocalhostIPv4SiblingSites:
     @pytest.mark.parametrize("llamacpp", [False, True])
     def test_endpoint_and_props_followup_use_ipv4(self, metadata_transport, llamacpp):
         import httpx
-        from agent import model_metadata as mm
+        import models.metadata.context as mm
 
         mm._endpoint_model_metadata_cache.clear()
         mm._endpoint_model_metadata_cache_time.clear()
@@ -181,7 +181,7 @@ class TestLocalhostIPv4SiblingSites:
 
 class TestContextCacheKeyNormalization:
     def test_trailing_slash_variants_share_one_entry(self, tmp_path, monkeypatch):
-        from agent import model_metadata
+        from models.metadata import context as model_metadata
 
         monkeypatch.setattr(
             model_metadata, "_get_context_cache_path",
@@ -200,7 +200,7 @@ class TestContextCacheKeyNormalization:
 
     def test_invalidate_clears_both_key_shapes(self, tmp_path, monkeypatch):
         import hermes_yaml as yaml
-        from agent import model_metadata
+        from models.metadata import context as model_metadata
 
         path = tmp_path / "context_lengths.yaml"
         monkeypatch.setattr(model_metadata, "_get_context_cache_path", lambda: path)
@@ -234,7 +234,7 @@ class TestDetectServerTypeNegativeCaching:
         return client
 
     def test_negative_verdict_is_cached_in_memory(self):
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata.context import detect_local_server_type
 
         client = self._client_all_401()
         with patch("httpx.Client", return_value=client):
@@ -251,8 +251,8 @@ class TestDetectServerTypeNegativeCaching:
     def test_negative_verdict_expires_quickly(self):
         """The short failure TTL keeps a transient failure recoverable."""
         import time as _time
-        from agent.model_metadata import detect_local_server_type
-        from agent import model_metadata
+        from models.metadata.context import detect_local_server_type
+        from models.metadata import context as model_metadata
 
         client = self._client_all_401()
         with patch("httpx.Client", return_value=client):

@@ -18,7 +18,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from hermes_cli.model_switch import list_authenticated_providers
-from hermes_cli.models import _PROVIDER_MODELS
+from models.catalog_static import _PROVIDER_MODELS
 
 
 def test_vertex_has_curated_model_list():

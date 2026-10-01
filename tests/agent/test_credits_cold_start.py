@@ -6,6 +6,8 @@ at session open, not only after the first inference header. These tests assert t
 notice policy fires correctly for a seed-shaped CreditsState with the warn90 latch
 primed the way conversation_loop does it.
 """
+
+import application_model_pricing
 import time
 
 from agent.credits_tracker import CreditsState, evaluate_credits_notices
@@ -280,10 +282,10 @@ class _DepletedAccount:
 
 def _cold_pricing_cache(monkeypatch):
     """Empty the process-wide pricing cache (and its expiry map) so the peek starts cold."""
-    from hermes_cli import models_pricing
+    import application_model_pricing as models_pricing
 
-    monkeypatch.setattr(models_pricing, "_pricing_cache", {})
-    monkeypatch.setattr(models_pricing, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(application_model_pricing, "_pricing_cache", {})
+    monkeypatch.setattr(application_model_pricing, "_pricing_cache_retry_after", {})
     return models_pricing
 
 
@@ -338,7 +340,7 @@ def test_bg_seed_warms_pricing_so_a_subscription_model_escapes_the_banner(monkey
     agent = _FakeAgent(model="openai/gpt-5.6-luna", base_url=_NOUS_BASE)
 
     assert _run_bg_seed(
-        monkeypatch, agent, warm=lambda: models_pricing._pricing_cache.update(_SUBSCRIPTION_CATALOG)
+        monkeypatch, agent, warm=lambda: application_model_pricing._cache_catalog(_NOUS_BASE[:-3], _SUBSCRIPTION_CATALOG[_NOUS_BASE[:-3]])
     ) is True
     assert agent._credits_state.depleted is True  # the account really is out of credits...
     assert agent.emitted == [([], [])]  # ...and the session says nothing about it
@@ -364,7 +366,7 @@ def test_bg_seed_reruns_the_policy_when_a_header_beat_it(monkeypatch):
     def _warm():
         agent._credits_state = header_state  # the header lands mid-fetch...
         agent._emit_credits_notices()  # ...and evaluates against the cold catalog
-        models_pricing._pricing_cache.update(_SUBSCRIPTION_CATALOG)
+        application_model_pricing._cache_catalog(_NOUS_BASE[:-3], _SUBSCRIPTION_CATALOG[_NOUS_BASE[:-3]])
 
     _run_bg_seed(monkeypatch, agent, warm=_warm)
     assert agent._credits_state is header_state  # the seed never clobbers a live header
@@ -409,16 +411,16 @@ def test_header_after_ttl_expiry_rewarms_instead_of_flashing_the_banner(monkeypa
     from agent import credits_tracker
 
     models_pricing = _cold_pricing_cache(monkeypatch)
-    models_pricing._cache_catalog(
-        _NOUS_BASE[:-3] + models_pricing._PRICING_AUTH_KEY_PREFIX + "abc",
-        _SUBSCRIPTION_CATALOG[_NOUS_BASE[:-3]], models_pricing._NOUS_CATALOG_TTL_SECONDS)
+    application_model_pricing._cache_catalog(
+        _NOUS_BASE[:-3] + application_model_pricing._PRICING_AUTH_KEY_PREFIX + "abc",
+        _SUBSCRIPTION_CATALOG[_NOUS_BASE[:-3]], application_model_pricing._NOUS_CATALOG_TTL_SECONDS)
     agent = _mixin_agent()
     agent._emit_credits_notices()
     assert agent.shown == []  # warm catalog: suppressed
-    models_pricing._pricing_cache_retry_after = {  # ...then the TTL passes
-        k: v - models_pricing._NOUS_CATALOG_TTL_SECONDS - 1 for k, v in models_pricing._pricing_cache_retry_after.items()}
+    application_model_pricing._pricing_cache_retry_after = {  # ...then the TTL passes
+        k: v - application_model_pricing._NOUS_CATALOG_TTL_SECONDS - 1 for k, v in application_model_pricing._pricing_cache_retry_after.items()}
     monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache",
-                        lambda: models_pricing._pricing_cache.update(_SUBSCRIPTION_CATALOG))
+                        lambda: application_model_pricing._cache_catalog(_NOUS_BASE[:-3], _SUBSCRIPTION_CATALOG[_NOUS_BASE[:-3]]))
 
     agent._emit_credits_notices()  # the next inference header
     _join_pricing_warm(agent)
@@ -437,7 +439,7 @@ def test_header_on_a_cold_catalog_still_warns_when_the_warm_fails(monkeypatch):
 
     def _failed_fetch():
         warms.append(1)
-        models_pricing._cache_catalog(_NOUS_BASE[:-3] + models_pricing._PRICING_AUTH_KEY_PREFIX + "abc", {})
+        application_model_pricing._cache_catalog(_NOUS_BASE[:-3] + application_model_pricing._PRICING_AUTH_KEY_PREFIX + "abc", {})
 
     monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", _failed_fetch)
     agent = _mixin_agent()

@@ -26,7 +26,7 @@ class TestResolveAutoMainFirst:
         mock_client = MagicMock()
 
         with patch(
-            "agent.auxiliary_client._get_aux_model_for_provider",
+            "agent.auxiliary_client.select_provider_auxiliary_model",
             return_value="gemini-3-flash",
         ), patch(
             "agent.auxiliary_client.resolve_provider_client",
@@ -60,7 +60,7 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"prefer_fast_model": True},
         ), patch(
-            "agent.auxiliary_client._get_aux_model_for_provider",
+            "agent.auxiliary_client.select_provider_auxiliary_model",
             return_value=fast_model,
         ), patch(
             "agent.auxiliary_client.resolve_provider_client",
@@ -408,14 +408,14 @@ class TestResolveVisionMainFirst:
         ), patch(
             "agent.auxiliary_client.OpenAI",
         ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "hermes_cli.auth.resolve_copilot_provider_credentials",
             return_value={
                 "provider": "copilot",
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
+            "providers.copilot_request_headers",
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()
@@ -445,14 +445,14 @@ class TestResolveVisionMainFirst:
         with patch(
             "agent.auxiliary_client.OpenAI",
         ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "hermes_cli.auth.resolve_copilot_provider_credentials",
             return_value={
                 "provider": "copilot",
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
+            "providers.copilot_request_headers",
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()
@@ -466,6 +466,34 @@ class TestResolveVisionMainFirst:
         assert model == "gpt-5-mini"
         assert captured == {"is_agent_turn": True, "is_vision": False}
         assert "default_headers" not in mock_openai.call_args.kwargs
+
+    def test_copilot_live_credentials_skip_token_rediscovery(self):
+        """A working main-runtime token/endpoint must be reused without another exchange."""
+        with patch(
+            "hermes_cli.auth.resolve_copilot_provider_credentials",
+            side_effect=AssertionError("live credentials must not be re-resolved"),
+        ), patch(
+            "agent.auxiliary_client.OpenAI",
+        ) as mock_openai:
+            mock_client = MagicMock()
+            mock_openai.return_value = mock_client
+
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "copilot",
+                "gpt-5-mini",
+                explicit_api_key="copilot-live-token",
+                explicit_base_url="https://enterprise.githubcopilot.example",
+            )
+
+        assert client is mock_client
+        assert model == "gpt-5-mini"
+        assert mock_openai.call_args.kwargs["api_key"] == "copilot-live-token"
+        assert str(mock_openai.call_args.kwargs["base_url"]).rstrip("/") == (
+            "https://enterprise.githubcopilot.example"
+        )
+
 
 # ── Vision — custom provider endpoint credential passthrough ────────────────
 
@@ -550,8 +578,8 @@ class TestResolveVisionCustomProvider:
         assert kwargs.get("explicit_api_key") == "sk-named"
         assert kwargs.get("is_vision") is True
 
-    def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self, monkeypatch):
-        """No recorded runtime endpoint → resolve the configured custom endpoint."""
+    def test_custom_main_without_runtime_endpoint_delegates_config_resolution(self, monkeypatch):
+        """Without a live endpoint, the concrete custom branch owns configured resolution."""
         import agent.auxiliary_client as aux
 
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
@@ -567,8 +595,7 @@ class TestResolveVisionCustomProvider:
             return_value=("auto", None, None, None, None),
         ), patch(
             "agent.auxiliary_client._resolve_custom_runtime",
-            return_value=("https://configured.example/v1", "sk-configured", "chat_completions"),
-        ), patch(
+        ) as mock_custom_runtime, patch(
             "agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
             mock_client = MagicMock()
@@ -580,7 +607,8 @@ class TestResolveVisionCustomProvider:
 
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs
-        assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
-        assert kwargs.get("explicit_api_key") == "sk-configured"
+        assert kwargs.get("explicit_base_url") is None
+        assert kwargs.get("explicit_api_key") is None
+        mock_custom_runtime.assert_not_called()
 
 # ── Constant cleanup ────────────────────────────────────────────────────────

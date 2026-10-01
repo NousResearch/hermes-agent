@@ -19,9 +19,10 @@ from agent.credential_pool import (
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
     dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
+from hermes_cli.provider_auth import (
+    AUTH_COMMAND_EXCLUDED_PROVIDER_IDS, get_provider_config, iter_provider_configs)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -79,15 +80,13 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     return None
 
 
-_PROVIDER_ALIASES = {
-    "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
-
-
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    return (_PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized)
-            or auth_mod._plugin_aliases().get(normalized) or normalized)
+    custom = _resolve_custom_provider_input(normalized)
+    if custom:
+        return custom
+    from providers import normalize_provider
+    return normalize_provider(normalized)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -128,20 +127,27 @@ def _provider_base_url(provider: str) -> str:
     configured = _configured_provider_entry(provider)
     if configured is not None:
         return str(configured.get("base_url") or "").strip()
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = get_provider_config(provider)
     return pconfig.inference_base_url if pconfig else ""
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
-    return (provider in PROVIDER_REGISTRY or provider == "openrouter"
-            or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+    config = get_provider_config(provider)
+    return (
+        (config is not None and config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS)
+        or provider.startswith(CUSTOM_POOL_PREFIX)
+        or configured_provider is not None
+    )
 
 
 def _unknown_provider_exit(provider: str) -> SystemExit:
     """Did-you-mean over the known provider ids plus the two commands that list/pick them."""
     import difflib
-    known = sorted(set(PROVIDER_REGISTRY) | {"openrouter"}
-                   | {entry["name"] for entry in _get_custom_provider_entries()})
+    known = sorted(
+        {config.id for config in iter_provider_configs()
+         if config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS}
+        | {entry["name"] for entry in _get_custom_provider_entries()}
+    )
     close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
     hint = f" Did you mean {', '.join(close)}?" if close else ""
     return SystemExit(
@@ -513,7 +519,9 @@ def auth_list_command(args) -> None:
     else:
         credential_pool = auth_mod._load_auth_store().get("credential_pool")
         providers = sorted({
-            *PROVIDER_REGISTRY.keys(), "openrouter", *list_custom_pool_providers(),
+            *(config.id for config in iter_provider_configs()
+              if config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS),
+            *list_custom_pool_providers(),
             *(e["provider_key"] for e in _get_custom_provider_entries() if e["provider_key"]),
             *(credential_pool.keys() if isinstance(credential_pool, dict) else ())})
     for provider in providers:
@@ -647,7 +655,8 @@ def auth_refresh_command(args) -> None:
     refreshed = pool.try_refresh_matching(credential_id=matched.id)
     if refreshed is None:
         after = next((e for e in pool.entries() if e.id == matched.id), None)
-        label = PROVIDER_REGISTRY[provider].name if provider in PROVIDER_REGISTRY else provider
+        config = get_provider_config(provider)
+        label = config.name if config is not None else provider
         state = ("it was removed from the pool" if after is None
                  else "the saved session is no longer valid")
         raise SystemExit(
@@ -794,7 +803,10 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
+    known = sorted(
+        config.id for config in iter_provider_configs()
+        if config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS
+    )
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
     print(f"\nKnown providers: {', '.join(known)}")
     if custom_display:

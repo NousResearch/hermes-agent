@@ -21,7 +21,7 @@ import threading
 
 import pytest
 
-import agent.model_metadata as mm
+import models.metadata.context as mm
 
 
 GRANTED = 262144

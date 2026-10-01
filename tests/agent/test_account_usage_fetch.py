@@ -121,8 +121,8 @@ def test_fetch_account_usage_codex(monkeypatch):
 def _register_profile(monkeypatch, profile):
     import providers
 
-    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
-    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers.registry, "_REGISTRY", dict(providers.registry._REGISTRY))
+    monkeypatch.setattr(providers.registry, "_ALIASES", dict(providers.registry._ALIASES))
     providers.register_provider(profile)
 
 

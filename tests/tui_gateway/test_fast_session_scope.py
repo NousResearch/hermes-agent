@@ -54,7 +54,7 @@ class TestConfigSetFastSessionScope:
                 patch.object(server, "_persist_live_session_runtime"), \
                 patch.object(server, "_emit"), \
                 patch(
-                    "hermes_cli.models.resolve_fast_mode_overrides",
+                    "models.metadata.fast_mode.resolve_fast_mode_overrides",
                     return_value=FAST_OVERRIDES,
                 ):
             resp = _set({"key": "fast", "session_id": "s1", "value": "fast"})
@@ -74,7 +74,7 @@ class TestConfigSetFastSessionScope:
         with patch.dict(server._sessions, {"s3": session}, clear=False), \
                 patch.object(server, "_write_config_key") as write_key, \
                 patch(
-                    "hermes_cli.models.resolve_fast_mode_overrides",
+                    "models.metadata.fast_mode.resolve_fast_mode_overrides",
                     return_value=FAST_OVERRIDES,
                 ):
             resp = _set({"key": "fast", "session_id": "s3", "value": "fast"})

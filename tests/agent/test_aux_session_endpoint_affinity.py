@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import auxiliary_client as aux
-from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+from providers import expand_direct_api_alias
 
 SESSION = {"provider": "openai-api", "model": "gpt-5.4",
            "base_url": "https://proxy.example:8443/v1", "api_key": "sk-session"}
@@ -16,11 +16,15 @@ SESSION = {"provider": "openai-api", "model": "gpt-5.4",
 
 def test_openai_alias_prefers_configured_endpoint_over_public_default(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://llm-proxy.corp.example/v1")
-    provider, base = expand_direct_api_alias("openai", None)
+    provider, base = expand_direct_api_alias(
+        "openai", None, preferred_base_url=aux._scoped_key_env("OPENAI_BASE_URL")
+    )
     assert provider == "custom"
     assert base == "https://llm-proxy.corp.example/v1"
     monkeypatch.delenv("OPENAI_BASE_URL")
-    assert expand_direct_api_alias("openai", None) == ("custom", "https://api.openai.com/v1")
+    assert expand_direct_api_alias(
+        "openai", None, preferred_base_url=aux._scoped_key_env("OPENAI_BASE_URL")
+    ) == ("custom", "https://api.openai.com/v1")
 
 
 @pytest.mark.parametrize("rejecting_base", [

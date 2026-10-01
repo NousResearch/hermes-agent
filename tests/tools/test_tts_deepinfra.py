@@ -9,15 +9,13 @@ infrastructure (catalog fetch + tag filter) is covered in
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _isolation(monkeypatch):
-    import hermes_cli.models as _models_mod
-    monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
+    from models.catalog_deepinfra import reset_catalog_cache
+    reset_catalog_cache()
     monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
     yield
 
@@ -51,7 +49,10 @@ def test_unselected_cloud_credentials_do_not_expose_edge_tool(monkeypatch):
     from tools import tts_tool
 
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {})
-    monkeypatch.setattr(tts_tool, "_import_edge_tts", MagicMock(side_effect=ImportError))
+    # Isolate edge's separate preinstalled/lazy-install readiness from the
+    # assertion: an unselected cloud key must not change the selected provider.
+    monkeypatch.setitem(tts_tool._BUILTIN_REQUIREMENTS, "edge", lambda: False)
+    monkeypatch.setattr(tts_tool, "_ready_after_first_use_install", lambda _provider: False)
     monkeypatch.setenv("OPENAI_API_KEY", "unselected-key")
 
     assert tts_tool.check_tts_requirements() is False

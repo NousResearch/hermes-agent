@@ -156,7 +156,8 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
-        from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
+        from agent.model_metadata import estimate_messages_tokens_rough
+        from models.metadata.context import get_model_context_length_async
         _hyg_context_length = await get_model_context_length_async(
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
@@ -793,7 +794,7 @@ class GatewayTurnHygieneMixin:
                 source=source, session_key=session_key,
                 user_config=hs.data if isinstance(hs.data, dict) else None,
             )
-            if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
+            if str(_hyg_runtime.get("runtime_kind") or "").lower() == "app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
             elif _hyg_runtime.get("api_key"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering

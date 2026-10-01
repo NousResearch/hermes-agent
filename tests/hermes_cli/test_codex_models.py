@@ -2,10 +2,11 @@ import base64
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import (
-    _FORWARD_COMPAT_TEMPLATE_MODELS,
+from hermes_cli.codex_models import get_codex_model_ids
+from models.codex_catalog import (
     DEFAULT_CODEX_MODELS,
-    get_codex_model_ids,
+    FORWARD_COMPAT_TEMPLATE_MODELS,
+    finalize_codex_models,
 )
 
 
@@ -37,12 +38,12 @@ def test_codex_catalog_never_offers_chatgpt_rejected_pro_slugs(monkeypatch, tmp_
 
     # Live discovery returning only template slugs fires every forward-compat
     # synthesis rule; none of what it adds may be -pro.
-    templates = list(dict.fromkeys(t for _, ts in _FORWARD_COMPAT_TEMPLATE_MODELS for t in ts))
+    templates = list(dict.fromkeys(t for _, ts in FORWARD_COMPAT_TEMPLATE_MODELS for t in ts))
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api", lambda access_token, **_kw: templates
     )
     live = get_codex_model_ids(access_token="codex-access-token")
-    assert {synthetic for synthetic, _ in _FORWARD_COMPAT_TEMPLATE_MODELS} <= set(live)
+    assert {synthetic for synthetic, _ in FORWARD_COMPAT_TEMPLATE_MODELS} <= set(live)
     assert _pro_slugs(live) == []
 
 
@@ -69,9 +70,9 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
     ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and
     unknown future descendants were never probed — neither may gain a
     synthetic ``-900k`` entry (#92797 review)."""
-    from hermes_cli.codex_models import _finalize_codex_models
+    from models.codex_catalog import finalize_codex_models
 
-    out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
+    out = finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
     assert "gpt-5.6-sol-pro-900k" not in out
     assert "gpt-5.6-nova-900k" not in out
 
@@ -145,7 +146,7 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         codex_models,
         "_fetch_models_from_api",
-        lambda _token, **_kw: codex_models._finalize_codex_models(["gpt-6-astra"]),
+        lambda _token, **_kw: finalize_codex_models(["gpt-6-astra"]),
     )
     entitled = get_codex_model_ids(access_token="entitled-token")
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
@@ -235,13 +236,20 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.4"
 
 
-    def test_opencode_zen_claude_sets_messages_mode(self):
+    def test_opencode_zen_claude_normalizes_model_without_owning_route_policy(self):
+        from providers.routing import InvocationRequest, resolve_invocation_route
+
         cli = _make_cli(model="opencode-zen/claude-sonnet-4-6")
         cli.api_mode = "chat_completions"
         changed = cli._normalize_model_for_provider("opencode-zen")
         assert changed is True
         assert cli.model == "claude-sonnet-4-6"
-        assert cli.api_mode == "anthropic_messages"
+        assert cli.api_mode == "chat_completions"
+
+        route = resolve_invocation_route(
+            InvocationRequest(provider="opencode-zen", model=cli.model)
+        )
+        assert route.api_mode == "anthropic_messages"
 
     def test_default_model_replaced(self):
         """No model configured (empty default) gets swapped for codex."""
@@ -307,14 +315,17 @@ def test_catalog_requests_ask_as_the_newest_client(monkeypatch):
     import sys
     from urllib.parse import parse_qs, urlparse
 
-    from agent import model_metadata
+    from agent.model_metadata import install_context_metadata_hooks
+    install_context_metadata_hooks()
+    from models.metadata import context as model_metadata
     from hermes_cli import codex_models
 
     seen_urls = []
     get = _gated_codex_catalog(seen_urls)
     monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(get)}))
     assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token=_codex_jwt("acct"))
-    monkeypatch.setattr(model_metadata.model_metadata_http, "get", get)
+    from agent import model_metadata_http
+    monkeypatch.setattr(model_metadata_http, "get", get)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
     live, fresh = model_metadata._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("acct"))
     assert fresh and "gpt-6-sol" in live
@@ -367,7 +378,7 @@ def test_picker_catalog_honours_the_custom_codex_base(monkeypatch):
 def test_catalog_falls_back_to_the_ungated_sentinel_when_newest_client_is_rejected():
     """If the backend goes back to rejecting out-of-sequence versions (empty list or non-200), the
     ``0.0.0`` sentinel is tried next; a sentinel that is itself empty yields no entries."""
-    from agent.model_metadata import CODEX_UNGATED_CLIENT_VERSION, fetch_codex_catalog_entries
+    from models.metadata.context import CODEX_UNGATED_CLIENT_VERSION, fetch_codex_catalog_entries
 
     class _Resp:
         def __init__(self, status, models):

@@ -9,6 +9,11 @@ here — keep walking the ladder". The ladder ORDER is behavior (see ``_LADDER``
 """
 
 from __future__ import annotations
+from models.catalog_policy import _provider_token, _is_self_hosted_provider, allows_model_whitespace
+
+import application_provider_groups
+import hermes_cli.models_local as hermes_cli_models_local
+import models.catalog_detection as models_catalog_detection
 
 import re
 from dataclasses import dataclass
@@ -17,6 +22,7 @@ from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
 from hermes_constants import openrouter_variant_base
+from providers import is_aggregator, normalize_provider
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -129,47 +135,12 @@ def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
-_SELF_HOSTED_PROVIDERS = frozenset({
-    "lmstudio", "ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp",
-})
 
 
-def _provider_token(provider: Optional[str]) -> str:
-    return str(provider or "").strip().lower()
 
 
-def _is_self_hosted_provider(provider: Optional[str]) -> bool:
-    """Local servers and the custom endpoint bucket, including aliases that normalize to it."""
-    raw = _provider_token(provider)
-    if not raw:
-        return False
-    if raw == "custom" or raw.startswith("custom:"):
-        return True
-    from hermes_cli import models as _m
-
-    normalized = _m.normalize_provider(raw)
-    if normalized == "custom" or normalized.startswith("custom:"):
-        return True
-    return raw in _SELF_HOSTED_PROVIDERS or normalized in _SELF_HOSTED_PROVIDERS
 
 
-def _non_public_host(host: str) -> bool:
-    """Loopback, LAN, and single-label hosts are a user's endpoint, never a vendor catalog."""
-    host = (host or "").lower().rstrip(".")
-    if not host or host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".localhost"):
-        return bool(host)
-    if host.endswith((".local", ".lan", ".internal", ".home", ".localdomain")):
-        return True
-    if "." not in host:
-        return True
-    parts = host.split(".")
-    if len(parts) == 4 and all(part.isdigit() for part in parts):
-        octets = [int(part) for part in parts]
-        if octets[0] in {10, 127} or (octets[0] == 192 and octets[1] == 168):
-            return True
-        if octets[0] == 172 and 16 <= octets[1] <= 31:
-            return True
-    return False
 
 
 def _stock_host(provider: str) -> str:
@@ -194,32 +165,6 @@ def _stock_host(provider: str) -> str:
     return base_url_hostname(pdef.base_url or "")
 
 
-def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional[str] = None) -> bool:
-    """True when a spaced id is a real selection, not a cloud-catalog typo.
-
-    Self-hosted providers always qualify. A base_url qualifies when the user
-    configured it: a non-public host, or a public host that is not this
-    provider's own stock endpoint. A public host with no stock to compare
-    against stays rejected, so a cloud URL cannot slip through a cold catalog.
-    """
-    if _is_self_hosted_provider(provider):
-        return True
-    url = str(base_url or "").strip()
-    if not url:
-        return False
-    from utils import base_url_hostname
-
-    host = base_url_hostname(url)
-    if not host:
-        return False
-    if _non_public_host(host):
-        return True
-    raw = _provider_token(provider)
-    from hermes_cli import models as _m
-
-    normalized = _m.normalize_provider(raw) if raw else ""
-    stock = _stock_host(normalized or raw)
-    return bool(stock) and host != stock
 
 
 def _whitespace_allowed(req: _Request) -> bool:
@@ -227,35 +172,6 @@ def _whitespace_allowed(req: _Request) -> bool:
     if _is_self_hosted_provider(req.normalized) or _is_self_hosted_provider(req.provider):
         return True
     return provider_allows_model_whitespace(req.provider or req.normalized, req.base_url)
-
-
-def offered_model_ids(models, provider: Optional[str], base_url: Optional[str] = None) -> list:
-    """Ids a picker may show. Drops whitespace the validator will refuse; keeps the rest."""
-    ids = list(models or [])
-    if provider_allows_model_whitespace(provider, base_url):
-        return ids
-    return [model_id for model_id in ids if not (isinstance(model_id, str) and any(ch.isspace() for ch in model_id))]
-
-
-def drop_unofferable_model_ids(rows: list) -> None:
-    """In-place: picker rows must not offer an id ``validate_requested_model`` will refuse for whitespace."""
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        provider = row.get("slug")
-        base_url = row.get("api_url") or row.get("base_url")
-        models = row.get("models")
-        if isinstance(models, list):
-            filtered = offered_model_ids(models, provider, base_url)
-            removed = len(models) - len(filtered)
-            if removed:
-                row["models"] = filtered
-                total = row.get("total_models")
-                if isinstance(total, int):
-                    row["total_models"] = max(0, total - removed)
-        featured = row.get("featured_models")
-        if isinstance(featured, list):
-            row["featured_models"] = offered_model_ids(featured, provider, base_url)
 
 
 def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
@@ -309,7 +225,7 @@ def _ollama_probe_headers(req: _Request) -> dict[str, str]:
 
     configured_base = _configured_ollama_base_url()
     configured_allowed = not configured_base or _ml._same_ollama_native_root(req.base_url or "", configured_base)
-    configured = _m._get_ollama_native_headers(req.base_url, api_key=req.api_key) if configured_allowed else {}
+    configured = hermes_cli_models_local._get_ollama_native_headers(req.base_url, api_key=req.api_key) if configured_allowed else {}
     if req.headers is None:
         return configured
     out = dict(configured)
@@ -329,7 +245,7 @@ def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
     from hermes_cli import models_local as _ml
 
     if str(req.provider or "").strip().lower() == "ollama" and not req.base_url:
-        req.base_url = _m._get_ollama_base_url()
+        req.base_url = hermes_cli_models_local._get_ollama_base_url()
     headers = _ollama_probe_headers(req)
     if not _ml.should_use_ollama_native_catalog(req.provider, req.base_url, headers=headers):
         return None
@@ -402,52 +318,8 @@ def _static_catalog(normalized: str) -> list[str]:
         return []
 
 
-_STATIC_FAMILY_PREFIXES = {
-    # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists for entitlement-gated *hidden*
-    # slugs the curated listing hasn't caught up with — but those are always the provider's own family
-    # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an unrelated typed name (e.g. `qwen3.5-4b`,
-    # `llama-3.1-8b`) here turns what should be an actionable "did you mean --provider <x>?" error into a
-    # confusing success that 400s on the next turn. Only soft- accept names that share the provider's family
-    # prefix; reject the rest with guidance to pin the right provider.
-    "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
-    "xai-oauth": ("grok-",),
-}
+from models.selection_conflict import _STATIC_FAMILY_PREFIXES, static_model_provider_conflict
 _STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
-
-
-def _family_head(model_id: str) -> str:
-    """Vendor family token of a model id: ``gpt-5.5`` → ``gpt``, ``claude-opus-5`` → ``claude``."""
-    return re.split(r"[-./:]", model_id.strip().lower(), maxsplit=1)[0]
-
-
-def static_model_provider_conflict(model_name: str, provider: Optional[str], *, limit: int = 5) -> Optional[dict[str, Any]]:
-    """Offline model×provider coherence from the curated catalogs only (no network: this runs on
-    ``session.create``). ``None`` = coherent or undecidable — custom / aggregator / catalog-less
-    providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
-    names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
-    the provider's family that another native vendor's catalog lists — or any foreign-family name
-    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
-    from hermes_cli import models as _m
-
-    requested = (model_name or "").strip()
-    normalized = _m.normalize_provider(provider)
-    catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
-    if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
-        return None
-    if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
-        return None
-    if _family_head(requested) in {_family_head(m) for m in catalog}:
-        return None
-    strict = normalized in _STATIC_FAMILY_PREFIXES
-    if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
-        return None
-    suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]
-    label = _m._PROVIDER_LABELS.get(normalized, normalized)
-    return {
-        "model": requested, "provider": normalized, "suggestions": suggestions,
-        "message": (f"Model `{requested}` is not served by provider `{normalized}` ({label}). "
-                    f"Closest {label} models: " + ", ".join(f"`{s}`" for s in suggestions) + "."),
-    }
 
 
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
@@ -455,7 +327,7 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     Returns None (fall through) when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if req.normalized == "openai-codex":
-        from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
+        from models.metadata.context import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
 
         # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
         # the suffix is a Hermes picker convention, so an unknown `*-900k` can never be a real
@@ -555,15 +427,16 @@ def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
 
 def _nous_portal_recommended_names() -> set[str]:
     """Lower-cased ids from the Portal's live recommended-models feed (empty on any failure)."""
-    from hermes_cli import models as _m
+    from application_nous_recommendations import fetch_recommended_models
 
     try:
-        payload = _m.fetch_nous_recommended_models(_m._resolve_nous_portal_url())
+        payload = fetch_recommended_models()
         return {
             name.lower()
             for tier in ("freeRecommendedModels", "paidRecommendedModels")
             for entry in (payload.get(tier) or [])
-            if (name := _m._extract_model_name(entry))
+            if isinstance(entry, dict) and isinstance(entry.get("modelName"), str)
+            and (name := entry["modelName"].strip())
         }
     except Exception:
         return set()
@@ -657,11 +530,11 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     # proxies keep the fallback.
     listing_authoritative = False
     if req.normalized in ("openai", "openai-api"):
-        from hermes_cli.providers import is_official_openai_host
+        from providers.routing import is_official_openai_host
 
         listing_authoritative = is_official_openai_host(req.base_url)
-    if not listing_authoritative and _m._model_in_provider_catalog(
-        (variant_base or req.lookup).lower(), _m._provider_keys(req.normalized)
+    if not listing_authoritative and models_catalog_detection._model_in_provider_catalog(
+        (variant_base or req.lookup).lower(), models_catalog_detection._provider_keys(req.normalized)
     ):
         return _accept_with_note(f"Note: `{req.requested}` was not found in the live /v1/models listing "
                                  "but exists in the curated catalog — accepted.")
@@ -722,7 +595,7 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     fail and the gateway never writes the session override). No catalog → accept with a warning."""
     from hermes_cli import models as _m
 
-    label = _m._PROVIDER_LABELS.get(req.normalized, req.normalized)
+    label = application_provider_groups.provider_label(req.normalized)
     catalog = _static_catalog(req.normalized)
     if not catalog:
         return _soft_accept(f"Note: could not reach the {label} API to validate `{req.requested}`. "
@@ -793,7 +666,7 @@ def validate_requested_model(
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
-    normalized = _m.normalize_provider(provider)
+    normalized = normalize_provider(provider)
     if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
     lookup = requested
@@ -809,3 +682,9 @@ def validate_requested_model(
             if verdict is not None:
                 return verdict
     raise AssertionError("unreachable: _validate_catalog_fallback always decides")
+
+
+def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional[str] = None) -> bool:
+    """Acquire the offline stock endpoint and apply canonical eligibility."""
+    normalized = normalize_provider(_provider_token(provider))
+    return allows_model_whitespace(provider, base_url, _stock_host(normalized))

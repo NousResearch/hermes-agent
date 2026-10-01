@@ -664,7 +664,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         with (
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch(
-                "agent.model_metadata.get_model_context_length",
+                "models.metadata.context.get_model_context_length",
                 return_value=128_000,
             ),
         ):

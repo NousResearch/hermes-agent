@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import MatchingPrefixModelIdsMixin
 from utils import base_url_host_matches
 
 
@@ -27,7 +28,7 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
 
 
-class CustomProfile(ProviderProfile):
+class CustomProfile(MatchingPrefixModelIdsMixin, ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...]:
@@ -94,7 +95,7 @@ class CustomProfile(ProviderProfile):
 
 custom = CustomProfile(
     name="custom", aliases=("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
-    env_vars=(),  # No fixed key — custom endpoint
+    display_name="custom", description="custom (direct API)", env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured
     # An arbitrary client ceiling can exceed a local server's actual output limit.
     # The endpoint owns its generation default.

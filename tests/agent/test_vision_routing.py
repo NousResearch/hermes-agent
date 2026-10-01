@@ -2,7 +2,7 @@
 
 Before the fix:
   - ``auxiliary.vision.provider: openai`` silently failed to resolve because
-    ``openai`` is not a first-class provider in PROVIDER_REGISTRY (only
+    ``openai`` is not a first-class provider in live provider projection (only
     ``openai-codex`` for OAuth and ``custom`` for OPENAI_BASE_URL).
   - The vision branch of ``call_llm`` then silently fell back to ``auto``
     which happily picked the user's main provider (e.g. DeepSeek), sending
@@ -211,9 +211,15 @@ model:
         cataloged as text-only are skipped.
         """
         _fresh_modules()
-        from agent.auxiliary_client import _main_model_supports_vision
-        # Bogus provider/model — capability lookup returns None → permissive.
-        assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is True
+        from models.selection import select_vision_auxiliary_model, selected_auxiliary_model_id
+
+        # Unknown capability remains permissive: only an explicit False blocks the main model.
+        selection = select_vision_auxiliary_model(
+            "nonexistent-provider",
+            main_model="nonexistent-model",
+            main_supports_vision=None,
+        )
+        assert selected_auxiliary_model_id(selection) == "nonexistent-model"
 
 
 # ---------------------------------------------------------------------------

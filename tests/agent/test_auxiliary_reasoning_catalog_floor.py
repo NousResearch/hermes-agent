@@ -15,7 +15,7 @@ import pytest
 import hermes_cli.models as models_mod
 from agent import auxiliary_reasoning_floor
 from agent.auxiliary_client import call_llm
-from hermes_cli import models_reasoning_caps
+import models.metadata.reasoning as reasoning_metadata
 
 _CATALOG = [
     {"id": "openai/gpt-oss-20b", "supported_parameters": ["reasoning", "tools"],
@@ -31,9 +31,9 @@ def fresh_process(monkeypatch):
     def _reset():
         auxiliary_reasoning_floor._FLOORED_ROUTES.clear()
         for name in ("_openrouter_reasoning_caps_cache", "_openrouter_reasoning_caps_failed_at"):
-            monkeypatch.setattr(models_mod, name, None)
+            monkeypatch.setattr(reasoning_metadata, name, None)
         for name in ("_openrouter_caps_disk_checked", "_openrouter_caps_warm_started"):
-            monkeypatch.setattr(models_mod, name, False)
+            monkeypatch.setattr(reasoning_metadata, name, False)
     _reset()
     yield _reset
     auxiliary_reasoning_floor._FLOORED_ROUTES.clear()
@@ -58,7 +58,7 @@ def _title_request(model):
 def test_catalog_mandatory_model_gets_the_floor_on_the_first_request(fresh_process):
     """A mirror left by an earlier process: the mandatory model's first thinking-off request already
     carries the floor; an optional model on the same route keeps its disable."""
-    models_reasoning_caps._seed_reasoning_caps(models_reasoning_caps._OPENROUTER_CATALOG_URL, _CATALOG)
+    reasoning_metadata._seed_reasoning_caps(reasoning_metadata._OPENROUTER_CATALOG_URL, _CATALOG)
 
     assert _title_request("openai/gpt-oss-20b") == {
         "enabled": True, "effort": auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT}
@@ -89,7 +89,7 @@ def test_cold_catalog_is_warmed_so_the_next_process_starts_at_the_floor(fresh_pr
             return json.dumps({"data": _CATALOG}).encode()
 
     monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", lambda req, timeout: _Resp())
-    monkeypatch.setattr(models_reasoning_caps.threading, "Thread", _joined_thread)
+    monkeypatch.setattr(reasoning_metadata.threading, "Thread", _joined_thread)
 
     _title_request("openai/gpt-oss-20b")
     assert warmed, "a cold catalog lookup must start the background warm"

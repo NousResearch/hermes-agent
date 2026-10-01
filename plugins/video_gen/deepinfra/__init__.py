@@ -26,14 +26,11 @@ class DeepInfraVideoGenProvider(OpenAICompatibleVideoGenProvider):
 
     def list_models(self) -> List[Dict[str, Any]]:
         """``video-gen``-tagged models from the live catalog; empty when unreachable (nothing beats a retired model)."""
-        try:
-            from hermes_cli.models import _fetch_deepinfra_models_by_tag
-        except Exception as exc:  # noqa: BLE001 — never break the picker
-            logger.debug("Cannot import _fetch_deepinfra_models_by_tag: %s", exc)
-            return []
+        from application_deepinfra_catalog import models_by_tag
+
         return [{"id": item["id"], "display": item["id"].split("/")[-1],
                  "strengths": ((item.get("metadata", {}) or {}).get("description") or "")[:80]}
-                for item in (_fetch_deepinfra_models_by_tag("video-gen") or []) if item.get("id")]
+                for item in (models_by_tag("video-gen") or []) if item.get("id")]
 
     def capabilities(self) -> Dict[str, Any]:
         return {"modalities": ["text", "image"], "aspect_ratios": ["16:9", "9:16", "1:1"], "resolutions": ["480p", "720p", "1080p"],

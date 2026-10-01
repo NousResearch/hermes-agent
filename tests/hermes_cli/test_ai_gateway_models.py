@@ -5,13 +5,17 @@ spec (type, tags, pricing). The pricing object uses ``input`` / ``output``
 where hermes's shared picker expects ``prompt`` / ``completion``; these tests
 pin the translation and the curated-list filtering.
 """
+
+import application_model_pricing
 import json
 from unittest.mock import patch, MagicMock
 
 from hermes_cli import models as models_module
-from hermes_cli import models_pricing
-from hermes_cli.models import VERCEL_AI_GATEWAY_MODELS, _ai_gateway_model_is_free, fetch_ai_gateway_models
-from hermes_cli.models_pricing import fetch_ai_gateway_pricing
+import application_model_pricing as models_pricing
+from models.catalog_static import VERCEL_AI_GATEWAY_MODELS
+from models.catalog_projection import _ai_gateway_model_is_free
+from hermes_cli.models import fetch_ai_gateway_models
+from application_model_pricing import fetch_ai_gateway_pricing
 
 
 def _mock_urlopen(payload):
@@ -26,7 +30,7 @@ def _mock_urlopen(payload):
 
 def _reset_caches():
     models_module._ai_gateway_catalog_cache = None
-    models_pricing._pricing_cache.clear()
+    application_model_pricing._pricing_cache.clear()
 
 
 def test_ai_gateway_pricing_translates_input_output_to_prompt_completion():

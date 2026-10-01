@@ -19,8 +19,8 @@ def _resolve_model() -> str:
         return m.strip()
     # No env seed / config preference: the cost-safe silent default (cache-only read), never an unpicked flagship.
     with contextlib.suppress(Exception):
-        from hermes_cli.models import get_preferred_silent_default_model
-        return get_preferred_silent_default_model()
+        from gateway.model_runtime_facts import provider_default_model
+        return provider_default_model("openrouter")
     return "z-ai/glm-5.2"
 
 
@@ -54,26 +54,20 @@ def _config_model_target() -> tuple[str, str]:
 
 def _resolve_startup_runtime() -> tuple[str, str | None]:
     model = _resolve_model()
-    if explicit_provider := os.environ.get("HERMES_TUI_PROVIDER", "").strip():
-        return model, explicit_provider
-    if not (explicit_model := _env_model_seed()):
-        return model, None
-    with contextlib.suppress(Exception):
-        from hermes_cli.model_switch import resolve_startup_model_route
-        from hermes_cli.models import detect_static_provider_for_model
-        full_cfg = _load_cfg()
-        cfg = full_cfg.get("model") or {}
-        current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
-                            or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto")
-        # Same owner as HermesCLI/oneshot: ``custom:<name>:<model>`` selects that provider (#73943).
-        if route := resolve_startup_model_route(
-                explicit_model, current_provider=current_provider,
-                user_providers=full_cfg.get("providers"), custom_providers=full_cfg.get("custom_providers")):
-            return route.model, route.provider
-        if detected := detect_static_provider_for_model(explicit_model, current_provider):
-            provider, detected_model = detected
-            return detected_model, provider
-    return model, None
+    explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
+    if not (seed := _env_model_seed()):
+        return model, explicit_provider or None
+    try:
+        from tui_gateway.model_startup_route import resolve_startup_seed
+        cfg = _load_cfg()
+        mc = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        current = (str(mc.get("provider") or "").strip()
+                   or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip() or "auto")
+        route = resolve_startup_seed(seed, current, cfg, explicit_provider=explicit_provider)
+        return route.model, route.provider
+    except Exception:
+        logger.debug("TUI canonical startup seed resolution failed", exc_info=True)
+        return model, explicit_provider or None
 
 
 # Bare billing buckets are not routable provider identities; restoring one as a session provider override
@@ -86,10 +80,8 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 
 
 def _is_routable_provider(provider: str) -> bool:
-    with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import is_routable_provider
-        return is_routable_provider(provider)
-    return False
+    from tui_gateway.model_startup_route import is_routable_provider
+    return is_routable_provider(provider, _load_cfg())
 
 
 def _overrides_have_routable_provider(overrides: dict) -> bool:
@@ -155,7 +147,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         provider = billing_provider
     base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
     reasoning_config = model_config.get("reasoning_config")
-    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    from providers import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
         base_url = api_mode = ""
@@ -164,8 +156,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if provider and not _is_routable_provider(provider):
         healed = None
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            healed = canonical_custom_identity(base_url=base_url or None, model=model or None)
+            from tui_gateway.model_startup_route import recover_custom_identity
+            healed = recover_custom_identity(_load_cfg(), base_url=base_url, model=model)
         except Exception:
             logger.debug("custom provider identity recovery failed", exc_info=True)
         if healed:
@@ -199,8 +191,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
         # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
+            from tui_gateway.model_startup_route import recover_custom_identity
+            provider = recover_custom_identity(_load_cfg(), base_url=base_url, model=model) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
     reasoning_config = getattr(agent, "reasoning_config", None)
@@ -557,8 +549,8 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         override_base_url = model_override.get("base_url")
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
+            from tui_gateway.model_startup_route import recover_custom_identity
+            if recovered := recover_custom_identity(_load_cfg(), base_url=override_base_url or "", model=model):
                 requested_provider = recovered
             if override_base_url:
                 # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
@@ -573,6 +565,20 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             requested_provider = provider_override
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
+        if _env_model_seed() and not model_override and not provider_override:
+            from tui_gateway.model_startup_route import resolve_startup_seed
+            cfg = _load_cfg()
+            mc = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            current = (str(mc.get("provider") or "").strip()
+                       or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip() or "auto")
+            route = resolve_startup_seed(
+                _env_model_seed(), current, cfg,
+                explicit_provider=os.environ.get("HERMES_TUI_PROVIDER", "").strip(),
+            )
+            if route.base_url and route.model == model:
+                resolve_kwargs["explicit_base_url"] = route.base_url
+                if route.api_key:
+                    resolve_kwargs["explicit_api_key"] = route.api_key
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
     if resolution.used_fallback:
         if not resolution.selected_model:
@@ -586,29 +592,32 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
+        _rederive_per_model_route(resolution.selected_model, resolution.runtime)
         return resolution.selected_model, resolution.runtime
+    acquired_api_mode = str(resolution.runtime.get("api_mode") or "")
     if resolution.runtime.get("source") == "local-runtime":
-        # Live supervisor beat any persisted loopback URL for this identity.
+        # Live supervisor beats a stale persisted endpoint for this identity.
         overrides.pop("base_url", None)
+    # A saved api_mode describes a previous model, not the new invocation authority.
+    overrides.pop("api_mode", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
-    if any(overrides.values()):
-        _rederive_per_model_route(model, resolution.runtime)
+    _rederive_per_model_route(model, resolution.runtime, acquired_api_mode=acquired_api_mode)
     return model, resolution.runtime
 
 
-def _rederive_per_model_route(model: str, runtime: dict) -> None:
-    """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
-    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
-    or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
-    other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
-    from hermes_cli.model_switch import model_derived_api_mode
-    from hermes_cli.models import normalize_opencode_base_url
+def _rederive_per_model_route(model: str, runtime: dict, *, acquired_api_mode: str | None = None) -> None:
+    """Credential acquisition supplies material; only canonical routing defines the live wire."""
+    from providers.routing import InvocationRequest, resolve_invocation_route
     provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
-    api_mode = model_derived_api_mode(provider, model)
-    if api_mode is None:
-        return
-    runtime["api_mode"] = api_mode
-    runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
+    api_mode = str(runtime.get("api_mode") or "") if acquired_api_mode is None else acquired_api_mode
+    route = resolve_invocation_route(InvocationRequest(
+        provider=provider, model=model, base_url=str(runtime.get("base_url") or ""),
+        configured_api_mode=api_mode, configured_provider=provider,
+        openai_runtime="codex_app_server" if runtime.get("runtime_kind") == "app_server" else "",
+    ))
+    runtime["base_url"] = route.base_url
+    runtime["api_mode"] = route.api_mode
+    runtime["runtime_kind"] = route.runtime_kind
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:

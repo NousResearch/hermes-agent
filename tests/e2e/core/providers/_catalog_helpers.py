@@ -154,14 +154,14 @@ _CATALOG: list[Row] | None = None
 
 _DISCOVER = """
 import json, providers
-from hermes_cli.providers import host_mandated_api_mode
+from providers.routing import endpoint_api_mode
 out = []
 for p in providers.list_providers():
-    key = next((e for e in p.env_vars if not e.endswith("_BASE_URL")), None)
+    key = next(iter(p.env_vars), None)
     out.append(dict(name=p.name, api_mode=p.api_mode, auth_type=p.auth_type, key_env=key,
                     base_url=p.base_url, aliases=list(p.aliases),
                     supports_model_listing=bool(p.supports_model_listing),
-                    host_mandated=host_mandated_api_mode(p.base_url) is not None))
+                    host_mandated=endpoint_api_mode(p.base_url) is not None))
 print("CATALOG=" + json.dumps(out))
 """
 

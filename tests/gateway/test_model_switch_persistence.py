@@ -207,7 +207,7 @@ class TestOneTurnNeverPersisted:
 
         import gateway.run as gateway_run
         from gateway.run import GatewayRunner
-        from hermes_cli.model_switch import ModelSwitchResult
+        from gateway.model_switch_resolution import GatewayModelSwitchResult as ModelSwitchResult
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -220,7 +220,7 @@ class TestOneTurnNeverPersisted:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch.switch_model",
+            "gateway.model_switch_resolution.resolve_model_switch",
             lambda **kw: ModelSwitchResult(
                 success=True,
                 new_model="gpt-5.5",

@@ -6,6 +6,7 @@ import pytest
 
 from agent import auxiliary_client, image_routing, model_metadata
 from hermes_cli import models_local
+from models.metadata import local as local_metadata
 
 
 @pytest.mark.parametrize("credential,expected", [(lambda: "minted", "minted"), ("static", "static")])
@@ -23,7 +24,7 @@ def test_capability_paths_share_concrete_bearer(credential, expected):
         with patch("httpx.Client", lambda **kwargs: client_type(
             **kwargs, transport=httpx.MockTransport(capture)
         )):
-            models_local.ollama_model_supports_thinking("fixture", "http://localhost:11434/v1", credential)
+            local_metadata.ollama_model_supports_thinking("fixture", "http://localhost:11434/v1", credential)
         assert requests and requests[0].headers["Authorization"] == f"Bearer {expected}"
         assert auxiliary_client._runtime_main_value("api_key") is credential
     finally:

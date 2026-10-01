@@ -16,7 +16,7 @@ from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
     _prepare_main_assignment,
 )
-from agent.model_metadata import is_local_endpoint
+from models.metadata.context import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
@@ -52,7 +52,7 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
 
 
 # Blocking budget for /api/model/info's context-length resolution. The resolver
-# chain (agent.model_metadata.get_model_context_length) runs several sequential
+# chain (models.metadata.context.get_model_context_length) runs several sequential
 # provider probes, each with its own multi-second timeout, so an unreachable or
 # blackholed model.base_url can hold this response for tens of seconds — and the
 # Desktop Model Settings page waits on it (#63214).
@@ -66,7 +66,7 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
     by its own per-request timeouts) while the response degrades to
     ``auto_context_length = 0`` ("auto-detected: unknown").
     """
-    from agent.model_metadata import get_model_context_length
+    from models.metadata.context import get_model_context_length
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
     try:
@@ -112,8 +112,8 @@ def get_model_info(profile: Optional[str] = None):
 
         caps = {}
         try:
-            from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+            from agent.models_dev import query_model_metadata
+            mc = query_model_metadata(provider=provider, model=model_name)
             if mc is not None:
                 caps = {name: getattr(mc, name) for name in _CAPABILITY_FIELDS}
         except Exception:
@@ -168,8 +168,16 @@ async def get_model_options(
 
 
 def _nous_recommended_default() -> dict:
-    from hermes_cli.models import recommended_nous_default_model
-    return recommended_nous_default_model()
+    from application_model_selection_defaults import (
+        select_nous_recommended_default,
+        selected_model_id,
+    )
+    selection, free_tier = select_nous_recommended_default()
+    return {
+        "provider": "nous",
+        "model": selected_model_id(selection),
+        "free_tier": bool(free_tier),
+    }
 
 
 @router.get("/api/model/recommended-default")
@@ -186,23 +194,32 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
 
     if slug == "nous":
         try:
-            return _nous_recommended_default()
+            # Account entitlement and OAuth facts must use the requested profile.
+            with _config_profile_scope(profile):
+                return _nous_recommended_default()
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
 
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
-        from hermes_cli.models import pick_silent_default_model
+        from application_model_selection_defaults import (
+            select_silent_default,
+            selected_model_id,
+        )
 
-        # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
-        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
+        # This scoped GET observes model catalogues but never persists configuration.
         with _config_profile_scope(profile):
             payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = [str(m) for m in (row.get("models") or [])]
-                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
+                selection = select_silent_default(slug, models)
+                return {
+                    "provider": slug,
+                    "model": selected_model_id(selection),
+                    "free_tier": None,
+                }
         return {"provider": slug, "model": "", "free_tier": None}
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
@@ -326,7 +343,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         # coroutine interleaving on the event-loop thread could cross-restore module globals).
         if model and not body.confirm_expensive_model:
             try:
-                from hermes_cli.model_selection_guards import combined_selection_warning
+                from application_model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a cache miss — off the loop.
                 warning = await asyncio.to_thread(combined_selection_warning, model, provider=provider, base_url=base_url)

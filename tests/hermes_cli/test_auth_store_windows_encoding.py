@@ -258,7 +258,7 @@ class TestAuthJsonSiblingReaders:
         import hermes_cli.auth as auth_mod
         import hermes_cli.main as main_mod
 
-        # No provider env vars, no .env, and PROVIDER_REGISTRY lookups report
+        # No provider env vars, no .env, and live provider projection lookups report
         # not-logged-in — so the function reaches the auth.json branch and the
         # result is driven by reading the (non-ASCII) store + the active
         # provider's status. The active provider IS logged in, so the UTF-8

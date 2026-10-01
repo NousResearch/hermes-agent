@@ -36,10 +36,8 @@ from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
-from agent.model_metadata import (
-    CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
-    strip_opaque_replay_items,
-)
+from agent.model_metadata import CHARS_PER_TOKEN, estimate_messages_tokens_rough, estimate_tokens_rough, strip_opaque_replay_items
+from models.metadata.context import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER

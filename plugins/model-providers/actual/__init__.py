@@ -65,10 +65,8 @@ class ActualProfile(ProviderProfile):
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Use the selected route, then config.yaml, then the legacy environment override."""
-        from hermes_cli.auth import (
-            normalize_actual_base_url,
-            resolve_api_key_provider_credentials,
-        )
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+        from providers.route_identity import normalize_actual_base_url
 
         base_url = normalize_actual_base_url(
             base_url or resolve_api_key_provider_credentials("actual")["base_url"]
@@ -85,6 +83,7 @@ actual = ActualProfile(
     signup_url="https://actual.inc",
     env_vars=("ACTUAL_API_KEY",),
     base_url=DEFAULT_ACTUAL_BASE_URL,
+    base_url_env_var="ACTUAL_BASE_URL",
     auth_type="api_key",
     api_mode="chat_completions",
 )

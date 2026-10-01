@@ -275,7 +275,7 @@ async def test_status_command_resolves_window_of_session_only_model_switch():
     with patch("gateway.run._load_gateway_config", return_value=config), patch(
         "gateway.run._resolve_runtime_agent_kwargs"
     ) as default_runtime, patch(
-        "agent.model_metadata.get_model_context_length", return_value=1_048_576
+        "models.metadata.context.get_model_context_length", return_value=1_048_576
     ) as lookup:
         result = await runner._handle_message(_make_event("/status"))
 
@@ -293,14 +293,14 @@ async def test_status_command_resolves_window_of_session_only_model_switch():
 async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
     """A model the resolver cannot size falls to DEFAULT_FALLBACK_CONTEXT; /status must not present
     that invented number as the window (a catalog-listed model of the same size still counts)."""
-    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+    from models.metadata.context import DEFAULT_FALLBACK_CONTEXT
 
     runner = _runner_with_session_override(
         {"model": "proxy-mystery-model", "provider": "custom:proxy", "base_url": "http://127.0.0.1:1/v1"},
         last_prompt_tokens=4_321,
     )
     with patch("gateway.run._load_gateway_config", return_value={}), patch(
-        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+        "models.metadata.context.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
     ):
         result = await runner._handle_message(_make_event("/status"))
     assert "**Context:** ~4,321 tokens" in result
@@ -309,7 +309,7 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
     runner = _runner_with_session_override(
         {"model": "grok-4", "provider": "xai", "base_url": ""}, last_prompt_tokens=4_321)
     with patch("gateway.run._load_gateway_config", return_value={}), patch(
-        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+        "models.metadata.context.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
     ):
         result = await runner._handle_message(_make_event("/status"))
     assert f"**Context:** 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} (2%)" in result
@@ -343,7 +343,7 @@ async def test_status_command_default_route_keeps_runtime_endpoint_and_context_p
         with patch("gateway.run._load_gateway_config", return_value=config), patch(
             "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
         ) as default_runtime, patch(
-            "agent.model_metadata.get_model_context_length",
+            "models.metadata.context.get_model_context_length",
             side_effect=lambda _model, **kw: kw["config_context_length"] or 8_192,
         ) as lookup:
             result = await runner._handle_message(_make_event("/status"))
@@ -456,7 +456,7 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
     monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100000,
     )
 
@@ -527,7 +527,7 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
 
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100000,
     )
 
@@ -680,7 +680,7 @@ async def test_context_command_keeps_configured_window_without_resident_agent():
         "hermes_cli.config.get_compatible_custom_providers",
         return_value=config["custom_providers"],
     ), patch(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         side_effect=lambda *args, **kwargs: kwargs.get("config_context_length") or 131_072,
     ) as context_lookup:
         result = await runner._handle_context_command(_make_event("/context"))

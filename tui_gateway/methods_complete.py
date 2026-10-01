@@ -299,14 +299,14 @@ def _(rid, params: dict) -> dict:
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.provider_auth import get_provider_config
     from hermes_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
     if not slug or not api_key:
         return _err(rid, 4001, "slug and api_key are required")
     if is_managed():
         return _err(rid, 4006, "managed install — credentials are read-only")
-    if not (pconfig := PROVIDER_REGISTRY.get(slug)):
+    if not (pconfig := get_provider_config(slug)):
         return _err(rid, 4002, f"unknown provider: {slug}")
     if pconfig.auth_type != "api_key":
         return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `hermes model` to configure")
@@ -339,11 +339,12 @@ def _(rid, params: dict) -> dict:
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from hermes_cli.auth import clear_provider_auth
+    from hermes_cli.provider_auth import get_provider_config
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
-    pconfig = PROVIDER_REGISTRY.get(slug)
+    pconfig = get_provider_config(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
     env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
     cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in env_vars])

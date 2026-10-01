@@ -7,7 +7,7 @@ live session exceeds a configurable token threshold.
 
 from unittest.mock import patch
 
-from hermes_cli.model_selection_guards import (
+from application_model_selection_guards import (
     DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD,
     SelectionContext,
     _context_cache_guard,

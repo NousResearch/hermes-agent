@@ -391,9 +391,10 @@ async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
     (the transfer's consent link and code) and hands that to the UI, then the poller drains the rest.
     Without a free-tier identity it is the plain device-code flow."""
     from hermes_cli import anon_auth
-    from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
+    from hermes_cli.auth import _request_device_code
+    from hermes_cli.provider_auth import get_provider_config
     from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
-    pconfig = PROVIDER_REGISTRY["nous"]
+    pconfig = get_provider_config("nous")
     portal_base_url = (
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
     ).rstrip("/")

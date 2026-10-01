@@ -1,0 +1,18 @@
+{
+  "base": "50dc83cfb4",
+  "external_exceptions": [
+    "hermes_cli.model_catalog.seed_cache_from_checkout: tests/compat/old_updater_surface.json and shipped updater import",
+    "Existing PLUGIN-COMPAT pointers: compat_manifest.json; retarget only, never use in-tree"
+  ],
+  "migration_window": "closed at Phase 5.9.7; see PHASE5_9_CLOSEOUT.md",
+  "production_python_files": 2138,
+  "original_reference_rows": 78,
+  "definition_rows": 249,
+  "final_dispositions": {
+    "consolidate under canonical owner": 56,
+    "delete": 5,
+    "retain as application acquisition/presentation": 188
+  },
+  "audit": "All tracked and untracked production Python: AST static imports and literal import_module/__import__ calls. Tests and tooling excluded.",
+  "structural_graph": "Fresh Lexicon refresh command failed; authoritative all-production source gates passed."
+}

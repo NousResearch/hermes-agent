@@ -284,7 +284,7 @@ class TestRunConversationRecoversFromCorruptImage400:
             patch.object(agent, "_cleanup_task_resources"),
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
-            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("models.metadata.context.get_model_context_length", return_value=200000),
         ):
             result = agent.run_conversation(
                 "did that look right?", conversation_history=history
@@ -375,7 +375,7 @@ class TestRunConversationRecoversFromCorruptImage400:
             patch.object(agent, "_cleanup_task_resources"),
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
-            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("models.metadata.context.get_model_context_length", return_value=200000),
         ):
             result = agent.run_conversation(
                 "did that look right?", conversation_history=history

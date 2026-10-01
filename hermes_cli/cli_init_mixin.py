@@ -143,8 +143,8 @@ class CLIInitMixin:
         if self.model == "":  # auto-detect from a local server
             _base_url = _model_config.get("base_url") or ""
             if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):
-                from hermes_cli.runtime_provider import _auto_detect_local_model
-                self.model = _auto_detect_local_model(_base_url) or self.model
+                from models.catalog_probe import detect_single_openai_model
+                self.model = detect_single_openai_model(_base_url) or self.model
         # Provider normalisation may silently override the default but must warn for an
         # explicit choice (a config model equal to the global fallback is NOT explicit).
         self._model_is_default = not model and not _config_model
@@ -180,6 +180,7 @@ class CLIInitMixin:
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
+        self.runtime_kind = "http"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (

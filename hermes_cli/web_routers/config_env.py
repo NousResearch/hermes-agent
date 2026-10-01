@@ -25,7 +25,8 @@ from hermes_cli.web_server_profiles import (
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
-from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+from providers.routing import canonicalize_api_mode
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -437,7 +438,7 @@ def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
     spelling), canonicalized; ``""`` = runtime auto-detect. Mirrors the read order of
     ``runtime_provider_custom._get_named_custom_provider``."""
     raw = str(entry.get("api_mode") or entry.get("transport") or "")
-    mode = _canonical_api_mode(raw).lower()
+    mode = canonicalize_api_mode(raw).lower()
     return mode if mode in _DESKTOP_API_MODES else ""
 
 
@@ -834,7 +835,7 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
     # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
     # base that actually served /models (#65488) — that is the URL the runtime will persist.
-    mode = _canonical_api_mode(body.api_mode or "").lower() or _auto_api_mode(resolved)
+    mode = canonicalize_api_mode(body.api_mode or "").lower() or _auto_api_mode(resolved)
     probe_model = (body.model or "").strip() or (ids[0] if ids else "")
     try:
         async with _endpoint_probe_client(resolved, 8.0) as client:
@@ -879,10 +880,12 @@ _TRANSPORT_LABELS = {"chat_completions": "Chat Completions", "codex_responses": 
 
 
 def _auto_api_mode(base_url: str) -> str:
-    """The transport the runtime falls back to for an endpoint without a pinned ``api_mode``
-    (same resolver as ``runtime_provider_custom._custom_runtime``)."""
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
-    return _detect_api_mode_for_url(base_url) or "chat_completions"
+    """Canonical transport for an otherwise unpinned custom endpoint."""
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
+    return resolve_invocation_route(
+        InvocationRequest(provider="custom", base_url=base_url or "")
+    ).api_mode
 
 
 async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: Dict[str, str]) -> str:
@@ -917,7 +920,7 @@ def _endpoint_probe_client(url: str, timeout: float):
     system proxy (Clash on Windows, corporate) answered the ``127.0.0.1`` probe with its own error
     page and the GUI reported "advertised no models" while the CLI saw the model (#63472)."""
     import httpx
-    from agent.model_metadata import is_local_endpoint
+    from models.metadata.context import is_local_endpoint
     return httpx.AsyncClient(timeout=httpx.Timeout(timeout), trust_env=not is_local_endpoint(url))
 
 

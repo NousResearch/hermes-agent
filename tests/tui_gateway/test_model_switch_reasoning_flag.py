@@ -27,8 +27,8 @@ def _quiet_switch(monkeypatch):
         success=True, new_model="new/model", target_provider="nous", base_url="", api_key="key",
         api_mode="chat_completions", warning_message="", model_info=None, error_message="",
         runtime_capabilities=None)
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: result)
-    monkeypatch.setattr("hermes_cli.model_switch.persist_model_selection", lambda _r: None)
+    monkeypatch.setattr("tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **_kw: result)
+    monkeypatch.setattr("application_model_switch_persistence.persist_model_selection", lambda *_args: None)
     monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *a, **k: None)
     for name in ("_restart_slash_worker", "_persist_live_session_runtime", "_persist_live_session_system_prompt",
                  "_append_model_switch_marker", "_emit_session_info"):
@@ -62,3 +62,27 @@ def test_reasoning_flag_with_global_writes_config_and_drops_the_pin(_quiet_switc
 
     with pytest.raises(ValueError):
         server._apply_model_switch("sid", {"agent": _Agent()}, "new/model --reasoning turbo")
+
+def test_context_cache_confirmation_uses_profile_threshold(monkeypatch):
+    import application_model_selection_guards as guards
+
+    monkeypatch.setattr(guards, "_cost_warning", lambda *args: None)
+    monkeypatch.setattr(guards, "_data_warning", lambda *args: None)
+    agent = SimpleNamespace(
+        context_compressor=SimpleNamespace(last_prompt_tokens=60_000),
+        model="old-model",
+    )
+    result = SimpleNamespace(
+        new_model="new-model", target_provider="openrouter", base_url="",
+        api_key="", model_info=None, warning_message="",
+    )
+    trigger = server._expensive_model_confirm(
+        result, "", "", agent, {"model": {"switch_context_confirm_tokens": 50_000}},
+    )
+    assert trigger and trigger["confirm_required"]
+    assert "50,000" in trigger["confirm_message"]
+
+    muted = server._expensive_model_confirm(
+        result, "", "", agent, {"model": {"switch_context_confirm_tokens": 70_000}},
+    )
+    assert muted is None

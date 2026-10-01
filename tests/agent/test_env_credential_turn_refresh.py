@@ -215,11 +215,11 @@ CUSTOM_BASE = "https://api.longcat.example/openai/v1"
 def named_custom_provider(monkeypatch):
     """Register a named custom provider (config `providers.longcat` block)."""
     block = {"name": "longcat", "base_url": CUSTOM_BASE, "key_env": "LONGCAT_API_KEY"}
-    import hermes_cli.runtime_provider as rp
+    import agent.configured_provider_resolution as configured
 
     monkeypatch.setattr(
-        rp,
-        "_get_named_custom_provider",
+        configured,
+        "get_configured_provider_entry",
         lambda requested: block if requested == "longcat" else None,
     )
     return block
@@ -227,7 +227,7 @@ def named_custom_provider(monkeypatch):
 
 class TestNamedCustomProviders:
     """#67935: named custom providers resolve to provider="custom" with no
-    PROVIDER_REGISTRY entry — their `key_env` credential must refresh too."""
+    live provider projection entry — their `key_env` credential must refresh too."""
 
     def _make_custom_agent(self, *, api_key="no-key-required"):
         agent = _make_agent(provider="custom", base_url=CUSTOM_BASE, api_key=api_key)

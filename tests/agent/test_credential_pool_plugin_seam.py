@@ -59,8 +59,8 @@ def plugin_profiles():
                                                 base_url="https://example.invalid/v1"))
     yield seen
     for name in ("example-oauth", "example-oauth-nohook"):
-        providers._REGISTRY.pop(name, None)
-    providers._PROVIDER_LIST_CACHE = None
+        providers.registry._REGISTRY.pop(name, None)
+    providers.registry._PROVIDER_LIST_CACHE = None
 
 
 def test_pool_refresh_dispatches_to_profile_hook(plugin_profiles, monkeypatch):

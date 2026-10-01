@@ -18,7 +18,7 @@ class TestMinimaxM3StaleCacheGuard:
     def test_m2_cache_not_clobbered(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import models.metadata.context as mm
         importlib.reload(mm)
         base = "https://api.minimaxi.com/anthropic"
         # 204,800 is the CORRECT value for M2.x — guard must not touch it.
@@ -110,17 +110,13 @@ class TestMinimaxBetaHeaders:
 
 
 class TestMinimaxApiMode:
-    """Verify determine_api_mode returns anthropic_messages for MiniMax providers.
-
-    The MiniMax /anthropic endpoint speaks Anthropic Messages wire format,
-    not OpenAI chat completions.  The overlay transport must reflect this
-    so that code paths calling determine_api_mode() without a base_url
-    (e.g. /model switch) get the correct api_mode.
-    """
+    """Verify the canonical route policy selects Anthropic Messages for MiniMax."""
 
     def test_minimax_returns_anthropic_messages(self):
-        from hermes_cli.providers import determine_api_mode
-        assert determine_api_mode("minimax") == "anthropic_messages"
+        from providers.routing import InvocationRequest, resolve_invocation_route
+        assert resolve_invocation_route(
+            InvocationRequest(provider="minimax")
+        ).api_mode == "anthropic_messages"
 
 
 

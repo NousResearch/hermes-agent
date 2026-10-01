@@ -77,7 +77,7 @@ def _make_agent(tmp_path: Path) -> AIAgent:
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", tmp_path),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("models.metadata.context.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
             api_key="test-key",

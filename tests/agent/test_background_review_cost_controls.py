@@ -37,7 +37,8 @@ class _FakeAgent:
         return {
             "api_key": "parent-key",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_mode": "codex_app_server",
+            "api_mode": "codex_responses",
+            "runtime_kind": "app_server",
         }
 
 

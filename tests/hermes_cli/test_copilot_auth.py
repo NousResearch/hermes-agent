@@ -1,4 +1,5 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 import pytest
 from unittest.mock import patch
@@ -120,7 +121,7 @@ class TestRequestHeaders:
     """Copilot API header generation."""
 
     def test_default_headers_include_openai_intent(self):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from providers import copilot_request_headers
         headers = copilot_request_headers()
         assert headers["Openai-Intent"] == "conversation-edits"
         assert headers["User-Agent"] == "HermesAgent/1.0"
@@ -128,20 +129,20 @@ class TestRequestHeaders:
 
 
     def test_no_vision_header_by_default(self):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from providers import copilot_request_headers
         headers = copilot_request_headers()
         assert "Copilot-Vision-Request" not in headers
 
 
 class TestCopilotDefaultHeaders:
-    """The models.py copilot_default_headers uses copilot_auth."""
+    """Copilot transport headers are provider-owned."""
 
 
     def test_param_passthrough_both_values(self):
         """is_agent_turn param correctly maps to x-initiator for both True and False."""
-        from hermes_cli.models import copilot_default_headers
+        from providers import copilot_request_headers
         for is_agent, expected in [(True, "agent"), (False, "user")]:
-            headers = copilot_default_headers(is_agent_turn=is_agent)
+            headers = copilot_request_headers(is_agent_turn=is_agent)
             assert headers["x-initiator"] == expected, (
                 f"is_agent_turn={is_agent} should produce x-initiator={expected!r}, "
                 f"got {headers['x-initiator']!r}"
@@ -149,12 +150,39 @@ class TestCopilotDefaultHeaders:
 
 
 class TestEnvVarOrder:
-    """PROVIDER_REGISTRY has correct env var order."""
+    """live provider projection has correct env var order."""
 
     def test_copilot_env_vars_include_copilot_github_token(self):
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        copilot = PROVIDER_REGISTRY["copilot"]
+
+        copilot = get_provider_config("copilot")
         assert "COPILOT_GITHUB_TOKEN" in copilot.api_key_env_vars
         # COPILOT_GITHUB_TOKEN should be first
         assert copilot.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN"
 
+
+class TestRuntimeCredentials:
+    """Copilot's application-owned runtime credential projection."""
+
+    def test_exchanged_token_and_account_endpoint(self, monkeypatch):
+        from hermes_cli import auth
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setattr(
+            copilot_auth,
+            "resolve_copilot_token",
+            lambda: ("ghu_raw_token", "COPILOT_GITHUB_TOKEN"),
+        )
+        monkeypatch.setattr(
+            copilot_auth,
+            "get_copilot_api_token",
+            lambda raw: ("copilot-api-token", "https://enterprise.githubcopilot.example"),
+        )
+
+        creds = auth.resolve_copilot_provider_credentials()
+
+        assert creds == {
+            "provider": "copilot",
+            "api_key": "copilot-api-token",
+            "base_url": "https://enterprise.githubcopilot.example",
+            "source": "COPILOT_GITHUB_TOKEN",
+        }

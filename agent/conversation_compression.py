@@ -2071,7 +2071,7 @@ def _lower_threshold_to_aux_context(
 
 def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
     """True when the auxiliary compression client is the main model on the main endpoint."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from providers import normalize_route_base_url
     if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
         return False
     main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
@@ -2089,7 +2089,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
             _resolve_task_provider_model, _try_configured_fallback_for_unavailable_client,
             get_text_auxiliary_client,
         )
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+        from models.metadata.context import MINIMUM_CONTEXT_LENGTH, get_model_context_length
         # Provider may be "auto"; fall back to the client's base_url hostname so the
         # user can tell where the compression model is actually called.
         try:
@@ -2194,7 +2194,7 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
     lazy probe in ``compress_context`` to re-raise hard rejections."""
     if getattr(agent, "_compression_feasibility_checked", False) or not getattr(agent, "context_compressor", None):
         return
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    from models.metadata.context import MINIMUM_CONTEXT_LENGTH
     if int(estimated_tokens or 0) < MINIMUM_CONTEXT_LENGTH:
         return
     try:
@@ -4061,7 +4061,7 @@ def compress_context(
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native
     # summary prompt to inject into. `is True`: MagicMock attributes are truthy.
     checkpoint_required = getattr(agent, "compression_checkpoint_required", False) is True
-    if getattr(agent, "api_mode", None) == "codex_app_server":
+    if getattr(agent, "runtime_kind", None) == "app_server":
         if checkpoint_required:
             raise _checkpoint_blocked(
                 "codex_app_server owns the authoritative thread and does not expose a truthful pre-compaction transcript boundary"

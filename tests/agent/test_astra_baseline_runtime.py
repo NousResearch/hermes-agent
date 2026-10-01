@@ -34,7 +34,7 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
 
     assert agent.api_mode == "codex_responses"
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+    from models.metadata.context import DEFAULT_CONTEXT_LENGTHS
 
     assert agent.context_compressor.context_length == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
     kwargs = agent._get_transport().build_kwargs(
@@ -50,10 +50,7 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
 
 def test_astra_codex_oauth_fallback_uses_backend_context_limit():
     """OAuth keeps the Codex backend's 272K fallback; direct API metadata remains 1.05M."""
-    from agent.model_metadata import (
-        DEFAULT_CONTEXT_LENGTHS,
-        _resolve_codex_oauth_context_length_with_source,
-    )
+    from models.metadata.context import DEFAULT_CONTEXT_LENGTHS, _resolve_codex_oauth_context_length_with_source
 
     codex_ctx, source = _resolve_codex_oauth_context_length_with_source("gpt-6-astra")
     assert source == "fallback"
@@ -63,7 +60,7 @@ def test_astra_codex_oauth_fallback_uses_backend_context_limit():
 @pytest.mark.parametrize("advertised,expected", [(272_000, 900_000), (200_000, 200_000), (1_050_000, 1_050_000)])
 def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, tmp_path, advertised, expected):
     """Only the known stale advertisement is lifted; the alias never reaches the wire."""
-    from agent import model_metadata as metadata
+    from models.metadata import context as metadata
     from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, codex_supported_efforts
     from agent.transports.codex import ResponsesApiTransport
 
@@ -96,7 +93,7 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
 def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(monkeypatch, tmp_path, provider, model):
     from hermes_cli import models
     from hermes_cli.inventory import ConfigContext, _append_unconfigured_rows
-    from hermes_cli.model_switch_providers import _finalize_picker_rows
+    from application_provider_discovery import _finalize_picker_rows
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "synthetic-account")

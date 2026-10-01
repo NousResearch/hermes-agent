@@ -8,7 +8,7 @@ kills during long prefill phases.
 
 import pytest
 
-from agent.model_metadata import is_local_endpoint
+from models.metadata.context import is_local_endpoint
 
 
 class TestIsLocalEndpoint:

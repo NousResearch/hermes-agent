@@ -12,11 +12,11 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import hermes_cli.model_switch as ms
-from hermes_cli import model_switch_providers
+import application_picker_prewarm as picker_prewarm
 
 
 def _reset_guard():
-    model_switch_providers._picker_prewarm_done.clear()
+    picker_prewarm._picker_prewarm_done.clear()
 
 
 
@@ -26,19 +26,19 @@ def test_prewarm_guard_is_once_per_process():
     long-lived process never leaks one OS thread per call."""
     _reset_guard()
     with patch.object(ms, "list_authenticated_providers", return_value=[]):
-        t1 = model_switch_providers.prewarm_picker_cache_async()
+        t1 = picker_prewarm.prewarm_picker_cache_async()
         assert t1 is not None
         t1.join(timeout=10)
         # Subsequent calls return None (guard set) — no new thread.
-        assert model_switch_providers.prewarm_picker_cache_async() is None
-        assert model_switch_providers.prewarm_picker_cache_async() is None
+        assert picker_prewarm.prewarm_picker_cache_async() is None
+        assert picker_prewarm.prewarm_picker_cache_async() is None
     _reset_guard()
 
 
 def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch):
     """End-to-end regression for #72762: the active custom endpoint must be
     warm by the time the user opens ``/model``, not just first-class
-    ``PROVIDER_REGISTRY`` providers.
+    ``live provider projection`` providers.
 
     The cache is keyed purely on ``base_url`` (see ``cached_fetch_api_models``
     in ``hermes_cli/models.py``), so this is not specific to any named
@@ -106,7 +106,7 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
             probe_current_custom_provider=True,
         )
 
-    t = model_switch_providers.prewarm_picker_cache_async()
+    t = picker_prewarm.prewarm_picker_cache_async()
     assert t is not None
     t.join(timeout=10)
 
@@ -128,5 +128,3 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
     assert row2["models"] == ["gateway-model-a", "gateway-model-b"]
 
     _reset_guard()
-
-

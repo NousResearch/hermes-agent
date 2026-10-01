@@ -180,7 +180,7 @@ def fail_model_probe(*args, **kwargs):
 
 
 models.fetch_api_models = fail_model_probe
-model_switch.get_model_capabilities = lambda *args, **kwargs: None
+model_switch.query_model_metadata = lambda *args, **kwargs: None
 model_switch.get_model_info = lambda *args, **kwargs: None
 result = model_switch.switch_model(
     "email-copywriter",

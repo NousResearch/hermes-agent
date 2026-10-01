@@ -1713,8 +1713,8 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self.send(
                 chat_id, "No authenticated models are available for this session.", metadata=metadata)
         try:
-            from hermes_cli.providers import get_label
-            provider_label = get_label(current_provider)
+            from providers.identity import get_provider_label
+            provider_label = get_provider_label(current_provider)
         except Exception:
             provider_label = current_provider
         lines = [

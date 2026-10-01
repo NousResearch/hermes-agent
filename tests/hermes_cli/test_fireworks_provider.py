@@ -1,7 +1,7 @@
 """Focused tests for Fireworks AI first-class provider wiring.
 
 These tests pin the wiring that makes Fireworks a real provider — alias
-resolution through both CLI resolvers, config/doctor/overlay registration,
+resolution through both CLI resolvers, config/doctor/profile registration,
 and credential/base-URL resolution — without
 any live network calls.
 """
@@ -22,7 +22,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import resolve_api_key_provider_credentials
-from hermes_cli.models import normalize_provider
+from providers import normalize_provider
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ class TestFireworksAliases:
 
     @pytest.mark.parametrize("alias", ["fireworks", "fireworks-ai", "fw"])
     def test_providers_normalize_provider(self, alias):
-        from hermes_cli.providers import normalize_provider as normalize_in_providers
+        from providers import normalize_provider as normalize_in_providers
 
         assert normalize_in_providers(alias) == "fireworks"
 
@@ -151,6 +151,6 @@ class TestFireworksAuxiliary:
 
 class TestFireworksModelMetadata:
     def test_url_infers_fireworks(self):
-        from agent.model_metadata import _infer_provider_from_url
+        from models.metadata.context import _infer_provider_from_url
 
         assert _infer_provider_from_url("https://api.fireworks.ai/inference/v1") == "fireworks"

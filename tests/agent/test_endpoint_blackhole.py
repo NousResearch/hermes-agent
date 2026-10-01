@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """Module-level caches must not leak between tests."""
-    from agent import model_metadata
+    from models.metadata import context as model_metadata
     model_metadata._endpoint_blackhole_cache.clear()
     model_metadata._endpoint_probe_path_cache.clear()
     model_metadata._endpoint_model_metadata_cache.clear()
@@ -52,22 +52,22 @@ class TestBlackholeCache:
 
     def test_keyed_on_host_port_not_path(self):
         """Every probe path for one server shares a single entry."""
-        from agent.model_metadata import _endpoint_blackholed, _note_endpoint_blackholed
+        from models.metadata.context import _endpoint_blackholed, _note_endpoint_blackholed
 
         _note_endpoint_blackholed("http://10.0.0.9:30080")
         assert _endpoint_blackholed("http://10.0.0.9:30080/v1") is True
         assert _endpoint_blackholed("http://10.0.0.9:30080/api/v1") is True
 
     def test_different_port_is_independent(self):
-        from agent.model_metadata import _endpoint_blackholed, _note_endpoint_blackholed
+        from models.metadata.context import _endpoint_blackholed, _note_endpoint_blackholed
 
         _note_endpoint_blackholed("http://10.0.0.9:30080/v1")
         assert _endpoint_blackholed("http://10.0.0.9:11434/v1") is False
 
     def test_entry_expires_after_ttl(self):
         """A recovered endpoint (VPN back up) is probed again without a restart."""
-        from agent import model_metadata
-        from agent.model_metadata import _endpoint_blackholed, _note_endpoint_blackholed
+        from models.metadata import context as model_metadata
+        from models.metadata.context import _endpoint_blackholed, _note_endpoint_blackholed
 
         _note_endpoint_blackholed("http://10.0.0.9:30080/v1")
         stale = (
@@ -79,8 +79,8 @@ class TestBlackholeCache:
         assert _endpoint_blackholed("http://10.0.0.9:30080/v1") is False
 
     def test_ttl_zero_disables_short_circuit(self):
-        from agent import model_metadata
-        from agent.model_metadata import _endpoint_blackholed, _note_endpoint_blackholed
+        from models.metadata import context as model_metadata
+        from models.metadata.context import _endpoint_blackholed, _note_endpoint_blackholed
 
         _note_endpoint_blackholed("http://10.0.0.9:30080/v1")
         with patch.object(model_metadata, "_ENDPOINT_BLACKHOLE_TTL_SECONDS", 0.0):
@@ -91,7 +91,7 @@ class TestDetectLocalServerTypeBlackhole:
 
     def test_connect_timeout_aborts_waterfall_after_one_probe(self):
         """Four sequential 2s probes against a dead host must collapse to one."""
-        from agent.model_metadata import _endpoint_blackholed, detect_local_server_type
+        from models.metadata.context import _endpoint_blackholed, detect_local_server_type
 
         client = _client_mock(httpx.ConnectTimeout("timed out"))
         with patch("httpx.Client", return_value=client):
@@ -101,7 +101,7 @@ class TestDetectLocalServerTypeBlackhole:
         assert _endpoint_blackholed(self.URL) is True
 
     def test_second_call_makes_no_request_at_all(self):
-        from agent.model_metadata import detect_local_server_type
+        from models.metadata.context import detect_local_server_type
 
         client = _client_mock(httpx.ConnectTimeout("timed out"))
         with patch("httpx.Client", return_value=client):
@@ -116,7 +116,7 @@ class TestDetectLocalServerTypeBlackhole:
 
         This is the common "local server not started yet" path.
         """
-        from agent.model_metadata import _endpoint_blackholed, detect_local_server_type
+        from models.metadata.context import _endpoint_blackholed, detect_local_server_type
 
         client = _client_mock(httpx.ConnectError("connection refused"))
         with patch("httpx.Client", return_value=client):
@@ -127,7 +127,7 @@ class TestDetectLocalServerTypeBlackhole:
 
     def test_read_timeout_does_not_blackhole(self):
         """A read timeout means the connection was accepted — not a blackhole."""
-        from agent.model_metadata import _endpoint_blackholed, detect_local_server_type
+        from models.metadata.context import _endpoint_blackholed, detect_local_server_type
 
         client = _client_mock(httpx.ReadTimeout("slow"))
         with patch("httpx.Client", return_value=client):
@@ -140,11 +140,11 @@ class TestFetchEndpointModelMetadataBlackhole:
 
     def test_connect_timeout_skips_remaining_candidates(self):
         """A timeout condemns the host, not the URL suffix — one stall, not two."""
-        from agent.model_metadata import _endpoint_blackholed, fetch_endpoint_model_metadata
+        from models.metadata.context import _endpoint_blackholed, fetch_endpoint_model_metadata
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.model_metadata_http.stream",
+                 "agent.model_metadata_http.stream",
                  side_effect=httpx.ConnectTimeout("timed out"),
              ) as get:
             assert fetch_endpoint_model_metadata(self.URL) == {}
@@ -153,11 +153,11 @@ class TestFetchEndpointModelMetadataBlackhole:
         assert _endpoint_blackholed(self.URL) is True
 
     def test_refused_tries_every_candidate_and_does_not_blackhole(self):
-        from agent.model_metadata import _endpoint_blackholed, fetch_endpoint_model_metadata
+        from models.metadata.context import _endpoint_blackholed, fetch_endpoint_model_metadata
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.model_metadata_http.stream",
+                 "agent.model_metadata_http.stream",
                  side_effect=httpx.ConnectError("refused"),
              ) as get:
             assert fetch_endpoint_model_metadata(self.URL) == {}
@@ -167,11 +167,11 @@ class TestFetchEndpointModelMetadataBlackhole:
 
     def test_blackholed_endpoint_issues_no_request(self):
         """force_refresh bypasses the metadata cache, so only the guard can stop it."""
-        from agent.model_metadata import _note_endpoint_blackholed, fetch_endpoint_model_metadata
+        from models.metadata.context import _note_endpoint_blackholed, fetch_endpoint_model_metadata
 
         _note_endpoint_blackholed(self.URL)
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("agent.model_metadata.model_metadata_http.stream") as get:
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
+             patch("agent.model_metadata_http.stream") as get:
             assert fetch_endpoint_model_metadata(self.URL, force_refresh=True) == {}
 
         get.assert_not_called()
@@ -180,7 +180,7 @@ class TestQueryOllamaApiShowBlackhole:
     URL = "http://10.0.0.9:30080/v1"
 
     def test_connect_timeout_records_blackhole(self):
-        from agent.model_metadata import _endpoint_blackholed, _query_ollama_api_show_uncached
+        from models.metadata.context import _endpoint_blackholed, _query_ollama_api_show_uncached
 
         client = _client_mock(httpx.ConnectTimeout("timed out"))
         with patch("httpx.Client", return_value=client):
@@ -190,7 +190,7 @@ class TestQueryOllamaApiShowBlackhole:
         assert _endpoint_blackholed(self.URL) is True
 
     def test_blackholed_endpoint_issues_no_request(self):
-        from agent.model_metadata import _note_endpoint_blackholed, _query_ollama_api_show_uncached
+        from models.metadata.context import _note_endpoint_blackholed, _query_ollama_api_show_uncached
 
         _note_endpoint_blackholed(self.URL)
         with patch("httpx.Client") as client_cls:
@@ -199,7 +199,7 @@ class TestQueryOllamaApiShowBlackhole:
         client_cls.assert_not_called()
 
     def test_read_timeout_does_not_blackhole(self):
-        from agent.model_metadata import _endpoint_blackholed, _query_ollama_api_show_uncached
+        from models.metadata.context import _endpoint_blackholed, _query_ollama_api_show_uncached
 
         client = _client_mock(httpx.ReadTimeout("slow"))
         with patch("httpx.Client", return_value=client):
@@ -211,13 +211,10 @@ class TestQueryLocalContextLengthBlackhole:
     URL = "http://10.0.0.9:30080/v1"
 
     def test_connect_timeout_records_blackhole(self):
-        from agent.model_metadata import (
-            _endpoint_blackholed,
-            _query_local_context_length_uncached,
-        )
+        from models.metadata.context import _endpoint_blackholed, _query_local_context_length_uncached
 
         client = _client_mock(httpx.ConnectTimeout("timed out"))
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client):
             assert _query_local_context_length_uncached("some-model", self.URL) is None
 
@@ -225,13 +222,10 @@ class TestQueryLocalContextLengthBlackhole:
 
     def test_blackholed_endpoint_skips_detection_and_requests(self):
         """The guard sits before detect_local_server_type — nothing runs at all."""
-        from agent.model_metadata import (
-            _note_endpoint_blackholed,
-            _query_local_context_length_uncached,
-        )
+        from models.metadata.context import _note_endpoint_blackholed, _query_local_context_length_uncached
 
         _note_endpoint_blackholed(self.URL)
-        with patch("agent.model_metadata.detect_local_server_type") as detect, \
+        with patch("models.metadata.context.detect_local_server_type") as detect, \
              patch("httpx.Client") as client_cls:
             assert _query_local_context_length_uncached("some-model", self.URL) is None
 
@@ -239,13 +233,10 @@ class TestQueryLocalContextLengthBlackhole:
         client_cls.assert_not_called()
 
     def test_read_timeout_does_not_blackhole(self):
-        from agent.model_metadata import (
-            _endpoint_blackholed,
-            _query_local_context_length_uncached,
-        )
+        from models.metadata.context import _endpoint_blackholed, _query_local_context_length_uncached
 
         client = _client_mock(httpx.ReadTimeout("slow"))
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+        with patch("models.metadata.context.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client):
             assert _query_local_context_length_uncached("some-model", self.URL) is None
 

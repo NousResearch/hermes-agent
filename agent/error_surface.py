@@ -103,7 +103,7 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
 
 def _provider_label(provider: str) -> str:
     try:
-        from hermes_cli.models import provider_label
+        from application_provider_groups import provider_label
 
         return provider_label(provider)
     except Exception:  # pragma: no cover — advisory only

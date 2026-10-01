@@ -1,7 +1,7 @@
 """Integration test for the codex_app_server runtime path through AIAgent.
 
 Verifies that:
-  - api_mode='codex_app_server' is accepted on AIAgent construction
+  - runtime_kind='app_server' is accepted on AIAgent construction
   - run_conversation() takes the early-return path and never enters the
     chat completions loop
   - Projected messages from a fake Codex session land in the messages list
@@ -58,7 +58,8 @@ def _make_codex_agent(**kwargs):
         api_key="stub",
         base_url="https://stub.invalid",
         provider="openai",
-        api_mode="codex_app_server",
+        api_mode="codex_responses",
+        runtime_kind="app_server",
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -521,7 +522,8 @@ class TestReviewForkApiModeDowngrade:
         # Mock _current_main_runtime to return the parent's codex_app_server
         # state so we can confirm the helper detects + downgrades it.
         agent._current_main_runtime = lambda: {
-            "api_mode": "codex_app_server",
+            "api_mode": "codex_responses",
+            "runtime_kind": "app_server",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "stub-token",
         }
@@ -533,6 +535,7 @@ class TestReviewForkApiModeDowngrade:
             # Set bare attributes the rest of the spawn function reads
             # so it can finish without exploding.
             self.api_mode = kwargs.get("api_mode")
+            self.runtime_kind = kwargs.get("runtime_kind")
             self.provider = kwargs.get("provider")
             self.model = kwargs.get("model")
             self._memory_write_origin = None
@@ -566,10 +569,8 @@ class TestReviewForkApiModeDowngrade:
                     break
                 time.sleep(0.1)
 
-        assert captured.get("api_mode") == "codex_responses", (
-            f"review fork should be downgraded to codex_responses when "
-            f"parent is codex_app_server; got {captured.get('api_mode')!r}"
-        )
+        assert captured.get("api_mode") == "codex_responses"
+        assert captured.get("runtime_kind") == "http"
 
 
 class TestErrorHandling:
@@ -664,7 +665,7 @@ class TestQuotaFailureFallsOverToConfiguredFallback:
         assert result["final_response"] == "fallback answered"
         assert result["completed"] is True
         assert "/v1/chat/completions" in calls
-        assert agent.api_mode != "codex_app_server"
+        assert agent.runtime_kind != "app_server"
 
 
 class TestSessionRetirementOnRunAgent:

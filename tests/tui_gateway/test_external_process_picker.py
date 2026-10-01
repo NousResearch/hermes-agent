@@ -54,11 +54,14 @@ def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
     home, profile = picker_env
     from hermes_cli.config import save_config
     from hermes_cli.main_provider_setup import _build_provider_picker_rows
-    from hermes_cli.models import _PROVIDER_LABELS, list_available_providers, provider_model_ids
+    from hermes_cli.models import list_available_providers
+    from hermes_cli.models import provider_model_ids
+    from hermes_cli.provider_catalog import provider_catalog
     from tui_gateway import server
 
     assert any(row["id"] == profile.name for row in list_available_providers())
-    rows, _ = _build_provider_picker_rows({}, "", _PROVIDER_LABELS, {})
+    provider_labels = {descriptor.slug: descriptor.label for descriptor in provider_catalog()}
+    rows, _ = _build_provider_picker_rows({}, "", provider_labels, {})
     assert any(row[0] == profile.name for row in rows)
     # The account's live picker (the profile's own probe) is what the shared pickers list,
     # merged with the pinned catalog so a declared id the probe omits is still selectable.

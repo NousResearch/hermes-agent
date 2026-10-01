@@ -182,7 +182,8 @@ class TestActiveTurnRedirect:
     def test_codex_app_server_hard_stop_reaches_native_session(self):
         agent = _bare_agent()
         calls = []
-        agent.api_mode = "codex_app_server"
+        agent.api_mode = "codex_responses"
+        agent.runtime_kind = "app_server"
         agent._codex_session = type(
             "_CodexSession",
             (),

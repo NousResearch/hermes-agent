@@ -325,7 +325,8 @@ def run_sign_in(
     *client_factory* is the HTTP client seam, ``client_factory(timeout_seconds, verify)``.
     """
     from hermes_cli import anon_auth as _core
-    from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
+    from hermes_cli.auth import _resolve_verify
+    from hermes_cli.provider_auth import get_provider_config
     from hermes_cli.auth_device_flow import _request_device_code
     from hermes_cli.auth_nous import _nous_http_client
 
@@ -363,7 +364,7 @@ def run_sign_in(
     outcome: Dict[str, Any] = {}
     account_state: Optional[Dict[str, Any]] = None
     try:
-        pconfig = PROVIDER_REGISTRY["nous"]
+        pconfig = get_provider_config("nous")
         client_id, scope_str = pconfig.client_id, pconfig.scope
         # A malformed CA bundle raises here, before the wire: inside the try, so it lands on Failed.
         verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)

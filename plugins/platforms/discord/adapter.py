@@ -5644,8 +5644,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
         """Two-step select-menu model picker (provider → model) via ``ModelPickerView``."""
         def _build(_channel):
             try:
-                from hermes_cli.providers import get_label
-                provider_label = get_label(current_provider)
+                from providers.identity import get_provider_label
+                provider_label = get_provider_label(current_provider)
             except Exception:
                 provider_label = current_provider
             embed = discord.Embed(
@@ -6555,7 +6555,7 @@ def _define_discord_view_classes() -> None:
 
         async def _expensive_warning_for(self, model_id: str):
             try:
-                from hermes_cli.model_selection_guards import combined_selection_warning
+                from application_model_selection_guards import combined_selection_warning
                 # Pricing lookup can hit models.dev on a cache miss — keep it off the event loop.
                 return await asyncio.to_thread(combined_selection_warning, model_id, provider=self._selected_provider)
             except Exception:
@@ -6617,8 +6617,8 @@ def _define_discord_view_classes() -> None:
                 return
             self._build_provider_select()
             try:
-                from hermes_cli.providers import get_label
-                provider_label = get_label(self.current_provider)
+                from providers.identity import get_provider_label
+                provider_label = get_provider_label(self.current_provider)
             except Exception:
                 provider_label = self.current_provider
             await self._edit(

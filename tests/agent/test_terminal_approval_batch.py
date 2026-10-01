@@ -31,7 +31,7 @@ def _agent():
         ]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("models.metadata.context.fetch_model_metadata", return_value={}),
     ):
         return AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1",
                        quiet_mode=True, skip_context_files=True, skip_memory=True, platform="desktop")

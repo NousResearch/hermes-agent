@@ -632,7 +632,7 @@ def _configure_model(profile_dir, params, applied):
     # misbehaving guard must never break the save (treated as "no warning"), matching
     # ``_apply_model_switch``.
     if not is_truthy_value(params.get("confirm_expensive_model", False)):
-        warn = _lazy("hermes_cli.model_selection_guards", "combined_selection_warning")
+        warn = _lazy("application_model_selection_guards", "combined_selection_warning")
         confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
     if confirm_message is None:
         applied["model"] = _best_effort(lambda: _pin_profile_model(profile_dir, provider, model))

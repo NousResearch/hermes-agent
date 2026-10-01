@@ -103,3 +103,74 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
         peer.shutdown()
         peer.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_prepare_model_rewrites_frozen_policy_and_clears_provider_credential(
+    tmp_path, monkeypatch
+):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    from gateway.session_model_resolution import SessionModelResolution
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import LocalSessionPolicy
+
+    old = LocalSessionPolicy(
+        source="cli",
+        platform="cli",
+        cwd=str(tmp_path),
+        model="old-model",
+        toolsets=(),
+        config_json=json.dumps({
+            "model": {
+                "default": "old-model",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+            }
+        }),
+        request_json=json.dumps({"source": "cli"}),
+        terminal_json=json.dumps({"TERMINAL_CWD": str(tmp_path)}),
+        credential_ref="old-ref",
+    )
+    authority = SimpleNamespace(_local_launch_keys={"old-ref": "old-key"})
+    live = SimpleNamespace(source=object(), route="route")
+    prepared = {
+        "snapshot": {
+            "receipt": {
+                "policy": asdict(old),
+                "session_id": "session-1",
+            }
+        }
+    }
+    resolved = SessionModelResolution(
+        model="new-model",
+        provider="anthropic",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        runtime_kind="http",
+        provider_changed=True,
+    )
+    monkeypatch.setattr(
+        "gateway.session_model_resolution.resolve_session_model",
+        lambda **_kwargs: resolved,
+    )
+
+    result = await prepare_model(
+        authority,
+        live,
+        {"model": "new-model", "provider": "anthropic"},
+        prepared,
+    )
+
+    policy = result["policy"]
+    frozen = json.loads(policy["config_json"])
+    assert policy["model"] == "new-model"
+    assert policy["credential_ref"] is None
+    assert frozen["model"] == {
+        "default": "new-model",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+    }
+    assert policy["source"] == old.source
+    assert policy["cwd"] == old.cwd

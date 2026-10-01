@@ -64,7 +64,7 @@ def _direct(wire: str, provider: str, base_url: Any, api_key: str, model: Any, *
 
 def _deepinfra_model(section: Dict[str, Any], kind: str) -> Optional[str]:
     """Configured model, else the first catalog model of ``kind`` (stt/tts)."""
-    from hermes_cli.models import deepinfra_model_ids
+    from application_deepinfra_catalog import deepinfra_model_ids
     return section.get("model") or next(iter(deepinfra_model_ids(kind)), None)
 
 
@@ -140,7 +140,7 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         api_key = tt._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:
             return _relay("no credentials")
-        from hermes_cli.models import deepinfra_base_url
+        from application_deepinfra_catalog import deepinfra_base_url
         model = _deepinfra_model(section, "stt")
         if not model:
             return _relay("no deepinfra stt model")
@@ -199,7 +199,7 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         api_key = tts._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:
             return _relay("no credentials")
-        from hermes_cli.models import deepinfra_base_url
+        from application_deepinfra_catalog import deepinfra_base_url
         di = _section(tts_config, "deepinfra")
         model = _deepinfra_model(di, "tts")
         if not model:

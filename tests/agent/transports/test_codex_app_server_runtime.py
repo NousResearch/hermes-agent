@@ -12,74 +12,36 @@ import threading
 
 import pytest
 
-from hermes_cli.runtime_provider import (
-    _VALID_API_MODES,
-    _maybe_apply_codex_app_server_runtime,
-)
+from providers.routing import InvocationRequest, resolve_invocation_route
 
 
-class TestApiModeRegistration:
-    """The new api_mode must be registered or downstream parsing rejects it."""
+class TestCodexAppServerRouting:
+    """App-server is an execution kind layered over the Responses wire."""
 
-    def test_codex_app_server_is_a_valid_api_mode(self) -> None:
-        assert "codex_app_server" in _VALID_API_MODES
+    def test_default_openai_runtime_is_http(self) -> None:
+        route = resolve_invocation_route(InvocationRequest(
+            provider="openai-api", model="gpt-5",
+        ))
+        assert route.runtime_kind == "http"
 
-
-
-class TestMaybeApplyCodexAppServerRuntime:
-    """The opt-in helper that rewrites api_mode → codex_app_server."""
-
-    @pytest.mark.parametrize(
-        "model_cfg",
-        [
-            None,
-            {},
-            {"openai_runtime": ""},
-            {"openai_runtime": "auto"},
-            {"openai_runtime": "AUTO"},
-            {"other_key": "codex_app_server"},  # wrong key
-        ],
-    )
-    def test_default_off_for_openai(self, model_cfg) -> None:
-        """Default behavior is preserved when the flag is unset/auto."""
-        got = _maybe_apply_codex_app_server_runtime(
-            provider="openai", api_mode="chat_completions", model_cfg=model_cfg
-        )
-        assert got == "chat_completions"
-
-    def test_opt_in_rewrites_openai(self) -> None:
-        got = _maybe_apply_codex_app_server_runtime(
-            provider="openai",
-            api_mode="chat_completions",
-            model_cfg={"openai_runtime": "codex_app_server"},
-        )
-        assert got == "codex_app_server"
-
-
+    def test_opt_in_selects_app_server_without_changing_wire(self) -> None:
+        route = resolve_invocation_route(InvocationRequest(
+            provider="openai-api", model="gpt-5", openai_runtime="codex_app_server",
+        ))
+        assert route.api_mode == "codex_responses"
+        assert route.runtime_kind == "app_server"
 
     @pytest.mark.parametrize(
         "provider",
-        [
-            "anthropic",
-            "openrouter",
-            "xai",
-            "qwen-oauth",
-            "opencode-zen",
-            "bedrock",
-            "",
-        ],
+        ["anthropic", "openrouter", "xai", "qwen-oauth", "opencode-zen", "bedrock", ""],
     )
-    def test_other_providers_never_rerouted(self, provider) -> None:
-        """Non-OpenAI providers MUST NOT be rerouted even with the flag set —
-        codex's app-server can only run OpenAI/Codex auth flows."""
-        got = _maybe_apply_codex_app_server_runtime(
+    def test_other_providers_never_select_app_server(self, provider) -> None:
+        route = resolve_invocation_route(InvocationRequest(
             provider=provider,
-            api_mode="anthropic_messages",
-            model_cfg={"openai_runtime": "codex_app_server"},
-        )
-        assert got == "anthropic_messages", (
-            f"provider={provider!r} should not be rerouted to codex_app_server"
-        )
+            model="model",
+            openai_runtime="codex_app_server",
+        ))
+        assert route.runtime_kind != "app_server"
 
 
 class TestCodexAppServerModule:

@@ -3,9 +3,9 @@
 ``/model --global`` reaches config.yaml from four places (CLI mixin, gateway slash command, TUI
 gateway, dashboard main slot). Each used to hand-roll its own write; the TUI never touched
 ``api_mode`` (stale wire protocol after a switch) and the dashboard wrote ``base_url: ""``. All
-four now go through ``hermes_cli.model_switch.persist_model_selection`` /
-``apply_model_selection``, so the same ``ModelSwitchResult`` must land as the same ``model.*``
-keys on disk — including the api_mode clear and the route-changed context_length clear.
+four now use the shared ``application_model_switch_persistence`` update policy,
+so each surface must write the same ``model.*`` keys on disk — including
+api_mode clearing and route-changed context_length clearing.
 """
 
 from __future__ import annotations
@@ -79,9 +79,29 @@ def _via_dashboard(home):
                          ids=["cli", "gateway", "tui", "dashboard"])
 def test_every_persist_surface_writes_the_same_model_block(seeded_home, monkeypatch, surface):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: _RESULT)
+    if surface is _via_tui:
+        from tui_gateway.model_switch_resolution import TuiModelSwitchResult
+        monkeypatch.setattr(
+            "tui_gateway.model_switch_resolution.resolve_tui_model_switch",
+            lambda **_kw: TuiModelSwitchResult(
+                success=True, new_model=_RESULT.new_model,
+                target_provider=_RESULT.target_provider,
+                base_url=_RESULT.base_url, api_mode=_RESULT.api_mode,
+                is_global=True,
+            ),
+        )
+    if surface is _via_dashboard:
+        from application_dashboard_model_selection import DashboardModelSelection
+        monkeypatch.setattr(
+            "application_dashboard_model_selection.select_dashboard_main_model",
+            lambda **_kw: DashboardModelSelection(
+                new_model=_RESULT.new_model, target_provider=_RESULT.target_provider,
+                base_url=_RESULT.base_url, api_mode=_RESULT.api_mode,
+            ),
+        )
     monkeypatch.setattr("cli.HermesCLI._persist_model_switch_to_session", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.cli_model_switch_mixin._print_switch_summary", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_selection_guards.combined_selection_warning",
+    monkeypatch.setattr("application_model_selection_guards.combined_selection_warning",
                         lambda *a, **k: None, raising=False)
     monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
 

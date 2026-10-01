@@ -19,10 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _clear_provider_caches():
     """Force providers/__init__.py to re-discover on next list_providers()."""
     import providers as _pkg
-    _pkg._REGISTRY.clear()
-    _pkg._ALIASES.clear()
-    _pkg._PROVIDER_LIST_CACHE = None
-    _pkg._discovered = False
+    _pkg.registry._REGISTRY.clear()
+    _pkg.registry._ALIASES.clear()
+    _pkg.registry._PROVIDER_LIST_CACHE = None
+    _pkg.discovery._discovered = False
     # Evict any cached plugin modules so the next import re-executes.
     for mod in list(sys.modules.keys()):
         if (

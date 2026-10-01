@@ -46,7 +46,7 @@ def _patched(func):
 def test_opencode_go_known_model_accepted():
     """A model present in the opencode-go curated catalog must be accepted
     even when /models is unreachable."""
-    from hermes_cli.models import _PROVIDER_MODELS
+    from models.catalog_static import _PROVIDER_MODELS
 
     result = validate_requested_model(_PROVIDER_MODELS["opencode-go"][0], "opencode-go")
     assert result["accepted"] is True

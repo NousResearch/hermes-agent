@@ -1,6 +1,6 @@
 """/api/model/info must bound its context-length probe (#63214).
 
-The resolver chain (``agent.model_metadata.get_model_context_length``) runs
+The resolver chain (``models.metadata.context.get_model_context_length``) runs
 several sequential provider probes, each with its own multi-second timeout, so
 an unreachable ``model.base_url`` held the response for tens of seconds — and
 the Desktop Model Settings page, which awaits this endpoint inside one
@@ -25,7 +25,7 @@ def test_model_info_degrades_when_the_context_probe_exceeds_its_budget(monkeypat
     )
     monkeypatch.setattr(router, "_MODEL_INFO_PROBE_BUDGET_S", 0.2)
 
-    import agent.model_metadata as metadata
+    import models.metadata.context as metadata
 
     def _hanging_probe(model, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
         time.sleep(1.0)
@@ -53,7 +53,7 @@ def test_model_info_surfaces_the_context_value_when_the_probe_is_fast(monkeypatc
         lambda profile: _config("some-model", "custom-proxy", "http://localhost:9/v1"),
     )
 
-    import agent.model_metadata as metadata
+    import models.metadata.context as metadata
 
     def _fast_probe(model, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
         return 131072

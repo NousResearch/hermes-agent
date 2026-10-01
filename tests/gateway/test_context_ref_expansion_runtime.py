@@ -174,7 +174,7 @@ async def test_at_reference_ignores_global_context_for_runtime_route_override(mo
     )
 
     import agent.context_references as ctx_mod
-    import agent.model_metadata as model_meta_mod
+    import models.metadata.context as model_meta_mod
 
     async def _fake_get_context(_model, **kwargs):
         captured["config_context_length"] = kwargs["config_context_length"]

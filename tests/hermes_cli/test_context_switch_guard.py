@@ -1,10 +1,10 @@
-"""Tests for hermes_cli.context_switch_guard."""
+"""Tests for application_model_switch_preflight."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+from application_model_switch_preflight import merge_preflight_compression_warning
 from hermes_cli.model_switch import ModelSwitchResult
 
 
@@ -49,11 +49,11 @@ def _compressor(
 
 def test_merge_appends_to_existing_warning(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
+        "application_model_switch_preflight._estimate_tokens",
         lambda *a, **k: 90_000,
     )
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        "application_model_switch_preflight.resolve_display_context_length",
         lambda *a, **k: 32_000,
     )
     cc = _compressor(monkeypatch)
@@ -75,11 +75,11 @@ def test_cap_lowers_the_switch_warning_threshold_below_the_ratio(monkeypatch):
     500K (no warning at 300K in-flight), the cap says less — the guard must warn with the capped number."""
     cap = 256_000
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
+        "application_model_switch_preflight._estimate_tokens",
         lambda *a, **k: 300_000,
     )
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        "application_model_switch_preflight.resolve_display_context_length",
         lambda *a, **k: 1_000_000,
     )
     cc = _compressor(
@@ -121,15 +121,15 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     # Force the probe-down path that hit the "qwen" → 131072 catalog match
     # when custom_providers was not threaded through.
     monkeypatch.setattr(
-        "agent.model_metadata._resolve_endpoint_context_length",
+        "models.metadata.context._resolve_endpoint_context_length",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(
-        "agent.model_metadata._query_ollama_api_show",
+        "models.metadata.context._query_ollama_api_show",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
+        "application_model_switch_preflight._estimate_tokens",
         lambda *a, **k: 147_053,
     )
     cc = _compressor(monkeypatch, context_length=1_000_000)

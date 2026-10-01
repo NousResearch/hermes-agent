@@ -140,6 +140,15 @@ class TestWikiReverseLookup(unittest.TestCase):
 
 
 class TestResolveModelAndRuntime(unittest.TestCase):
+    def test_empty_model_uses_canonical_provider_default(self):
+        with patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("gateway.run._resolve_gateway_model", return_value=""), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "bedrock"}), \
+             patch("gateway.model_runtime_facts.provider_default_model", return_value="safe/default"), \
+             patch("hermes_constants.resolve_reasoning_config", return_value=None):
+            model, _runtime_kwargs = _resolve_model_and_runtime()
+        self.assertEqual(model, "safe/default")
+
     def test_configured_reasoning_reaches_the_comment_agent(self):
         """#85153 sibling: the comment agent is an ``AIAgent()`` built from gateway config like every other
         surface, so ``agent.reasoning_effort: none`` must ride ``runtime_kwargs`` (resolved against the

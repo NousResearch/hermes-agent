@@ -27,7 +27,7 @@ def _confirm_selection_guards(
     Shows one [y/N] confirm listing every warning that fired. Returns True to proceed.
     """
     try:
-        from hermes_cli.model_selection_guards import combined_message, selection_warnings
+        from application_model_selection_guards import combined_message, selection_warnings
         warnings = selection_warnings(
             model_id, provider=provider, base_url=base_url, api_key=api_key, include_kinds=include_kinds,
         )
@@ -59,7 +59,8 @@ class _ModelPickerRows:
         self, all_models: List[str], pricing: Optional[Dict[str, Dict[str, str]]], *,
         current_model: str, sale_chrome: bool, notes: Optional[Dict[str, str]] = None,
     ) -> None:
-        from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
+        from hermes_cli.models_pricing import _format_price_per_mtok
+        from models.metadata.pricing import compute_sale_discount
         self.current_model = current_model
         # Per-model dim annotation (e.g. "usage credits"); the row stays selectable.
         self.notes = notes or {}
@@ -184,10 +185,13 @@ def _prompt_model_selection(
             return None
         return _confirmed_selection(custom) if custom else None
 
-    # Reorder: current model first, then the rest (deduplicated)
-    ordered = list(dict.fromkeys(
-        ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
-    ))
+    from hermes_cli.model_selection_picker import picker_model_ids
+    ordered = picker_model_ids(
+        confirm_provider,
+        model_ids,
+        base_url=confirm_base_url,
+        current_model=current_model,
+    )
 
     # All models for column-width computation (selectable + unavailable)
     rows = _ModelPickerRows(ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome, notes=notes)

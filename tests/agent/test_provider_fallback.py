@@ -183,8 +183,10 @@ class TestFallbackChainAdvancement:
         Anthropic client — otherwise the turn POSTs /chat/completions. The wire
         is opt-in since 2026-09-06 (``nous.anthropic_wire``, see ``nous_api_mode``).
         """
-        from hermes_cli import providers as _providers
-        monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "native")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"nous": {"anthropic_wire": "native"}},
+        )
         portal = "https://inference-api.nousresearch.com/v1"
         fbs = [
             {
@@ -214,8 +216,8 @@ class TestFallbackChainAdvancement:
                 ),
             ),
             patch(
-                "hermes_cli.model_normalize.normalize_model_for_provider",
-                side_effect=lambda m, p: m,
+                "models.normalize_model_id",
+                side_effect=lambda p, m, **kwargs: m,
             ),
             patch(
                 "agent.anthropic_adapter.build_anthropic_client",
@@ -250,8 +252,8 @@ class TestFallbackChainAdvancement:
                 ),
             ),
             patch(
-                "hermes_cli.model_normalize.normalize_model_for_provider",
-                side_effect=lambda m, p: m,
+                "models.normalize_model_id",
+                side_effect=lambda p, m, **kwargs: m,
             ),
             patch(
                 "agent.anthropic_adapter.build_anthropic_client",
@@ -312,7 +314,7 @@ class TestFallbackChainDedup:
             called.append((provider, model))
             return _mock_client(), model
         with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
-            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+            with patch("models.normalize_model_id", side_effect=lambda p, m, **kwargs: m):
                 ok = agent._try_activate_fallback()
 
         assert ok is True
@@ -365,8 +367,8 @@ class TestFallbackChainDedup:
 
         with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
             with patch(
-                "hermes_cli.model_normalize.normalize_model_for_provider",
-                side_effect=lambda m, p: m,
+                "models.normalize_model_id",
+                side_effect=lambda p, m, **kwargs: m,
             ):
                 ok = agent._try_activate_fallback()
 
@@ -426,7 +428,7 @@ class TestFallbackExtraBodyReResolution:
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(base_url=self.FB_URL), "fb-model"),
         ), patch(
-            "agent.model_metadata.get_model_context_length",
+            "models.metadata.context.get_model_context_length",
             return_value=128_000,
         ):
             assert agent._try_activate_fallback() is True

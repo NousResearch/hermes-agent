@@ -8,9 +8,10 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import MatchingPrefixModelIdsMixin
 
 
-class GeminiProfile(ProviderProfile):
+class GeminiProfile(MatchingPrefixModelIdsMixin, ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
@@ -32,9 +33,12 @@ class GeminiProfile(ProviderProfile):
 
 
 gemini = GeminiProfile(
-    name="gemini", aliases=("google", "google-gemini", "google-ai-studio"), api_mode="chat_completions",
+    name="gemini", aliases=("google", "google-gemini", "google-ai-studio"),
+    display_name="Google AI Studio", description="Google AI Studio (Native Gemini API)",
+    signup_url="https://aistudio.google.com/app/apikey", api_mode="chat_completions",
     env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta", auth_type="api_key",
+    base_url="https://generativelanguage.googleapis.com/v1beta", base_url_env_var="GEMINI_BASE_URL",
+    auth_type="api_key",
     default_aux_model="gemini-3.6-flash",
 )
 

@@ -640,7 +640,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     prompt = text
     if isinstance(prompt, str) and "@" in prompt:
         from agent.context_references import preprocess_context_references
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
         ctx_len = get_model_context_length(
             getattr(agent, "model", "") or _resolve_model(),
             base_url=getattr(agent, "base_url", "") or "",

@@ -439,7 +439,8 @@ def test_codex_app_server_turn_fails_closed_before_codex_can_compact():
             raise AssertionError("run_turn() must not be reached")
 
     agent = SimpleNamespace(
-        api_mode="codex_app_server",
+        api_mode="codex_responses",
+        runtime_kind="app_server",
         compression_checkpoint_required=True,
         _codex_session=_ExplodingSession(),
     )
@@ -466,12 +467,12 @@ def test_agent_init_refuses_checkpoint_required_on_codex_app_server():
     )
 
     with pytest.raises(RuntimeError, match="BLOCKED_MISSING_PREREQUISITE"):
-        _refuse_checkpoint_required_on_codex_app_server(True, "codex_app_server")
+        _refuse_checkpoint_required_on_codex_app_server(True, "app_server")
 
     # Every other combination stays permitted.
-    _refuse_checkpoint_required_on_codex_app_server(True, "chat_completions")
-    _refuse_checkpoint_required_on_codex_app_server(True, "codex_responses")
-    _refuse_checkpoint_required_on_codex_app_server(False, "codex_app_server")
+    _refuse_checkpoint_required_on_codex_app_server(True, "http")
+    _refuse_checkpoint_required_on_codex_app_server(True, None)
+    _refuse_checkpoint_required_on_codex_app_server(False, "app_server")
     _refuse_checkpoint_required_on_codex_app_server(False, None)
 
 

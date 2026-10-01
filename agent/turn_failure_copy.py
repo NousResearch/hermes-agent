@@ -70,7 +70,7 @@ def failed_turn_notice(turn_messages: Any) -> str:
 
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
-    from hermes_cli.models import provider_label
+    from application_provider_groups import provider_label
 
     return provider_label(str(provider or ""))
 

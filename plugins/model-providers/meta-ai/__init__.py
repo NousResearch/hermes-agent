@@ -6,7 +6,6 @@ top-level ``reasoning_effort`` kwarg — not ``extra_body.reasoning``, whose
 emission is gated by a core host allowlist a third-party plugin must not edit.
 """
 
-import os
 from typing import Any
 
 from agent.reasoning_effort import META_AI_EFFORTS, clamp_effort
@@ -59,8 +58,8 @@ meta_ai = MetaAIProfile(
     description="Meta Muse Spark family (Meta Superintelligence Labs)",
     signup_url="https://developer.meta.com/ai/",
     # MODEL_API_KEY is Meta's documented env var; the aliases are conveniences.
-    env_vars=("MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY", "META_BASE_URL"),
-    base_url=os.getenv("META_BASE_URL", "").strip() or "https://api.meta.ai/v1", auth_type="api_key",
+    env_vars=("MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY"),
+    base_url="https://api.meta.ai/v1", base_url_env_var="META_BASE_URL", auth_type="api_key",
     # Responses API engages Muse prompt caching (0 cached tokens on chat/completions vs
     # 93-99% hits on /v1/responses); the hook above still covers custom non-api.meta.ai base URLs.
     api_mode="codex_responses",

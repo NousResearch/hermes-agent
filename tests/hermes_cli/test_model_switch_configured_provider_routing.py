@@ -9,9 +9,8 @@ detection only consulted static catalogs / OpenRouter, never the user's
 configured provider model lists, so the name stayed on Codex and was
 soft-accepted as an unknown hidden Codex model.
 
-The fix adds an exact-match configured-provider detection step in
-``switch_model`` that runs before ``detect_provider_for_model`` and before
-common-path validation.  These tests pin its precedence rules and prove the
+Configured-provider facts now feed canonical ``models.selection`` policy
+before common-path validation. These tests pin that precedence and prove the
 deliberately-supported Codex hidden-model soft-accept (#16172 / #19729) is left
 intact when nothing in config matches.
 
@@ -53,19 +52,13 @@ def _run_switch(
 ):
     """Drive ``switch_model`` with the resolution chain mocked out.
 
-    Every external lookup that would otherwise hit catalogs/network is patched:
-    alias resolution, aggregator catalog, ``detect_provider_for_model`` (so step
-    e is a no-op and cannot accidentally reroute), validation, credential
-    resolution, normalization, and model metadata.  This isolates the new
-    configured-provider detection step.
+    External catalog/network boundaries are patched so the test isolates
+    configured-provider fact acquisition plus canonical explicit selection.
     """
-    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
-         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
-         patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
+    with patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.models_validate.validate_requested_model", return_value=validation), \
-         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
-         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch("hermes_cli.model_switch.query_model_metadata", return_value=None), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
              return_value={

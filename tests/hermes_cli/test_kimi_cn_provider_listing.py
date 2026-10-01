@@ -72,6 +72,6 @@ def test_resolve_provider_full_preserves_kimi_cn_provider_identity():
     assert pdef is not None
     assert pdef.id == "kimi-coding-cn"
     assert pdef.base_url == "https://api.moonshot.cn/v1"
-    assert pdef.api_key_env_vars == ("KIMI_CN_API_KEY",)
+    assert pdef.env_vars == ("KIMI_CN_API_KEY",)
 
 

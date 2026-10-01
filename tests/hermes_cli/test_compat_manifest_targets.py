@@ -101,3 +101,13 @@ def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
         conn.close()
     assert "tasks" in tables, tables
     assert not (tmp_path / "projects.db").exists()
+
+def test_model_pricing_external_pointers_follow_canonical_and_application_owners():
+    import hermes_cli.models as facade
+    import application_model_pricing as acquisition
+    from models.metadata import pricing
+    from models import catalog_policy
+
+    assert getattr(facade, "get_pricing_for_provider") is acquisition.get_pricing_for_provider
+    assert getattr(facade, "compute_sale_discount") is pricing.compute_sale_discount
+    assert getattr(facade, "restrict_to_nous_policy") is catalog_policy.restrict_to_nous_policy

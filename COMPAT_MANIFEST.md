@@ -1381,13 +1381,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `get_hermes_home` | moved-lazy | `hermes_constants` |
 
-### `hermes_cli.local_runtime.capabilities`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
-| `urllib` | import | `urllib.request` |
-
 ### `hermes_cli.local_runtime.catalog`
 
 | name | kind | new location |
@@ -1463,8 +1456,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `custom_provider_slug` | moved-lazy | `hermes_cli.providers` |
 | `http` | import | `http.client` |
-| `list_picker_providers` | moved-lazy | `hermes_cli.model_switch_providers` |
-| `prewarm_picker_cache_async` | moved-lazy | `hermes_cli.model_switch_providers` |
+| `list_picker_providers` | moved-lazy | `application_provider_discovery` |
+| `prewarm_picker_cache_async` | moved-lazy | `application_picker_prewarm` |
 | `time` | import | `time` |
 
 ### `hermes_cli.models`
@@ -1473,36 +1466,36 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `LMStudioLoadResult` | moved-lazy | `hermes_cli.models_local` |
 | `NamedTuple` | import | `typing` |
-| `PROVIDER_GROUPS` | moved-lazy | `hermes_cli.models_catalog_static` |
-| `ProviderEntry` | moved-lazy | `hermes_cli.models_catalog_static` |
+| `PROVIDER_GROUPS` | moved-lazy | `application_provider_groups` |
+| `ProviderEntry` | moved-lazy | `hermes_cli.provider_catalog` |
 | `atomic_json_write` | moved-lazy | `utils` |
 | `base_url_host_matches` | moved-lazy | `utils` |
-| `compute_sale_discount` | moved-lazy | `hermes_cli.models_pricing` |
+| `compute_sale_discount` | moved-lazy | `models.metadata.pricing` |
 | `ensure_lmstudio_model_loaded` | moved-lazy | `hermes_cli.models_local` |
-| `fetch_ai_gateway_pricing` | moved-lazy | `hermes_cli.models_pricing` |
+| `fetch_ai_gateway_pricing` | moved-lazy | `application_model_pricing` |
 | `fetch_lmstudio_models` | moved-lazy | `hermes_cli.models_local` |
-| `fetch_models_with_pricing` | moved-lazy | `hermes_cli.models_pricing` |
+| `fetch_models_with_pricing` | moved-lazy | `application_model_pricing` |
 | `fetch_ollama_local_models` | moved-lazy | `hermes_cli.models_local` |
-| `get_cached_nous_inference_base_url` | moved-lazy | `hermes_cli.models_pricing` |
+| `get_cached_nous_inference_base_url` | moved-lazy | `application_model_pricing` |
 | `get_close_matches` | import | `difflib` |
-| `get_pricing_for_provider` | moved-lazy | `hermes_cli.models_pricing` |
-| `group_providers` | moved-lazy | `hermes_cli.models_catalog_static` |
+| `get_pricing_for_provider` | moved-lazy | `application_model_pricing` |
+| `group_providers` | moved-lazy | `application_provider_groups` |
 | `http` | import | `http.client` |
 | `is_nous_free_tier` | restored-def | `(deleted; BASE body restored)` |
-| `lmstudio_model_reasoning_options` | moved-lazy | `hermes_cli.models_local` |
+| `lmstudio_model_reasoning_options` | moved-lazy | `models.metadata.local` |
 | `nous_catalog_url` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `nous_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `nous_policy_allowed_ids` | moved-lazy | `hermes_cli.models_pricing` |
-| `ollama_model_supports_thinking` | moved-lazy | `hermes_cli.models_local` |
+| `nous_policy_allowed_ids` | moved-lazy | `application_model_pricing` |
+| `ollama_model_supports_thinking` | moved-lazy | `models.metadata.local` |
 | `openrouter_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `parse_openrouter_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `peek_cached_pricing` | moved-lazy | `hermes_cli.models_pricing` |
-| `pricing_cache_scope` | moved-lazy | `hermes_cli.models_pricing` |
+| `peek_cached_pricing` | moved-lazy | `application_model_pricing` |
+| `pricing_cache_scope` | moved-lazy | `application_model_pricing` |
 | `probe_lmstudio_models` | moved-lazy | `hermes_cli.models_local` |
 | `probe_ollama_local_models` | moved-lazy | `hermes_cli.models_local` |
-| `provider_group_for_slug` | moved-lazy | `hermes_cli.models_catalog_static` |
+| `provider_group_for_slug` | moved-lazy | `application_provider_groups` |
 | `refresh_reasoning_caps_async` | moved-lazy | `hermes_cli.models_reasoning_caps` |
-| `restrict_to_nous_policy` | moved-lazy | `hermes_cli.models_pricing` |
+| `restrict_to_nous_policy` | moved-lazy | `models.catalog_policy` |
 | `should_use_ollama_native_catalog` | moved-lazy | `hermes_cli.models_local` |
 | `url_origin` | moved-lazy | `hermes_cli.urllib_security` |
 | `validate_requested_model` | moved-lazy | `hermes_cli.models_validate` |

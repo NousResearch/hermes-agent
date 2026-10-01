@@ -60,7 +60,7 @@ def _profile_unsupported_formats(provider: Optional[str], base_url: Optional[str
         from providers import get_provider_profile
         name = str(provider or "").strip().lower()
         if name == "custom" and base_url:
-            from agent.model_metadata import _infer_provider_from_url
+            from models.metadata.context import _infer_provider_from_url
             name = _infer_provider_from_url(base_url) or name
         profile = get_provider_profile(name)
     except Exception:

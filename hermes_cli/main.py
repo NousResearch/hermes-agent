@@ -1052,16 +1052,17 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
     return False
 
 
-def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool) -> bool:
+def _auth_store_logged_in(auth_file: Path, strict_profile_scope: bool) -> bool:
     """True if auth.json's active provider is logged in (api_key providers ignored under strict scope)."""
     from hermes_cli.auth import get_auth_status
+    from hermes_cli.provider_auth import get_provider_config
 
     if not auth_file.exists():
         return False
     try:
         auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
         active = auth.get("active_provider")
-        active_config = registry.get(str(active or "").strip().lower())
+        active_config = get_provider_config(str(active or "").strip().lower())
         if active and not (
             strict_profile_scope and active_config and active_config.auth_type == "api_key"
         ):
@@ -1082,7 +1083,8 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
-    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+    from hermes_cli.auth import get_auth_status
+    from hermes_cli.provider_auth import iter_provider_configs
 
     cfg = load_config()
     model_cfg = cfg.get("model")
@@ -1106,7 +1108,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         "ANTHROPIC_TOKEN",
         "OPENAI_BASE_URL",
     }
-    for pconfig in PROVIDER_REGISTRY.values():
+    for pconfig in iter_provider_configs():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
     if strict_profile_scope:
@@ -1120,10 +1122,10 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     if _dotenv_has_provider_key(get_env_path(), provider_env_vars):
         return True
 
-    # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
+    # Cheap on-disk checks (auth.json, config.yaml) first: the provider-config
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    if _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
+    if _auth_store_logged_in(get_hermes_home() / "auth.json", strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh
@@ -1139,7 +1141,8 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
             if any(
                 (status := get_auth_status(pid)).get("logged_in")
                 and status.get("key_source") != "keyless"
-                for pid, pconfig in PROVIDER_REGISTRY.items()
+                for pconfig in iter_provider_configs()
+                for pid in (pconfig.id,)
                 if pconfig.auth_type == "api_key"
             ):
                 return True
@@ -1178,7 +1181,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
 
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.model_selection_guards import (
+        from application_model_selection_guards import (
             combined_message,
             selection_warnings,
         )
@@ -2028,7 +2031,8 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
     """
     from hermes_cli.auth import AuthError, format_auth_error, resolve_provider
     from hermes_cli.config import get_compatible_custom_providers, get_env_value
-    from hermes_cli.providers import custom_provider_aliases, resolve_provider_full
+    from providers import custom_provider_aliases
+    from hermes_cli.providers import resolve_provider_full
 
     active = ""
     if effective_provider == "custom" and isinstance(model_cfg, dict):
@@ -2129,9 +2133,9 @@ def select_provider_and_model(args=None):
     _custom_provider_map = _named_custom_provider_map(config)
     active = _resolve_active_provider(config, model_cfg, effective_provider, _custom_provider_map)
 
-    from hermes_cli.models import _PROVIDER_LABELS
+    from hermes_cli.provider_catalog import provider_catalog
 
-    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
+    provider_labels = {descriptor.slug: descriptor.label for descriptor in provider_catalog()}
     if active and active in _custom_provider_map:
         active_label = _custom_provider_map[active]["name"]
     else:

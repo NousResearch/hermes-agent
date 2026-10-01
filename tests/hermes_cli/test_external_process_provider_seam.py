@@ -8,6 +8,7 @@ real resolution path, asserting ``copilot-acp`` is unchanged alongside it.
 """
 
 from __future__ import annotations
+from hermes_cli.provider_auth import get_provider_config
 
 import os
 import stat
@@ -32,6 +33,7 @@ register_provider(
         name="acme-acp",
         aliases=("acme",),
         display_name="Acme ACP",
+        description="External-process provider seam fixture",
         base_url="acp://acme",
         auth_type="external_process",
         process_command="acme-cli",
@@ -55,11 +57,11 @@ def fake_cli(tmp_path, monkeypatch):
 
 
 def test_an_out_of_tree_external_process_provider_resolves_end_to_end(fake_cli, monkeypatch):
-    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_external_process_provider_credentials, resolve_provider
+    from hermes_cli.auth import resolve_external_process_provider_credentials, resolve_provider
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    assert PROVIDER_REGISTRY["acme"] is PROVIDER_REGISTRY["acme-acp"]
-    assert PROVIDER_REGISTRY["acme-acp"].auth_type == "external_process"
+    assert get_provider_config("acme").id == get_provider_config("acme-acp").id == "acme-acp"
+    assert get_provider_config("acme-acp").auth_type == "external_process"
     assert resolve_provider("acme") == "acme-acp"
 
     creds = resolve_external_process_provider_credentials("acme-acp")

@@ -1351,7 +1351,7 @@ class TestBuildApiKwargs:
     def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
         """The core GitHub Responses path must preserve a supported xhigh."""
         monkeypatch.setattr(
-            "hermes_cli.models.github_model_reasoning_efforts",
+            "models.metadata.github.github_model_reasoning_efforts",
             lambda _model: ["none", "low", "medium", "high", "xhigh"],
         )
         agent.model = "gpt-5.5"
@@ -5628,7 +5628,13 @@ class TestGpt5ApiModeRouting:
         agent.api_mode = "chat_completions"
         agent.model = "openai/gpt-5.5"
         assert not agent._is_direct_openai_url()
-        assert not AIAgent._provider_model_requires_responses_api(agent.model, provider=agent.provider)
+        from providers.routing import InvocationRequest, resolve_invocation_route
+        route = resolve_invocation_route(InvocationRequest(
+            provider=agent.provider,
+            model=agent.model,
+            base_url=agent.base_url,
+        ))
+        assert route.api_mode == "chat_completions"
 
     def test_is_azure_openai_url_detection(self, agent):
         assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True

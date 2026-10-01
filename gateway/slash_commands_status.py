@@ -414,7 +414,7 @@ class GatewayStatusCommandsMixin:
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
         if not context_length and model_name:
-            from agent.model_metadata import get_model_context_length
+            from models.metadata.context import get_model_context_length
             context_length = _int_value(
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
             )

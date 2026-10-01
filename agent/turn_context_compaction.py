@@ -219,7 +219,7 @@ def _codex_native_auto_compaction(agent: Any) -> bool:
     initiates compaction in "hermes" mode."""
     return (
         # See #36801.
-        getattr(agent, "api_mode", None) == "codex_app_server"
+        getattr(agent, "runtime_kind", None) == "app_server"
         and str(
             getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
         ).lower()

@@ -42,7 +42,7 @@ def _make_agent(provider="copilot", base_url="https://api.githubcopilot.com") ->
     return agent
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("models.metadata.context.get_model_context_length", return_value=131_072)
 def test_switch_to_openrouter_reapplies_attribution_headers(mock_ctx_len):
     """Switching to an openrouter.ai base_url must attach the OpenRouter
     attribution headers (HTTP-Referer / X-Title) to the rebuilt client
@@ -63,7 +63,7 @@ def test_switch_to_openrouter_reapplies_attribution_headers(mock_ctx_len):
 
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("models.metadata.context.get_model_context_length", return_value=131_072)
 def test_switch_away_from_headered_provider_clears_stale_headers(mock_ctx_len):
     """Switching FROM a headered provider TO one with no URL-specific headers
     must not carry the old provider's headers along."""

@@ -10,10 +10,14 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import normalize_copilot_id
 
 
 class CopilotACPProfile(ProviderProfile):
     """GitHub Copilot ACP — external process, no REST models endpoint."""
+
+    def normalize_model_id(self, model: str, *, known_ids=()) -> str:
+        return normalize_copilot_id(model, known_ids)
 
     def create_client(self, **client_kwargs: Any) -> Any:
         """Build the ACP stdio shim rather than an HTTP client."""
@@ -49,9 +53,11 @@ class CopilotACPProfile(ProviderProfile):
 
 copilot_acp = CopilotACPProfile(
     name="copilot-acp", aliases=("github-copilot-acp", "copilot-acp-agent"),
+    display_name="GitHub Copilot ACP", description="GitHub Copilot ACP (Spawns copilot --acp --stdio)",
     api_mode="chat_completions",  # ACP subprocess uses chat_completions routing
     env_vars=(),  # Managed by ACP subprocess
     base_url="acp://copilot",  # ACP internal scheme
+    base_url_env_var="COPILOT_ACP_BASE_URL",
     auth_type="external_process",
     # How to launch the CLI; env var names predate this profile (formerly hardcoded in
     # hermes_cli/auth.py), so existing setups keep working.

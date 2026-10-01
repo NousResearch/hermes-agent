@@ -12,14 +12,14 @@ from hermes_cli import model_setup_flows_custom as flows
     (None, "using the default"),
 ])
 def test_blank_context_length_reports_detection_outcome(capsys, resolved, expect):
-    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
-    with patch("agent.model_metadata.get_model_context_length",
+    from models.metadata.context import DEFAULT_FALLBACK_CONTEXT
+    with patch("models.metadata.context.get_model_context_length",
                return_value=resolved if resolved is not None else DEFAULT_FALLBACK_CONTEXT):
         flows._report_context_length_detection("some-model", "http://localhost:8000/v1", "k")
     assert expect in capsys.readouterr().out
 
 
 def test_probe_failure_never_blocks_the_save(capsys):
-    with patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("boom")):
+    with patch("models.metadata.context.get_model_context_length", side_effect=RuntimeError("boom")):
         flows._report_context_length_detection("some-model", "http://x/v1", "")
     assert capsys.readouterr().out == ""

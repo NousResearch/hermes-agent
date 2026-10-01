@@ -20,7 +20,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 from agent.secret_scope import get_secret_str
-from hermes_cli.urllib_security import url_origin
+from models.catalog_local import (
+    classify_ollama_catalog,
+    ollama_native_root as _root_for_ollama_native_api,
+    same_ollama_native_root as _same_ollama_native_root,
+)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.models")
@@ -44,16 +48,6 @@ def _normalize_openai_base_url(base_url: Optional[str]) -> str:
     if value and "://" not in value:
         return "http://" + value
     return value
-
-
-def _root_for_ollama_native_api(base_url: str) -> str:
-    """Convert an OpenAI-style Ollama base URL to the native API root."""
-    root = str(base_url or "").strip().rstrip("/")
-    if root.startswith(":"):
-        root = "http://127.0.0.1" + root
-    elif root and "://" not in root:
-        root = "http://" + root
-    return _strip_suffixes(root, ("/api/tags", "/v1/models", "/api", "/v1"))
 
 
 def _configured_ollama_base_url() -> str:
@@ -227,7 +221,9 @@ def probe_ollama_local_models(
     """Probe local Ollama-compatible models from native ``/api/tags`` (Ollama's authoritative local
     catalog; ``/v1/models`` is not required for local servers). ``None`` when the endpoint cannot be
     reached or returns malformed data; a list (possibly empty) when it was reachable."""
-    from hermes_cli.models import _HERMES_USER_AGENT, _get_ollama_base_url, _urlopen_model_catalog_request
+    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.models_local import _get_ollama_base_url
+    from hermes_cli.models import _urlopen_model_catalog_request
     root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
     if not root:
         return None
@@ -268,23 +264,6 @@ def fetch_ollama_local_models(
     return probe_ollama_local_models(base_url, timeout, headers=headers)
 
 
-def _same_ollama_native_root(left: str, right: str) -> bool:
-    """Return True when two Ollama/OpenAI-style base URLs share an API root."""
-    left_root = _root_for_ollama_native_api(left).rstrip("/")
-    right_root = _root_for_ollama_native_api(right).rstrip("/")
-    if not left_root or not right_root:
-        return False
-    try:
-        left_parts = urllib.parse.urlsplit(left_root)
-        right_parts = urllib.parse.urlsplit(right_root)
-        return (
-            url_origin(left_root) == url_origin(right_root)
-            and left_parts.path.rstrip("/") == right_parts.path.rstrip("/")
-        )
-    except (AttributeError, ValueError):
-        return False
-
-
 _NEVER_OLLAMA_PROVIDERS = frozenset({"openrouter", "nous", "anthropic", "openai", "openai-codex", "gemini", "ollama-cloud"})
 _LOCAL_LIKE_PROVIDERS = frozenset({"", "custom", "local", "llamacpp", "llama.cpp", "llama-cpp", "vllm"})
 
@@ -294,50 +273,17 @@ def should_use_ollama_native_catalog(
     base_url: Optional[str],
     headers: Optional[dict[str, str]] = None,
 ) -> bool:
-    """True when model discovery should use local Ollama ``/api/tags``: the caller asked for Ollama
-    explicitly, the base URL matches ``providers.ollama.base_url``, or an ambiguous custom URL on
-    Ollama's default port actually serves ``/api/tags``. (Bare ``ollama`` is normalized to
-    ``custom`` elsewhere so runtime paths share the OpenAI client, but ``/api/tags`` is the
-    authoritative local list; other custom endpoints keep the ``/models`` probe.)"""
-    requested = str(provider or "").strip().lower()
+    """Resolve the pure catalogue classification, probing only when required."""
+    decision = classify_ollama_catalog(
+        provider,
+        base_url,
+        configured_base_url=_configured_ollama_base_url(),
+    )
+    if decision == "native":
+        return True
+    if decision == "openai":
+        return False
     root = _root_for_ollama_native_api(base_url or "")
-    if root:
-        try:
-            host = (urllib.parse.urlparse(root).hostname or "").lower()
-            if host == "ollama.com" or host.endswith(".ollama.com"):
-                return False
-        except ValueError:
-            pass
-
-    if requested in _NEVER_OLLAMA_PROVIDERS:
-        return False
-
-    configured_base = _configured_ollama_base_url()
-    if requested == "ollama":
-        if not root:
-            return False
-        if configured_base and not _same_ollama_native_root(root, configured_base):
-            return probe_ollama_local_models(root, timeout=0.5, headers=headers) is not None
-        return True
-
-    if configured_base and _same_ollama_native_root(root, configured_base):
-        return True
-
-    if not root:
-        return False
-
-    if requested not in _LOCAL_LIKE_PROVIDERS and not requested.startswith("custom:"):
-        return False
-
-    if requested == "custom:ollama" or requested.endswith("-ollama"):
-        return True
-
-    try:
-        if urllib.parse.urlparse(root).port != _OLLAMA_DEFAULT_PORT:
-            return False
-    except ValueError:
-        return False
-
     return probe_ollama_local_models(root, timeout=0.5, headers=headers) is not None
 
 
@@ -345,7 +291,8 @@ def _ollama_local_catalog(force_refresh: bool) -> list[str]:
     """Catalog for the raw ``ollama`` provider: native ``/api/tags`` when the endpoint is a real
     Ollama server, else the OpenAI-style ``/v1/models`` of the configured gateway (incl. Ollama
     Cloud)."""
-    from hermes_cli.models import _get_provider_config_dict, fetch_api_models
+    from hermes_cli.models import _get_provider_config_dict
+    from hermes_cli.models import fetch_api_models
     if force_refresh:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
@@ -560,58 +507,6 @@ def ensure_lmstudio_model_loaded(
     if refreshed_models is None:
         return _result(None, load_attempted=True)
     return _result(_lmstudio_loaded_context(_lmstudio_entry_for(refreshed_models, model)), load_attempted=True)
-
-
-def lmstudio_model_reasoning_options(
-    model: str,
-    base_url: Optional[str],
-    api_key: Optional[str] = None,
-    timeout: float = 5.0,
-) -> list[str]:
-    """Reasoning ``allowed_options`` LM Studio publishes for ``model`` under
-    ``capabilities.reasoning`` in ``/api/v1/models``; ``[]`` when unknown, unreachable, or absent."""
-    raw = _lmstudio_entry_for(_lmstudio_raw_models_or_none(api_key, base_url, timeout) or [], model)
-    if raw is None:
-        return []
-    caps = raw.get("capabilities")
-    reasoning = caps.get("reasoning") if isinstance(caps, dict) else None
-    opts = reasoning.get("allowed_options") if isinstance(reasoning, dict) else None
-    if isinstance(opts, list):
-        return [str(o).strip().lower() for o in opts if isinstance(o, str)]
-    return []
-
-
-def ollama_model_supports_thinking(
-    model: str,
-    base_url: Optional[str],
-    api_key: Optional[str] = None,
-    timeout: float = 5.0,
-) -> Optional[bool]:
-    """Tri-state: True if an Ollama (Cloud or local) model advertises ``thinking`` in native
-    ``/api/show`` ``capabilities`` (authoritative; OpenAI-compat ``/v1/models`` omits it), False
-    when the probe succeeded without it, None when it failed (caller treats as "don't emit")."""
-    import httpx
-
-    server_url = (base_url or "").strip().rstrip("/")
-    if server_url.endswith("/v1"):
-        server_url = server_url[:-3]
-    bare_model = _strip_ollama_cloud_suffix((model or "").strip())
-    if not server_url or not bare_model:
-        return None
-
-    from agent.command_token_source import materialize_probe_api_key
-    token = materialize_probe_api_key(api_key)
-    try:
-        with httpx.Client(timeout=timeout, headers={"Authorization": f"Bearer {token}"} if token else {}) as client:
-            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
-            if resp.status_code != 200:
-                return None
-            caps = resp.json().get("capabilities")
-            if isinstance(caps, list):
-                return "thinking" in caps
-    except Exception:
-        return None
-    return None
 
 
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour

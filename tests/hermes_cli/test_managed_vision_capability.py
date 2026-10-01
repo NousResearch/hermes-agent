@@ -35,17 +35,24 @@ def _stage(home_root, name):
 
 
 def test_not_ours_returns_none(hermes_home):
-    from hermes_cli.local_runtime.capabilities import managed_model_supports_vision
+    from agent.model_capability_sources import _managed
+    from models import ModelRef
+    from models.metadata.types import ModelMetadataContext
 
-    assert managed_model_supports_vision("gpt-4o") is None
+    assert _managed(
+        ModelRef("llamacpp", "gpt-4o"),
+        ModelMetadataContext(route_provider="llamacpp"),
+    ) is None
 
 
 def test_catalog_vision_model_with_projector_on_disk(hermes_home):
     """Staged catalog model with an mmproj present: True (server down —
     the catalog + on-disk projector answer)."""
+    from agent.model_capability_sources import _managed
     from hermes_cli.local_runtime.bootstrap import assets_dir
-    from hermes_cli.local_runtime.capabilities import managed_model_supports_vision
     from hermes_cli.local_runtime.catalog import CATALOG
+    from models import ModelRef
+    from models.metadata.types import ModelMetadataContext
 
     entry = next(e for e in CATALOG if e.mmproj is not None)
     variant = entry.variants[-1]
@@ -54,50 +61,71 @@ def test_catalog_vision_model_with_projector_on_disk(hermes_home):
     adir.mkdir(parents=True, exist_ok=True)
     (adir / entry.mmproj.local_name).write_bytes(b"GGUF mmproj")
 
-    assert managed_model_supports_vision(variant.model_id) is True
+    result = _managed(
+        ModelRef("llamacpp", variant.model_id),
+        ModelMetadataContext(route_provider="llamacpp"),
+    )
+    assert result is not None and result.supports_vision is True
 
 
 def test_catalog_vision_model_missing_projector_is_blind(hermes_home):
     """Same model, projector NOT on disk: False — it genuinely cannot see,
     and claiming otherwise sends an image to a model that errors on it."""
-    from hermes_cli.local_runtime.capabilities import managed_model_supports_vision
+    from agent.model_capability_sources import _managed
     from hermes_cli.local_runtime.catalog import CATALOG
+    from models import ModelRef
+    from models.metadata.types import ModelMetadataContext
 
     entry = next(e for e in CATALOG if e.mmproj is not None)
     variant = entry.variants[-1]
     _stage(hermes_home, variant.model_id)
 
-    assert managed_model_supports_vision(variant.model_id) is False
+    result = _managed(
+        ModelRef("llamacpp", variant.model_id),
+        ModelMetadataContext(route_provider="llamacpp"),
+    )
+    assert result is not None and result.supports_vision is False
 
 
 def test_live_props_beats_catalog(hermes_home, monkeypatch):
     """A running child's modalities report wins over the catalog: the
     server that will receive the image is the authority."""
-    import hermes_cli.local_runtime.capabilities as caps
+    import models.metadata.managed_runtime as caps
 
+    from agent.model_capability_sources import _managed
     from hermes_cli.local_runtime.catalog import CATALOG
+    from models import ModelRef
+    from models.metadata.types import ModelMetadataContext
 
     entry = next(e for e in CATALOG if e.mmproj is not None)
     variant = entry.variants[-1]
     _stage(hermes_home, variant.model_id)
     # Catalog would say False (no projector staged) — live props says True.
-    monkeypatch.setattr(caps, "_props_modalities", lambda mid: True)
-    assert caps.managed_model_supports_vision(variant.model_id) is True
+    result = caps.managed_model_metadata(
+        variant.model_id,
+        staged_model_ids=lambda: (variant.model_id,),
+        entry_for_model=lambda _: entry,
+        assets_dir=lambda: hermes_home / "assets",
+        live_props=lambda _: True,
+    )
+    assert result is not None and result.supports_vision is True
 
 
 def test_lookup_chain_consults_managed_runtime(hermes_home, monkeypatch):
     """_lookup_supports_vision: user override wins, then the managed
     answer, and the cloud catalog is never reached for a managed model."""
     import agent.image_routing as ir
+    from models.metadata.types import ModelMetadataPatch
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.capabilities.managed_model_supports_vision",
-        lambda mid: True)
+        "agent.model_capability_sources.managed_runtime.managed_model_metadata",
+        lambda *args, **kwargs: ModelMetadataPatch(supports_vision=True),
+    )
 
     def catalog_must_not_run(*a, **k):
         raise AssertionError("cloud catalog consulted for a managed model")
 
-    monkeypatch.setattr("agent.models_dev.get_model_capabilities",
+    monkeypatch.setattr("agent.models_dev.query_model_metadata",
                         catalog_must_not_run)
 
     got = ir._lookup_supports_vision("llamacpp", "Some-Local-Model", {})

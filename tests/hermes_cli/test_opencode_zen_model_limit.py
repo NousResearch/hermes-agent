@@ -3,7 +3,6 @@
 import os
 from unittest.mock import patch
 
-import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers
 
 
@@ -23,7 +22,7 @@ def test_opencode_zen_lists_all_models_while_other_providers_remain_capped(monke
         "agent.models_dev.fetch_models_dev",
         lambda: {"opencode": {}, "deepseek": {}},
     )
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("application_provider_discovery.list_providers", lambda: [])
     monkeypatch.setattr(
         "hermes_cli.models.cached_provider_model_ids",
         lambda provider, **_: {

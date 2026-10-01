@@ -4,7 +4,7 @@ import time
 from types import SimpleNamespace
 
 from agent import chat_completion_wait_notice as wn
-from agent.model_metadata import is_local_endpoint
+from models.metadata.context import is_local_endpoint
 
 
 class StreamingWaitMonitor:

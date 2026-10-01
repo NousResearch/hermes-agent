@@ -57,8 +57,10 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
 
     env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        env_var_order = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
+        from hermes_cli.provider_auth import get_provider_config
+        config = get_provider_config("anthropic")
+        if config is not None:
+            env_var_order = config.api_key_env_vars
     except (ImportError, KeyError):
         pass
     from hermes_cli.config import get_env_value
@@ -120,8 +122,9 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
     (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``); others get ``default`` untouched."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
-        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        from hermes_cli.auth import get_external_process_provider_status
+        from hermes_cli.provider_auth import get_provider_config
+        pconfig = get_provider_config(provider_id)
         if not pconfig or pconfig.auth_type != "external_process":
             return default
         status = get_external_process_provider_status(provider_id) or {}

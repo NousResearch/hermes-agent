@@ -151,7 +151,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
@@ -278,7 +278,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
@@ -418,7 +418,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 
@@ -583,7 +583,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 
@@ -722,7 +722,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     # won't trigger for 12 short messages — hard-limit must be the ONLY
     # thing firing compression.
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 1_000_000,
     )
 
@@ -820,7 +820,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
 

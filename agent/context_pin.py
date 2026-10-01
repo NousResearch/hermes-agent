@@ -34,10 +34,7 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     endpoint, models.dev disk cache, hardcoded catalog). Never a network probe: users pin
     precisely when the endpoint cannot report its window, so the check must not add startup
     latency or a failing request."""
-    from agent.model_metadata import (
-        DEFAULT_CONTEXT_LENGTHS, _load_model_metadata_disk_cache, _longest_key_match,
-        _strip_provider_prefix, get_cached_context_length,
-    )
+    from models.metadata.context import DEFAULT_CONTEXT_LENGTHS, _load_model_metadata_disk_cache, _longest_key_match, _strip_provider_prefix, get_cached_context_length
     model = _strip_provider_prefix(str(model or ""))
     if not model:
         return None

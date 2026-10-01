@@ -25,7 +25,10 @@ def home(tmp_path, monkeypatch):
         "  alias-host: {model: model-alias, provider: custom, base_url: http://127.0.0.1:3/v1, api_key: sk-alias-literal}\n"
         "  alias-env: {model: model-alias-env, provider: custom, base_url: http://127.0.0.1:3/v1, key_env: ALIAS_HOST_KEY}\n",
         encoding="utf-8")
+    from gateway import run as gateway_run
     from hermes_cli import model_switch
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     model_switch.DIRECT_ALIASES.clear()
     return hermes_home
 
@@ -61,3 +64,47 @@ def test_alias_key_is_a_launch_key_not_durable_policy(home):
     policy = build_policy(params, _config(), private_secrets={})
     assert policy.model == "model-alias" and policy.base_url == "http://127.0.0.1:3/v1"
     assert "sk-alias-literal" not in policy.config_json + policy.request_json
+
+
+def test_alias_launch_explicit_provider_wins_without_alias_credential(home):
+    from gateway.session_local_route import resolve_launch_route
+
+    result = resolve_launch_route(
+        {"model": "alias-host", "provider": "openrouter"},
+        _config(),
+    )
+    assert result["model"] == "model-alias"
+    assert result["provider"] == "openrouter"
+    assert result["base_url"] == "http://127.0.0.1:3/v1"
+    assert "api_key" not in result
+
+
+def test_configured_provider_slash_keeps_credential_lookup_key():
+    from gateway.session_local_route import resolve_launch_route
+
+    config = {
+        "model": {"default": "claude-sonnet-4.6", "provider": "anthropic"},
+        "providers": {
+            "ollama": {"base_url": "http://localhost:11434/v1"},
+        },
+    }
+    result = resolve_launch_route({"model": "ollama/qwen3.5:4b"}, config)
+    assert result["model"] == "qwen3.5:4b"
+    assert result["provider"] == "ollama"
+
+
+def test_aggregator_native_slug_is_not_stolen_by_configured_provider(monkeypatch):
+    from gateway.session_local_route import resolve_launch_route
+
+    monkeypatch.setattr(
+        "gateway.session_local_route.find_static_provider_model_id",
+        lambda provider, model: model if provider == "openrouter" else None,
+    )
+    params = {"model": "anthropic/claude-opus-4.6"}
+    config = {
+        "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+        "providers": {
+            "anthropic": {"api_key": "sk-test"},
+        },
+    }
+    assert resolve_launch_route(params, config) == params

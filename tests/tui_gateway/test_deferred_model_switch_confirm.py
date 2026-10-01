@@ -141,7 +141,7 @@ class TestGuardFailureIsNotFatal:
             raise RuntimeError("guard table is broken")
 
         monkeypatch.setattr(
-            "hermes_cli.model_selection_guards.combined_selection_warning", _boom
+            "application_model_selection_guards.combined_selection_warning", _boom
         )
 
         result = _config_set_model(GUARDED_MODEL)["result"]

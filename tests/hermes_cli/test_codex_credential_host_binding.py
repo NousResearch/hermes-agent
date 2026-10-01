@@ -228,8 +228,8 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
     # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda: [])
-    monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
-    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
+    monkeypatch.setattr("hermes_cli.models_local.fetch_ollama_cloud_models", lambda **kw: [])
+    monkeypatch.setattr("application_model_pricing.get_pricing_for_provider", lambda *a, **kw: {})
 
     payload = build_model_options_payload(load_picker_context(), refresh=True)
     row = next(p for p in payload["providers"] if p["slug"] == "openai-codex")
@@ -255,9 +255,10 @@ def test_picker_refuses_opaque_key_aimed_at_chatgpt(picker_http):
 
 @pytest.fixture
 def probe_http(monkeypatch):
-    from agent import model_metadata as mm
+    from agent import model_metadata_http
+    from models.metadata import context as mm
     seen = []
-    monkeypatch.setattr(mm.model_metadata_http, "get", _catalog_recorder(seen))
+    monkeypatch.setattr(model_metadata_http, "get", _catalog_recorder(seen))
     monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
     return seen
 
@@ -266,7 +267,7 @@ def probe_http(monkeypatch):
 def test_context_probe_asks_the_gateway_with_its_own_key(probe_http, key):
     """The route's base is bound to its key: a gateway key (opaque or JWT) probes that gateway's
     catalog, never chatgpt.com."""
-    from agent import model_metadata as mm
+    from models.metadata import context as mm
 
     live, fresh = mm._fetch_codex_oauth_context_lengths_with_source(key, base_url=GW)
 
@@ -275,14 +276,14 @@ def test_context_probe_asks_the_gateway_with_its_own_key(probe_http, key):
 
 
 def test_context_probe_refuses_opaque_key_on_the_chatgpt_default(probe_http):
-    from agent import model_metadata as mm
+    from models.metadata import context as mm
 
     assert mm._fetch_codex_oauth_context_lengths_with_source(OPAQUE, base_url="") == ({}, False)
     assert probe_http == []
 
 
 def test_context_probe_direct_chatgpt_positive_control(probe_http):
-    from agent import model_metadata as mm
+    from models.metadata import context as mm
 
     mm._fetch_codex_oauth_context_lengths_with_source(JWT, base_url=CHATGPT)
 
@@ -486,7 +487,7 @@ def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_
     def _boom(*_a, **_kw):
         raise RuntimeError("route resolution failed")
 
-    monkeypatch.setattr(runtime_provider, "_pool_entry_mode_and_url", _boom)
+    monkeypatch.setattr(runtime_provider, "_pool_entry_route_base_url", _boom)
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
     for scope, expected in [({}, GW), ({"HERMES_CODEX_BASE_URL": OTHER_GW + "/"}, OTHER_GW)]:

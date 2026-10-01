@@ -31,7 +31,7 @@ def _make_event(text="/model"):
 async def test_direct_model_switch_runs_off_the_event_loop(tmp_path, monkeypatch):
     """A direct `/model <name>` switch must run switch_model() on a worker thread so the
     blocking models.dev HTTP fetch can't freeze the gateway event loop (#20525)."""
-    from hermes_cli.model_switch import ModelSwitchResult
+    from gateway.model_switch_resolution import GatewayModelSwitchResult as ModelSwitchResult
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -52,7 +52,7 @@ async def test_direct_model_switch_runs_off_the_event_loop(tmp_path, monkeypatch
         switch_threads.append(threading.get_ident())
         return ModelSwitchResult(success=False, error_message="nope")
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
+    monkeypatch.setattr("gateway.model_switch_resolution.resolve_model_switch", _fake_switch)
 
     result = await _make_runner()._handle_model_command(_make_event("/model gpt-5.4"))
 

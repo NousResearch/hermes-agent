@@ -591,8 +591,8 @@ def ensure_hermes_home():
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: E402,F401
 from hermes_cli.config_providers import (  # noqa: E402,F401  (re-exported; callers/tests use hermes_cli.config.<name>)
-    _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
-    _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
+    _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
+    _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
     _entries_for_route, _normalize_custom_provider_entry, _normalize_provider_models,
     _pick_provider_base_url, _route_model_cfg, _warn_once_per_provider,
     apply_custom_provider_extra_headers_to_client_kwargs,
@@ -3953,25 +3953,34 @@ def config_command(args):
 # ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----
 
 def _inject_profile_env_vars() -> None:
-    """Expose env_vars of every ``auth_type="api_key"`` provider in providers/ via OPTIONAL_ENV_VARS
-    without editing this file."""
+    """Expose explicit API-key credential and endpoint env declarations in OPTIONAL_ENV_VARS."""
     try:
         from providers import list_providers
         for _pp in list_providers():
             if _pp.auth_type != "api_key":
                 continue
+            _label = _pp.display_name or _pp.name
             for _var in _pp.env_vars:
                 if _var in OPTIONAL_ENV_VARS:
                     continue
-                _is_key = not _var.endswith(("_BASE_URL", "_URL"))
-                _label = _pp.display_name or _pp.name
                 OPTIONAL_ENV_VARS[_var] = {
-                    "description": f"{_label} {'API key' if _is_key else 'base URL override'}",
-                    "prompt": f"{_label} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                    "description": f"{_label} API key",
+                    "prompt": f"{_label} API key",
                     "url": _pp.signup_url or None,
-                    "password": _is_key,
+                    "password": True,
                     "category": "provider",
-                    "advanced": True}
+                    "advanced": True,
+                }
+            _base_var = (_pp.base_url_env_var or "").strip()
+            if _base_var and _base_var not in OPTIONAL_ENV_VARS:
+                OPTIONAL_ENV_VARS[_base_var] = {
+                    "description": f"{_label} base URL override",
+                    "prompt": f"{_label} base URL (leave empty for default)",
+                    "url": None,
+                    "password": False,
+                    "category": "provider",
+                    "advanced": True,
+                }
     except Exception:
         pass
 
@@ -4085,7 +4094,7 @@ def stamp_install_method(method: str, project_root: Optional[Path] = None) -> No
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'normalize_route_base_url': ('hermes_cli.route_identity', 'normalize_route_base_url'),
+    'normalize_route_base_url': ('providers.route_identity', 'normalize_route_base_url'),
 }
 
 

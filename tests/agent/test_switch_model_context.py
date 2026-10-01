@@ -6,7 +6,7 @@ import pytest
 
 from hermes_cli.models_local import LMStudioLoadResult
 from run_agent import AIAgent
-from hermes_cli.route_identity import normalize_route_base_url
+from providers import normalize_route_base_url
 from agent.context_compressor import ContextCompressor
 
 
@@ -98,7 +98,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     return agent
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("models.metadata.context.get_model_context_length", return_value=131_072)
 def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
     """Switching models must not reuse the previous model.context_length override."""
     agent = _make_agent_with_compressor(config_context_length=32_768)
@@ -145,7 +145,7 @@ def test_switch_model_reapplies_checked_auxiliary_compression_limit():
     aux_client = MagicMock(base_url="https://aux.example/v1", api_key="aux-key")
     with (
         patch(
-            "agent.model_metadata.get_model_context_length",
+            "models.metadata.context.get_model_context_length",
             side_effect=[400_000, 80_000],
         ),
         patch(
@@ -171,7 +171,7 @@ def test_switch_model_reapplies_checked_auxiliary_compression_limit():
     assert agent.context_compressor.threshold_tokens == 80_000
     # Switching to a runtime whose aux fits restores the main-model trigger (no one-way ratchet).
     with (
-        patch("agent.model_metadata.get_model_context_length", side_effect=[400_000, 400_000]),
+        patch("models.metadata.context.get_model_context_length", side_effect=[400_000, 400_000]),
         patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(aux_client, "auxiliary-model")),
     ):
         agent.switch_model(
@@ -189,7 +189,7 @@ def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
     agent.runtime_capabilities = {"native_compaction": True}
     agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+    with patch("models.metadata.context.get_model_context_length", return_value=128_000):
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
 
     assert agent.base_url == "https://api.openai.com/v1"
@@ -204,7 +204,7 @@ def test_cross_provider_switch_to_default_openai_preserves_native_capability():
     agent.runtime_capabilities = {"native_compaction": False}
     agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+    with patch("models.metadata.context.get_model_context_length", return_value=128_000):
         agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
 
     assert agent.base_url == "https://api.openai.com/v1"
@@ -349,7 +349,7 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
     monkeypatch.setattr("hermes_cli.config.get_custom_provider_context_length", fake_provider_context)
     monkeypatch.setattr(AIAgent, "_ensure_lmstudio_runtime_loaded", fake_lmstudio_load)
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=100_000) as mock_ctx_len:
+    with patch("models.metadata.context.get_model_context_length", return_value=100_000) as mock_ctx_len:
         agent.switch_model(
             "lmstudio/new-model",
             "lmstudio",

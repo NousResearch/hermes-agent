@@ -6,6 +6,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from models import models_dev_cache as mdc
+
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
@@ -13,9 +15,8 @@ from agent.models_dev import (
     _explicit_model_override,
     _override_context_window,
     _override_for,
-    _validate_registry,
     fetch_models_dev,
-    get_model_capabilities,
+    query_model_metadata,
     get_model_info,
     lookup_models_dev_context,
 )
@@ -170,10 +171,10 @@ class TestFetchModelsDev:
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
 
-        with patch.object(md, "_disk_cache_age_seconds",
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds",
                           return_value=md._MODELS_DEV_CACHE_TTL + 60), \
-             patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
-             patch.object(md, "_load_etag", return_value=""), \
+             patch.object(mdc, "load_models_dev_disk_cache", return_value=SAMPLE_REGISTRY), \
+             patch.object(mdc, "load_models_dev_etag", return_value=""), \
              patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
             result = fetch_models_dev()
 
@@ -192,11 +193,11 @@ class TestFetchModelsDev:
         md._models_dev_cache_time = time.time() - md._MODELS_DEV_CACHE_TTL - 1
 
         with patch.object(
-            md,
-            "_disk_cache_age_seconds",
+            mdc,
+            "models_dev_disk_cache_age_seconds",
             return_value=md._MODELS_DEV_CACHE_TTL + 60,
-        ), patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
-           patch.object(md, "_load_etag", return_value=""):
+        ), patch.object(mdc, "load_models_dev_disk_cache", return_value=SAMPLE_REGISTRY), \
+           patch.object(mdc, "load_models_dev_etag", return_value=""):
             first = fetch_models_dev()
             # Join the background refresh worker so its failure backoff is
             # observable and requests.get stays patched for its lifetime.
@@ -231,9 +232,9 @@ class TestFetchModelsDev:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = time.time() - 1
 
-        with patch.object(md, "_save_disk_cache") as mock_save, \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag") as mock_save_etag:
+        with patch.object(mdc, "save_models_dev_disk_cache") as mock_save, \
+             patch.object(mdc, "load_models_dev_etag", return_value=""), \
+             patch.object(mdc, "save_models_dev_etag") as mock_save_etag:
             # Run the worker synchronously — deterministic, no thread.
             md._models_dev_refresh_in_flight = True
             md._background_refresh_models_dev()
@@ -262,10 +263,10 @@ class TestFetchModelsDev:
             return response
 
         mock_get.side_effect = blocking_get
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), patch.object(
-            md, "_save_disk_cache"
-        ), patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag"), \
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), patch.object(
+            mdc, "save_models_dev_disk_cache"
+        ), patch.object(mdc, "load_models_dev_etag", return_value=""), \
+             patch.object(mdc, "save_models_dev_etag"), \
              ThreadPoolExecutor(max_workers=6) as pool:
             futures = [pool.submit(fetch_models_dev) for _ in range(6)]
             assert request_started.wait(timeout=2)
@@ -282,11 +283,11 @@ class TestFetchModelsDev:
         response = self._mock_response(SAMPLE_REGISTRY)
         mock_get.side_effect = [OSError("models.dev unreachable"), response]
 
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), patch.object(
-            md, "_load_disk_cache", return_value={}
-        ), patch.object(md, "_save_disk_cache"), \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag"):
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), patch.object(
+            mdc, "load_models_dev_disk_cache", return_value={}
+        ), patch.object(mdc, "save_models_dev_disk_cache"), \
+             patch.object(mdc, "load_models_dev_etag", return_value=""), \
+             patch.object(mdc, "save_models_dev_etag"):
             assert fetch_models_dev() == {}
             assert fetch_models_dev(force_refresh=True) == SAMPLE_REGISTRY
 
@@ -315,7 +316,7 @@ class TestFetchModelsDev:
 
         md._models_dev_cache = cache
         md._models_dev_cache_time = cache_time(md)
-        with patch.object(md, "_load_disk_cache", return_value=disk_data):
+        with patch.object(mdc, "load_models_dev_disk_cache", return_value=disk_data):
             result = fetch_models_dev(allow_network=False)
 
         assert result == expected
@@ -365,11 +366,11 @@ class TestETagConditionalGet:
         md._models_dev_cache = SAMPLE_REGISTRY
         md._models_dev_cache_time = 0
 
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_save_disk_cache"), \
-             patch.object(md, "_load_etag", return_value='"v1"'), \
-             patch.object(md, "_save_etag"):
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), \
+             patch.object(mdc, "load_models_dev_disk_cache", return_value={}), \
+             patch.object(mdc, "save_models_dev_disk_cache"), \
+             patch.object(mdc, "load_models_dev_etag", return_value='"v1"'), \
+             patch.object(mdc, "save_models_dev_etag"):
             fetch_models_dev(force_refresh=True)
 
         call_kwargs = mock_get.call_args
@@ -389,8 +390,8 @@ class TestETagConditionalGet:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = time.time() + 100  # backoff was armed
 
-        with patch.object(md, "_load_etag", return_value='"v1"'), \
-             patch.object(md, "_save_etag"):
+        with patch.object(mdc, "load_models_dev_etag", return_value='"v1"'), \
+             patch.object(mdc, "save_models_dev_etag"):
             # Run the background worker synchronously
             md._models_dev_refresh_in_flight = True
             md._background_refresh_models_dev()
@@ -418,10 +419,10 @@ class TestETagConditionalGet:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
 
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_load_etag", return_value='"v1"'), \
-             patch.object(md, "_save_etag"):
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), \
+             patch.object(mdc, "load_models_dev_disk_cache", return_value={}), \
+             patch.object(mdc, "load_models_dev_etag", return_value='"v1"'), \
+             patch.object(mdc, "save_models_dev_etag"):
             result = fetch_models_dev(force_refresh=True)
 
         assert result == SAMPLE_REGISTRY
@@ -440,11 +441,11 @@ class TestETagConditionalGet:
         response.raise_for_status = MagicMock()
         mock_get.return_value = response
 
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_save_disk_cache"), \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag"):
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), \
+             patch.object(mdc, "load_models_dev_disk_cache", return_value={}), \
+             patch.object(mdc, "save_models_dev_disk_cache"), \
+             patch.object(mdc, "load_models_dev_etag", return_value=""), \
+             patch.object(mdc, "save_models_dev_etag"):
             fetch_models_dev()
 
         call_kwargs = mock_get.call_args
@@ -461,15 +462,15 @@ class TestCorruptCacheRejection:
     """A corrupt or empty disk cache must be rejected, not served as {}."""
 
     def test_validate_registry_rejects_empty_dict(self):
-        assert not _validate_registry({})
+        assert not mdc.valid_models_dev_registry({})
 
     def test_validate_registry_rejects_non_dict(self):
-        assert not _validate_registry("not a dict")
-        assert not _validate_registry(None)
-        assert not _validate_registry([])
+        assert not mdc.valid_models_dev_registry("not a dict")
+        assert not mdc.valid_models_dev_registry(None)
+        assert not mdc.valid_models_dev_registry([])
 
     def test_validate_registry_accepts_populated_dict(self):
-        assert _validate_registry({"anthropic": {}})
+        assert mdc.valid_models_dev_registry({"anthropic": {}})
 
     def test_corrupt_json_on_disk_rejected_with_warning(self, tmp_path, caplog):
         """Invalid JSON in a REAL cache file is rejected with a warning."""
@@ -479,10 +480,10 @@ class TestCorruptCacheRejection:
 
         cache = tmp_path / "models_dev_cache.json"
         cache.write_text("not json{{{", encoding="utf-8")
-        with patch.object(md, "_get_cache_path", return_value=cache), \
-             patch.object(md, "_get_etag_path", return_value=tmp_path / "models_dev_cache.etag"):
+        with patch.object(mdc, "models_dev_cache_path", return_value=cache), \
+             patch.object(mdc, "models_dev_etag_path", return_value=tmp_path / "models_dev_cache.etag"):
             with caplog.at_level(logging.WARNING):
-                result = md._load_disk_cache()
+                result = mdc.load_models_dev_disk_cache()
 
         assert result == {}
         assert any("disk cache" in r.message for r in caplog.records)
@@ -495,10 +496,10 @@ class TestCorruptCacheRejection:
 
         cache = tmp_path / "models_dev_cache.json"
         cache.write_text("{}", encoding="utf-8")
-        with patch.object(md, "_get_cache_path", return_value=cache), \
-             patch.object(md, "_get_etag_path", return_value=tmp_path / "models_dev_cache.etag"):
+        with patch.object(mdc, "models_dev_cache_path", return_value=cache), \
+             patch.object(mdc, "models_dev_etag_path", return_value=tmp_path / "models_dev_cache.etag"):
             with caplog.at_level(logging.WARNING):
-                result = md._load_disk_cache()
+                result = mdc.load_models_dev_disk_cache()
 
         assert result == {}
         assert any("corrupt or empty" in r.message for r in caplog.records)
@@ -517,9 +518,9 @@ class TestCorruptCacheRejection:
         cache.write_text("corrupt!!", encoding="utf-8")
         etag.write_text("stale-etag", encoding="utf-8")
 
-        with patch.object(md, "_get_cache_path", return_value=cache), \
-             patch.object(md, "_get_etag_path", return_value=etag):
-            result = md._load_disk_cache()
+        with patch.object(mdc, "models_dev_cache_path", return_value=cache), \
+             patch.object(mdc, "models_dev_etag_path", return_value=etag):
+            result = mdc.load_models_dev_disk_cache()
 
         assert result == {}
         assert not etag.exists()
@@ -549,7 +550,7 @@ class TestCorruptCacheRejection:
             return resp
 
         with patch.object(md.requests, "get", side_effect=fake_get), \
-             patch.object(md, "_load_etag", return_value="stale-etag"), \
+             patch.object(mdc, "load_models_dev_etag", return_value="stale-etag"), \
              patch.object(md, "_models_dev_cache", {}):
             data, etag = md._fetch_models_dev_from_network()
 
@@ -565,7 +566,7 @@ class TestCorruptCacheRejection:
         etag = tmp_path / "models_dev_cache.etag"
         etag.write_text("stale", encoding="utf-8")
 
-        with patch.object(md, "_get_etag_path", return_value=etag), \
+        with patch.object(mdc, "models_dev_etag_path", return_value=etag), \
              patch.object(md, "_models_dev_cache", {}):
             before = md._models_dev_retry_after
             try:
@@ -611,11 +612,11 @@ class TestMirrorUrlOverride:
 
         fake_config = {"models_dev": {"url": "https://mirror.example.com/api.json"}}
 
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_save_disk_cache"), \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag"), \
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), \
+             patch.object(mdc, "load_models_dev_disk_cache", return_value={}), \
+             patch.object(mdc, "save_models_dev_disk_cache"), \
+             patch.object(mdc, "load_models_dev_etag", return_value=""), \
+             patch.object(mdc, "save_models_dev_etag"), \
              patch("hermes_cli.config.load_config_readonly", return_value=fake_config):
             fetch_models_dev()
 
@@ -637,11 +638,11 @@ class TestMirrorUrlOverride:
 
         fake_config = {"models_dev": {"url": ""}}
 
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_save_disk_cache"), \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag"), \
+        with patch.object(mdc, "models_dev_disk_cache_age_seconds", return_value=None), \
+             patch.object(mdc, "load_models_dev_disk_cache", return_value={}), \
+             patch.object(mdc, "save_models_dev_disk_cache"), \
+             patch.object(mdc, "load_models_dev_etag", return_value=""), \
+             patch.object(mdc, "save_models_dev_etag"), \
              patch("hermes_cli.config.load_config_readonly", return_value=fake_config):
             fetch_models_dev()
 
@@ -658,11 +659,11 @@ class TestNoNetworkOnHotPaths:
     """Query functions must default to allow_network=False on hot paths."""
 
     @patch("agent.models_dev.requests.get")
-    def test_get_model_capabilities_default_no_network(self, mock_get):
-        """get_model_capabilities defaults to allow_network=False."""
+    def test_query_model_metadata_default_no_network(self, mock_get):
+        """query_model_metadata defaults to allow_network=False."""
         with patch("agent.models_dev.fetch_models_dev") as mock_fetch:
             mock_fetch.return_value = CAPS_REGISTRY
-            get_model_capabilities("anthropic", "claude-sonnet-4")
+            query_model_metadata("anthropic", "claude-sonnet-4")
         # fetch_models_dev was called with allow_network=False
         mock_fetch.assert_called_once_with(allow_network=False)
 
@@ -685,7 +686,7 @@ class TestNoNetworkOnHotPaths:
 
 
 # ---------------------------------------------------------------------------
-# get_model_capabilities — vision via modalities.input
+# query_model_metadata — vision via modalities.input
 # ---------------------------------------------------------------------------
 
 
@@ -728,13 +729,13 @@ CAPS_REGISTRY = {
 }
 
 
-class TestGetModelCapabilities:
-    """Tests for get_model_capabilities vision detection."""
+class TestQueryModelMetadata:
+    """Tests for query_model_metadata vision detection."""
 
     def test_vision_from_attachment_flag(self):
         """Models with attachment=True and no modalities should report supports_vision=True."""
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
-            caps = get_model_capabilities("anthropic", "claude-sonnet-4")
+            caps = query_model_metadata("anthropic", "claude-sonnet-4")
         assert caps is not None
         assert caps.supports_vision is True
 
@@ -753,7 +754,7 @@ class TestGetModelCapabilities:
             }},
         }
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
-            caps = get_model_capabilities("gemini", "weird-model")
+            caps = query_model_metadata("gemini", "weird-model")
         assert caps is not None
         assert caps.supports_vision is False
 
@@ -765,7 +766,7 @@ class TestGetModelCapabilities:
         overrides = {"925llm": {"deepseek-v4.1-flash": {"context_window": 1_000_000}}}
         with patch("agent.models_dev._load_model_overrides", return_value=overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
-            caps = get_model_capabilities("925llm", "deepseek-v4.1-flash")
+            caps = query_model_metadata("925llm", "deepseek-v4.1-flash")
             info = get_model_info("925llm", "deepseek-v4.1-flash")
 
         assert caps is not None
@@ -798,14 +799,17 @@ class TestCatalogProviderAlias:
                               "tool_call": True, "reasoning": False,
                               "modalities": {"input": ["text"], "output": ["text"]}}}}}
         with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value=registry):
-            builtin = get_model_capabilities("925llm", "deepseek-v4.1-flash")
-            prefixed = get_model_capabilities("custom:925llm", "deepseek-v4.1-flash")
-            catalog = get_model_capabilities("925llm", "deepseek-chat")
+            builtin = query_model_metadata("925llm", "deepseek-v4.1-flash")
+            prefixed = query_model_metadata("custom:925llm", "deepseek-v4.1-flash")
+            catalog = query_model_metadata("925llm", "deepseek-chat")
             ctx = lookup_models_dev_context("925llm", "deepseek-chat")
             info = get_model_info("925llm", "deepseek-chat")
 
         assert builtin is not None and builtin.supports_vision is True
-        assert prefixed == builtin
+        assert prefixed is not None
+        assert prefixed.ref.provider == "custom:925llm"
+        assert prefixed.ref.model == builtin.ref.model
+        assert prefixed.supports_vision == builtin.supports_vision
         assert catalog is not None and catalog.supports_vision is False and catalog.max_output_tokens == 8000
         assert ctx == 128000
         assert info is not None and info.provider_id == "deepseek" and info.context_window == 128000
@@ -824,7 +828,7 @@ class TestCatalogProviderAlias:
         with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={"deepseek": {"models": {}}}), \
                 caplog.at_level(logging.WARNING, logger="agent.models_dev"):
             info = get_model_info("925llm", "deepseek-v4.1-flash")
-            assert get_model_capabilities("925llm", "deepseek-v4.1-flash").supports_vision is None
+            assert query_model_metadata("925llm", "deepseek-v4.1-flash").supports_vision is None
             get_model_info("925llm", "deepseek-v4.1-flash")
 
         assert info is not None and info.provider_id == "925llm"
@@ -836,8 +840,8 @@ class TestCatalogProviderAlias:
         config = {"providers": {"925llm": {"api": "http://gw.internal/v1"}},
                   "custom_providers": [{"name": "legacy-gw", "base_url": "http://x/v1", "catalog_provider": "deepseek"}]}
         with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={}):
-            assert get_model_capabilities("925llm", "deepseek-v4.1-flash") is None
-            legacy = get_model_capabilities("legacy-gw", "deepseek-v4.1-flash")
+            assert query_model_metadata("925llm", "deepseek-v4.1-flash") is None
+            legacy = query_model_metadata("legacy-gw", "deepseek-v4.1-flash")
         assert legacy is not None and legacy.supports_vision is True
 
 
@@ -1028,7 +1032,7 @@ class TestModelOverrides:
         warnings = [r for r in caplog.records if "model_overrides" in r.message]
         assert len(warnings) == 1
 
-    # --- get_model_capabilities with overrides ---
+    # --- query_model_metadata with overrides ---
 
     def test_caps_override_unknown_model(self):
         """Override provides capabilities for a model NOT in the catalog (#8731)."""
@@ -1044,7 +1048,7 @@ class TestModelOverrides:
         }
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
-            caps = get_model_capabilities("custom:my-vllm", "my-llava-model")
+            caps = query_model_metadata("custom:my-vllm", "my-llava-model")
         assert caps is not None
         assert caps.context_window == 8192
         assert caps.supports_vision is True
@@ -1069,8 +1073,8 @@ class TestModelOverrides:
         }
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
-            unknown = get_model_capabilities("custom-gateway", "upstream-model")
-            explicit_false = get_model_capabilities("custom-gateway", "text-model")
+            unknown = query_model_metadata("custom-gateway", "upstream-model")
+            explicit_false = query_model_metadata("custom-gateway", "text-model")
 
         assert unknown is not None
         assert unknown.context_window == 1_000_000
@@ -1091,7 +1095,7 @@ class TestModelOverrides:
         }
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
-            caps = get_model_capabilities("anthropic", "claude-sonnet-4")
+            caps = query_model_metadata("anthropic", "claude-sonnet-4")
         assert caps is not None
         # Override wins
         assert caps.context_window == 500000
@@ -1108,14 +1112,14 @@ class TestModelOverrides:
         }
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
-            caps = get_model_capabilities("anthropic", "claude-sonnet-4")
+            caps = query_model_metadata("anthropic", "claude-sonnet-4")
         assert caps is not None
         assert caps.context_window != 1000
 
     def test_caps_no_override_no_catalog_returns_none(self):
         with self._setup_overrides({}), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
-            caps = get_model_capabilities("anthropic", "unknown-model")
+            caps = query_model_metadata("anthropic", "unknown-model")
         assert caps is None
 
     def test_caps_override_default_for_unknown_model(self):
@@ -1130,7 +1134,7 @@ class TestModelOverrides:
         }
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
-            caps = get_model_capabilities("custom:my-vllm", "some-new-model")
+            caps = query_model_metadata("custom:my-vllm", "some-new-model")
         assert caps is not None
         assert caps.context_window == 32768
         assert caps.supports_tools is True
@@ -1312,14 +1316,14 @@ class TestModelOverrides:
         }
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value=registry):
-            caps = get_model_capabilities("ollama-cloud", "kimi-k2.6")
+            caps = query_model_metadata("ollama-cloud", "kimi-k2.6")
         assert caps is not None
         assert caps.context_window == 262144  # catalog, not the _default
         assert caps.supports_tools is True
 
     def test_model_info_unknown_model_gets_safe_defaults(self):
         """get_model_info's unknown-model path seeds the same safe
-        defaults as get_model_capabilities (200K/tools-on), so a partial
+        defaults as query_model_metadata (200K/tools-on), so a partial
         override doesn't yield ctx=0/tools-off."""
         overrides = {
             "custom:my-vllm": {
@@ -1385,8 +1389,8 @@ class TestOpenRouterRoutingVariantCatalogLookup:
         with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
             routed = f"z-ai/glm-5.3-flash:{suffix}"
             assert lookup_models_dev_context("openrouter", routed) == 1310720
-            base_caps = get_model_capabilities("openrouter", "z-ai/glm-5.3-flash")
-            routed_caps = get_model_capabilities("openrouter", routed)
+            base_caps = query_model_metadata("openrouter", "z-ai/glm-5.3-flash")
+            routed_caps = query_model_metadata("openrouter", routed)
             assert routed_caps.context_window == base_caps.context_window == 1310720
             assert routed_caps.supports_tools == base_caps.supports_tools
             assert get_model_info("openrouter", routed).context_window == 1310720
@@ -1406,7 +1410,7 @@ class TestOpencodeRelayVisionMarker:
     @pytest.mark.parametrize("provider", ["opencode-go", "opencode-zen", "opencode-go-bridge"])
     def test_vision_marker_fills_the_catalog_gap_for_opencode_family(self, provider):
         with patch("agent.models_dev.fetch_models_dev", return_value={}):
-            caps = get_model_capabilities(provider, "deepseek-v4-flash-vision-exp")
+            caps = query_model_metadata(provider, "deepseek-v4-flash-vision-exp")
         assert caps is not None and caps.supports_vision is True
         assert caps.supports_reasoning is None  # only vision is claimed
 
@@ -1415,8 +1419,8 @@ class TestOpencodeRelayVisionMarker:
             "deepseek-v4-flash-vision-exp": {"id": "deepseek-v4-flash-vision-exp", "modalities": {"input": ["text"]},
                                              "limit": {"context": 500000}}}}}
         with patch("agent.models_dev.fetch_models_dev", return_value={}):
-            assert get_model_capabilities("opencode-go", "deepseek-v4-flash") is None
-            assert get_model_capabilities("deepseek", "some-vision-model") is None
+            assert query_model_metadata("opencode-go", "deepseek-v4-flash") is None
+            assert query_model_metadata("deepseek", "some-vision-model") is None
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
-            caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
+            caps = query_model_metadata("opencode-go", "deepseek-v4-flash-vision-exp")
         assert caps.supports_vision is False and caps.context_window == 500000

@@ -17,8 +17,10 @@ import logging
 class TestAuxiliaryOpenrouterDefaultIsFree:
     def test_builtin_openrouter_default_is_free_sku(self):
         from agent import auxiliary_client as ac
+        from agent.auxiliary_model_resolution import select_provider_auxiliary_fallback
 
-        assert ac._is_free_model(ac._OPENROUTER_MODEL), (
+        model = select_provider_auxiliary_fallback("openrouter")
+        assert ac._is_free_model(model), (
             "the built-in auxiliary OpenRouter fallback model must be a :free "
             "SKU — a paid built-in default is silent real spend (#81952)"
         )

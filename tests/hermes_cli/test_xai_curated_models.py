@@ -2,10 +2,8 @@
 
 from unittest.mock import patch
 
-from hermes_cli.models import (
-    _PROVIDER_MODELS,
-    provider_model_ids,
-)
+from models.catalog_static import _PROVIDER_MODELS
+from hermes_cli.models import provider_model_ids
 
 
 

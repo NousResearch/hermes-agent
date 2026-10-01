@@ -117,9 +117,25 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.model_capability_sources import default_capability_sources
+from models import ModelRef
+from models.metadata import ModelMetadataContext, resolve_supports_vision
+from models.metadata.context import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from models.selection import (
+    auxiliary_task_prefers_fast_model,
+    select_vision_auxiliary_model,
+    selected_auxiliary_model_id,
+)
 from hermes_cli.config import get_hermes_home
-from hermes_cli.config_providers import _canonical_api_mode
+from providers import get_provider_profile
+from providers.routing import canonicalize_api_mode
+from agent.fallback_routing import resolve_fallback_invocation_route
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
+from agent.configured_provider_resolution import get_configured_provider_entry
+from agent.auxiliary_model_resolution import (
+    select_provider_auxiliary_fallback,
+    select_provider_auxiliary_model,
+)
 from agent.auxiliary_health import (
     _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
     fallback_candidate_unavailable_reason,
@@ -528,33 +544,14 @@ def _extract_url_query_params(url: str):
 _stale_base_url_warned = False
 
 # Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp) route through the generic custom
-# provider — mirrors hermes_cli.auth._PROVIDER_ALIASES. Without this group an explicit
+# provider. This set remains local because it also controls custom-route URL/key policy.
+# Without this group an explicit
 # ``provider: ollama`` aux lane matches no registry entry and raises a misleading
 # ``OLLAMA_API_KEY`` error instead of using the lane's base_url (#106010).
 _LOCAL_SERVER_ALIASES = {
     "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom",
 }
-
-_ALIAS_TABLE: Optional[Dict[str, str]] = None
-
-
-def _provider_alias_table() -> Dict[str, str]:
-    """The same alias table the main provider path resolves against (hermes_cli.auth).
-
-    A hand-copied mirror here rots silently every time auth grows a family — the local
-    servers (#106010) and the OpenCode entries were both missed that way. Local-server
-    names stay pinned on top: that set doubles as the guard for the /v1 tail and the
-    no-key-borrow rule in the custom branch below.
-    """
-    global _ALIAS_TABLE
-    if _ALIAS_TABLE is None:
-        merged: Dict[str, str] = dict(_LOCAL_SERVER_ALIASES)
-        with contextlib.suppress(Exception):
-            from hermes_cli.auth import _PROVIDER_ALIASES as _auth_table
-            merged.update(_auth_table)
-        _ALIAS_TABLE = merged
-    return _ALIAS_TABLE
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
@@ -563,15 +560,14 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not suffix:
             return "custom"
         normalized = suffix
-    if normalized == "codex":
-        return "openai-codex"
     if normalized == "main":
         # Resolve to the actual main provider so named custom providers work.
         main_prov = (_read_main_provider() or "").strip().lower()
         if not main_prov or main_prov in {"auto", "main"}:
             return "custom"
         normalized = main_prov
-    return _provider_alias_table().get(normalized, normalized)
+    from providers import normalize_provider
+    return normalize_provider(normalized)
 
 
 # Sentinel from _fixed_temperature_for_model(): callers strip ``temperature`` entirely.
@@ -613,7 +609,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     bare = _codex_route_bare_model(model, provider)
     if bare is None:
         return False
-    from agent.model_metadata import is_codex_context_variant
+    from models.metadata.context import is_codex_context_variant
     if is_codex_context_variant(bare):
         return False
     if "astra" in bare:
@@ -689,181 +685,15 @@ def _compression_threshold_for_model(
     return None
 
 
-# Aux "fast tier" families, fastest first (measured p50 titling latency). Matched as substrings
-# against the LIVE /v1/models catalog because pinned ids rot; rolling "-latest" aliases lead.
-_FAST_MODEL_FAMILIES: tuple = (
-    "gpt-mini-latest", "gpt-nano-latest", "claude-haiku-latest", "gemini-flash-latest",
-    "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5-mini", "haiku-4.5", "gemini-3.6-flash", "flash-lite",
-    "-nano", "-mini", "-flash", "haiku",
-)
+def _task_fast_preference_enabled(task: Optional[str]) -> bool:
+    """Read the caller-configured fast-model preference; eligibility is domain policy."""
 
-# Disqualifiers: reasoning variants think before answering; ":batch" is a queue; ":free" tiers
-# are rate-limited and slowest; embedders/modality endpoints match a rung but cannot answer.
-_FAST_MODEL_EXCLUDE: tuple = (
-    "thinking", "reason", "-r1", "minilm", ":batch", ":free",
-    "o1-", "o3-", "o4-", "codex", "audio", "-vl", "embed",
-    "-tts", "-transcribe", "-realtime", "-image", "-search-preview",
-)
+    if not task:
+        return False
+    return is_truthy_value(
+        _get_auxiliary_task_config(task).get("prefer_fast_model"), default=False
+    )
 
-
-def _model_recency_key(model_id: str) -> tuple:
-    """Sort key putting a family's newest release first: digit runs compare numerically (plain
-    string order picks ``gpt-3.5-mini`` over ``gpt-5.4-mini`` and breaks at 9 vs 10)."""
-    # re.split with one capturing group alternates text, number, text, …
-    return tuple(
-        (1, float(part), "") if index % 2 else (0, 0.0, part)
-        for index, part in enumerate(re.split(r"(\d+(?:\.\d+)?)", model_id.lower())) if part)
-
-
-def _fast_model_from_catalog(provider_id: str) -> str:
-    """Newest ``_FAST_MODEL_FAMILIES`` match from the provider's live (cached) catalog.
-
-    "" when the catalog is unavailable or holds no small model (caller falls through to the
-    curated default). Never raises; the fetch is memory+disk cached.
-    """
-    is_nous = provider_id.strip().lower() == "nous"
-    try:
-        from hermes_cli.auth import resolve_api_key_provider_credentials
-        from hermes_cli.models_pricing import fetch_models_with_pricing
-        from providers import get_provider_profile
-        # Most /v1/models endpoints are authenticated; an anonymous 401 would read as "no small
-        # model" and pin the curated default forever.
-        api_key, base_url = "", ""
-        try:
-            creds = resolve_api_key_provider_credentials(provider_id) or {}
-            api_key = str(creds.get("api_key", "")).strip()
-            base_url = str(creds.get("base_url", "")).strip()
-        except Exception:
-            # Not an API-key provider, or nothing configured; anonymous fetch may still work.
-            logger.debug("No credentials for %s catalog", provider_id, exc_info=True)
-        if not api_key and is_nous:
-            # Nous is OAuth (resolver raises); anonymous reads return the full catalog.
-            try:
-                from hermes_cli.models_pricing import _resolve_nous_pricing_credentials
-                api_key, base_url = _resolve_nous_pricing_credentials()
-            except Exception:
-                logger.debug("No Nous credentials for catalog", exc_info=True)
-        if not base_url:
-            base_url = str(getattr(get_provider_profile(provider_id), "base_url", "") or "")
-        base_url = base_url.rstrip("/")
-        if not base_url:
-            return ""
-        if base_url.endswith("/v1"):  # fetch_models_with_pricing appends /v1/models
-            base_url = base_url[:-3]
-        # Nous-only args must match the pickers' or the seeded cache loses sale chrome and
-        # policy-catalog expiry.
-        _nous_kwargs = {}
-        if is_nous:
-            from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
-            _nous_kwargs = {"include_sale_original": True, "cache_ttl_seconds": _NOUS_CATALOG_TTL_SECONDS}
-        catalog = fetch_models_with_pricing(
-            api_key=api_key or None, base_url=base_url, timeout=3.0, **_nous_kwargs) or {}
-    except Exception:
-        logger.debug("Fast-model catalog lookup failed for %s", provider_id, exc_info=True)
-        return ""
-    ids = sorted((str(m) for m in catalog), key=_model_recency_key, reverse=True)
-    if is_nous:
-        # Narrow catalog ids by org policy, as the pickers do.
-        try:
-            from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
-            ids = restrict_to_nous_policy(ids, nous_policy_allowed_ids())
-        except Exception:
-            logger.debug("Nous policy filter unavailable", exc_info=True)
-    for family in _FAST_MODEL_FAMILIES:
-        for model_id in ids:
-            lowered = model_id.lower()
-            if family in lowered and not any(x in lowered for x in _FAST_MODEL_EXCLUDE):
-                return model_id
-    return ""
-
-
-# Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
-def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) -> str:
-    """Cheap auxiliary model for a provider.
-
-    Ladder: (``prefer_fast`` only) live-catalog family match, then ``ProviderProfile.resolve_aux_model``;
-    then ``default_aux_model`` (curated); then the legacy dict. ``prefer_fast`` is opt-in (titling)
-    so other callers keep their static behaviour and cache keys.
-    """
-    profile = None
-    with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        profile = get_provider_profile(provider_id)
-    picked = ""
-    if prefer_fast:
-        picked = _fast_model_from_catalog(provider_id)
-        if not picked and profile is not None:
-            try:
-                picked = profile.resolve_aux_model() or ""
-            except Exception:
-                logger.debug("resolve_aux_model failed for %s", provider_id, exc_info=True)
-    if not picked and profile is not None and profile.default_aux_model:
-        picked = profile.default_aux_model
-    if not picked:
-        picked = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
-    # Rungs 2-4 are policy-blind; a blocked pick is refused at request time, so drop it and
-    # let the caller keep the main model.
-    if picked and provider_id.strip().lower() == "nous":
-        try:
-            from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
-            allowed = nous_policy_allowed_ids()
-            if allowed and not restrict_to_nous_policy([picked], allowed):
-                return ""
-        except Exception:
-            logger.debug("Nous policy check unavailable", exc_info=True)
-    return picked
-
-
-# Fallback for providers without ProviderProfile.default_aux_model (plus some pinned here).
-# New providers should set default_aux_model instead.
-_API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
-    "gemini": "gemini-3.6-flash", "zai": "glm-4.5-flash", "kimi-coding": "kimi-k2-turbo-preview",
-    "stepfun": "step-3.5-flash", "kimi-coding-cn": "kimi-k2-turbo-preview",
-    "gmi": "google/gemini-3.1-flash-lite-preview", "anthropic": "claude-haiku-4-5-20251001",
-    "ai-gateway": "google/gemini-3-flash", "opencode-zen": "gemini-3-flash", "opencode-go": "glm-5",
-    "kilocode": "google/gemini-3.6-flash", "ollama-cloud": "nemotron-3-nano:30b",
-    "tencent-tokenhub": "hy4-preview", "tencent-tokenplan": "hy4-preview",
-    # No "deepinfra": its aux model lives on the ProviderProfile (read first).
-}
-
-# Legacy alias for callers not yet using _get_aux_model_for_provider().
-_API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
-
-# Tasks that may opt into ``auxiliary.<task>.prefer_fast_model``.
-_FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
-
-
-def _task_prefers_fast_model(task: Optional[str]) -> bool:
-    """Return whether an eligible task explicitly opts into fast-model routing."""
-    return task in _FAST_MODEL_TASKS and is_truthy_value(
-        _get_auxiliary_task_config(task).get("prefer_fast_model"), default=False)
-
-
-# Dedicated vision models for direct providers whose main chat model differs. zai: glm-5.3-flash
-# is the only image-capable GLM id served on every Z.AI surface (pay-as-you-go and Coding Plan,
-# global and CN); the former glm-5v-turbo pin 404s / 1211 "Unknown Model" on the coding endpoints
-# (#111429). ZaiProfile has no default_vision_model(), so dropping the pin would route vision to
-# the user's text-only chat model and skip Z.AI entirely.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
-
-
-def _resolve_provider_vision_default(provider: str) -> Optional[str]:
-    """Provider default vision model id, or None: static ``_PROVIDER_VISION_MODELS`` (vision-only
-    names absent from any catalog) win, else ``ProviderProfile.default_vision_model()``."""
-    static = _PROVIDER_VISION_MODELS.get(provider)
-    if static:
-        return static
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(provider)
-        return profile.default_vision_model() if profile is not None else None
-    except Exception:
-        return None
-
-
-# Endpoints that reject image input: vision auto-detect skips these to the aggregator chain
-# instead of returning a client that 404s (Kimi Coding Plan Anthropic wire has no image_in).
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({"kimi-coding", "kimi-coding-cn"})
 
 # OpenRouter app attribution (always sent). `X-Title` is what the dashboard reads.
 _OR_HEADERS_BASE = {
@@ -953,11 +783,6 @@ def _nous_extra_body() -> dict:
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
-# _OPENROUTER_MODEL MUST stay a :free SKU (matching the free_only warning): this lane engages
-# silently, and a paid default meant spend the user never opted into. User-configured values
-# are honored untouched (_warn_paid_lane_once fires).
-_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
-_NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -1556,7 +1381,7 @@ class _CodexCompletionsAdapter:
         return resp_kwargs, model, timeout
 
     def create(self, **kwargs) -> Any:
-        from hermes_cli.providers import is_actual_route
+        from providers import is_actual_route
 
         if is_actual_route(
             getattr(self._client, "_hermes_aux_effective_provider", ""),
@@ -1894,18 +1719,9 @@ class AsyncBedrockAuxiliaryClient(_AsyncAuxiliaryClientBase):
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
-    """True if ``base_url`` speaks Anthropic Messages, not OpenAI chat.completions.
-
-    Mirrors ``hermes_cli.runtime_provider._detect_api_mode_for_url`` so aux and main agree: any
-    ``/anthropic`` URL (MiniMax, Zhipu, LiteLLM), ``api.kimi.com/coding`` (chat 404s), ``api.anthropic.com``.
-    """
-    normalized = (base_url or "").strip().lower().rstrip("/")
-    if not normalized:
-        return False
-    if urlparse(normalized).path.rstrip("/").endswith(("/anthropic", "/anthropic/v1")):
-        return True
-    hostname = base_url_hostname(normalized)
-    return hostname == "api.anthropic.com" or bool(hostname == "api.kimi.com" and "/coding" in normalized)
+    """True when the canonical endpoint policy mandates Anthropic Messages."""
+    from providers.routing import endpoint_api_mode
+    return endpoint_api_mode(base_url) == "anthropic_messages"
 
 
 def _maybe_wrap_anthropic(
@@ -2151,13 +1967,14 @@ def _read_codex_singleton_token() -> Optional[str]:
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Try each API-key provider in PROVIDER_REGISTRY order; (client, model) or (None, None)."""
+    """Try each API-key provider in canonical provider projection order; (client, model) or (None, None)."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+        from hermes_cli.auth import resolve_api_key_provider_credentials
     except ImportError:
-        logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
+        logger.debug("Could not import provider auth projection for API-key fallback")
         return None, None
-    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+    for pconfig in iter_provider_configs():
+        provider_id = pconfig.id
         if pconfig.auth_type != "api_key":
             continue
         if _is_provider_unhealthy(provider_id):
@@ -2176,7 +1993,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("copilot"):
                     continue
-        model = _get_aux_model_for_provider(provider_id) or None
+        model = select_provider_auxiliary_model(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         pool_present, entry = _select_pool_entry(provider_id)
@@ -2211,8 +2028,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-            headers = copilot_default_headers()
+            from providers import copilot_request_headers
+            headers = copilot_request_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers = build_nvidia_nim_headers(base_url)
         else:
@@ -2238,7 +2055,7 @@ def _endpoint_default_headers(
     if base_url_host_matches(base_url, "api.kimi.com"):
         headers: dict = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(base_url, "githubcopilot.com"):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from providers import copilot_request_headers
         headers = dict(copilot_request_headers(is_agent_turn=True, is_vision=is_vision))
     elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
         headers = dict(build_nvidia_nim_headers(base_url))
@@ -2276,16 +2093,18 @@ def _is_free_model(model: Optional[str]) -> bool:
 
 
 def _aux_openrouter_settings() -> Tuple[bool, str]:
-    """Read (free_only, openrouter_model) from config; (False, _OPENROUTER_MODEL) on failure."""
+    """Read OpenRouter fallback policy; model choice is owned by the selection seam."""
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
         cfg = load_config_readonly()
         free_only = bool(cfg_get(cfg, "auxiliary", "free_only", default=False))
         val = cfg_get(cfg, "auxiliary", "openrouter_model")
-        model = val.strip() if isinstance(val, str) and val.strip() else _OPENROUTER_MODEL
-        return free_only, model
+        preferred = val.strip() if isinstance(val, str) and val.strip() else ""
+        return free_only, select_provider_auxiliary_fallback(
+            "openrouter", preferred_model=preferred
+        )
     except Exception:
-        return False, _OPENROUTER_MODEL
+        return False, select_provider_auxiliary_fallback("openrouter")
 
 
 def _warn_paid_lane_once(model: str) -> None:
@@ -2409,42 +2228,38 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         return _create_openai_client(api_key=api_key, base_url=base_url), GUEST_MODEL
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
-    # Portal recommended-models is authoritative (tier-aware); _NOUS_MODEL when unreachable/null.
-    # Probes skip the lookup: exact model is irrelevant and it hits the network.
-    model = _NOUS_MODEL
+    # Provider-owned recommendation is authoritative; provider-declared fallback handles misses.
+    # Probes skip the lookup: exact model is irrelevant and it may hit the network.
+    recommended = ""
     if not _aux_probe_active():
         try:
-            from hermes_cli.models import get_nous_recommended_aux_model
-            recommended = get_nous_recommended_aux_model(vision=vision)
-            if recommended:
-                model = recommended
-                logger.debug("Auxiliary/%s: using Portal-recommended model %s", lane, model)
-            else:
-                logger.debug("Auxiliary/%s: no Portal recommendation, falling back to %s", lane, model)
+            profile = get_provider_profile("nous")
+            recommended = str(profile.resolve_aux_model(vision=vision) or "") if profile else ""
         except Exception as exc:
-            logger.debug(
-                "Auxiliary/%s: recommended-models lookup failed (%s); "
-                "falling back to %s",
-                lane, exc, model,
-            )
+            logger.debug("Auxiliary/%s: provider recommendation lookup failed (%s)", lane, exc)
+    model = select_provider_auxiliary_fallback("nous", preferred_model=recommended)
+    if not model:
+        return None, None
+    if recommended and model == recommended:
+        logger.debug("Auxiliary/%s: using Portal-recommended model %s", lane, model)
+    else:
+        logger.debug("Auxiliary/%s: using provider fallback model %s", lane, model)
     return _create_openai_client(api_key=api_key, base_url=base_url), model
 
 
 def _refresh_nous_recommended_model(*, vision: bool, stale_model: Optional[str]) -> Optional[str]:
-    """Fresh Portal recommended model after a stale-model 404 (long-lived processes pin dropped models).
+    """Fresh Portal recommendation, else provider fallback, excluding the stale model."""
 
-    Returns the fresh recommendation, else ``_NOUS_MODEL``, whichever differs from ``stale_model``; None if neither.
-    """
     stale = (stale_model or "").strip().lower()
     fresh: Optional[str] = None
     try:
-        from hermes_cli.models import get_nous_recommended_aux_model
-        fresh = get_nous_recommended_aux_model(vision=vision, force_refresh=True)
+        profile = get_provider_profile("nous")
+        fresh = profile.resolve_aux_model(vision=vision, force_refresh=True) if profile else None
     except Exception as exc:
-        logger.debug("Nous recommended-model refresh failed (%s); using default %s", exc, _NOUS_MODEL)
-    if fresh and fresh.strip().lower() != stale:
-        return fresh
-    return _NOUS_MODEL if _NOUS_MODEL.strip().lower() != stale else None
+        logger.debug("Nous provider recommendation refresh failed (%s)", exc)
+    return select_provider_auxiliary_fallback(
+        "nous", preferred_model=fresh or "", excluded_model=stale
+    ) or None
 
 
 def _read_main_field(field: str, *, readonly: bool, lower: bool = False) -> str:
@@ -3063,7 +2878,7 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
         base_url = override_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    model = select_provider_auxiliary_model("anthropic")
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
@@ -3686,8 +3501,8 @@ def _recoverable_pool_provider(
         rt_provider = runtime.get("provider", "")
         if rt_provider and rt_provider not in {"", "auto", "custom"}:
             with contextlib.suppress(Exception):
-                from hermes_cli.auth import PROVIDER_REGISTRY
-                pconfig = PROVIDER_REGISTRY.get(rt_provider)
+                from hermes_cli.provider_auth import get_provider_config
+                pconfig = get_provider_config(rt_provider)
                 if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
                     # The pool's key was issued for the endpoint the main runtime actually uses; a
                     # rejection at any other host (registry default vs configured proxy) says nothing
@@ -3957,17 +3772,12 @@ class _FallbackDestination(NamedTuple):
 def _complete_fallback_destination(
     provider: str, base_url: str, api_mode: Optional[str], model: Optional[str]
 ) -> _FallbackDestination:
-    if not api_mode:
-        if _endpoint_speaks_anthropic_messages(base_url):
-            api_mode = "anthropic_messages"
-        else:
-            with contextlib.suppress(Exception):
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                runtime = resolve_runtime_provider(
-                    requested=provider, explicit_base_url=base_url or None, target_model=model or ""
-                )
-                api_mode = str(runtime.get("api_mode") or "").strip() or None
-    return _FallbackDestination(provider, base_url, api_mode, model)
+    route = resolve_fallback_invocation_route(
+        provider, model or "", base_url, explicit_api_mode=api_mode,
+    )
+    return _FallbackDestination(
+        route.provider, route.base_url, route.api_mode or None, route.model or model,
+    )
 
 
 def _fallback_destination_from_entry(
@@ -4297,13 +4107,39 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    if task == "vision" and (
-            main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
-        # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
-        # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
-        logger.info("Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
-                    reason, failed_provider, main_provider)
-        return None, None, ""
+    if task == "vision":
+        profile = get_provider_profile(main_provider)
+        rejects_vision = bool(profile is not None and profile.rejects_vision_input)
+        supports_vision: Optional[bool] = None
+        if not rejects_vision:
+            try:
+                from agent.image_routing import _vision_override_patches
+                from hermes_cli.config import load_config_readonly
+
+                cfg = load_config_readonly()
+                explicit_fact, configured_fact = _vision_override_patches(
+                    cfg, main_provider, main_model,
+                )
+                supports_vision = resolve_supports_vision(
+                    ModelRef(main_provider, main_model),
+                    context=ModelMetadataContext(
+                        route_provider=main_provider,
+                        allow_network=True,
+                        explicit=explicit_fact,
+                        configured=configured_fact,
+                    ),
+                    sources=default_capability_sources(),
+                )
+            except Exception:
+                logger.debug("Main fallback vision capability lookup failed", exc_info=True)
+        if rejects_vision or supports_vision is False:
+            # Same capability gate as the auto-route: handing an image to a known text-only
+            # main model turns a transient 429 into a guaranteed 400 (#108349).
+            logger.info(
+                "Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
+                reason, failed_provider, main_provider,
+            )
+            return None, None, ""
     main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
@@ -4446,19 +4282,27 @@ def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
 
 
 def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
-    """Resolve one fallback entry through the central provider router."""
+    """Resolve one fallback entry through canonical provider routing, then build its client."""
     provider = str(entry.get("provider") or "").strip()
-    model = str(entry.get("model") or "").strip() or None
+    model = str(entry.get("model") or "").strip()
     if not provider or not model:
         return None, None
+    explicit_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip() or None
+    route = resolve_fallback_invocation_route(
+        provider, model, str(entry.get("base_url") or "").strip(),
+        explicit_api_mode=explicit_mode,
+    )
     client, resolved_model = resolve_provider_client(
-        provider, model=model, explicit_base_url=str(entry.get("base_url") or "").strip() or None,
+        route.provider, model=route.model or model,
+        explicit_base_url=route.base_url or None,
         explicit_api_key=_fallback_entry_api_key(entry),
-        api_mode=str(entry.get("api_mode") or entry.get("transport") or "").strip() or None,
+        api_mode=route.api_mode or None,
     )
     if client is not None:
         with contextlib.suppress(Exception):
-            client._hermes_fallback_destination = _fallback_destination_from_entry(entry, client, resolved_model)
+            client._hermes_fallback_destination = _FallbackDestination(
+                route.provider, route.base_url, route.api_mode or None, resolved_model or route.model or model,
+            )
     return client, resolved_model
 
 
@@ -4539,77 +4383,121 @@ def _warn_stale_openai_base_url(runtime_provider: str) -> None:
         _stale_base_url_warned = True
 
 
-def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[str, str, str, Any, str]:
-    """Step-1 target: (provider, model, base_url, api_key, api_mode) of the main runtime, after the
-    fast-model opt-in and the MoA aggregator substitution."""
-    main_provider = str(runtime.get("provider", "") or _read_main_provider() or "")
-    main_model = str(runtime.get("model") or _read_main_model() or "")
-    runtime_base_url = str(runtime.get("base_url") or "")
+class _MainRuntimeRoute(NamedTuple):
+    """One resolved main-session route consumed by auxiliary main-first paths."""
+
+    provider: str
+    requested_provider: str
+    model: str
+    base_url: str
+    api_key: Any
+    api_mode: str
+
+
+def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> _MainRuntimeRoute:
+    """Resolve the main session's route through the lower provider-domain owner.
+
+    Non-empty runtime endpoint/mode facts are authoritative. Missing endpoint or API-mode
+    facts stay missing so the concrete provider branch may consult its configured route;
+    provider profile defaults must not silently replace a live session destination.
+    """
+    main_provider = str(runtime.get("provider", "") or _read_main_provider() or "").strip().lower()
+    requested_provider = str(runtime.get("requested_provider") or main_provider).strip().lower()
+    main_model = str(runtime.get("model") or _read_main_model() or "").strip()
+    runtime_base_url = str(runtime.get("base_url") or "").strip()
     runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = str(runtime.get("api_mode") or "")
+    runtime_api_mode = str(runtime.get("api_mode") or "").strip()
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
-    if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
-        fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
+    if (
+        auxiliary_task_prefers_fast_model(task, _task_fast_preference_enabled(task))
+        and main_provider
+        and main_provider not in {"auto", ""}
+    ):
+        fast_model = select_provider_auxiliary_model(
+            main_provider, main_model=main_model, prefer_fast=True
+        )
         if fast_model and fast_model != main_model:
-            logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
-                         task, fast_model, main_model)
+            logger.debug(
+                "Auxiliary task %s: preferring fast model %s over main model %s",
+                task, fast_model, main_model,
+            )
             main_model = fast_model
-    # MoA virtual provider: the preset name is not a wire model; run aux on the aggregator and drop
-    # the facade's "moa://local" base_url / placeholder key so it uses its own credentials.
+    # MoA is orchestration, not a wire route. Aux work runs on the aggregator and must not inherit
+    # the facade's moa:// endpoint, placeholder key, or API mode.
     if main_provider == "moa":
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider, main_model = _agg_provider, _agg_model
+        agg_provider, agg_model = _resolve_moa_aggregator(main_model)
+        if agg_provider and agg_model:
+            main_provider = requested_provider = agg_provider
+            main_model = agg_model
             runtime_base_url = runtime_api_key = runtime_api_mode = ""
-    return main_provider, main_model, runtime_base_url, runtime_api_key, runtime_api_mode
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
+    route = resolve_invocation_route(InvocationRequest(
+        provider=main_provider,
+        requested_provider=requested_provider,
+        model=main_model,
+        base_url=runtime_base_url,
+        explicit_api_mode=runtime_api_mode,
+    ))
+    # The lower resolver may project a profile default when no endpoint was supplied. Main-first
+    # forwards only endpoint/mode facts that the live runtime actually resolved; otherwise the
+    # concrete branch remains free to use its configured/pool destination.
+    base_url = route.base_url if runtime_base_url else ""
+    api_mode = route.api_mode if runtime_api_mode else ""
+    return _MainRuntimeRoute(
+        route.provider, requested_provider, route.model, base_url, runtime_api_key, api_mode
+    )
 
 
-def _try_main_provider_route(
-    main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
-) -> Optional[Tuple[Any, str, str]]:
-    """Step 1: route aux onto the main provider + main model; None if unusable."""
+def _main_route_resolver_provider(target: _MainRuntimeRoute) -> str:
+    """Provider identity passed to the concrete aux resolver for one live main route."""
+    requested = target.requested_provider
+    if (
+        target.provider == "custom"
+        and requested not in {"", "auto", "custom"}
+        and get_configured_provider_entry(requested) is not None
+    ):
+        # Main runtime canonicalization intentionally collapses configured custom providers to
+        # ``custom``. Re-enter through the requested identity so entry-owned headers/capabilities
+        # survive while the live endpoint/key below remain explicit and authoritative.
+        return requested
+    if (
+        target.provider.startswith("custom:")
+        and target.base_url
+        and get_configured_provider_entry(target.provider) is None
+    ):
+        return "custom"
+    return target.provider
+
+
+def _try_main_provider_route(target: _MainRuntimeRoute) -> Optional[Tuple[Any, str, str]]:
+    """Step 1: reuse the main session's resolved route; None if unusable."""
+    main_provider, main_model = target.provider, target.model
     if not (main_provider and main_model and main_provider not in {"auto", ""}):
         return None
-    resolved_provider = main_provider
-    explicit_base_url = runtime_base_url or None
+    resolved_provider = _main_route_resolver_provider(target)
+    explicit_base_url = target.base_url or None
+    explicit_api_key = target.api_key or None
     health_base_url = _custom_health_base_url(main_provider, explicit_base_url)
-    explicit_api_key = None
-    if runtime_base_url and main_provider == "custom":
-        # Anonymous custom endpoint — pass through explicit base_url + api_key.
-        explicit_api_key = runtime_api_key or None
-    elif main_provider.startswith("custom:"):
-        # Named custom provider (custom_providers / providers dict entry).
-        _has_named_entry = False
-        with contextlib.suppress(ImportError):
-            from hermes_cli.runtime_provider import _get_named_custom_provider
-            _has_named_entry = _get_named_custom_provider(main_provider) is not None
-        if _has_named_entry:
-            # KEEP the full ``custom:<name>`` so the named arm honours the entry's api_mode
-            # (collapsing to "custom" strips /anthropic → 404s). base_url/api_key come from the entry.
-            explicit_base_url = None
-        elif runtime_base_url:
-            # Config-less named custom provider (live runtime only): anonymous custom arm + runtime key.
-            # See #34777.
-            resolved_provider = "custom"
-            explicit_api_key = runtime_api_key or None
-        elif runtime_api_key:
-            explicit_api_key = runtime_api_key
-    elif runtime_api_key:
-        # Pin aux to the main session's working key, not a re-selected (maybe exhausted) pool key.
-        explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
     if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
         _log_skip_unhealthy(main_chain_label, base_url=health_base_url)
         return None
     client, resolved = resolve_provider_client(
-        resolved_provider, main_model, explicit_base_url=explicit_base_url,
-        explicit_api_key=explicit_api_key, api_mode=runtime_api_mode or None,
+        resolved_provider,
+        main_model,
+        explicit_base_url=explicit_base_url,
+        explicit_api_key=explicit_api_key,
+        api_mode=target.api_mode or None,
     )
     if client is None:
         return None
-    logger.info("Auxiliary auto-detect: using main provider %s (%s)", main_provider, resolved or main_model)
+    logger.info(
+        "Auxiliary auto-detect: using main provider %s (%s)",
+        main_provider, resolved or main_model,
+    )
     return client, resolved or main_model, resolved_provider
 
 
@@ -4664,20 +4552,20 @@ def _resolve_auto_route(
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
-    main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
-    routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
+    main_route = _main_route_target(runtime, task)
+    routed = _try_main_provider_route(main_route)
     if routed is not None:
         return routed
     if task:
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-            task, main_provider or "auto", reason="main provider unavailable")
+            task, main_route.provider or "auto", reason="main provider unavailable")
         if fb_client is not None:
             return fb_client, fb_model, _fallback_provider_from_label(fb_label)
     fb_client, fb_model, fb_label = _try_main_fallback_chain(
-        task, main_provider or "auto", reason="main provider unavailable")
+        task, main_route.provider or "auto", reason="main provider unavailable")
     if fb_client is not None:
         return fb_client, fb_model, fb_label
-    if not _discovery_chain_allowed(main_provider, task):
+    if not _discovery_chain_allowed(main_route.provider, task):
         return None, None, ""
     return _try_discovery_chain()
 
@@ -4726,7 +4614,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
-            from agent.model_metadata import _infer_provider_from_url
+            from models.metadata.context import _infer_provider_from_url
             inferred = _infer_provider_from_url(sync_base_url) or ""
         except Exception:
             inferred = ""
@@ -4747,8 +4635,12 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
     if not model_name:
         return model_name
     try:
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        return normalize_model_for_provider(model_name, provider)
+        from models.catalog_static import static_provider_model_ids
+        from models import normalize_model_id
+
+        return normalize_model_id(
+            provider, model_name, known_ids=static_provider_model_ids(provider)
+        )
     except Exception:
         return model_name
 
@@ -4893,8 +4785,7 @@ def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
 
 def _is_actual_auxiliary_route(req: _ResolveRequest, base_url: str) -> bool:
     from hermes_cli.auth import normalize_actual_base_url
-    from hermes_cli.providers import is_actual_route
-    from hermes_cli.route_identity import normalize_route_base_url
+    from providers import is_actual_route, normalize_route_base_url
 
     if is_actual_route(req.provider, base_url):
         return True
@@ -5008,19 +4899,35 @@ def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
 def _resolve_nous_branch(req: _ResolveRequest) -> _ResolveResult:
     """Nous Portal (OAuth)."""
     model = req.model
-    # Vision: caller flag, _PROVIDER_VISION_MODELS override, or a known vision id.
-    client, default = _try_nous(vision=(req.is_vision or model in _PROVIDER_VISION_MODELS.values()
-                                        or (model or "").strip().lower() == "mimo-v2-omni"))
+    vision = req.is_vision
+    if not vision and model:
+        try:
+            runtime = _normalize_main_runtime(req.main_runtime)
+            route_base = str(req.explicit_base_url or runtime.get("base_url") or "")
+            route_key = req.explicit_api_key or runtime.get("api_key") or ""
+            supports = resolve_supports_vision(
+                ModelRef("nous", model),
+                context=ModelMetadataContext(
+                    base_url=route_base,
+                    api_key=route_key if isinstance(route_key, str) else "",
+                    route_provider="nous",
+                    allow_network=True,
+                ),
+                sources=default_capability_sources(),
+            )
+            vision = supports is True
+        except Exception:
+            logger.debug("Nous model capability lookup failed", exc_info=True)
+    client, default = _try_nous(vision=vision)
     if client is None:
         logger.warning("resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)")
         return None, None
     final_model = _normalize_resolved_model(model or default, req.provider)
-    # Dual-wire: anthropic/* → /v1/messages, else /chat/completions. Derive from the catalog id
-    # (not a stale api_mode) so aux matches the main agent.
-    from hermes_cli.providers import nous_api_mode
+    # Resolve the Portal wire through the same canonical route policy as the main runtime.
     client = _maybe_wrap_anthropic(
         client, final_model, str(getattr(client, "api_key", "") or ""),
-        str(getattr(client, "base_url", "") or ""), nous_api_mode(final_model),
+        str(getattr(client, "base_url", "") or ""),
+        _nous_route_api_mode(final_model, str(getattr(client, "base_url", "") or "")),
     )
     return _route_client(req, client, final_model)
 
@@ -5145,16 +5052,15 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_he
 
 def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResult]:
     """Named custom provider (config.yaml providers dict / custom_providers list); None if no entry matches."""
-    from hermes_cli.runtime_provider import _get_named_custom_provider
     provider = req.provider
     # If the raw name is an alias (``kimi`` → ``kimi-coding``) and a custom_providers entry exists
     # under it, the custom entry wins over alias rewriting. Only for aliases, so entries matching a
     # canonical name (e.g. ``nous``) still defer to the built-in.
     custom_entry = None
     if req.original_provider and req.original_provider != provider:
-        custom_entry = _get_named_custom_provider(req.original_provider)
+        custom_entry = get_configured_provider_entry(req.original_provider)
     if custom_entry is None:
-        custom_entry = _get_named_custom_provider(provider)
+        custom_entry = get_configured_provider_entry(provider)
     if not custom_entry:
         return None
     # A per-task/explicit base_url or api_key composes OVER the named entry's defaults: the entry supplies
@@ -5222,7 +5128,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
 
 
 def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
-    """Azure Foundry via the runtime resolver: the generic PROVIDER_REGISTRY path only knows the static
+    """Azure Foundry via the runtime resolver: the generic canonical provider projection path only knows the static
     AZURE_FOUNDRY_API_KEY env var, missing ``auth_mode: entra_id`` (callable bearer) and config base_url overrides."""
     client, default_model = _try_azure_foundry(model=req.model, explicit_api_key=req.explicit_api_key,
                                                explicit_base_url=req.explicit_base_url, api_mode=req.api_mode)
@@ -5256,7 +5162,7 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
 
 
 def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: Callable) -> _ResolveResult:
-    """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
+    """canonical provider projection ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
         client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key,
@@ -5288,7 +5194,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     # Explicit base_url override: a fallback_model/custom_providers entry pointing a built-in name elsewhere.
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
-    final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
+    final_model = _normalize_resolved_model(req.model or select_provider_auxiliary_model(provider), provider)
     # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
@@ -5302,15 +5208,18 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
-    # wrap so call_llm() transparently routes through responses.stream().
+    # Copilot model-dependent wire comes from the canonical route owner.
     if provider == "copilot" and final_model and not req.raw_codex:
-        with contextlib.suppress(ImportError):
-            from hermes_cli.models import _should_use_copilot_responses_api
-            if _should_use_copilot_responses_api(final_model):
-                logger.debug("resolve_provider_client: copilot model %s needs "
-                             "Responses API — wrapping with CodexAuxiliaryClient", final_model)
-                client = CodexAuxiliaryClient(client, final_model)
+        from providers.routing import InvocationRequest, resolve_invocation_route
+        route = resolve_invocation_route(InvocationRequest(
+            provider=provider,
+            model=final_model,
+            base_url=base_url,
+        ))
+        if route.api_mode == "codex_responses":
+            logger.debug("resolve_provider_client: copilot model %s needs "
+                         "Responses API — wrapping with CodexAuxiliaryClient", final_model)
+            client = CodexAuxiliaryClient(client, final_model)
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
     client = _wrap_transport(req, client, final_model, raw_base_url, api_key)
@@ -5318,8 +5227,31 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     return _route_client(req, client, final_model)
 
 
+def _resolve_copilot_branch(req: _ResolveRequest) -> _ResolveResult:
+    """GitHub Copilot auxiliary route; token exchange remains application-owned."""
+    try:
+        from hermes_cli.auth import resolve_copilot_provider_credentials
+    except ImportError:
+        logger.debug("hermes_cli.auth not available for Copilot auxiliary routing")
+        return None, None
+    pconfig = get_provider_config("copilot")
+    if pconfig is None:
+        logger.debug("resolve_provider_client: Copilot provider config unavailable")
+        return None, None
+
+    def _credentials(_provider: str) -> Dict[str, Any]:
+        if _normalize_api_key(req.explicit_api_key):
+            return {
+                "api_key": "",
+                "base_url": (req.explicit_base_url or pconfig.inference_base_url).rstrip("/"),
+            }
+        return resolve_copilot_provider_credentials()
+
+    return _resolve_api_key_branch(req, pconfig, _credentials)
+
+
 def _resolve_external_process_branch(req: _ResolveRequest, creds: Dict[str, Any]) -> _ResolveResult:
-    """PROVIDER_REGISTRY ``external_process`` providers, served via their registered profile."""
+    """canonical provider projection ``external_process`` providers, served via their registered profile."""
     provider = req.provider
     final_model = _normalize_resolved_model(
         req.model or (req.main_runtime.get("model") if req.main_runtime else None) or _read_main_model_for_aux(),
@@ -5359,17 +5291,17 @@ def _resolve_external_process_branch(req: _ResolveRequest, creds: Dict[str, Any]
 
 
 def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
-    """PROVIDER_REGISTRY providers, dispatched on ``auth_type``; unknown providers log once."""
+    """canonical provider projection providers, dispatched on ``auth_type``; unknown providers log once."""
     provider = req.provider
     try:
         from hermes_cli.auth import (
-            PROVIDER_REGISTRY, resolve_api_key_provider_credentials,
+            resolve_api_key_provider_credentials,
             resolve_external_process_provider_credentials,
         )
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
         return None, None
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = get_provider_config(provider)
     if pconfig is None:
         _log_once_debug(_LOGGED_UNKNOWN_PROVIDER_KEYS, provider,
                         "resolve_provider_client: unknown provider %r", provider)
@@ -5399,13 +5331,14 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
 
 
 # Explicit providers with a dedicated branch; anything else falls through to named custom
-# providers → azure-foundry → PROVIDER_REGISTRY (order preserved from the original if-chain).
+# providers → azure-foundry → canonical provider projection (order preserved from the original if-chain).
 _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
     "auto": _resolve_auto_branch,
     "openrouter": _resolve_openrouter_branch,
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
     "xai-oauth": _resolve_xai_oauth_branch,
+    "copilot": _resolve_copilot_branch,
     "custom": _resolve_custom_branch,
 }
 
@@ -5427,7 +5360,7 @@ def resolve_provider_client(
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
     provider = _normalize_aux_provider(provider)
-    api_mode = _canonical_api_mode(str(api_mode or "")).lower() or None
+    api_mode = canonicalize_api_mode(str(api_mode or "")).lower() or None
     # MoA chokepoint: "moa" is not an HTTP provider; resolve to the aggregator so direct callers don't
     # dead-end in unknown-provider. Unresolvable preset → leave untouched for the normal diagnostic.
     if provider == "moa":
@@ -5450,8 +5383,8 @@ def resolve_provider_client(
         # leak a stale process-global runtime into a different provider (for example Claude model slug on
         # Codex OAuth) and override that correctly resolved model. 1. ``model`` argument (caller knew what
         # they wanted) 2. Provider's catalog default — cheap/fast model the provider registered via
-        # ``ProviderProfile.default_aux_model`` or the legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK``
-        # dict. 3. User's main model from ``model.model`` in config.yaml. This is the load-bearing step for
+        # ``ProviderProfile.default_aux_model``. 3. User's main model from
+        # ``model.model`` in config.yaml. This is the load-bearing step for
         # OAuth providers: an xai-oauth user with grok-4.3 configured gets grok-4.3 for title generation
         # instead of silently dropping to whatever Step-2 fallback (#31845). When the main provider is MoA,
         # ``_read_main_model_for_aux()`` substitutes the preset's aggregator model — the preset NAME is
@@ -5468,7 +5401,9 @@ def resolve_provider_client(
         # here wins over that. The main chat model is routinely text-only (e.g. a ``:free`` chat SKU), so
         # pre-filling it sends the image to a model that cannot accept one and the Portal 404s. Leave
         # ``model`` unset and let the Portal slot through; only an explicit caller model may override it.
-        model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
+        model = select_provider_auxiliary_model(
+            provider, main_model=_read_main_model_for_aux()
+        ) or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
@@ -5506,27 +5441,17 @@ def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str
 _VISION_AUTO_PROVIDER_ORDER = ("openrouter", "nous", "deepinfra")
 
 
-def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
-    """True when ``provider``/``model`` is known to accept image input; unknown capability → True (attempt the call)."""
-    try:
-        from agent.image_routing import _lookup_supports_vision
-        from hermes_cli.config import load_config_readonly
-    except ImportError:
-        return True
-    try:
-        supports = _lookup_supports_vision(provider, model, load_config_readonly())
-    except Exception:  # pragma: no cover - defensive
-        return True
-    return True if supports is None else bool(supports)
-
-
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
 
 def _deepinfra_strict_vision_backend(model: Optional[str]) -> Tuple[Optional[Any], Optional[str]]:
-    """DeepInfra vision: default model is discovered live via default_vision_model() so no hardcoded id can rot."""
-    vision_model = model or _resolve_provider_vision_default("deepinfra")
+    """DeepInfra vision: provider discovery supplies the default; selection owns precedence."""
+    profile = get_provider_profile("deepinfra")
+    vision_default = str(profile.default_vision_model() or "") if profile else ""
+    vision_model = selected_auxiliary_model_id(select_vision_auxiliary_model(
+        "deepinfra", explicit_model=model or "", vision_default=vision_default,
+    ))
     if not vision_model:
         logger.debug("Vision auto-detect: deepinfra catalog unreachable or returned no vision-tagged models — skipping")
         return None, None
@@ -5587,47 +5512,105 @@ def _finalize_vision_client(
 
 
 def _vision_main_provider_client(
-    main_provider: str, main_model: str, runtime: Dict[str, Any], resolved_model: Optional[str],
+    main_route: _MainRuntimeRoute, runtime: Dict[str, Any], resolved_model: Optional[str],
     resolved_api_mode: Optional[str],
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Auto-detect step 1: try the main provider; (None, None) falls through to the aggregator chain."""
-    # A provider vision default (static override or catalog discovery) is a *known* multimodal
-    # model; the pinned chat model usually isn't, so only fall back to it when no default exists.
-    provider_vision_default = _resolve_provider_vision_default(main_provider)
-    vision_model = provider_vision_default or main_model
-    if main_provider == "nous":
-        # Nous picks its vision model from Portal tier-aware slots inside _try_nous(vision=True);
-        # passing the chat model would override that and 404. Only auxiliary.vision.model may.
-        sync_client, default_model = _resolve_strict_vision_backend(main_provider, resolved_model or provider_vision_default)
-        if sync_client is None:
-            return None, None
-        logger.info("Vision auto-detect: using main provider %s (%s)", main_provider, default_model or resolved_model or main_model)
-        return sync_client, default_model
-    if main_provider in _PROVIDERS_WITHOUT_VISION:  # endpoint rejects image input entirely
-        logger.debug("Vision auto-detect: skipping main provider %s (no vision support) — falling through to aggregator chain", main_provider)
-        return None, None
-    if not _main_model_supports_vision(main_provider, vision_model):
-        # Known text-only model. Log only the provider name (CodeQL clear-text-logging FPs).
+    """Auto-detect step 1: consume provider, metadata, and selection domain answers directly."""
+    main_provider, main_model = main_route.provider, main_route.model
+    resolver_provider = _main_route_resolver_provider(main_route)
+    inherited_api_mode = resolved_api_mode or main_route.api_mode or None
+    explicit_base_url = main_route.base_url or None
+    explicit_api_key = main_route.api_key or None
+    profile = get_provider_profile(main_provider)
+    if profile is not None and profile.rejects_vision_input:
         logger.debug(
-            "Vision auto-detect: skipping main provider %s (reports no vision capability) — falling through to aggregator chain",
+            "Vision auto-detect: skipping main provider %s (no vision support) — "
+            "falling through to aggregator chain",
             main_provider,
         )
         return None, None
-    # Custom endpoints carry no built-in base_url/api_key: recover the live main endpoint from
-    # set_runtime_main() or, with no live runtime recorded, the configured custom endpoint.
-    rpc_base_url = rpc_api_key = None
-    rpc_api_mode = resolved_api_mode
-    if main_provider == "custom" or main_provider.startswith("custom:"):
-        if runtime.get("base_url"):
-            custom_base, custom_key, custom_mode = runtime.get("base_url"), runtime.get("api_key") or None, runtime.get("api_mode")
-        else:
-            custom_base, custom_key, custom_mode = _resolve_custom_runtime()
-        if custom_base:
-            rpc_base_url, rpc_api_key = custom_base, custom_key
-            rpc_api_mode = resolved_api_mode or custom_mode or None
+
+    try:
+        from agent.image_routing import _vision_override_patches
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        explicit_fact, configured_fact = _vision_override_patches(
+            cfg, main_provider, main_model, requested_provider=main_route.requested_provider,
+        )
+        main_supports_vision = resolve_supports_vision(
+            ModelRef(main_provider, main_model),
+            context=ModelMetadataContext(
+                base_url=main_route.base_url,
+                api_key=main_route.api_key if isinstance(main_route.api_key, str) else "",
+                route_provider=main_provider,
+                allow_network=True,
+                explicit=explicit_fact,
+                configured=configured_fact,
+            ),
+            sources=default_capability_sources(),
+        ) if main_model else None
+    except Exception:
+        logger.debug("Vision capability lookup failed for main route", exc_info=True)
+        main_supports_vision = None
+
+    try:
+        vision_default = str(profile.default_vision_model() or "") if profile is not None else ""
+    except Exception:
+        logger.debug("Vision default lookup failed for %s", main_provider, exc_info=True)
+        vision_default = ""
+
+    vision_model = selected_auxiliary_model_id(select_vision_auxiliary_model(
+        main_provider,
+        explicit_model=resolved_model or "",
+        vision_default=vision_default,
+        main_model=main_model,
+        main_supports_vision=main_supports_vision,
+    ))
+    if not vision_model:
+        return None, None
+
+    try:
+        from agent.image_routing import _vision_override_patches
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        explicit_fact, configured_fact = _vision_override_patches(
+            cfg, main_provider, vision_model, requested_provider=main_route.requested_provider,
+        )
+        selected_supports_vision = resolve_supports_vision(
+            ModelRef(main_provider, vision_model),
+            context=ModelMetadataContext(
+                base_url=main_route.base_url,
+                api_key=main_route.api_key if isinstance(main_route.api_key, str) else "",
+                route_provider=main_provider,
+                allow_network=True,
+                explicit=explicit_fact,
+                configured=configured_fact,
+            ),
+            sources=default_capability_sources(),
+        )
+    except Exception:
+        logger.debug("Vision capability lookup failed for selected model", exc_info=True)
+        selected_supports_vision = None
+
+    if selected_supports_vision is False:
+        # Known text-only model. Log only the provider name (CodeQL clear-text-logging FPs).
+        logger.debug(
+            "Vision auto-detect: skipping main provider %s (reports no vision capability) — "
+            "falling through to aggregator chain",
+            main_provider,
+        )
+        return None, None
+
     rpc_client, rpc_model = resolve_provider_client(
-        main_provider, vision_model, api_mode=rpc_api_mode, explicit_base_url=rpc_base_url,
-        explicit_api_key=rpc_api_key, main_runtime=runtime, is_vision=True)
+        resolver_provider, vision_model,
+        api_mode=inherited_api_mode,
+        explicit_base_url=explicit_base_url,
+        explicit_api_key=explicit_api_key,
+        main_runtime=runtime,
+        is_vision=True,
+    )
     if rpc_client is None:
         return None, None
     logger.info("Vision auto-detect: using main provider %s (%s)", main_provider, rpc_model or vision_model)
@@ -5639,19 +5622,16 @@ def _vision_auto_route(
     async_mode: bool,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
-    main_provider = str(runtime.get("provider") or _read_main_provider())
-    main_model = str(runtime.get("model") or _read_main_model())
-    if main_provider.strip().lower() == "moa":
-        # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
-        # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider, main_model = _agg_provider, _agg_model
-            runtime = dict(runtime, base_url="", api_key="", api_mode="")
+    main_route = _main_route_target(runtime, "vision")
+    main_provider = main_route.provider
     if main_provider and main_provider not in {"auto", "", "moa"}:
-        client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
+        client, default_model = _vision_main_provider_client(
+            main_route, runtime, resolved_model, resolved_api_mode
+        )
         if client is not None:
-            return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
+            return _finalize_vision_client(
+                main_provider, client, default_model, resolved_model, async_mode
+            )
     # Aggregators use their dedicated vision model, not the user's main model.
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
         if candidate == main_provider:
@@ -5779,7 +5759,10 @@ def _client_cache_key(
     runtime = _normalize_main_runtime(main_runtime)
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
     runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
+    task_key = (
+        task or "",
+        auxiliary_task_prefers_fast_model(task, _task_fast_preference_enabled(task)),
+    ) if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
     # share an entry, and the second builder's _store_cached_client would close the first's client.
@@ -6045,14 +6028,14 @@ def _get_cached_client(
 # MoA virtual provider: an *explicit* `provider: moa` override (either the caller-passed `provider` arg or
 # `auxiliary.<task>.provider` in config.yaml) reaches this function directly — it never goes through
 # _resolve_auto_route(), which only unwraps the *implicit* "main provider is moa" case (#53827). Left as-is, "moa"
-# is returned verbatim and resolve_provider_client() looks it up in PROVIDER_REGISTRY (which has no "moa"
+# is returned verbatim and resolve_provider_client() looks it up in canonical provider projection (which has no "moa"
 # entry — it's not a real HTTP provider), falls to the unknown-provider dead end, and call_llm surfaces a
 # nonsensical "MOA_API_KEY environment variable" error for a provider that was never meant to be reached
 # over the wire. Auxiliary tasks don't need the reference fan-out — resolve to the preset's aggregator slot
 # instead, exactly like the implicit path does (shared helper: _resolve_moa_aggregator).
 def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[str]]:
     """Resolve an *explicit* ``provider: moa`` to its preset's aggregator slot (_resolve_auto_route()
-    only unwraps the implicit case; "moa" isn't in PROVIDER_REGISTRY and would dead-end)."""
+    only unwraps the implicit case; "moa" isn't in canonical provider projection and would dead-end)."""
     if prov.strip().lower() != "moa":
         return prov, mdl
     agg_provider, agg_model = _resolve_moa_aggregator(mdl)
@@ -6069,9 +6052,8 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
     if normalized in _LOCAL_SERVER_ALIASES:
         return True  # the custom branch applies the /v1 tail only when it still sees the alias
     try:
-        from hermes_cli.providers import get_provider
-        return get_provider(normalized) is not None
-    except Exception:  # keep provider-backed routes safe when the catalog can't load
+        return get_provider_profile(normalized) is not None
+    except Exception:  # keep provider-backed routes safe when discovery cannot load
         return normalized in {
             "anthropic", "copilot", "copilot-acp", "minimax-oauth", "nous", "openai-codex", "qwen-oauth", "xai-oauth",
         }
@@ -6100,7 +6082,7 @@ def _resolve_task_provider_model(
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
         # User-facing spellings (``responses``, ``anthropic``, …) canonicalize here so every
         # branch downstream compares against the transport names only (#39750).
-        resolved_api_mode = _canonical_api_mode(str(task_config.get("api_mode") or "")).lower() or None
+        resolved_api_mode = canonicalize_api_mode(str(task_config.get("api_mode") or "")).lower() or None
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.
@@ -6124,11 +6106,19 @@ def _resolve_task_provider_model(
             cfg_api_key = None
     # One shared alias table with resolve_runtime_provider(): ``provider: openai`` routes the same
     # way here (compression/vision/title) and on the runtime path (background review, curator, MoA).
-    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+    from providers import expand_direct_api_alias
     if provider:
-        provider, base_url = expand_direct_api_alias(provider, base_url)
+        provider, base_url = expand_direct_api_alias(
+            provider, base_url,
+            configured_provider=get_configured_provider_entry(provider) is not None,
+            preferred_base_url=_scoped_key_env("OPENAI_BASE_URL"),
+        )
     if cfg_provider:
-        cfg_provider, cfg_base_url = expand_direct_api_alias(cfg_provider, cfg_base_url)
+        cfg_provider, cfg_base_url = expand_direct_api_alias(
+            cfg_provider, cfg_base_url,
+            configured_provider=get_configured_provider_entry(cfg_provider) is not None,
+            preferred_base_url=_scoped_key_env("OPENAI_BASE_URL"),
+        )
     # An explicit provider without base_url adopts the task's configured endpoint (same or
     # unnamed provider) so the early return below carries it. Explicit "auto" is excluded — it
     # must keep flowing through auto-resolution.
@@ -6459,12 +6449,27 @@ def _contains_profile_reasoning_fields(value: Any) -> bool:
 _NOUS_PROVIDER_NAMES = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
+def _nous_route_api_mode(model: str, base_url: str = "") -> str:
+    """Resolve Nous dual-wire policy from already-read non-secret config."""
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
+    wire = "chat"
+    try:
+        from hermes_cli.config import load_config_readonly
+        wire = str(((load_config_readonly().get("nous") or {}).get("anthropic_wire")) or "chat")
+    except Exception:
+        pass
+    return resolve_invocation_route(InvocationRequest(
+        provider="nous",
+        model=model,
+        base_url=base_url,
+        route_options={"anthropic_wire": wire},
+    )).api_mode
+
+
 def _nous_on_messages_wire(provider_norm: str, model: str) -> bool:
     """True when a Nous Portal route serves ``model`` over /v1/messages (dual-wire catalog)."""
-    if provider_norm not in _NOUS_PROVIDER_NAMES:
-        return False
-    from hermes_cli.providers import nous_api_mode
-    return nous_api_mode(model) == "anthropic_messages"
+    return provider_norm in _NOUS_PROVIDER_NAMES and _nous_route_api_mode(model) == "anthropic_messages"
 
 
 _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
@@ -6539,8 +6544,7 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
     name = _normalize_aux_provider(provider_norm)
     if name == "custom":
         return True
-    from hermes_cli.runtime_provider import _get_named_custom_provider
-    return _get_named_custom_provider(name) is not None
+    return get_configured_provider_entry(name) is not None
 
 
 def _project_provider_profile(

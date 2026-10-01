@@ -227,6 +227,27 @@ class TestOpenCodeGoModelGating:
         assert top_level == {}
 
 
+class TestOpenCodeRoutePolicy:
+    @pytest.mark.parametrize(
+        ("profile_name", "model", "expected"),
+        [
+            ("opencode-zen", "claude-sonnet-4.6", "anthropic_messages"),
+            ("opencode-zen", "qwen3-coder-plus", "anthropic_messages"),
+            ("opencode-zen", "gpt-5.5", "codex_responses"),
+            ("opencode-go", "minimax-m2.7", "anthropic_messages"),
+            ("opencode-go", "grok-code-fast-1", "codex_responses"),
+        ],
+    )
+    def test_model_wire_policy_is_owned_by_the_profile(
+        self, opencode_zen_profile, opencode_go_profile, profile_name, model, expected
+    ):
+        profile = opencode_zen_profile if profile_name == "opencode-zen" else opencode_go_profile
+        assert profile.resolve_route_policy(model) == expected
+
+    def test_unlisted_model_has_no_policy(self, opencode_go_profile):
+        assert opencode_go_profile.resolve_route_policy("gemini-3-flash") is None
+
+
 class TestOpenCodeGoFullKwargsIntegration:
     """End-to-end transport kwargs include the profile-provided controls."""
 
@@ -297,10 +318,8 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
 
     monkeypatch.setattr("httpx.Client", _Client)
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
-        # /v1 stripped, as anthropic_messages routing leaves it — the hook must not reuse this base_url.
-        lambda requested, explicit_base_url=None, explicit_api_key=None: {
-            "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_key": "sk-test"},
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda provider: {"provider": provider, "api_key": "sk-test"},
     )
 
     snapshot = fetch_account_usage("opencode-go")

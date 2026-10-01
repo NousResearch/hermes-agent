@@ -329,9 +329,9 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     # ``custom:<name>`` identity (matches _runtime_model_config).
     if str(model_config.get("provider") or "").strip().lower() == "custom":
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            healed = canonical_custom_identity(
-                base_url=model_config.get("base_url") or None, model=model_config.get("model") or row_model or None)
+            from application_configured_provider_facts import custom_identity
+            healed = custom_identity(
+                base_url=model_config.get("base_url") or "", model=model_config.get("model") or row_model or "")
             if healed:
                 model_config["provider"] = healed
         except Exception:

@@ -172,7 +172,7 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from models.metadata.context import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
         self._show_plugin_compat_notice()
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
@@ -200,7 +200,7 @@ class CLIInfoMixin:
                 fix = "Fix: Set model.context_length in config.yaml, or increase your server's context setting"
             self._console_print(f"[dim]   {fix}[/]")
 
-        from hermes_cli.model_switch import is_nous_hermes_non_agentic
+        from agent.model_warnings import is_nous_hermes_non_agentic
         if is_nous_hermes_non_agentic(getattr(self, "model", "") or ""):
             self._console_print()
             self._console_print(
@@ -235,7 +235,7 @@ class CLIInfoMixin:
 
     def _fast_command_available(self) -> bool:
         try:
-            from hermes_cli.models import model_supports_fast_mode
+            from models.metadata.fast_mode import model_supports_fast_mode
         except Exception:
             return False
         agent = getattr(self, "agent", None)

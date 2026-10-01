@@ -16,8 +16,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolation(monkeypatch):
-    import hermes_cli.models as _models_mod
-    monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
+    from models.catalog_deepinfra import reset_catalog_cache
+    reset_catalog_cache()
     yield
 
 

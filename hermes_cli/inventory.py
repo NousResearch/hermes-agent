@@ -85,7 +85,7 @@ def build_models_payload(
     in process caches (normal picker opens, while a background worker warms cold endpoints).
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
     cannot stall the response (GUI picker opens)."""
-    from hermes_cli.model_switch import list_authenticated_providers
+    from application_provider_discovery import list_authenticated_providers
 
     rows = list_authenticated_providers(
         current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
@@ -158,10 +158,9 @@ def build_models_payload(
     if featured:
         _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
-    from hermes_cli.models_validate import drop_unofferable_model_ids
+    from hermes_cli.model_selection_picker import project_picker_rows
 
-    drop_unofferable_model_ids(rows)
-
+    rows = project_picker_rows(rows)
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
 
@@ -171,7 +170,7 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
     custom:* slug, so without it the dedup would empty a user's own custom row. Flat-namespace
     resellers (opencode-go/zen) serve every model first-party and keep shared names."""
     try:
-        from hermes_cli.providers import is_routing_aggregator
+        from providers import is_routing_aggregator
     except Exception:
         return
 
@@ -191,7 +190,7 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
         )
         if slug_suffix and slug_suffix in builtin_aggregators:
             return True
-        from agent.model_metadata import _infer_provider_from_url
+        from models.metadata.context import _infer_provider_from_url
 
         inferred = _infer_provider_from_url(str(row.get("api_url") or ""))
         return inferred is not None and inferred in builtin_aggregators
@@ -294,7 +293,7 @@ def _reasoning_catalog_reader(slug: str):
     """Per-model reasoning-capability reader for aggregators that publish one. Cache-only — the picker
     must never block on HTTP; a cold cache warms in the background and reports no restriction until then."""
     try:
-        from hermes_cli.models_reasoning_caps import (
+        from models.metadata.reasoning import (
             nous_model_reasoning_capabilities,
             openrouter_model_reasoning_capabilities,
             warm_nous_reasoning_caps_async,
@@ -319,12 +318,12 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from models.metadata.fast_mode import model_supports_fast_mode
 
     try:
-        from agent.models_dev import get_model_capabilities
+        from agent.models_dev import query_model_metadata
     except Exception:
-        get_model_capabilities = None  # type: ignore[assignment]
+        query_model_metadata = None  # type: ignore[assignment]
 
     for row in rows:
         slug = row.get("slug") or ""
@@ -333,9 +332,9 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
 
         for model in row.get("models") or []:
             reasoning = True
-            if get_model_capabilities is not None and slug:
+            if query_model_metadata is not None and slug:
                 try:
-                    meta = get_model_capabilities(slug, model, config=metadata_config)
+                    meta = query_model_metadata(slug, model, config=metadata_config)
                     if meta is not None and meta.supports_reasoning is not None:
                         reasoning = meta.supports_reasoning
                 except Exception:
@@ -348,12 +347,12 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                     detail = read_reasoning_catalog(model)
                 except Exception:
                     detail = None
-                if detail and not detail.get("supports_reasoning"):
+                if detail and not detail.supported:
                     # Aggregator catalog beats models.dev for a route it serves: no reasoning param
                     # means no reasoning controls, so no disable to describe either.
                     entry["reasoning"] = False
                 elif detail:
-                    entry["can_disable_reasoning"] = not detail.get("mandatory")
+                    entry["can_disable_reasoning"] = not detail.mandatory
 
             caps[model] = entry
 
@@ -410,9 +409,9 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
 
     GUI pickers compare the two to decide which row is active; exact equality never matches for custom
     providers (#87035). Exposing ``aliases`` — every current and legacy spelling from
-    :func:`hermes_cli.providers.custom_provider_aliases` — lets the frontend do a membership check instead.
+    :func:`providers.custom_provider_aliases` — lets the frontend do a membership check instead.
     """
-    from hermes_cli.providers import custom_provider_aliases
+    from providers import custom_provider_aliases
 
     for row in rows:
         if not row.get("is_user_defined"):
@@ -429,9 +428,9 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
 
 def _provider_auth_hint(slug: str) -> tuple[str, str]:
     """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when unregistered)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.provider_auth import get_provider_config
 
-    cfg = PROVIDER_REGISTRY.get(slug)
+    cfg = get_provider_config(slug)
     auth_type = cfg.auth_type if cfg else "api_key"
     key_env = cfg.api_key_env_vars[0] if (cfg and cfg.api_key_env_vars) else ""
     return auth_type, key_env
@@ -442,9 +441,7 @@ def _row(slug: str, name: str, is_current: bool, **extra: Any) -> dict:
 
 
 def _canonical_row(entry, cur: str, **extra: Any) -> dict:
-    from hermes_cli.models import _PROVIDER_LABELS
-
-    return _row(entry.slug, _PROVIDER_LABELS.get(entry.slug, entry.label), entry.slug.lower() == cur, **extra)
+    return _row(entry.slug, entry.label, entry.slug.lower() == cur, **extra)
 
 
 def _append_unconfigured_rows(
@@ -453,13 +450,14 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
+    from hermes_cli.models import _model_requires_account_discovery
+    from hermes_cli.provider_catalog import provider_entries
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
-    for entry in CANONICAL_PROVIDERS:
+    for entry in provider_entries():
         if entry.slug.lower() in seen:
             continue
         if current_only and entry.slug.lower() != cur:
@@ -546,8 +544,9 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
 def _external_process_signed_in(slug: str) -> bool:
     """True when an external-process provider has verified CLI credentials."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
-        pconfig = PROVIDER_REGISTRY.get(slug)
+        from hermes_cli.auth import get_external_process_provider_status
+        from hermes_cli.provider_auth import get_provider_config
+        pconfig = get_provider_config(slug)
         return bool(pconfig and pconfig.auth_type == "external_process"
                     and get_external_process_provider_status(slug).get("auth_verified"))
     except Exception:
@@ -598,11 +597,11 @@ def _apply_picker_hints(rows: list[dict]) -> None:
 
 
 def _reorder_canonical(rows: list[dict]) -> list[dict]:
-    """Canonical slugs in ``CANONICAL_PROVIDERS`` order, truly-custom rows last. Keys on slug membership,
+    """Live provider slugs in presentation order, truly-custom rows last. Keys on slug membership,
     NOT ``is_user_defined`` — ``providers:`` config rows carry that flag even for canonical slugs."""
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.provider_catalog import provider_slugs
 
-    order = {e.slug: i for i, e in enumerate(CANONICAL_PROVIDERS)}
+    order = {slug: i for i, slug in enumerate(provider_slugs())}
     canon = sorted((r for r in rows if r["slug"] in order), key=lambda r: order[r["slug"]])
     extras = [r for r in rows if r["slug"] not in order]
     return canon + extras
@@ -613,16 +612,12 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
     ``free_tier`` (account is free-tier) and ``unavailable_models`` (paid models a free user can't pick).
     ``cached_only`` never hits the network: unknown Nous entitlement fails closed (``free_tier_pending``,
     all models locked) and missing pricing is marked ``pricing_pending``."""
-    from hermes_cli.models_pricing import (
-        _format_price_per_mtok,
-        compute_sale_discount,
-        get_pricing_for_provider,
-    )
-    from hermes_cli.models import (
-        check_nous_free_tier,
-        get_cached_nous_free_tier,
-        partition_nous_models_by_tier,
-    )
+    from hermes_cli.models_pricing import _format_price_per_mtok
+    from models.metadata.pricing import compute_sale_discount
+    from application_model_pricing import get_pricing_for_provider
+    from hermes_cli.models import check_nous_free_tier
+    from hermes_cli.models import get_cached_nous_free_tier
+    from models.metadata.pricing import partition_nous_models_by_tier
 
     nous_free_tier: Optional[bool] = None  # resolved once (cached in models.py for the TTL window)
 
@@ -739,7 +734,7 @@ def _prewarm_pricing_async(
     """Warm picker pricing caches without delaying the current payload (one worker per
     profile + endpoint scope; a live worker is reused)."""
     from hermes_constants import hermes_home_key
-    from hermes_cli.models_pricing import pricing_cache_scope
+    from application_model_pricing import pricing_cache_scope
 
     slugs = {str(row.get("slug") or "").lower() for row in rows if row.get("slug")}
     endpoint_scope = tuple(sorted(
@@ -785,3 +780,12 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
             warning="Aggregator is the acting model billed for the run; references only advise once per user turn by default.")
     except Exception:
         return None
+
+
+def refresh_picker_catalog_sources() -> None:
+    """Eagerly warm the remote provider catalogues used by picker inventory."""
+    from application_nous_recommendations import fetch_recommended_models
+    from hermes_cli.models import fetch_openrouter_models
+
+    fetch_openrouter_models(force_refresh=True)
+    fetch_recommended_models(force_refresh=True)

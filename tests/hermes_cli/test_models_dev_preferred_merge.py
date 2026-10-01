@@ -20,11 +20,9 @@ appear in ``/model`` without a Hermes release.
 from unittest.mock import patch
 
 
-from hermes_cli.models import (
-    _PROVIDER_MODELS,
-    _merge_with_models_dev,
-    provider_model_ids,
-)
+from models.catalog_static import _PROVIDER_MODELS
+from hermes_cli.models import _merge_with_models_dev
+from hermes_cli.models import provider_model_ids
 
 
 class TestMergeHelper:

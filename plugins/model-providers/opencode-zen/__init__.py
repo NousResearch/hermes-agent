@@ -45,6 +45,20 @@ def _is_glm_5_2_model(model: str | None) -> bool:
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
+    def resolve_route_policy(self, model: str, base_url: str = "", *, options=None) -> str | None:
+        """Return Go's wire for models with a non-chat endpoint contract."""
+        del base_url
+        normalized = _flat_model_name(self.normalize_model_id(model))
+        if normalized.startswith(("gpt-", "grok-", "muse-spark")):
+            return "codex_responses"
+        if normalized.startswith(("minimax-", "qwen", "union-alpha")):
+            return "anthropic_messages"
+        return None
+
+    def normalize_model_id(self, model: str, *, known_ids=()) -> str:
+        value = str(model or "").strip()
+        return value.split("/", 1)[1].strip() if "/" in value else value
+
     # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
     # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
     _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
@@ -65,10 +79,10 @@ class OpenCodeGoProfile(ProviderProfile):
         import httpx
 
         from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        # Account usage needs only an API key, never a CLI-computed model route.
+        from hermes_cli.auth import resolve_api_key_provider_credentials
 
-        runtime = resolve_runtime_provider(requested=self.name, explicit_base_url=base_url, explicit_api_key=api_key)
-        token = str(runtime.get("api_key", "") or "").strip()
+        token = str(api_key or resolve_api_key_provider_credentials(self.name).get("api_key") or "").strip()
         if not token:
             return None
         with httpx.Client(timeout=10.0) as client:
@@ -109,6 +123,22 @@ class OpenCodeGoProfile(ProviderProfile):
 class OpenCodeZenProfile(ProviderProfile):
     """OpenCode Zen - model-specific reasoning controls."""
 
+    def resolve_route_policy(self, model: str, base_url: str = "", *, options=None) -> str | None:
+        """Return Zen's wire for models with a non-chat endpoint contract."""
+        del base_url
+        normalized = _flat_model_name(self.normalize_model_id(model))
+        if normalized.startswith(("claude-", "union-alpha", "qwen")):
+            return "anthropic_messages"
+        if normalized.startswith(("gpt-", "grok-", "muse-spark")):
+            return "codex_responses"
+        return None
+
+    def normalize_model_id(self, model: str, *, known_ids=()) -> str:
+        value = str(model or "").strip()
+        if "/" in value:
+            value = value.split("/", 1)[1].strip() or value
+        return value.replace(".", "-") if value.lower().startswith("claude-") else value
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -116,14 +146,20 @@ class OpenCodeZenProfile(ProviderProfile):
 
 
 opencode_zen = OpenCodeZenProfile(
-    name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
-    base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
+    name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), display_name="OpenCode Zen",
+    description="OpenCode Zen (Curated models, pay-as-you-go)", signup_url="https://opencode.ai/auth",
+    env_vars=("OPENCODE_ZEN_API_KEY",), base_url="https://opencode.ai/zen/v1",
+    base_url_env_var="OPENCODE_ZEN_BASE_URL", is_aggregator=True, is_routing_aggregator=False,
+    default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
 
 opencode_go = OpenCodeGoProfile(
-    name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
-    base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
+    name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), display_name="OpenCode Go",
+    description="OpenCode Go (Open models subscription)", signup_url="https://opencode.ai/auth",
+    env_vars=("OPENCODE_GO_API_KEY",), base_url="https://opencode.ai/zen/go/v1",
+    base_url_env_var="OPENCODE_GO_BASE_URL", is_aggregator=True, is_routing_aggregator=False,
+    default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should

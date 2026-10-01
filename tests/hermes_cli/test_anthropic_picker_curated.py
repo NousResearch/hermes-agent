@@ -11,6 +11,8 @@ Bug — newly-routed curated aliases vanished on a native Anthropic setup
     OpenAI curated-merge philosophy.
 """
 
+import models.catalog_static as models_catalog_static
+
 from unittest.mock import patch
 
 from hermes_cli import models as M
@@ -31,7 +33,7 @@ def test_anthropic_merge_dedupes_overlap_and_appends_live_only():
     # Live-only entry is preserved (discovery still works for unknown models).
     assert "claude-future-9-99" in result
     # Curated entries lead, live-only trails.
-    curated = list(M._PROVIDER_MODELS["anthropic"])
+    curated = list(models_catalog_static._PROVIDER_MODELS["anthropic"])
     assert result[:len(curated)] == curated and result[-1] == "claude-future-9-99"
 
 
@@ -40,4 +42,4 @@ def test_anthropic_falls_back_to_curated_when_live_unavailable():
     with patch.object(M, "_fetch_anthropic_models", return_value=None):
         result = M.provider_model_ids("anthropic")
 
-    assert result == list(M._PROVIDER_MODELS["anthropic"])
+    assert result == list(models_catalog_static._PROVIDER_MODELS["anthropic"])

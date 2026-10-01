@@ -72,7 +72,7 @@ except Exception as exc:
 _SWITCH = r"""
 import json, sys
 from hermes_cli.model_switch import switch_model
-from hermes_cli.providers import normalize_provider
+from providers import normalize_provider
 r = switch_model(raw_input=sys.argv[2], current_provider="custom", current_model="x", current_base_url="",
                  current_api_key="", explicit_provider=sys.argv[1])
 print("RESULT=" + json.dumps({"ok": bool(r.success), "provider": r.target_provider, "base_url": r.base_url,

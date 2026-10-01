@@ -138,14 +138,17 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
 
 async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
-    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
+    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth.
+
+    The credential gate runs first so the request gate can trust the Desktop's
+    loopback renderer Origin on an authenticated upgrade (#130277)."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return False
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return False
-    if not _ws_request_is_allowed(ws):
+    if not _ws_request_is_allowed(ws, authenticated=True):
         await ws.close(code=4403)
         return False
     return True

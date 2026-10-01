@@ -497,6 +497,62 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
         assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
 
+    # -- Desktop loopback renderer Origin on a remote gateway (#130277) --
+    #
+    # The packaged Desktop renderer is served over loopback HTTP
+    # (startRendererServer), so Chromium stamps Origin: http://127.0.0.1:<port>
+    # on every gateway WS upgrade. That origin can never match a remote
+    # dashboard's bound host, so before this exception the Desktop was refused
+    # with a pre-accept 4403 on every remote gateway -- an opaque 403 the user
+    # sees as "WebSocket error before open". The upgrade has already passed
+    # _ws_auth_ok (single-use ticket / internal credential) by the time this
+    # guard runs, and a foreign page cannot mint one, so the loopback renderer
+    # origin is trusted there. A non-loopback http(s) Origin is still checked.
+
+    def test_loopback_helper_accepts_only_loopback_web_origins(self):
+        for origin in (
+            "http://127.0.0.1:47891",
+            "http://127.0.0.1",
+            "https://127.0.0.1:1000",
+            "http://localhost:47891",
+            "http://[::1]:47891",
+        ):
+            assert _web_server_chat._browser_loopback_origin(origin) is True, origin
+
+        for origin in (
+            "https://19891214.xyz:15015",
+            "https://evil.test",
+            "file://",
+            "null",
+            "",
+            # A loopback-looking host that is really a foreign domain.
+            "http://127.0.0.1.evil.test",
+            # The TestClient peer sentinel is a peer label, never an Origin.
+            "http://testclient",
+        ):
+            assert _web_server_chat._browser_loopback_origin(origin) is False, origin
+
+    def test_loopback_renderer_origin_allowed_only_when_authenticated(self, gated_app):
+        """The Desktop's loopback renderer origin passes on an authenticated upgrade."""
+        ws = self._ws(origin="http://127.0.0.1:47891", host="fly-app.fly.dev")
+        assert _web_server_chat._ws_request_is_allowed(ws, authenticated=True) is True
+
+        # The same origin without the credential gate having passed stays
+        # rejected -- the exception is scoped to an authenticated upgrade.
+        unauthenticated = self._ws(origin="http://127.0.0.1:47891", host="fly-app.fly.dev")
+        assert _web_server_chat._ws_request_is_allowed(unauthenticated) is False
+
+    def test_authenticated_upgrade_still_rejects_foreign_http_origin(self, gated_app):
+        """Relaxing the origin comparison for one loopback origin must not
+        relax it for a cross-site http(s) origin: DNS-rebinding defence intact."""
+        ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
+        assert _web_server_chat._ws_request_is_allowed(ws, authenticated=True) is False
+
+    def test_authenticated_upgrade_still_host_checked(self, gated_app):
+        """The Host check runs before the origin exception and is never relaxed."""
+        ws = self._ws(origin="http://127.0.0.1:47891", host="wrong-host.test")
+        assert _web_server_chat._ws_request_is_allowed(ws, authenticated=True) is False
+
 
 
 class TestSidecarUrl:

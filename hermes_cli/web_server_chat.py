@@ -135,6 +135,11 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
+# The host names a browser may legitimately present as a *loopback* web origin
+# (``_LOOPBACK_HOST_VALUES`` in web_server.py) — deliberately excluding the
+# TestClient sentinel above, which is a peer label, never an Origin host.
+_LOOPBACK_ORIGIN_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """Return a rejection reason token for the peer IP, or None when allowed.
@@ -164,13 +169,38 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     return _ws_client_reason(ws) is None
 
 
-def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
+def _browser_loopback_origin(origin: str) -> bool:
+    """True when ``origin`` is a loopback ``http(s)`` web origin.
+
+    The packaged Desktop renderer is served from a loopback HTTP origin
+    (``startRendererServer`` — the real origin its embeds need), so Chromium
+    stamps ``Origin: http://127.0.0.1:<port>`` on gateway WS upgrades. That
+    origin can never equal a remote dashboard's bound host, so the honest
+    question for it is "is this the loopback renderer?", not a host match.
+    """
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return parsed.hostname in _LOOPBACK_ORIGIN_HOSTS
+
+
+def _ws_host_origin_reason(ws: "WebSocket", *, allow_loopback_origin: bool = False) -> Optional[str]:
     """Return ``host_mismatch …`` / ``origin_mismatch …``, or None when allowed.
 
     HTTP middleware does not run for WebSocket routes, so the DNS-rebinding
     Host check is repeated here; an Origin header, when present, must target the
     bound host.  Non-web origins (packaged Electron: file://, null, app://) are
     trusted — the credential check is the real auth boundary there.
+
+    ``allow_loopback_origin`` additionally trusts a loopback renderer origin for
+    an upgrade that already passed the credential gate (see
+    :func:`_ws_request_is_allowed`). The Desktop — the one shipped client whose
+    origin is a loopback HTTP origin — is otherwise locked out of every remote
+    gateway by an Origin comparison it can never satisfy (#130277). On that
+    path the credential is a single-use ticket minted over the authenticated
+    REST leg, so it, not Origin, is the auth boundary; a foreign page cannot
+    mint one. The Host header is still checked first — this relaxes the origin
+    comparison only.
     """
     from hermes_cli.web_server import _is_accepted_host, app
     bound_host = getattr(app.state, "bound_host", None)
@@ -186,19 +216,28 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
         return None
+    if allow_loopback_origin and _browser_loopback_origin(origin):
+        return None
     if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
 
-def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+def _ws_host_origin_is_allowed(ws: "WebSocket", *, allow_loopback_origin: bool = False) -> bool:
     """True when the upgrade passes the dashboard Host/Origin guard."""
-    return _ws_host_origin_reason(ws) is None
+    return _ws_host_origin_reason(ws, allow_loopback_origin=allow_loopback_origin) is None
 
 
-def _ws_request_is_allowed(ws: "WebSocket") -> bool:
-    """Return True when the WebSocket upgrade matches dashboard boundaries."""
-    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+def _ws_request_is_allowed(ws: "WebSocket", *, authenticated: bool = False) -> bool:
+    """Return True when the WebSocket upgrade matches dashboard boundaries.
+
+    ``authenticated`` marks an upgrade whose credential gate already passed;
+    it lets the Desktop's loopback renderer origin through (see
+    :func:`_ws_host_origin_reason`). Callers must only set it after
+    :func:`_ws_auth_ok` returned True for this exact socket.
+    """
+    return _ws_host_origin_is_allowed(
+        ws, allow_loopback_origin=authenticated) and _ws_client_is_allowed(ws)
 
 
 _GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"

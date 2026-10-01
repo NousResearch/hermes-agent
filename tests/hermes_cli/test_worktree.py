@@ -73,19 +73,44 @@ def git_repo_no_remote(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("real_untracked", [True, False], ids=["untracked-file-kept", "include-symlink-only-removed"])
-def test_exit_cleanup_preserves_dirty_worktree(git_repo, monkeypatch, capsys, real_untracked):
+@pytest.mark.parametrize(
+    "real_untracked,separate_git_dir",
+    [(True, False), (False, False), (False, True)],
+    ids=["untracked-file-kept", "include-symlink-only-removed", "separate-git-dir-include-symlink-removed"],
+)
+def test_exit_cleanup_preserves_dirty_worktree(git_repo, tmp_path, monkeypatch, capsys, real_untracked,
+                                               separate_git_dir):
     """Exit cleanup must preserve local changes, but not count .worktreeinclude symlinks as changes.
 
     A trailing-slash ignore (``node_modules/``) never matches the include step's symlink, so git
     lists it as untracked; treating that as dirty would keep every worktree of such a repo forever.
+    With ``--separate-git-dir`` the common dir's parent is not the main checkout, so the symlink
+    check must use the real checkout root.
     """
     import cli
 
+    include = "node_modules\n"
+    if separate_git_dir:
+        git_repo = tmp_path / "sep-repo"
+        (tmp_path / "gd").mkdir()
+        subprocess.run(["git", "init", "--separate-git-dir", str(tmp_path / "gd" / "x.git"), str(git_repo)],
+                       capture_output=True, check=True)
+        for args in (["config", "user.email", "test@test.com"], ["config", "user.name", "Test"],
+                     ["remote", "add", "origin", "https://example.com/test-repo.git"]):
+            subprocess.run(["git", *args], cwd=git_repo, capture_output=True, check=True)
+        (git_repo / "README.md").write_text("# Test Repo\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=git_repo, capture_output=True)
+        include = "node_modules/\n"
     (git_repo / "node_modules").mkdir()
     (git_repo / "node_modules" / "dep.js").write_text("x\n")
-    (git_repo / ".worktreeinclude").write_text("node_modules\n")
-    (git_repo / ".git" / "info" / "exclude").write_text("node_modules/\n.worktreeinclude\n.worktrees/\n")
+    (git_repo / ".worktreeinclude").write_text(include)
+    exclude = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+                             cwd=git_repo, capture_output=True, text=True, check=True).stdout.strip()
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "w") as fh:
+        fh.write("node_modules/\n.worktreeinclude\n.worktrees/\n")
     worktree = TestWorktreeLockReaping._mk(cli, git_repo, "session", dirty=real_untracked)
     worktree_ops._copy_worktree_includes(str(git_repo), worktree)
     assert (worktree / "node_modules").is_symlink()

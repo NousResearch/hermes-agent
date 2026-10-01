@@ -542,6 +542,8 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
             }
             if result_variants and not candidate_groups:
                 repairs += 1
+                if filtered:
+                    _remember_absorbed_row(filtered[-1], msg, folded=False)
                 continue
             if candidate_groups:
                 matched_tool_groups.add(min(candidate_groups))
@@ -576,6 +578,8 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
+                if pruned:
+                    _remember_absorbed_row(pruned[-1], msg, folded=False)
                 continue
             if kept_calls:
                 msg["tool_calls"] = kept_calls

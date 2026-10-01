@@ -305,7 +305,7 @@ def _crop_image_region(
     mime, None)`` — caller owns cleanup — or ``(None, None, error)``.
     Ported from QwenLM/qwen-code zoom-image.ts (Apache-2.0)."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError:
         return None, None, (
             "region cropping requires Pillow (run `hermes pm repair`); "
@@ -316,7 +316,7 @@ def _crop_image_region(
             "Invalid region: expected [x1, y1, x2, y2] as four numbers "
             "(pixel coordinates in the original image).")
     try:
-        with Image.open(image_path) as img:
+        with Image.open(image_path) as source_img, ImageOps.exif_transpose(source_img) as img:
             width, height = img.size
             x1, y1, x2, y2 = (int(v) for v in region)
             cx1, cy1, cx2, cy2 = (max(0, min(v, b)) for v, b in zip((x1, y1, x2, y2), (width, height) * 2))

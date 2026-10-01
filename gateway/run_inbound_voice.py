@@ -3,11 +3,27 @@
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from gateway.run_common import _UNSET
 
 logger = logging.getLogger("gateway.run")
+
+
+@dataclass(frozen=True)
+class VoiceClipTranscript:
+    path: str
+    text: str
+
+
+@dataclass(frozen=True)
+class VoiceTranscription:
+    text: str
+    clips: tuple[VoiceClipTranscript, ...] = ()
+
+    def transcripts(self) -> List[str]:
+        return [clip.text for clip in self.clips]
 
 
 class GatewayInboundVoiceMixin:
@@ -59,9 +75,12 @@ class GatewayInboundVoiceMixin:
     async def _enrich_message_with_transcription(
         self, user_text: str, audio_paths: List[str]
     ) -> tuple[str, List[str]]:
-        """Transcribe voice clips with the configured STT provider and prepend the transcripts →
-        ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
-        failed or STT is disabled) let callers echo them back before the agent loop."""
+        result = await self._transcribe_voice_clips(user_text, audio_paths)
+        return result.text, result.transcripts()
+
+    async def _transcribe_voice_clips(
+        self, user_text: str, audio_paths: List[str]
+    ) -> VoiceTranscription:
         from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
         if not getattr(self.config, "stt_enabled", True):
@@ -71,7 +90,7 @@ class GatewayInboundVoiceMixin:
                 duration_str = await _probe_audio_duration(abs_path)
                 suffix = f" (duration: {duration_str})" if duration_str else ""
                 notes.append(f"[The user sent a voice message: {abs_path}{suffix}]")
-            return (self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text), []
+            return VoiceTranscription(self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text)
 
         try:
             from tools.transcription_tools import (
@@ -79,10 +98,10 @@ class GatewayInboundVoiceMixin:
             )
         except ModuleNotFoundError as e:
             logger.error("Transcription module unavailable: %s", e)
-            return self._prepend_media_prefix("[voice message could not be transcribed]", user_text), []
+            return VoiceTranscription(self._prepend_media_prefix("[voice message could not be transcribed]", user_text))
 
         enriched_parts = []
-        successful_transcripts: List[str] = []
+        clips: List[VoiceClipTranscript] = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
@@ -90,7 +109,7 @@ class GatewayInboundVoiceMixin:
                     path, transcribe_audio, transcribe_audio_local_fallback,
                 )
                 if transcript is not None:
-                    successful_transcripts.append(transcript)
+                    clips.append(VoiceClipTranscript(path, transcript))
                 enriched_parts.append(note)
             except Exception as e:
                 logger.error("Transcription error: %s", e)
@@ -98,7 +117,7 @@ class GatewayInboundVoiceMixin:
 
         if enriched_parts:
             user_text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text)
-        return user_text, successful_transcripts
+        return VoiceTranscription(user_text, tuple(clips))
 
     def _pending_event_audio_paths(self, event) -> List[str]:
         """Return STT-eligible paths from a pending voice message."""
@@ -111,33 +130,30 @@ class GatewayInboundVoiceMixin:
     async def _transcribe_pending_audio_event_once(
         self, event, user_text: Optional[str] = None
     ) -> tuple[str | None, List[str]]:
-        """Transcribe a pending audio event once and cache the result on the event: the interrupt
-        monitor and the pending-drain path both need it — one STT call and one echo per message."""
         if hasattr(event, "_gateway_pending_stt_text"):
             return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
         audio_paths = self._pending_event_audio_paths(event)
         if not audio_paths:
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
-        event._gateway_pending_stt_text = enriched_text
-        event._gateway_pending_stt_transcripts = list(successful_transcripts)
-        return enriched_text, successful_transcripts
+        result = await self._transcribe_voice_clips(text, audio_paths)
+        event._gateway_pending_stt_text = result.text
+        event._gateway_pending_stt_transcripts = result.transcripts()
+        event._gateway_pending_stt_clips = result.clips
+        return result.text, result.transcripts()
 
     async def _echo_pending_stt_transcripts_once(
         self, event, adapter, source, transcripts: List[str], *, metadata=None,
         log_context: str = "Transcript",
     ) -> None:
-        """Echo pending-event STT transcripts to the chat at most once. Tracked as a COUNT (not a
-        set — identical transcripts are distinct deliveries): ``merge_pending_message_event`` can
-        append a second voice note and invalidate the cache; the re-run returns earlier transcripts
-        as a prefix, so only the unsent tail is echoed."""
         if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
             return
-        already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
+        echoed = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
+        clips = getattr(event, "_gateway_pending_stt_clips", ())
+        unsent = [clip for clip in clips if clip.path not in echoed]
+        event._gateway_pending_stt_echoed_paths = echoed | {clip.path for clip in unsent}
         await self._echo_stt_transcripts(
-            adapter, source, transcripts[already_echoed:], metadata=metadata, log_context=log_context,
+            adapter, source, [clip.text for clip in unsent], metadata=metadata, log_context=log_context,
         )
 
     async def _transcribe_and_echo_pending_voice(

@@ -1,0 +1,17 @@
+name: dashboard-auth-ldap
+repo: https://github.com/angel12/hermes-ldap-auth
+sha: 7b871ef375239275e29b1934bbed8ae7573afea3
+description: LDAP / Active Directory password login for the web dashboard. Verifies credentials with an
+  LDAP bind (direct or search-then-bind), never stores passwords, requires ldaps:// or StartTLS, and
+  supports group restriction. Registers the `ldap` dashboard auth provider once dashboard.ldap_auth is configured.
+maintainer: angel12
+tier: community
+category: general
+requires_hermes: ">=0.21"
+docs_url: https://github.com/angel12/hermes-ldap-auth#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

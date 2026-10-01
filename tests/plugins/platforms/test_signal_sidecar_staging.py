@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -55,17 +56,23 @@ def sidecar(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["gateway", "batch", "standalone"])
-@pytest.mark.parametrize("reject", [False, True])
-async def test_outbound_staging_through_http(route, reject, sidecar, tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [None, "rpc_error", "staging_error"])
+async def test_outbound_staging_through_http(route, failure, sidecar, tmp_path, monkeypatch):
     shared, received, rejection, url = sidecar
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    rejection[0] = reject
+    rejection[0] = failure == "rpc_error"
     source = tmp_path / "private" / "chart.png"
     source.parent.mkdir()
     source.write_bytes(b"private attachment")
     existing = shared / "chart.png"
     existing.write_bytes(b"already shared attachment")
-    extra = {"http_url": url, "account": "+15551234567", "attachment_staging_dir": str(shared)}
+    staging_dir = shared
+    if failure == "staging_error":
+        staging_dir = tmp_path / "not-a-directory"
+        staging_dir.write_bytes(b"misconfigured mount")
+        backoff = AsyncMock()
+        monkeypatch.setattr("asyncio.sleep", backoff)
+    extra = {"http_url": url, "account": "+15551234567", "attachment_staging_dir": str(staging_dir)}
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
@@ -84,8 +91,17 @@ async def test_outbound_staging_through_http(route, reject, sidecar, tmp_path, m
             result = await _send_to_platform(Platform.SIGNAL, config, "+15557654321", "",
                                              media_files=[(str(source), False), (str(existing), False)])
             success = result.get("success", False)
-    assert success is not reject
+    assert success is (failure is None)
     attachment_calls = [(paths, contents) for paths, contents in received if paths]
+    if failure == "staging_error":
+        error = result.get("error") if route == "standalone" else result.error
+        assert str(staging_dir) in error
+        assert not attachment_calls
+        backoff.assert_not_awaited()
+        assert source.read_bytes() == b"private attachment"
+        assert existing.read_bytes() == b"already shared attachment"
+        assert staging_dir.read_bytes() == b"misconfigured mount"
+        return
     assert attachment_calls
     for paths, contents in attachment_calls:
         assert contents == ([b"private attachment"] if route == "gateway" else

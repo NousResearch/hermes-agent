@@ -273,13 +273,13 @@ async def administer_matrix_room(
         except ValueError as exc:
             return {**result, "warning": str(exc)}
         return result
-    except ValueError as exc:
-        return {"error": str(exc)}
     except Exception as exc:
         errcode = getattr(exc, "errcode", None)
         if sent and errcode is None:
             return {"error": "Matrix administration failed after the change was sent to the homeserver",
                     "outcome": "unknown", "next_step": UNKNOWN_OUTCOME_STEPS[args["action"]]}
+        if isinstance(exc, ValueError):
+            return {"error": str(exc)}
         result = {"error": f"Matrix administration failed: {type(exc).__name__}"}
         if errcode:
             result.update(errcode=str(errcode), message=str(exc))

@@ -32,6 +32,108 @@ def invitee(live_room: LiveRoom) -> MatrixAccount:
     return asyncio.run(_register(live_room.homeserver, "invitee"))
 
 
+@pytest.mark.parametrize("enabled", [True], ids=["opt-in"])
+def test_accepted_invite_with_invalid_json_reports_unknown_outcome(
+    gateway: LiveGateway, live_room: LiveRoom, invitee: MatrixAccount, enabled: bool,
+) -> None:
+    from tests.integration.matrix_live.admin_client import power
+
+    async def promote() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        try:
+            await power(client, live_room.room_id, live_room.observer.user_id, live_room.bot.user_id)
+        finally:
+            await client.close()
+
+    asyncio.run(asyncio.wait_for(promote(), timeout=25))
+    code = dedent(f"""\
+        import asyncio, importlib, json, tempfile, weakref
+        from pathlib import Path
+        from aiohttp import ClientSession, web
+        from mautrix.client import ClientAPI
+        from mautrix.types import DeviceID, UserID
+        from gateway.config import PlatformConfig
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from gateway.session_identity import RoutingIdentity
+        from hermes_cli.config import atomic_config_write
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from tools.registry import registry
+
+        async def exchange():
+            writes = []
+            async with ClientSession() as upstream:
+                async def forward(request):
+                    headers = {{key: value for key, value in request.headers.items() if key.lower() != 'host'}}
+                    async with upstream.request(request.method, 'http://synapse:8008' + request.raw_path,
+                                                headers=headers, data=await request.read()) as response:
+                        body = await response.read()
+                        if request.method == 'POST' and request.path.endswith('/invite') and 200 <= response.status < 300:
+                            writes.append(response.status)
+                            return web.Response(status=response.status, text='<html>', content_type='application/json')
+                        return web.Response(status=response.status, body=body,
+                                            headers={{'Content-Type': response.headers.get('Content-Type', 'application/json')}})
+
+                app = web.Application()
+                app.router.add_route('*', '/{{path:.*}}', forward)
+                runner = web.AppRunner(app)
+                await runner.setup()
+                await web.TCPSite(runner, '127.0.0.1', 0).start()
+                try:
+                    with tempfile.TemporaryDirectory() as directory:
+                        home = Path(directory)
+                        atomic_config_write(home / 'config.yaml', {{'platform_toolsets': {{'matrix': ['matrix_admin']}}}})
+                        token = set_hermes_home_override(home)
+                        client = ClientAPI(UserID({live_room.bot.user_id!r}), DeviceID({live_room.bot.device_id!r}),
+                                           base_url=f'http://127.0.0.1:{{runner.addresses[0][1]}}',
+                                           token={live_room.bot.access_token!r})
+                        adapter = MatrixAdapter(PlatformConfig(enabled=True, token={live_room.bot.access_token!r},
+                            extra={{'homeserver': 'http://synapse:8008', 'user_id': {live_room.bot.user_id!r}, 'e2ee_mode': 'off'}}))
+                        adapter._client = client
+                        adapter._joined_rooms.add({live_room.room_id!r})
+                        adapter._allowed_room_ids.clear()
+                        adapter.set_authorization_check(lambda user, chat_type, chat_id: user == {live_room.observer.user_id!r})
+                        identity = RoutingIdentity('default', 'default', home, home, multiplexed=False,
+                                                   transport=weakref.ref(adapter))
+                        tokens = set_session_vars(platform='matrix', chat_id={live_room.room_id!r}, chat_type='group',
+                            user_id={live_room.observer.user_id!r}, session_key='native-admin-outcome',
+                            transport_adapter=adapter, transport_loop=asyncio.get_running_loop(), routing_identity=identity)
+                        try:
+                            importlib.import_module('tools.matrix_room_tool')
+                            result = await asyncio.to_thread(registry.dispatch, 'matrix_room_admin',
+                                                             {{'action': 'invite', 'user_id': {invitee.user_id!r}}})
+                            print('ADMIN_PROXY_RESULT=' + json.dumps({{'result': json.loads(result), 'writes': writes}}))
+                        finally:
+                            clear_session_vars(tokens)
+                            reset_hermes_home_override(token)
+                            await client.api.session.close()
+                finally:
+                    await runner.cleanup()
+        asyncio.run(asyncio.wait_for(exchange(), timeout=30))
+    """)
+    execution = gateway.container.exec(["/opt/hermes/.venv/bin/python", "-c", code])
+    output = execution.output.decode("utf-8", errors="replace")
+    assert execution.exit_code == 0, output
+    observed = json.loads(output.split("ADMIN_PROXY_RESULT=", 1)[1].splitlines()[0])
+
+    async def membership() -> dict:
+        client = live_room.observer.client(live_room.homeserver)
+        try:
+            return await state(client, live_room.room_id, "m.room.member", invitee.user_id)
+        finally:
+            await client.close()
+
+    member = asyncio.run(asyncio.wait_for(membership(), timeout=25))
+    assert (observed, member["membership"]) == ({
+        "result": {
+            "error": "Matrix administration failed after the change was sent to the homeserver",
+            "outcome": "unknown",
+            "next_step": "Ask the user whether the invite arrived before retrying",
+        },
+        "writes": [200],
+    }, "invite")
+
+
 @pytest.mark.parametrize("encrypted", [False, True], ids=["plain", "encrypted"])
 @pytest.mark.parametrize("enabled", [False, True], ids=["default", "opt-in"])
 def test_model_admin_uses_owning_client_and_current_room_permissions(

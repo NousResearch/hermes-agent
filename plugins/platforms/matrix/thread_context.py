@@ -38,16 +38,16 @@ class HistoryMessage:
     content: dict
 
 
-async def decrypt_history_event(client: Any, raw: dict) -> Any:
+async def decrypt_history_event(client: Any, raw: dict[str, Any]) -> Any:
     if raw.get("type") != "m.room.encrypted":
         return raw
     crypto = getattr(client, "crypto", None)
     if crypto is None:
         raise UndecryptableEvent("missing decryption keys")
     try:
-        from mautrix.types import Event
+        from mautrix.types import EncryptedEvent, JSON
 
-        return await asyncio.wait_for(crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0)
+        return await asyncio.wait_for(crypto.decrypt_megolm_event(EncryptedEvent.deserialize(JSON(raw))), timeout=10.0)
     except Exception as exc:
         logger.debug("Matrix: could not decrypt history event %s: %s", raw.get("event_id"), exc)
         reason = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"

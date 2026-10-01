@@ -171,19 +171,21 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
 
 def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Optional[Dict[str, Any]]:
     """Scan the legacy ``custom_providers:`` list for ``requested_norm``."""
-    for entry in custom_providers:
-        name, base_url = (entry.get("name"), entry.get("base_url")) if isinstance(entry, dict) else (None, None)
-        if not isinstance(name, str) or not isinstance(base_url, str):
-            continue
+    from hermes_cli.custom_provider_identity import match_custom_provider_route
+    matched = match_custom_provider_route(requested_norm, custom_providers)
+    if matched is not None:
+        resolved_slug, entry = matched
+        name, base_url = _clean(entry.get("name")), _clean(_entry_url(entry))
         provider_key = _clean(entry.get("provider_key", ""))
-        if requested_norm not in custom_provider_aliases(name, provider_key):
-            continue
         result = {"name": name.strip(), "base_url": base_url.strip(), "api_key": _clean(entry.get("api_key", ""))}
         model_name = _clean(entry.get("model", ""))
         if model_name:
             result["model"] = model_name
         _lift_common_custom_fields(entry, result, provider_key=provider_key, key_env=_clean(entry.get("key_env", "")),
                                    api_mode=_rp()._parse_api_mode(entry.get("api_mode")))
+        result["provider_slug"] = resolved_slug
+        if entry.get("key_cmd"):
+            result["key_cmd"] = entry["key_cmd"]
         return result
     return None
 
@@ -195,6 +197,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     rp = _rp()
     config = rp.load_config()
     providers = config.get("providers")
+    custom_providers = rp.get_compatible_custom_providers(config)
+    if requested_norm.startswith("custom:"):
+        # Explicit allocated slugs beat a keyed entry's ambiguous display alias.
+        found = _match_legacy_custom_provider(requested_norm, custom_providers)
+        if found:
+            return found
     found = _match_new_style_provider(requested_norm, providers) if isinstance(providers, dict) else None
     if found:
         return found
@@ -229,7 +237,7 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
         return None
     if not entry:
         return None
-    return custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or "")).split(":", 1)[1] or None
+    return (entry.get("provider_slug") or custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or ""))).split(":", 1)[1] or None
 
 
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
@@ -301,6 +309,20 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     endpoint first, then the ownership-checked managed server, then a configured model or
     provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
+    # Preserve an explicit route before using a URL shared by several keys.
+    candidate = str(config_provider or "").strip()
+    if not candidate:
+        try:
+            candidate = str(rp._get_model_config().get("provider") or "").strip()
+        except Exception:
+            pass
+    if candidate and candidate.lower() not in {"custom", "auto", "openrouter"}:
+        try:
+            entry = rp._get_named_custom_provider(candidate)
+        except Exception:
+            entry = None
+        if entry and (not base_url or _normalize_base_url_for_match(entry.get("base_url")) == _normalize_base_url_for_match(base_url)):
+            return entry.get("provider_slug") or custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or ""))
     if base_url:
         identity = find_custom_provider_identity(base_url)
         if identity:
@@ -550,7 +572,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         return None
     pool_result = rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+        provider_name=custom_provider.get("provider_slug") or custom_provider.get("provider_key") or custom_provider.get("name"),
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.

@@ -443,6 +443,13 @@ def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str,
     if not requested or not custom_providers or not isinstance(custom_providers, list):
         return None
     first_valid: Optional[ProviderDef] = None
+    from hermes_cli.custom_provider_identity import match_custom_provider_route
+    matched = match_custom_provider_route(name, custom_providers)
+    if matched is not None:
+        resolved_slug, matched_entry = matched
+        display_name = (matched_entry.get("name") or "").strip()
+        api_url = (matched_entry.get("base_url", "") or matched_entry.get("url", "") or matched_entry.get("api", "")).strip()
+        return _user_pdef(resolved_slug, display_name, api_url, (matched_entry.get("key_env") or "").strip())
     # If the stored provider is the bare string "custom" (corrupt state from a prior model-switch bug), fall
     # back to the first custom provider entry so existing configs self-heal. (GH #17478)
     for entry in custom_providers:

@@ -1824,19 +1824,31 @@ def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
     return model_cfg
 
 
-def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
+def persist_model_selection(result: ModelSwitchResult, config_path: Any = None, *, reasoning_effort: str = "") -> None:
     """Write a successful :func:`switch_model` result to ``config_path`` (default:
     ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
 
-    Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
-    user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
-    cold-start disk I/O — async callers run this on a worker thread."""
+    ONE targeted read-modify-write: only the selection's own dotted keys change (``model.*``
+    plus ``agent.reasoning_effort`` when paired), so sibling keys, layout and sections written
+    by a concurrent ``--global`` command (/reasoning, /fast) survive instead of being reverted
+    or deleted by a stale whole-document snapshot. The document is re-read atomically under the
+    writer lock immediately before the one dump, so keys another writer added after this call's
+    own read are preserved. The model and its effort share the same atomic save, so a failed
+    write cannot leave them on different selections. Async callers run this on a worker."""
     from pathlib import Path
     from hermes_cli.config import get_config_path, read_user_config_raw
-    from utils import atomic_roundtrip_yaml_update
+    from utils import atomic_roundtrip_yaml_update_multi
     path = Path(config_path) if config_path else get_config_path()
-    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
-        atomic_roundtrip_yaml_update(path, f"model.{key}", value)
+    if reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(reasoning_effort) is None:
+            raise ValueError("Invalid reasoning effort")
+    config = read_user_config_raw(path)
+    updates = {f"model.{key}": value
+               for key, value in model_selection_config_updates(result, config.get("model")).items()}
+    if reasoning_effort:
+        updates["agent.reasoning_effort"] = reasoning_effort
+    atomic_roundtrip_yaml_update_multi(path, updates)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

@@ -214,21 +214,20 @@ def _picker_offers_reasoning(provider_data: dict, model: str) -> bool:
     return not (isinstance(entry, dict) and entry.get("reasoning") is False)
 
 
-def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
+def _apply_reasoning_after_switch(cli, effort: str, *, persisted: bool) -> None:
     """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
     agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
-    would be clobbered. Session-scoped unless the pick itself persists (``--global``)."""
-    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
+    would be clobbered. ``persisted`` means the model and effort were saved atomically."""
+    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config
     parsed = _parse_reasoning_config(effort)
     if parsed is None:
         return
     cli.reasoning_config = parsed
     if cli.agent is not None:
         cli.agent.reasoning_config = parsed
-    saved = persist_global and save_config_value("agent.reasoning_effort", effort)
-    if saved:
+    if persisted:
         CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = effort
-    _cprint(f"    Reasoning effort: {effort}" + (" (saved to config)" if saved else ""))
+    _cprint(f"    Reasoning effort: {effort}" + (" (saved to config)" if persisted else ""))
 
 
 def _commit_model_switch(
@@ -246,16 +245,23 @@ def _commit_model_switch(
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
-    if reasoning_effort:
-        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
+    saved = False
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
-        _cprint("    Saved to config.yaml (--global)" if picker else "    Saved to config.yaml")
+        effort_kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort and not one_turn else {}
+        try:
+            persist_model_selection(result, **effort_kwargs)
+        except Exception:
+            _cprint("    Could not save config.yaml; model and reasoning apply to this session only.")
+        else:
+            saved = True
+            _cprint("    Saved to config.yaml (--global)" if picker else "    Saved to config.yaml")
     elif one_turn:
         _cprint("    (next turn only — restores after one response)")
     else:
         _cprint("    (session only — add --global to persist)")
+    if reasoning_effort:
+        _apply_reasoning_after_switch(cli, reasoning_effort, persisted=saved and not one_turn)
     # The row records what THIS session runs even on --global (else a later resume restores the
     # stale creation-time model); --once is restored after one turn and never touches the row.
     if not one_turn:

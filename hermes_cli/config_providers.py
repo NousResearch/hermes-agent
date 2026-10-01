@@ -340,6 +340,8 @@ def get_compatible_custom_providers(
     def _norm(entry: Dict[str, Any], field: str) -> str:
         return str(entry.get(field, "") or "").strip().lower()
 
+    from hermes_cli.custom_provider_identity import custom_provider_group_key
+
     compatible: List[Dict[str, Any]] = []
     seen_provider_keys: set = set()
     seen_name_url_pairs: set = set()
@@ -349,7 +351,7 @@ def get_compatible_custom_providers(
         provider_key = _norm(entry, "provider_key")
         name = _norm(entry, "name")
         base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
-        pair = (name, base_url, _norm(entry, "model"))
+        pair = (*custom_provider_group_key(entry), _norm(entry, "model"))
         if provider_key and provider_key in seen_provider_keys:
             continue
         if name and base_url and pair in seen_name_url_pairs:

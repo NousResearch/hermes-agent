@@ -552,19 +552,34 @@ def custom_provider_pool_key_candidates(
     """
     if not base_url:
         return []
+    from hermes_cli.custom_provider_identity import iter_custom_provider_routes, match_custom_provider_route
     normalized_url = _norm_url(base_url)
-    requested_aliases = _requested_custom_name_aliases(provider_name) if provider_name else set()
-
-    if requested_aliases:
-        for norm_name, entry in _iter_custom_providers():
-            if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
-                return _pool_keys_for_custom_entry(norm_name, entry)
-
-    for norm_name, entry in _iter_custom_providers():
-        entry_url = _norm_url(entry.get("base_url"))
-        if entry_url and entry_url == normalized_url:
-            return _pool_keys_for_custom_entry(norm_name, entry)
-    return []
+    entries = [entry for _name, entry in _iter_custom_providers()]
+    routes = list(iter_custom_provider_routes(entries))
+    if provider_name:
+        matched = match_custom_provider_route(provider_name, entries)
+        # An explicit name must never fall through to a sibling at the same URL.
+        if matched is None:
+            return []
+    else:
+        matched = next(((slug, entry) for slug, entry in routes
+                        if _norm_url(entry.get("base_url")) == normalized_url), None)
+    if matched is None:
+        return []
+    slug, entry = matched
+    if _norm_url(entry.get("base_url")) != normalized_url:
+        return []
+    keys = []
+    provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
+    if provider_key:
+        keys.append(provider_key)
+    keys.append(slug)
+    # Retain old display-name pools only if that alias belongs to this group.
+    legacy = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(str(entry.get('name') or ''))}"
+    legacy_match = match_custom_provider_route(legacy, entries)
+    if legacy_match is not None and legacy_match[0] == slug:
+        keys.append(legacy)
+    return list(dict.fromkeys(keys))
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
@@ -592,8 +607,9 @@ def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
     """Return the custom_providers config entry matching a pool key like 'custom:together.ai'."""
     if not pool_key.startswith(CUSTOM_POOL_PREFIX):
         return None
-    suffix = pool_key[len(CUSTOM_POOL_PREFIX):]
-    return next((entry for norm_name, entry in _iter_custom_providers() if norm_name == suffix), None)
+    from hermes_cli.custom_provider_identity import match_custom_provider_route
+    matched = match_custom_provider_route(pool_key, (entry for _name, entry in _iter_custom_providers()))
+    return matched[1] if matched is not None else None
 
 
 def get_pool_strategy(provider: str) -> str:
@@ -641,21 +657,7 @@ def _legacy_custom_pool_matches(
 ) -> bool:
     """Match a legacy ``custom:<name>`` pool against a named runtime identity."""
     try:
-        for normalized_name, entry in _iter_custom_providers():
-            if f"{CUSTOM_POOL_PREFIX}{normalized_name}" != pool_provider:
-                continue
-            aliases = {normalized_name}
-            for value in (entry.get("name"), entry.get("provider_key")):
-                alias = _normalize_custom_pool_name(str(value or ""))
-                if alias:
-                    aliases.add(alias)
-                    if alias.startswith(CUSTOM_POOL_PREFIX):
-                        aliases.add(alias[len(CUSTOM_POOL_PREFIX):])
-            configured_url = _norm_url(entry.get("base_url"))
-            runtime_aliases = {_normalize_custom_pool_name(provider_norm)}
-            if provider_norm.startswith(CUSTOM_POOL_PREFIX):
-                runtime_aliases.add(_normalize_custom_pool_name(provider_norm[len(CUSTOM_POOL_PREFIX):]))
-            return bool(runtime_aliases & aliases) and runtime_url == configured_url
+        return pool_provider in custom_provider_pool_key_candidates(runtime_url, provider_name=provider_norm)
     except Exception:
         return False
     return False
@@ -747,10 +749,9 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
             # Named/exact custom runtimes are keyed by identity: search the
             # configured candidates by identity before endpoint so a sibling
             # sharing the URL cannot lend its pool.
-            for normalized_name, entry in _iter_custom_providers():
-                for candidate in _pool_keys_for_custom_entry(normalized_name, entry):
-                    if _accepts(candidate):
-                        return candidate
+            for candidate in custom_provider_pool_key_candidates(base_url, provider_name=provider_norm):
+                if _accepts(candidate):
+                    return candidate
     except Exception:
         pass
     return provider_norm

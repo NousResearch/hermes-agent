@@ -13,8 +13,7 @@ canonical ``hermes_cli.model_switch.persist_model_selection`` shape shared by ev
 surface.
 """
 
-from unittest.mock import MagicMock, patch
-
+import hermes_yaml as yaml
 import pytest
 
 from hermes_cli.model_switch import ModelSwitchResult
@@ -78,40 +77,46 @@ def _run_switch(monkeypatch, result, cmd="/model MiniMax-M3 --global"):
     import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
-    saved: dict[str, object] = {}
-
-    def _fake_save(path, key, value):
-        saved[key] = value
-
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", _fake_save)
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
     monkeypatch.setattr(
         "hermes_cli.inventory.load_picker_context",
         lambda: (_ for _ in ()).throw(RuntimeError("no picker context in test")),
     )
     cli_mod.HermesCLI._handle_model_switch(_StubCLI(), cmd)
-    return saved
 
 
-def test_global_switch_persists_base_url_and_api_mode(monkeypatch):
+@pytest.mark.parametrize("picker", [False, True])
+def test_global_switch_persists_base_url_and_api_mode(tmp_path, monkeypatch, picker):
     """The core #25106 fix: a --global switch to a new provider/endpoint must
     write the newly resolved base_url and api_mode, not just default/provider."""
-    saved = _run_switch(monkeypatch, _make_result())
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    before = {"model": {"default": "old-model", "provider": "copilot", "base_url": "https://old.example/v1"},
+              "marker": "keep", "providers": {"fixture": {"api_key": "${FIXTURE_KEY}"}}}
+    path.write_text(yaml.safe_dump(before))
+    if picker:
+        _run_apply(monkeypatch, _make_result())
+    else:
+        _run_switch(monkeypatch, _make_result())
+    saved = yaml.safe_load(path.read_text())
+    assert saved["model"]["default"] == "MiniMax-M3"
+    assert saved["model"]["provider"] == "custom:minimax"
+    assert saved["model"]["base_url"] == "https://api.minimax.io/v1"
+    assert saved["model"]["api_mode"] == "chat_completions"
+    assert saved["marker"] == before["marker"]
+    assert saved["providers"] == before["providers"]
 
-    assert saved["model.default"] == "MiniMax-M3"
-    assert saved["model.provider"] == "custom:minimax"
-    assert saved["model.base_url"] == "https://api.minimax.io/v1"
-    assert saved["model.api_mode"] == "chat_completions"
 
-
-def test_session_only_switch_does_not_touch_config(monkeypatch):
+def test_session_only_switch_does_not_touch_config(tmp_path, monkeypatch):
     """--session must not write config.yaml at all — persistence stays
     entirely in-memory."""
     import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
-    save_calls = []
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda *a, **k: save_calls.append(a))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    before = "# preserved exactly\nmodel: old-model\n"
+    path.write_text(before)
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: _make_result())
     monkeypatch.setattr(
         "hermes_cli.inventory.load_picker_context",
@@ -120,7 +125,7 @@ def test_session_only_switch_does_not_touch_config(monkeypatch):
 
     cli_mod.HermesCLI._handle_model_switch(_StubCLI(), "/model MiniMax-M3 --session")
 
-    assert save_calls == []
+    assert path.read_text() == before
 
 
 def _run_apply(monkeypatch, result, persist_global=True):
@@ -132,14 +137,7 @@ def _run_apply(monkeypatch, result, persist_global=True):
     import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
-    saved: dict[str, object] = {}
-
-    def _fake_save(path, key, value):
-        saved[key] = value
-
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", _fake_save)
     cli_mod.HermesCLI._apply_model_switch_result(_StubCLI(), result, persist_global)
-    return saved
 
 
 

@@ -70,6 +70,21 @@ def test_catalog_placeholders_match_english(lang: str):
         )
 
 
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_picker_titles_render_real_newlines(lang: str):
+    """Picker messages must contain real line breaks in every language.
+
+    A doubled ``\\n`` escape in the catalog YAML parses to a literal backslash-n and the
+    picker prints ``\n`` on screen (regression for the /fast and /reasoning pickers).
+    """
+    for key, kwargs in (("gateway.fast.picker_title", {"mode": "fast"}),
+                        ("gateway.reasoning.picker_title",
+                         {"level": "high", "scope": "session", "display": "on"})):
+        value = i18n.t(key, lang=lang, **kwargs)
+        assert "\\n" not in value, f"{lang} {key}: literal backslash-n in rendered text"
+        assert "\n" in value, f"{lang} {key}: line breaks missing"
+
+
 # ---------------------------------------------------------------------------
 # Language resolution
 # ---------------------------------------------------------------------------

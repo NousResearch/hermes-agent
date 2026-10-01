@@ -1280,7 +1280,10 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(BasePlatformAdapter):
+from plugins.platforms.feishu.model_picker import FeishuModelPickerMixin
+
+
+class FeishuAdapter(FeishuModelPickerMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1340,6 +1343,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        self._init_model_picker()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
@@ -1754,6 +1758,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
+
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
@@ -2186,6 +2191,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+            if action_value.get("hermes_model_picker"):
+                return self._handle_model_picker_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2424,6 +2431,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
         self._card_action_tokens[token] = now
         return False
+
 
     async def _handle_card_action_event(self, data: Any) -> None:
         """Route Feishu interactive card button clicks as synthetic COMMAND events."""

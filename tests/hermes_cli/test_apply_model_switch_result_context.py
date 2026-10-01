@@ -125,15 +125,25 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
     )
 
 
-def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
+def test_global_switch_clears_context_pin_owned_by_previous_route(tmp_path, monkeypatch):
+    """The pin belonged to the previous route; the global save (one targeted atomic write) must
+    drop it, sync the new endpoint and leave sibling settings alone."""
+    import hermes_yaml as yaml
     import cli as cli_mod
 
-    writes = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        "utils.atomic_roundtrip_yaml_update",
-        lambda path, key, value: writes.append((key, value)),
-    )
+    path = tmp_path / "config.yaml"
+    configured = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://large.example/v1",
+            "context_length": 1_048_576,
+        },
+        "marker": "keep",
+    }
+    path.write_text(yaml.safe_dump(configured))
     cli = _StubCLI()
     cli.model = "shared-model"
     cli.provider = "custom"
@@ -155,21 +165,14 @@ def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
         is_global=True,
     )
 
-    configured = {
-        "model": {
-            "default": "shared-model",
-            "provider": "custom",
-            "base_url": "https://large.example/v1",
-            "context_length": 1_048_576,
-        }
-    }
-    with (
-        patch(
-            "agent.model_metadata.get_model_context_length",
-            return_value=256_000,
-        ),
-        patch("hermes_cli.config.read_user_config_raw", return_value=configured),
+    with patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=256_000,
     ):
         cli_mod.HermesCLI._apply_model_switch_result(cli, result, True)
 
-    assert ("model.context_length", None) in writes
+    saved = yaml.safe_load(path.read_text())
+    assert saved["model"]["default"] == "shared-model"
+    assert saved["model"]["base_url"] == "https://small.example/v1"
+    assert "context_length" not in saved["model"]
+    assert saved["marker"] == "keep"

@@ -9847,9 +9847,10 @@ def test_config_set_model_global_persists(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    # persist_model_selection uses targeted per-key writes (#48305) so it
-    # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
+    # persist_model_selection applies targeted dotted-key updates (#48305 intent) as ONE
+    # read-modify-write, so sibling model.* keys and unrelated sections survive the save.
+    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update_multi",
+                        lambda path, updates, **kw: saved_values.update(updates))
 
     resp = server.handle_request(
         {

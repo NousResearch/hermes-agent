@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
-from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
@@ -33,6 +32,12 @@ _FAST_SELECTIONS = {
 
 # /reasoning display-toggle arguments -> show_reasoning value.
 _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
+
+def _picker_stale_reply() -> str:
+    """Text for the picker's session/authorization re-checks — the same one for the pre-commit
+    checks and the ones inside the commit (e.g. /new landing between them). The typed path never
+    needs it: mid-run input is rejected up front."""
+    return t("gateway.model.picker.stale_reply")
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -54,11 +59,26 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
-async def _persist_model_switch_to_config(result, config_path) -> None:
+async def _persist_model_switch_to_config(result, config_path, *, reasoning_effort: str = "") -> None:
     """Write-through a resolved /model switch to the profile config at ``config_path``, off the
     event loop (the route comparison can do cold-start disk I/O)."""
     from hermes_cli.model_switch import persist_model_selection
-    await asyncio.to_thread(persist_model_selection, result, config_path)
+    kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
+    await asyncio.to_thread(persist_model_selection, result, config_path, **kwargs)
+
+
+async def _picker_guard_passes(ctx) -> bool:
+    """True when a picker commit may keep writing session state: no guard (the typed path holds
+    the switch lock across its whole commit) or the card's guard still reports its session
+    current. ``/new`` does not take the switch lock, so picker commits re-check at each
+    session-scoped write instead of trusting the check that started the commit."""
+    guard = getattr(ctx, "session_guard", None)
+    if guard is None:
+        return True
+    try:
+        return bool(await guard())
+    except Exception:
+        return False
 
 
 @dataclasses.dataclass
@@ -72,6 +92,8 @@ class _ModelSwitchContext:
     one_turn: bool = False
     reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
+    session_guard: Optional[Any] = None  # picker-only: re-validates the card's session mid-commit
+    session_stale: bool = False  # set by the commit when that guard reports the session replaced
     current_model: str = ""
     current_provider: str = "openrouter"
     current_base_url: str = ""
@@ -203,11 +225,17 @@ class GatewayModelCommandsMixin:
         """
         from hermes_cli.model_switch import format_model_for_display
 
+        if not await _picker_guard_passes(ctx):
+            ctx.session_stale = True
+            return None
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
         if _sess_db is not None:  # so the dashboard shows the updated model
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
+                if not await _picker_guard_passes(ctx):
+                    ctx.session_stale = True
+                    return None
                 # Typed path: consume the auto-reset flag so the next message's cleanup does not
                 # wipe the override stored below.
                 if not picker and getattr(_sess_entry, "was_auto_reset", False):
@@ -219,6 +247,9 @@ class GatewayModelCommandsMixin:
                 )
             except Exception as exc:
                 logger.debug("Failed to persist model switch to DB: %s", exc)
+        if not await _picker_guard_passes(ctx):
+            ctx.session_stale = True
+            return None
         # Prepended to the next user message (no system messages mid-history). Display form strips
         # opaque Palantir RID prefixes; the override map keeps the full ID for the wire.
         if not hasattr(self, "_pending_model_notes"):
@@ -242,6 +273,9 @@ class GatewayModelCommandsMixin:
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+        if not await _picker_guard_passes(ctx):
+            ctx.session_stale = True
+            return None
         # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
         # the session override (memory + store) — a redundant copy would shadow every later global
         # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
@@ -249,7 +283,8 @@ class GatewayModelCommandsMixin:
         global_error: Optional[str] = None
         if ctx.persist_global:
             try:
-                await _persist_model_switch_to_config(result, ctx.config_path)
+                effort_kwargs = {"reasoning_effort": ctx.reasoning_effort} if ctx.reasoning_effort else {}
+                await _persist_model_switch_to_config(result, ctx.config_path, **effort_kwargs)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
                 global_error = f"config.yaml not updated ({str(e) or type(e).__name__})"
@@ -379,6 +414,11 @@ class GatewayModelCommandsMixin:
         if error is not None:
             return error
         global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        if ctx.session_stale or (picker and not await _picker_guard_passes(ctx)):
+            # The card's session was replaced (e.g. /new) while this click was committing —
+            # nothing further may land on the replacement; the reply must not claim a switch
+            # that did not stick.
+            return _picker_stale_reply()
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
@@ -386,12 +426,22 @@ class GatewayModelCommandsMixin:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
-            reply += "\n" + self._apply_reasoning_selection(
-                ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global and global_error is None)
+            if ctx.persist_global and global_error is None:
+                # The paired choice was already committed in the model's atomic write.
+                from hermes_constants import parse_reasoning_effort
+                self._reasoning_config = parse_reasoning_effort(ctx.reasoning_effort)
+                self._set_reasoning_override(ctx.session_key, None)
+                reply += "\n" + t("gateway.reasoning.set_global", effort=ctx.reasoning_effort)
+            elif not await _picker_guard_passes(ctx):
+                # The session rotated after the check above (the confirmation awaited metadata
+                # in between): never pin the old card's effort onto the fresh session.
+                return _picker_stale_reply()
+            else:
+                reply += "\n" + self._apply_reasoning_selection(
+                    ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort)
         return reply
 
-    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
+    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected, *, persist_global: bool = False) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
@@ -403,13 +453,33 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
-        result = await adapter.send_model_picker(
-            chat_id=source.chat_id, providers=providers,
-            current_model=listing_kwargs["current_model"],
-            current_provider=listing_kwargs["current_provider"], session_key=session_key,
-            on_model_selected=on_model_selected,
-            metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-        )
+        picker_kwargs = {}
+        # Context-aware adapters opt in; old platform/plugin signatures remain valid.
+        if getattr(adapter, "supports_model_picker_context", False) is True:
+            reasoning = self._resolve_session_reasoning_config(
+                source=source, session_key=session_key, model=listing_kwargs["current_model"],
+            ) or {}
+            picker_kwargs["picker_context"] = {
+                "user_id": getattr(source, "user_id", ""),
+                "user_id_alt": getattr(source, "user_id_alt", ""),
+                "chat_type": getattr(source, "chat_type", ""),
+                "thread_id": getattr(source, "thread_id", None),
+                "profile_label": getattr(source, "profile", "") or getattr(self, "_owner_profile", ""),
+                "persist_global": persist_global,
+                "reasoning_effort": "none" if reasoning.get("enabled") is False else reasoning.get("effort", ""),
+            }
+        try:
+            result = await adapter.send_model_picker(
+                chat_id=source.chat_id, providers=providers,
+                current_model=listing_kwargs["current_model"],
+                current_provider=listing_kwargs["current_provider"], session_key=session_key,
+                on_model_selected=on_model_selected,
+                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                **picker_kwargs,
+            )
+        except Exception:
+            logger.warning("Model picker send failed", exc_info=True)
+            return False
         return bool(result.success)
 
     async def _model_listing_reply(
@@ -430,21 +500,60 @@ class GatewayModelCommandsMixin:
         )
         adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
-            async def _picker_switch(model_id: str, provider_slug: str) -> str:
-                # The picker callback binds the raw event source (pre-normalization).
-                result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
-                if error is not None:
-                    return error
-                return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
+            context_picker = getattr(adapter, "supports_model_picker_context", False) is True
+            bound_session_id = None
+            if context_picker:
+                entry = await self.async_session_store.get_or_create_session(ctx.source, touch_activity=False)
+                bound_session_id = entry.session_id
 
-            async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str) -> str:
+            async def _selection_is_current() -> bool:
+                if not context_picker:
+                    return True
+                if self._is_user_authorized_for_source(ctx.source) is not True:
+                    return False
+                if self._delivery_adapter_for(ctx.source) is not adapter:
+                    return False
+                if self._session_key_for_source(ctx.source) != ctx.session_key:
+                    return False
+                if profile_home is not None and self._resolve_profile_home_for_source(ctx.source) != profile_home:
+                    return False
+                entry = await self.async_session_store.get_or_create_session(ctx.source, touch_activity=False)
+                return entry.session_id == bound_session_id
+
+            async def _picker_switch(model_id: str, provider_slug: str, effort: str = "") -> str:
+                async with self._model_switch_lock():
+                    if ctx.session_key in getattr(self, "_running_agents", {}):
+                        # Typed /model mid-run is rejected (busy_policy "reject" +
+                        # _BUSY_REJECT_TEXT); a delayed card click must not hot-swap the agent
+                        # an in-flight turn is streaming from either.
+                        return getattr(self, "_BUSY_REJECT_TEXT", {}).get("model") or (
+                            "Agent is running — wait or /stop first, then switch models.")
+                    if not await _selection_is_current():
+                        return _picker_stale_reply()
+                    selection_ctx = dataclasses.replace(
+                        ctx, reasoning_effort=effort if effort and effort != "keep" else ctx.reasoning_effort,
+                        session_guard=_selection_is_current,
+                    )
+                    selection_ctx.read_config()
+                    selection_ctx.apply_override(self._session_model_overrides.get(ctx.session_key, {}))
+                    result, error = await self._perform_model_switch(selection_ctx, model_id, provider_slug, ctx.source)
+                    if error is not None:
+                        return error
+                    if not await _selection_is_current():
+                        return _picker_stale_reply()
+                    return await self._commit_model_switch_locked(result, selection_ctx, source=ctx.source, picker=True)
+
+            async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str, effort: str = "") -> str:
+                if context_picker and _chat_id != ctx.source.chat_id:
+                    return t("gateway.model.picker.wrong_chat")
                 if profile_home is None:
-                    return await _picker_switch(model_id, provider_slug)
+                    return await _picker_switch(model_id, provider_slug, effort)
                 from gateway.run import _profile_runtime_scope
                 with _profile_runtime_scope(profile_home):
-                    return await _picker_switch(model_id, provider_slug)
+                    return await _picker_switch(model_id, provider_slug, effort)
 
-            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected):
+            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected,
+                                             persist_global=ctx.persist_global):
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or "unknown", provider=get_label(ctx.current_provider)), ""]
@@ -624,16 +733,16 @@ class GatewayModelCommandsMixin:
     # ----------------------------------------------------------- /reasoning, /fast
 
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
-        """Save a dot-separated key to config.yaml (shared by /reasoning, /fast and their pickers)."""
-        from gateway.slash_commands import _nested_dict
+        """Save a dot-separated key to config.yaml (shared by /reasoning, /fast and their pickers).
+
+        ONE targeted read-modify-write through the shared writer lock: only this key changes, so
+        a save racing a /model selection commit (or another --global command) can neither revert
+        the other's keys nor be reverted by it."""
         from gateway.run import _gateway_config_home
-        from hermes_cli.config import read_user_config_raw
+        from utils import atomic_roundtrip_yaml_update
         config_path = _gateway_config_home() / "config.yaml"
         try:
-            user_config = read_user_config_raw(config_path)  # raw: never persist merged defaults
-            *parents, leaf = key_path.split(".")
-            _nested_dict(user_config, *parents)[leaf] = value
-            atomic_config_write(config_path, user_config)
+            atomic_roundtrip_yaml_update(config_path, key_path, value)
             return True
         except Exception as e:
             logger.error("Failed to save config key %s: %s", key_path, e)

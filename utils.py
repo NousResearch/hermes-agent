@@ -432,26 +432,24 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
-def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
-    """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
+# One in-process lock over every read-modify-write of a YAML config through the round-trip
+# primitives below. Without it, two writers can each read, pause, and then dump their own
+# snapshot last — e.g. a /model --global save reverting an unrelated /fast or /reasoning key
+# (sibling of the #100314 class). Writers that change only their own dotted keys re-read under
+# this lock immediately before the one dump, so keys another writer added are merged, never
+# deleted by a stale whole-document snapshot.
+_CONFIG_RW_LOCK = threading.RLock()
 
-    Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
-    single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
-    ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
-    litters the file and diverges from whole-document writers that drop the key).
-    """
+
+def _apply_dotted_update(config: Any, key_path: str, value: Any) -> None:
+    """Set one dotted key on a round-trip document (``None`` removes it), creating intermediate
+    mappings on the way. Honors escaped dots and prefers existing literal dotted keys (model IDs
+    like ``glm-5.3``) over blind splitting — same navigation as ``hermes config set``'s
+    ``_set_nested``; otherwise /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom
+    siblings. See #91607."""
     from ruamel.yaml.comments import CommentedMap
-    # Honor escaped dots and prefer existing literal dotted keys (model IDs like ``glm-5.3``) over
-    # blind splitting — same navigation as ``hermes config set``'s ``_set_nested``; otherwise
-    # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
-    # See #91607.
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
-    path = Path(path)
-    from hermes_constants import mkdir_under_hermes_home
-
-    mkdir_under_hermes_home(path.parent)
-    yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
     i = 0
@@ -472,7 +470,50 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
             current[seg] = next_value
         current = next_value
         i += consumed
-    _roundtrip_dump(path, yaml_rt, config)
+
+
+def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
+    """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
+
+    Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
+    single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
+    ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
+    litters the file and diverges from whole-document writers that drop the key). The read and
+    the write share ``_CONFIG_RW_LOCK``, so no other in-process writer lands between them.
+    """
+    path = Path(path)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
+    with _CONFIG_RW_LOCK:
+        yaml_rt, config = _roundtrip_load(path)
+        _apply_dotted_update(config, key_path, value)
+        _roundtrip_dump(path, yaml_rt, config)
+
+
+def atomic_roundtrip_yaml_update_multi(path: Union[str, Path], updates: "dict[str, Any]") -> None:
+    """Apply several dotted-key updates (``None`` = remove) in ONE read-modify-write.
+
+    Same comment-preserving round trip and the same fail-closed readability gate as
+    :func:`atomic_roundtrip_yaml_save`, and the same only-your-keys scope guarantee as
+    :func:`atomic_roundtrip_yaml_update` — extended so a paired write (model + reasoning effort)
+    stays a single atomic save. The document is re-read under ``_CONFIG_RW_LOCK`` immediately
+    before the one dump, so keys another writer added after the caller's own read (a /fast or
+    /reasoning --global save) are preserved instead of being reverted or deleted by a stale
+    whole-document snapshot.
+    """
+    from hermes_cli.config import require_readable_config_before_write
+
+    path = Path(path)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
+    with _CONFIG_RW_LOCK:
+        require_readable_config_before_write(path)
+        yaml_rt, config = _roundtrip_load(path)
+        for key_path, value in updates.items():
+            _apply_dotted_update(config, key_path, value)
+        _roundtrip_dump(path, yaml_rt, config)
 
 
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are

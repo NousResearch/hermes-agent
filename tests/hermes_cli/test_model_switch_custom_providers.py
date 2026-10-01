@@ -1263,9 +1263,9 @@ def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypat
 
 
 def test_list_authenticated_providers_same_url_different_keys_disambiguated(monkeypatch):
-    """Two custom_providers entries with the same base_url but different
-    api_keys (and identical cleaned names) must both stay visible in the
-    picker — slug is suffixed to disambiguate."""
+    """Two custom_providers entries with the same base_url but different api_keys must
+    both stay visible: each row shows the display name exactly as the user gave it
+    ("OpenAI — key A" / "OpenAI — key B"), and the slug is still suffixed."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
 
@@ -1289,6 +1289,35 @@ def test_list_authenticated_providers_same_url_different_keys_disambiguated(monk
     models = {p["slug"]: p["models"] for p in custom_groups}
     assert models["custom:openai"] == ["gpt-5.4"]
     assert models["custom:openai-2"] == ["gpt-4.6"]
+    # Single-entry rows show the display name as given — no suffix stripping.
+    assert sorted(p["name"] for p in custom_groups) == ["OpenAI — key A", "OpenAI — key B"]
+
+
+def test_same_named_relay_keys_remain_visible_and_resolvable(monkeypatch):
+    """Same name/URL/model entries remain separate when only key_env differs."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    config = {"custom_providers": [
+        {"name": "Relay", "base_url": "https://relay.example/v1", "key_env": "RELAY_KEY_A", "model": "shared-model"},
+        {"name": "Relay", "base_url": "https://relay.example/v1", "key_env": "RELAY_KEY_B", "model": "shared-model"},
+    ]}
+    from hermes_cli.config import get_compatible_custom_providers
+    compatible = get_compatible_custom_providers(config)
+    assert [entry["key_env"] for entry in compatible] == ["RELAY_KEY_A", "RELAY_KEY_B"]
+
+    providers = list_authenticated_providers(
+        user_providers={}, custom_providers=compatible, max_models=50,
+        probe_custom_providers=False,
+    )
+    custom = [row for row in providers if row.get("is_user_defined")]
+    assert {row["slug"] for row in custom} == {"custom:relay", "custom:relay-2"}
+    assert all(row["models"] == ["shared-model"] for row in custom)
+
+    second = resolve_provider_full("custom:relay-2", {}, compatible)
+    assert second is not None
+    assert second.id == "custom:relay-2"
+    assert second.api_key_env_vars == ("RELAY_KEY_B",)
 
 
 def test_list_authenticated_providers_same_url_different_key_env_and_api_mode_stay_separate(monkeypatch):
@@ -1777,6 +1806,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     )
 
     from hermes_cli.model_setup_flows_custom import _model_flow_named_custom
+    from hermes_cli.custom_provider_identity import credential_identity
 
     _model_flow_named_custom(
         {},
@@ -1801,7 +1831,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
             {
                 "api_mode": "anthropic_messages",
                 "headers": {"X-Tenant": "dragomes"},
-                "credential_identity": "sk-test",
+                "credential_identity": credential_identity({"api_key": "sk-test"}),
             },
         )
     ], (

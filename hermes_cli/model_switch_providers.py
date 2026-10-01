@@ -563,7 +563,8 @@ def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[Any, str, str]:
     if source is not None:
         return source, key_env, source.cache_identity
     inline_api_key = str(entry.get("api_key", "") or "").strip()
-    return inline_api_key, key_env, inline_api_key or (f"env:{key_env}" if key_env else "")
+    from hermes_cli.custom_provider_identity import credential_identity
+    return inline_api_key, key_env, credential_identity(entry)
 
 
 def _discover_flag(entry: dict):
@@ -576,7 +577,8 @@ def _discover_flag(entry: dict):
 
 def _display_prefix(name: str) -> str:
     """Text before the per-model separator Hermes's own writer uses ("—" / " - ")."""
-    return next((name.split(sep)[0].strip() for sep in ("—", " - ") if sep in name), name)
+    from hermes_cli.custom_provider_identity import display_prefix
+    return display_prefix(name)
 
 
 def _group_display_name(display_name: str) -> str:
@@ -704,6 +706,7 @@ class _PickerBuild:
     builtin_endpoints: set = field(default_factory=set)
     # (display_name, base_url) pairs from section 3 so section 4 skips overlapping rows.
     section3_pairs: set = field(default_factory=set)
+    section3_groups: set = field(default_factory=set)
 
     @property
     def current_provider_norm(self) -> str:
@@ -981,6 +984,8 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         if not isinstance(ep_cfg, dict) or not is_provider_enabled(ep_cfg) or ep_name.lower() in b.seen_slugs:
             continue
         display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
+        from hermes_cli.custom_provider_identity import custom_provider_group_key
+        b.section3_groups.add(custom_provider_group_key({**ep_cfg, "name": display_name}))
         api_url = _entry_base_url(ep_cfg, ("base_url", "api", "url"))
         inline_api_key, key_env, cred_identity = _entry_credentials(ep_cfg, "key_env", "api_key_env")
         headers = _extra_headers_from_config(ep_cfg)
@@ -1063,8 +1068,9 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     their own rows."""
     from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
     from hermes_cli.config import coerce_provider_id
+    from hermes_cli.custom_provider_identity import custom_provider_group_key, iter_custom_provider_routes
     groups: dict[tuple, dict] = {}
-    for entry in custom_providers:
+    for route_slug, entry in iter_custom_provider_routes(custom_providers):
         if not isinstance(entry, dict):
             continue
         raw_name = coerce_provider_id(entry.get("name"))
@@ -1078,13 +1084,17 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         entry_extra_headers = _extra_headers_from_config(entry)
         prefix = _display_prefix(raw_name)
         provider_key = str(entry.get("provider_key") or "").strip()
-        group_key = (api_url, cred_identity, api_mode, tuple(sorted(entry_extra_headers.items())), prefix.lower())
-        display_name = prefix or raw_name
+        group_key = custom_provider_group_key(entry)
         grp = groups.setdefault(group_key, {
-            "slug": custom_provider_slug(display_name, provider_key), "name": display_name,
+            "slug": route_slug, "name": prefix or raw_name, "full_name": raw_name, "members": 0,
+            "group_key": group_key,
             "api_url": api_url, "api_key": "", "credential_identity": cred_identity, "models": [], "has_explicit_models": False,
             "discover_models": True, "api_mode": api_mode, "extra_headers": entry_extra_headers,
             "aliases": set()})
+        # The add flow's "Display name" prompt promises the given name shows in the menu:
+        # keep it verbatim for single-entry rows; only a merged multi-entry row (per-model
+        # "Name — model" entries on one credential) collapses to the shared prefix.
+        grp["members"] += 1
         grp["api_key"] = grp["api_key"] or api_key  # first member with a key wins
         grp["discover_models"] = grp["discover_models"] and discover  # one opt-out pins the whole row
         grp["aliases"].update(custom_provider_aliases(raw_name, provider_key))
@@ -1097,20 +1107,13 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         if b.current_base_url_norm and _norm_url(grp["api_url"]) == b.current_base_url_norm)
     for grp in groups.values():
         api_url, api_key, slug = grp["api_url"], grp.get("api_key", ""), grp["slug"]
-        # Slug claimed by a built-in/overlay/providers: row -> skip (don't shadow).
-        if slug.lower() in b.seen_slugs and slug.lower() not in section4_slugs:
+        # The keyed and legacy views may overlap, but a shared name/URL alone
+        # cannot identify a credential group.
+        if grp["group_key"] in b.section3_groups:
             continue
-        # Two custom endpoints with the same cleaned name: suffix a counter so both stay visible.
-        if slug.lower() in section4_slugs:
-            base_slug, n = slug, 2
-            while f"{base_slug}-{n}".lower() in b.seen_slugs:
-                n += 1
-            slug = f"{base_slug}-{n}"
-            grp["slug"] = slug
+        if any(row["slug"].lower() == slug.lower() for row in b.results):
+            continue
         grp_url_norm = _norm_url(api_url)
-        pair_key = (str(grp["name"]).strip().lower(), grp_url_norm)
-        if pair_key[0] and pair_key[1] and pair_key in b.section3_pairs:
-            continue
         # A built-in row already represents this endpoint (e.g. "my-dashscope" vs the
         # alibaba-coding-plan row): keep the built-in, hide the shadow.
         if grp_url_norm and grp_url_norm in b.builtin_endpoints:
@@ -1133,7 +1136,8 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
                         credential_identity=grp["credential_identity"])
                 except Exception:
                     pass
-        b.add_endpoint_row(slug, grp["name"], grp["api_url"], grp["models"], is_current, native_catalog_empty)
+        row_name = grp["full_name"] if grp["members"] == 1 else grp["name"]
+        b.add_endpoint_row(slug, row_name, grp["api_url"], grp["models"], is_current, native_catalog_empty)
         section4_slugs.add(slug.lower())
 
 

@@ -470,9 +470,9 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 
 def _save_custom_provider(base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
-                          key_env=""):
-    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
-    existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
+                          key_env="", *, provider_slug=""):
+    """Save a custom endpoint, matching its selected route or URL plus credential identity.
+    An existing entry gets model / context_length / api_mode updated. *key_env* means the caller
     already wrote the key to ``.env``; the entry references it instead of inlining the secret.
 
     See #69449.
@@ -482,8 +482,21 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
+    from hermes_cli.custom_provider_identity import credential_identity, custom_provider_group_key, match_custom_provider_route
+    from hermes_cli.config import get_compatible_custom_providers, _expand_env_vars
+    from hermes_cli.config_providers import _normalize_custom_provider_entry
+    target_identity = credential_identity(_expand_env_vars({"api_key": api_key, "key_env": key_env}))
+    selected = match_custom_provider_route(provider_slug, get_compatible_custom_providers(cfg)) if provider_slug else None
+    if provider_slug and selected is None:
+        raise ValueError("Selected provider no longer exists; reopen the model picker")
     for entry in providers:
-        if not (isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")):
+        if not isinstance(entry, dict) or entry.get("base_url", "").rstrip("/") != base_url.rstrip("/"):
+            continue
+        if selected is not None:
+            normalized = _normalize_custom_provider_entry(entry)
+            if normalized is None or custom_provider_group_key(normalized) != custom_provider_group_key(selected[1]):
+                continue
+        elif credential_identity(entry) != target_identity:
             continue
         changed = False
         if model and entry.get("model") != model:
@@ -809,46 +822,28 @@ def _run_anthropic_oauth_flow(save_env_value):
 
 def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
     """Saved custom providers keyed by slug, with raw ``${ENV}`` refs preserved."""
-    from hermes_cli.config import get_compatible_custom_providers, read_raw_config
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_cli.config import get_compatible_custom_providers, read_raw_config, _expand_env_vars
+    from hermes_cli.config_providers import _normalize_custom_provider_entry
+    from hermes_cli.custom_provider_identity import custom_provider_group_key, iter_custom_provider_routes
 
-    # Raw (un-expanded) templates keyed by identity. ``get_compatible_custom_providers(
-    # read_raw_config())`` is deliberately bypassed: its normalize step ``urlparse()``s
-    # ``base_url`` and drops entries whose base_url is itself an env-ref template.
-    raw_api_key_refs: dict[tuple, str] = {}
-    raw_base_url_refs: dict[tuple, str] = {}
+    # Match raw templates to the expanded credential route, never name/URL alone:
+    # two accounts may have identical names, endpoints and default models.
     raw_cfg = read_raw_config()
-
-    raw_entries: list[tuple[str, str, dict]] = []
-    raw_list = raw_cfg.get("custom_providers")
-    if isinstance(raw_list, list):
-        raw_entries.extend((e.get("name", ""), "", e) for e in raw_list if isinstance(e, dict))
-    raw_providers = raw_cfg.get("providers")
-    if isinstance(raw_providers, dict):
-        raw_entries.extend((e.get("name", "") or k, k, e) for k, e in raw_providers.items() if isinstance(e, dict))
-    for name, provider_key, raw_entry in raw_entries:
-        template = str(raw_entry.get("api_key", "") or "").strip()
-        base_template = str(raw_entry.get("base_url", "") or raw_entry.get("url", "") or raw_entry.get("api", "") or "").strip()
-        name = str(name or "").strip()
-        provider_key = str(provider_key or "").strip()
-        model = str(raw_entry.get("model", "") or raw_entry.get("default_model", "") or "").strip()
-        # Index by every identity the loaded (expanded) config might present: (name),
-        # (name, model), (provider_key), (provider_key, model); case-insensitive names.
-        keys = [k.lower() for k in (name, provider_key) if k]
-        identities = [(k,) for k in keys] + [(k, model) for k in keys]
-        for refs, tmpl in ((raw_api_key_refs, template), (raw_base_url_refs, base_template)):
-            if "${" in tmpl:
-                for identity in identities:
-                    refs.setdefault(identity, tmpl)
-
-    def _lookup_ref(refs: dict[tuple, str], name: str, provider_key: str, model: str) -> str:
-        name_lc = str(name or "").strip().lower()
-        pkey_lc = str(provider_key or "").strip().lower()
-        model = str(model or "").strip()
-        return next((refs[i] for i in ((pkey_lc, model), (pkey_lc,), (name_lc, model), (name_lc,)) if i[0] and i in refs), "")
+    raw_entries = [("", entry) for entry in raw_cfg.get("custom_providers", []) if isinstance(entry, dict)]
+    raw_entries += [(key, entry) for key, entry in (raw_cfg.get("providers") or {}).items()
+                    if isinstance(entry, dict)]
+    route_refs = {}
+    for key, raw in raw_entries:
+        normalized = _normalize_custom_provider_entry(_expand_env_vars(raw), provider_key=key)
+        if normalized is None:
+            continue
+        api_ref = str(raw.get("api_key") or "").strip()
+        url_ref = str(raw.get("base_url") or raw.get("url") or raw.get("api") or "").strip()
+        route_refs[custom_provider_group_key(normalized)] = (
+            api_ref if "${" in api_ref else "", url_ref if "${" in url_ref else "")
 
     custom_provider_map = {}
-    for entry in get_compatible_custom_providers(cfg):
+    for route_slug, entry in iter_custom_provider_routes(get_compatible_custom_providers(cfg)):
         if not isinstance(entry, dict):
             continue
         name = (entry.get("name") or "").strip()
@@ -857,7 +852,9 @@ def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
             continue
         provider_key = (entry.get("provider_key") or "").strip()
         model = entry.get("model", "")
-        custom_provider_map[custom_provider_slug(name, provider_key)] = {
+        api_ref, url_ref = route_refs.get(custom_provider_group_key(entry), ("", ""))
+        custom_provider_map[route_slug] = {
+            "provider_slug": route_slug,
             "name": name,
             "base_url": base_url,
             "api_key": entry.get("api_key", ""),
@@ -870,8 +867,8 @@ def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
             "discover_models": entry.get("discover_models", True),
             "api_mode": entry.get("api_mode", ""),
             "provider_key": provider_key,
-            "api_key_ref": _lookup_ref(raw_api_key_refs, name, provider_key, model),
-            "base_url_ref": _lookup_ref(raw_base_url_refs, name, provider_key, model)}
+            "api_key_ref": api_ref,
+            "base_url_ref": url_ref}
     return custom_provider_map
 
 

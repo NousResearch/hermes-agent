@@ -1,0 +1,22 @@
+name: dexio
+repo: https://github.com/dexio-wiki/hermes-plugin
+sha: 5ab1615315512bbc70dad8f80cc5ecebc0404b34
+version: "0.1.0"
+description: "Dexio shared-wiki memory. Before each turn, the pages of your Dexio wiki that match the user's message; tools to search, read and write the pages your other agents and team also use. Nothing is captured automatically: no transcripts or turn logs. Disclosure: before each turn the first 300 characters of the user's message go to the configured Dexio server (default app.dexio.wiki, or a self-hosted one via DEXIO_URL) as a search query, and tool arguments go there when the agent calls a tool. Standard library only; no background threads or local services."
+maintainer: dexio-wiki
+tier: community
+category: memory
+docs_url: https://github.com/dexio-wiki/hermes-plugin#readme
+readme: true
+capabilities:
+  provides_tools:
+    - dexio_search
+    - dexio_read
+    - dexio_list
+    - dexio_write
+    - dexio_edit
+    - dexio_append
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEXIO_API_KEY

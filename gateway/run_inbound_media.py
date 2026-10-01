@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import shutil
@@ -25,6 +26,7 @@ def rehome_inbound_media(event: MessageEvent) -> None:
         return
     from tools.credential_files import to_agent_visible_cache_path
     rewritten = list(event.media_urls)
+    failed: set[int] = set()
     quoted = {dependency.media_index for dependency in event._quoted_media_dependencies}
     for i, raw in enumerate(event.media_urls):
         src, dest = Path(raw), Path(rehomed_media_path(raw))
@@ -32,12 +34,13 @@ def rehome_inbound_media(event: MessageEvent) -> None:
             continue
         try:
             if not src.is_file():
+                failed.add(i)
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             if i not in quoted:
                 shutil.move(str(src), str(dest))
             else:
-                with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as file:
+                with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=".inbound-", delete=False) as file:
                     temporary = Path(file.name)
                 try:
                     shutil.copy2(src, temporary)
@@ -45,12 +48,32 @@ def rehome_inbound_media(event: MessageEvent) -> None:
                 finally:
                     temporary.unlink(missing_ok=True)
         except OSError:
+            failed.add(i)
             logger.warning("Could not rehome inbound attachment %s into the routed profile's cache", raw, exc_info=True)
             continue
         rewritten[i] = str(dest)
         if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
             event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
-    event.media_urls = rewritten
+    if not failed:
+        event.media_urls = rewritten
+        return
+
+    retained = [index for index in range(len(rewritten)) if index not in failed]
+    positions = {index: position for position, index in enumerate(retained)}
+    if event.text:
+        for index in failed:
+            event.text = event.text.replace(event.media_urls[index], "[attachment unavailable]")
+    event.media_urls = [rewritten[index] for index in retained]
+    event.media_types = [event.media_types[index] for index in retained if index < len(event.media_types)]
+    event.media_text_inlined = [
+        event.media_text_inlined[index] if index < len(event.media_text_inlined) else None
+        for index in retained
+    ]
+    event._quoted_media_dependencies = tuple(
+        dataclasses.replace(dependency, media_index=positions[dependency.media_index])
+        for dependency in event._quoted_media_dependencies
+        if dependency.media_index in positions
+    )
 
 
 def rehomed_media_path(raw: str) -> str:

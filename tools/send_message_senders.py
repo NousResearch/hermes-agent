@@ -408,7 +408,7 @@ async def _resolve_slack_user_target(token, chat_id):
         return None, _error(f"Slack DM resolution failed: {e}")
 
 
-async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message):
+async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message, batch_styles):
     """One Signal batch under the scheduler with rate-limit retries: None on success, False when
     retries were exhausted (batch lost), error dict for a non-rate-limit RPC error."""
     n, max_attempts = len(att_batch), rl.SIGNAL_RATE_LIMIT_MAX_ATTEMPTS
@@ -416,7 +416,7 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
         try:
             await scheduler.acquire(n)
             _rpc_t0 = time.monotonic()
-            data = await post(att_batch, batch_message)
+            data = await post(att_batch, batch_message, batch_styles)
             if "error" not in data:
                 await scheduler.report_rpc_duration(time.monotonic() - _rpc_t0, n)
                 return None
@@ -450,7 +450,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
     except ImportError:
         return {"error": "httpx not installed"}
     from gateway.platforms import signal_rate_limit as rl
-    from gateway.platforms.signal_format import markdown_to_signal
+    from gateway.platforms.signal import MAX_MESSAGE_LENGTH, SignalAdapter
+    from gateway.platforms.signal_format import add_signal_reply_prefix, markdown_to_signal
     try:
         http_url, account = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/"), extra.get("account", "")
         if not account:
@@ -462,17 +463,27 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                 attachment_paths.append(media_path)
             else:
                 logger.warning("Signal media file not found, skipping: %s", media_path)
-        # No attachments still means one (text-only) batch; text rides on batch #0 only.
         per_batch = rl.SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        att_batches = [attachment_paths[i:i + per_batch] for i in range(0, len(attachment_paths), per_batch)] or [[]]
-        n_batches, (plain_text, text_styles) = len(att_batches), markdown_to_signal(message)
+        prefixed_message = add_signal_reply_prefix(message, extra.get("reply_prefix"))
+        text_chunks = SignalAdapter._split_signal_formatted_message(
+            *markdown_to_signal(prefixed_message), MAX_MESSAGE_LENGTH)
+        att_batches = [attachment_paths[i:i + per_batch] for i in range(0, len(attachment_paths), per_batch)]
+        if att_batches:
+            deliveries = [([], text, styles) for text, styles in text_chunks[:-1]]
+            final_text, final_styles = text_chunks[-1]
+            deliveries.extend(
+                (batch, final_text if idx == 0 else "", final_styles if idx == 0 else [])
+                for idx, batch in enumerate(att_batches))
+        else:
+            deliveries = [([], text, styles) for text, styles in text_chunks]
+        n_batches = len(deliveries)
         recipient = {"groupId": chat_id[6:]} if chat_id.startswith("group:") else {"recipient": [chat_id]}
 
-        async def _rpc_send(text, *, id_prefix, timeout, attachments=None, styled=False):
+        async def _rpc_send(text, *, id_prefix, timeout, attachments=None, styles=None):
             params = {"account": account, "message": text, **recipient}
-            if styled and text and text_styles:
-                params["textStyle" if len(text_styles) == 1 else "textStyles"] = (
-                    text_styles[0] if len(text_styles) == 1 else text_styles)
+            if text and styles:
+                params["textStyle" if len(styles) == 1 else "textStyles"] = (
+                    styles[0] if len(styles) == 1 else styles)
             if attachments:
                 params["attachments"] = attachments
             payload = {"jsonrpc": "2.0", "method": "send", "params": params,
@@ -480,28 +491,37 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 return await client.post(f"{http_url}/api/v1/rpc", json=payload)
 
-        async def _post(batch_attachments, batch_message):
-            resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments, styled=True,
-                                   timeout=rl._signal_send_timeout(len(batch_attachments)))
+        async def _post(batch_attachments, batch_message, batch_styles):
+            resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments,
+                                   styles=batch_styles, timeout=rl._signal_send_timeout(len(batch_attachments)))
             resp.raise_for_status()
             return resp.json()
         scheduler = rl.get_scheduler()
         logger.info("send_message Signal: scheduler state=%s, %d attachment(s) in %d batch(es)",
                     scheduler.state(), len(attachment_paths), n_batches)
         failed_batches: list[int] = []
-        for idx, att_batch in enumerate(att_batches):
+        failed_attachment_batches: list[int] = []
+        for idx, (att_batch, batch_message, batch_styles) in enumerate(deliveries):
             n = len(att_batch)
             if n > 0 and (estimated := scheduler.estimate_wait(n)) >= rl.SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
                 # Best-effort one-shot RPC for a user-facing pacing notice.
                 try:
-                    await _rpc_send(f"(More images coming — pausing ~{rl._format_wait(estimated)} "
-                                    f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
+                    notice, notice_styles = markdown_to_signal(add_signal_reply_prefix(
+                        f"(More images coming — pausing ~{rl._format_wait(estimated)} "
+                        f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", extra.get("reply_prefix")))
+                    notice_chunks = SignalAdapter._split_signal_formatted_message(
+                        notice, notice_styles, MAX_MESSAGE_LENGTH)
+                    for notice_idx, (notice_chunk, chunk_styles) in enumerate(notice_chunks, start=1):
+                        await _rpc_send(notice_chunk, id_prefix=f"notice_{notice_idx}", timeout=30.0,
+                                        styles=chunk_styles)
                 except Exception as _e:
                     logger.warning("Signal: inline notice failed: %s", _e)
-            outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch,
-                                               plain_text if idx == 0 else "")
+            outcome = await _signal_send_batch(
+                _post, scheduler, rl, idx, n_batches, att_batch, batch_message, batch_styles)
             if outcome is False:
                 failed_batches.append(idx + 1)
+                if att_batch:
+                    failed_attachment_batches.append(idx + 1)
             elif outcome is not None:
                 return outcome
         warnings = []
@@ -511,7 +531,10 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             warnings.append(f"Signal rate-limited {len(failed_batches)} batch(es) "
                             f"(#{', #'.join(str(b) for b in failed_batches)})")
         if failed_batches and len(failed_batches) == n_batches:
-            return _error(f"Signal: every batch ({n_batches}) hit rate limit; no attachments delivered")
+            return _error(f"Signal: every delivery batch ({n_batches}) hit rate limit")
+        if att_batches and len(failed_attachment_batches) == len(att_batches):
+            return _error(f"Signal: every attachment batch ({len(att_batches)}) hit rate limit; "
+                          "no attachments delivered")
         # Result-safe chat identifier for tool transcripts/log consumers.
         return _success("signal", "group:***" if str(chat_id).startswith("group:") else chat_id, warnings)
     except Exception as e:

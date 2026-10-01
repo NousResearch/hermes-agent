@@ -701,7 +701,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
-    chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    chunks = ([message] if platform == Platform.SIGNAL else
+              BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message])
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
             or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,

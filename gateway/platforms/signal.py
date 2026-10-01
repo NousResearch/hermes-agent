@@ -34,7 +34,7 @@ from gateway.platforms.helpers import redact_phone
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
-from gateway.platforms.signal_format import markdown_to_signal
+from gateway.platforms.signal_format import add_signal_reply_prefix, markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
@@ -188,6 +188,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self._reply_prefix = extra.get("reply_prefix")
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
@@ -674,21 +675,32 @@ class SignalAdapter(BasePlatformAdapter):
         conversion keeps styles that cross a chunk boundary intact instead of leaking Markdown markers."""
         if utf16_len(plain_text) <= max_length:
             return [(plain_text, text_styles)]
-        body_limit = max(1, max_length - 10)  # 10 = indicator reserve, mirrors truncate_message().
         offsets = cls._utf16_offsets(plain_text)
-        chunks: list[tuple[str, list[str]]] = []
-        start_idx, total_u16 = 0, offsets[-1]
-        while offsets[start_idx] < total_u16:
-            end_budget = min(total_u16, offsets[start_idx] + body_limit)
-            end_idx = start_idx + 1
-            while end_idx < len(offsets) and offsets[end_idx] <= end_budget:
-                end_idx += 1
-            end_idx = max(end_idx - 1, start_idx + 1)
-            chunk_styles = cls._styles_for_chunk(text_styles, offsets[start_idx], offsets[end_idx])
-            chunks.append((plain_text[start_idx:end_idx], chunk_styles))
-            start_idx = end_idx
-        if len(chunks) == 1:
+        total_u16 = offsets[-1]
+
+        def _split(body_limit: int) -> list[tuple[str, list[str]]]:
+            chunks: list[tuple[str, list[str]]] = []
+            start_idx = 0
+            while offsets[start_idx] < total_u16:
+                end_budget = min(total_u16, offsets[start_idx] + body_limit)
+                end_idx = start_idx + 1
+                while end_idx < len(offsets) and offsets[end_idx] <= end_budget:
+                    end_idx += 1
+                end_idx = max(end_idx - 1, start_idx + 1)
+                chunk_styles = cls._styles_for_chunk(text_styles, offsets[start_idx], offsets[end_idx])
+                chunks.append((plain_text[start_idx:end_idx], chunk_styles))
+                start_idx = end_idx
             return chunks
+
+        indicator_reserve = 10
+        while True:
+            chunks = _split(max(1, max_length - indicator_reserve))
+            required_reserve = utf16_len(f" ({len(chunks)}/{len(chunks)})")
+            if required_reserve <= indicator_reserve:
+                break
+            if required_reserve >= max_length:
+                return _split(max_length)
+            indicator_reserve = required_reserve
         return [(f"{txt} ({idx}/{len(chunks)})", st) for idx, (txt, st) in enumerate(chunks, start=1)]
 
     async def _rpc_send(self, params: Dict[str, Any], fail_error: str) -> Tuple[Any, Optional[SendResult]]:
@@ -708,7 +720,8 @@ class SignalAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         base_params = await self._with_target({"account": self.account}, chat_id)
-        chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
+        chunks = self._split_signal_formatted_message(
+            *markdown_to_signal(add_signal_reply_prefix(content, self._reply_prefix)), self.MAX_MESSAGE_LENGTH)
         last_result = None
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
             params: Dict[str, Any] = dict(base_params, message=plain_text)

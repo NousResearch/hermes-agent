@@ -23,6 +23,16 @@ _INLINE_PATTERNS = [
     (re.compile(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)"), "ITALIC")]
 
 
+def signal_reply_prefix(configured_prefix: object) -> str:
+    """Return a configured Signal prefix with escaped newlines expanded."""
+    return configured_prefix.replace("\\n", "\n") if isinstance(configured_prefix, str) else ""
+
+
+def add_signal_reply_prefix(text: str, configured_prefix: object) -> str:
+    """Prepend the normalized configured prefix to one outbound Signal message."""
+    return f"{signal_reply_prefix(configured_prefix)}{text}"
+
+
 def _utf16_len(s: str) -> int:
     """Length of *s* in UTF-16 code units."""
     return len(s.encode("utf-16-le")) // 2

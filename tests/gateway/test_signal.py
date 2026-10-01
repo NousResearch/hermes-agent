@@ -644,6 +644,28 @@ class TestSignalSendDocumentViaHelper:
 class TestSignalSendReturnsMessageId:
     """Signal send() should not pretend sent messages are editable."""
 
+    def test_formatted_splitter_reserves_full_pagination_suffix(self):
+        from gateway.platforms.base import utf16_len
+        from gateway.platforms.signal import SignalAdapter
+
+        chunks = SignalAdapter._split_signal_formatted_message("x" * 20_000, [], 20)
+
+        assert len(chunks) >= 1000
+        assert all(utf16_len(message) <= 20 for message, _styles in chunks)
+
+    @pytest.mark.asyncio
+    async def test_send_prepends_configured_reply_prefix(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, reply_prefix="🤖 **Hermes**\\n")
+        adapter._stop_typing_indicator = AsyncMock()
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+155****4567", content="Battery check passed")
+
+        assert result.success is True
+        assert captured[0]["params"]["message"] == "🤖 Hermes\nBattery check passed"
+        assert captured[0]["params"]["textStyle"] == "3:6:BOLD"
+
     @pytest.mark.asyncio
     async def test_send_chunks_long_messages_without_truncation_footer(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)

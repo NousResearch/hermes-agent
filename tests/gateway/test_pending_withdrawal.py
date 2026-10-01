@@ -190,3 +190,50 @@ async def test_withdrawal_preserves_independent_debounce_events(removed):
         timer.cancel()
         await asyncio.gather(timer, return_exceptions=True)
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store", ["batch", "debounce", "fifo", "reservation", "claimed"])
+@pytest.mark.parametrize("provenance", ["live", "canonical", "other-canonical", "missing"])
+async def test_native_withdrawal_requires_receiving_adapter_and_preserves_remaining_input(store, provenance, tmp_path):
+    import weakref
+    from gateway.native_message_deletion import NativeMessageDeletion
+    from gateway.platforms.base_pending import reserve_pending_dispatch
+    from gateway.platforms.base_text_debounce import TextDebounceState
+    from gateway.session_identity import RoutingIdentity
+
+    adapter, other = _Adapter(), _Adapter()
+    adapter.platform = other.platform = Platform.DISCORD
+    events = [_event(adapter, name) for name in ("before", "removed", "after")]
+    for event in events:
+        event.source.scope_id = "guild"
+        if provenance == "missing":
+            del event.source._transport_adapter_ref
+        elif provenance != "live":
+            owner = other if provenance == "other-canonical" else adapter
+            event.source._identity = RoutingIdentity(
+                "transport", "runtime", tmp_path, tmp_path, transport=weakref.ref(owner))
+    expected_found = provenance in {"live", "canonical"} and store != "claimed"
+    key = adapter._event_session_key(events[0])
+    records = []
+    runner = _runner()
+    if store == "batch":
+        adapter._pending_text_batches.update({event.message_id: event for event in events})
+        read = lambda: list(adapter._pending_text_batches.values())
+    elif store == "debounce":
+        adapter._text_debounce_store()[key] = TextDebounceState(events[-1], None, 1, 2, events[:-1])
+        read = lambda: [*adapter._text_debounce_store()[key].earlier_events, adapter._text_debounce_store()[key].event]
+    elif store == "fifo":
+        adapter.set_queued_withdrawal_handler(runner._withdraw_queued_followups)
+        for event in events:
+            runner._enqueue_fifo(key, event, adapter)
+        read = lambda: [adapter._pending_messages[key], *runner._session_state(key).conversation.queued_events]
+    else:
+        for event in events:
+            record = reserve_pending_dispatch(adapter, key, event)
+            record.claimed = store == "claimed"
+            records.append(record)
+        read = lambda: [record.event for record in records if not record.withdrawn]
+    found = adapter.withdraw_native_messages(NativeMessageDeletion(
+        Platform.DISCORD, "guild", ROOM, ("removed",)))
+    expected = [event for event in events if not (expected_found and event.message_id == "removed")]
+    assert (found, read()) == (expected_found, expected)

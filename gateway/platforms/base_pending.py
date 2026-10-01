@@ -24,7 +24,9 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
+from gateway.native_message_deletion import NativeMessageDeletion
 from gateway.platforms.event import MessageEvent
+from gateway.session_identity import identity_of
 
 
 _SECURITY_METADATA_KEYS = (
@@ -338,6 +340,22 @@ class PendingWithdrawalMixin:
             return (event.message_id == message_id and source is not None
                     and source.platform == self.platform
                     and source.chat_id == chat_id and source.user_id == sender_id)
+
+        return self._withdraw_pending_where(matches)
+
+    def withdraw_native_messages(self, deletion: NativeMessageDeletion) -> bool:
+        """Withdraw native input received by this adapter before its turn started."""
+        if deletion.platform != self.platform:
+            return False
+
+        def matches(event: MessageEvent) -> bool:
+            if not deletion.matches(event):
+                return False
+            identity = identity_of(event.source)
+            if identity is not None:
+                return identity.adapter() is self
+            transport = getattr(event.source, "_transport_adapter_ref", None)
+            return callable(transport) and transport() is self
 
         return self._withdraw_pending_where(matches)
 

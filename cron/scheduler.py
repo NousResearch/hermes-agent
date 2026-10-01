@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -284,6 +285,62 @@ def _log_tick_yield_once(reason: str) -> None:
             "process. Restart this one to reclaim its ticks.",
             reason)
     _last_yield_log = {"reason": reason, "at": now}
+
+
+def _compose_cron_failure_notice(
+    job: dict, error: str | None, default_content: str, *, output_file=None,
+) -> str:
+    """Let ``cron.failure_compose`` replace a failure notice without weakening the default path.
+
+    The command receives one JSON object on stdin and must print the complete message to stdout.
+    Hook failures, timeouts, invalid configuration, and empty output all fall back to the built-in
+    notice so alert delivery remains fail-open.
+    """
+    try:
+        cron_cfg = (load_config() or {}).get("cron") or {}
+        configured = cron_cfg.get("failure_compose")
+        if not configured:
+            return default_content
+        if isinstance(configured, str):
+            command = shlex.split(configured)
+        elif isinstance(configured, (list, tuple)):
+            command = [str(part) for part in configured if str(part).strip()]
+        else:
+            logger.warning("Ignoring cron.failure_compose with unsupported type %s", type(configured).__name__)
+            return default_content
+        if not command:
+            return default_content
+        timeout = float(cron_cfg.get("failure_compose_timeout", 10))
+        if timeout <= 0:
+            raise ValueError("cron.failure_compose_timeout must be positive")
+        payload = {
+            "job_id": job.get("id"),
+            "job_name": job.get("name") or job.get("id"),
+            "exit_code": job.get("exit_code"),
+            "error": error or "unknown error",
+            "output_file": output_file,
+            "timestamps": {
+                "started_at": job.get("started_at"),
+                "finished_at": _hermes_now().isoformat(),
+            },
+        }
+        result = subprocess.run(
+            command,
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"exit code {result.returncode}: {result.stderr.strip()[:300]}")
+        composed = result.stdout.strip()
+        if not composed:
+            raise RuntimeError("returned empty output")
+        return composed
+    except Exception as exc:
+        logger.warning("Cron failure composition hook failed; using built-in notice: %s", exc)
+        return default_content
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -2909,6 +2966,9 @@ def _compose_run_delivery(
                 # The one alert on entering a provider-window hold says so (#89376).
                 + hold_notice(job, job.get("_quota_hold_seconds"))
             )
+        if deliver_content and not incident_acked:
+            deliver_content = _compose_cron_failure_notice(
+                job, error, deliver_content, output_file=output_file)
     return deliver_content, blocked_config, blocked_config_silent, incident_acked, failure_incident_id
 
 

@@ -462,3 +462,48 @@ class TestPreflightAndDashboardLanes:
             {"failure_deliver": ""}, tmp_path
         )
         assert cleared["failure_deliver"] is None
+
+
+class TestFailureCompositionHook:
+    def test_hook_receives_json_and_replaces_failure_notice(self, monkeypatch):
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = "ALERT · scout failed"
+            stderr = ""
+
+        monkeypatch.setattr(s, "load_config", lambda: {
+            "cron": {"failure_compose": ["alert-format", "--json"]}
+        })
+        monkeypatch.setattr(s.subprocess, "run", lambda *args, **kwargs: (
+            calls.append((args, kwargs)) or Result()
+        ))
+
+        out = s._compose_cron_failure_notice(
+            {"id": "j7", "name": "scout", "exit_code": 3, "started_at": "2026-10-01T00:00:00Z"},
+            "Script exited with code 3",
+            "built-in notice",
+            output_file="/tmp/j7.txt",
+        )
+
+        assert out == "ALERT · scout failed"
+        args, kwargs = calls[0]
+        assert args[0] == ["alert-format", "--json"]
+        payload = json.loads(kwargs["input"])
+        assert payload["job_id"] == "j7"
+        assert payload["error"] == "Script exited with code 3"
+        assert payload["output_file"] == "/tmp/j7.txt"
+        assert payload["timestamps"]["started_at"] == "2026-10-01T00:00:00Z"
+
+    def test_hook_failure_keeps_builtin_notice(self, monkeypatch):
+        monkeypatch.setattr(s, "load_config", lambda: {
+            "cron": {"failure_compose": "missing-command"}
+        })
+        monkeypatch.setattr(
+            s.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("not found"))
+        )
+
+        assert s._compose_cron_failure_notice(
+            {"id": "j8"}, "boom", "built-in notice"
+        ) == "built-in notice"

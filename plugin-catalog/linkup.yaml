@@ -1,0 +1,22 @@
+name: linkup
+repo: https://github.com/LinkupPlatform/linkup-hermes-plugin
+sha: 6a1909656b96f5e951bb6a332ea252501f4fb686
+description: "Linkup web search: live cited search (fast/standard/deep), URL-to-Markdown fetch with JS rendering, async deep research, and a Linkup backend for the built-in web_search / web_extract tools."
+maintainer: LinkupPlatform
+tier: community
+category: web
+requires_hermes: ">=0.21"
+docs_url: https://github.com/LinkupPlatform/linkup-hermes-plugin#readme
+version: "1.0.0"
+image: "https://raw.githubusercontent.com/LinkupPlatform/linkup-hermes-plugin/6a1909656b96f5e951bb6a332ea252501f4fb686/docs/banner.png"
+platforms: []
+capabilities:
+  provides_tools:
+    - linkup_search
+    - linkup_fetch
+    - linkup_research
+    - linkup_research_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - LINKUP_API_KEY

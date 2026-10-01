@@ -461,6 +461,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         has_pending_batch = self._text_batch_key(event) in self._pending_text_batches
         is_attachment_only = bool(media_urls) and not (text or "").strip()
         if (message_type == MessageType.TEXT and (self._text_batch_delay_seconds > 0 or has_pending_batch)) or (is_attachment_only and self._attachment_text_merge_delay_seconds > 0):
+            key = self._text_batch_key(event)
+            existing = self._pending_text_batches.get(key)
+            if existing is not None and existing.reply_context_conflicts(event):
+                await self._flush_text_batch_now(key)
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)

@@ -26,8 +26,9 @@ function intrinsicHeight(descriptor: EmbedDescriptor): number {
 }
 
 function LazyRenderer({ descriptor }: { descriptor: EmbedDescriptor }) {
-  // X and Instagram load their official blockquote script in-document. The tweet
-  // check also narrows the union to FrameEmbed for the iframe renderers below.
+  // X and Instagram get a sandboxed iframe that sizes itself from the embed
+  // page's height messages. The tweet check also narrows the union to
+  // FrameEmbed for the iframe renderers below.
   if (descriptor.renderer === 'tweet' || descriptor.provider === 'instagram') {
     return <SocialEmbedRenderer descriptor={descriptor} />
   }

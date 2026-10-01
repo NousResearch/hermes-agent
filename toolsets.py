@@ -463,8 +463,9 @@ def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str]
     from hermes_cli.profiles import read_profile_meta
     from hermes_constants import get_hermes_home
     role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
-    granted = {name for name, spec in TOOLSETS.copy().items() if role is not None and spec.get("role") == role}
-    denied = {name for name, spec in TOOLSETS.copy().items() if spec.get("role") not in (None, role)}
+    toolsets = TOOLSETS.copy()
+    granted = {name for name, spec in toolsets.items() if role is not None and spec.get("role") == role}
+    denied = {name for name, spec in toolsets.items() if spec.get("role") not in (None, role)}
     return granted, denied
 
 

@@ -708,10 +708,12 @@ class SessionDB(
                             if self.db_path.exists() and not has_invalid_sqlite_header_preopen(self.db_path):
                                 break
                             time.sleep(0.05)
-                        if self.db_path.exists() and has_invalid_sqlite_header_preopen(self.db_path):
+                        if not self.db_path.exists() or has_invalid_sqlite_header_preopen(self.db_path):
                             # Ceiling: the lock owner neither fixed the file nor
-                            # finished within the window. Name the contention instead
-                            # of failing on sqlite's opaque NOTADB error (#126773).
+                            # finished within the window. An absent path is still
+                            # mid-swap, not permission to create a competing DB.
+                            # Name the contention instead of falling through to an
+                            # unlocked SQLite open (#126773).
                             msg = (
                                 f"state.db has an invalid header and the startup "
                                 "quarantine lock was held by another process for the "

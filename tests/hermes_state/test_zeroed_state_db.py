@@ -384,6 +384,7 @@ def _hold_quarantine_lock(db, hold_started, release, hold_s=0.45):
     release.set()
 
 
+@pytest.mark.platforms("posix")
 def test_quarantine_lock_contention_single_wait_and_honest_error(tmp_path, monkeypatch):
     """#126773: a loser that misses the startup quarantine lock must not
     re-enter the quarantine path (a second full lock wait), and any failure
@@ -430,6 +431,7 @@ def test_quarantine_lock_contention_single_wait_and_honest_error(tmp_path, monke
         holder.join(timeout=5)
 
 
+@pytest.mark.platforms("posix")
 def test_quarantine_lock_contention_winner_delivers_connects_clean(tmp_path, monkeypatch):
     """#126773 normal case: when the lock owner quarantines the invalid file
     and lays down a fresh db, the waiting loser connects cleanly instead of
@@ -482,6 +484,7 @@ def test_quarantine_lock_contention_winner_delivers_connects_clean(tmp_path, mon
         sdb.close()
 
 
+@pytest.mark.platforms("posix")
 def test_quarantine_error_names_contention_vs_move_failure(tmp_path, monkeypatch):
     """#126773: _handle_quarantine_if_invalid distinguishes a held lock (probe
     fails -> contention message) from a genuine rename failure (lock free ->

@@ -355,6 +355,139 @@ async def test_invalid_arguments_are_rejected_before_any_matrix_request(name, ar
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before", "target", "receipt", "marker_preflight", "marker", "unchanged"])
+async def test_receipt_interruptions_stop_the_owner_and_preserve_partial_results(stage):
+    import threading
+    from tools.interrupt import acting_for_tid, set_interrupt
+
+    adapter = _adapter()
+    client = adapter._client
+    parent = threading.get_ident()
+    token = acting_for_tid.set(parent)
+    drained = asyncio.Event()
+    blocked = asyncio.Event()
+    raw = {"room_id": ROOM, "event_id": "$target", "sender": ALICE,
+           "type": "m.room.message", "content": {"msgtype": "m.text", "body": "target"}}
+
+    async def target(*_args):
+        if stage == "target":
+            set_interrupt(True, parent)
+        return raw
+
+    async def receipt(*_args, **_kwargs):
+        if stage == "receipt":
+            set_interrupt(True, parent)
+            try:
+                await blocked.wait()
+            finally:
+                drained.set()
+        return {}
+
+    async def marker(*_args, **_kwargs):
+        if stage == "marker":
+            set_interrupt(True, parent)
+            try:
+                await blocked.wait()
+            finally:
+                drained.set()
+        return {}
+
+    access_calls = 0
+
+    async def access(*_args):
+        nonlocal access_calls
+        access_calls += 1
+        if stage == "marker_preflight" and access_calls == 3:
+            set_interrupt(True, parent)
+        return False
+
+    client.get_event.side_effect = target
+    client.api.request.side_effect = receipt
+    client.set_account_data.side_effect = marker
+    adapter._is_dm_room = AsyncMock(side_effect=access)
+    try:
+        if stage == "before":
+            set_interrupt(True, parent)
+        result = await _tool(adapter, "matrix_mark_read", {
+            "event_id": "$target", "thread_id": "room", "visibility": "public",
+        })
+        writes = (client.api.request.await_count, client.set_account_data.await_count)
+        if stage in {"before", "target"}:
+            assert (result, writes) == ({"error": "Matrix read acknowledgement interrupted"}, (0, 0))
+            return
+        expected = {
+            "room_id": ROOM, "account_user_id": BOT, "event_id": "$target",
+            "thread_id": "room", "visibility": "public", "receipt_sent": True,
+            "marked_unread_reset": stage == "unchanged", "fully_read_marker_changed": False,
+            "counts": "await_sync", "errors": [],
+        }
+        if stage != "unchanged":
+            operation = "receipt" if stage == "receipt" else "marked_unread"
+            expected["errors"] = [{"operation": operation, "error": "Matrix read acknowledgement interrupted"}]
+            if stage == "receipt":
+                expected["receipt_sent"] = None
+                expected["counts"] = "unknown"
+            if stage == "marker":
+                expected["marked_unread_reset"] = None
+        assert (result, writes, drained.is_set()) == (
+            expected, (1, 1 if stage in {"marker", "unchanged"} else 0), stage in {"receipt", "marker"},
+        )
+    finally:
+        set_interrupt(False, parent)
+        acting_for_tid.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["receipt", "marker"])
+@pytest.mark.parametrize("change", ["unchanged", "member", "owner_profile", "session", "target_sender"])
+async def test_read_writes_recheck_membership_and_owner_after_final_access(stage, change):
+    adapter = _adapter()
+    client = adapter._client
+    membership = {"membership": "join"}
+    client.get_state_event.side_effect = lambda *_args: dict(membership)
+    client.get_event.return_value = {"room_id": ROOM, "event_id": "$target", "sender": "@bob:server" if change == "target_sender" else ALICE,
+        "type": "m.room.message", "content": {"msgtype": "m.text", "body": "target"}}
+    if change == "target_sender":
+        adapter.set_authorization_check(lambda user, *_args, **_kwargs: user in {ALICE, "@bob:server"})
+    calls = 0
+
+    async def final_access(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == (2 if stage == "receipt" else 3):
+            if change == "member":
+                membership["membership"] = "leave"
+            if change == "owner_profile":
+                adapter._owner_profile = "other"
+            if change == "target_sender":
+                adapter.set_authorization_check(lambda user, *_args, **_kwargs: user == ALICE)
+            if change == "session":
+                set_session_vars(platform="matrix", chat_id=ROOM, user_id="@other:server",
+                    transport_adapter=adapter, transport_loop=asyncio.get_running_loop())
+        return False
+
+    adapter._is_dm_room = AsyncMock(side_effect=final_access)
+    result = await _tool(adapter, "matrix_mark_read", {
+        "event_id": "$target", "thread_id": "room", "visibility": "public",
+    })
+    writes = (client.api.request.await_count, client.set_account_data.await_count)
+    if change != "unchanged" and stage == "receipt":
+        error = ("Matrix requester is not a joined room member" if change == "member" else
+                 "Matrix event sender is not authorized for this room" if change == "target_sender" else
+                 "Matrix session or client ownership changed")
+        assert (result, writes) == ({"error": error}, (0, 0))
+        return
+    expected = {
+        "room_id": ROOM, "account_user_id": BOT, "event_id": "$target", "thread_id": "room",
+        "visibility": "public", "receipt_sent": True, "marked_unread_reset": change == "unchanged",
+        "fully_read_marker_changed": False, "counts": "await_sync", "errors": [],
+    }
+    if change != "unchanged":
+        expected["errors"] = [{"operation": "marked_unread", "error": "Matrix access changed after the receipt was sent"}]
+    assert (result, writes) == (expected, (1, 1 if change == "unchanged" else 0))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cursor", [None, "saved-position"])
 async def test_initial_sync_requests_unread_counts_before_checkpointing(cursor):
     from mautrix.api import HTTPAPI, Method, Path

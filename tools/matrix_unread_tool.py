@@ -24,11 +24,25 @@ async def _matrix_unread_action(args: dict[str, Any], *, mark_read: bool) -> str
     if thread_id is None and not mark_read:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or "main"
     if mark_read:
-        operation = adapter.mark_matrix_read(
-            room_id, args.get("event_id"), thread_id, args.get("visibility"), requester=requester,
+        from plugins.platforms.matrix.unread import ReadProgress
+        from tools.matrix_tool_runtime import run_matrix_mutation
+
+        progress = ReadProgress()
+        response = await run_matrix_mutation(
+            owner_loop,
+            lambda interrupted, before_write: adapter.mark_matrix_read(
+                room_id, args.get("event_id"), thread_id, args.get("visibility"), requester=requester,
+                interrupt_check=interrupted, before_write=before_write, progress=progress,
+            ),
+            operation_label="Matrix read acknowledgement",
+            next_step="Check the receipt before retrying; matrix_unread counts update after server sync",
         )
-    else:
-        operation = adapter.read_matrix_unread(room_id, thread_id, requester=requester)
+        outcome = json.loads(response)
+        if outcome.get("outcome") == "unknown" and progress.result is not None:
+            error = outcome["error"].removesuffix(" after the change was sent to the homeserver")
+            return json.dumps(progress.interrupted_result(error), ensure_ascii=False)
+        return response
+    operation = adapter.read_matrix_unread(room_id, thread_id, requester=requester)
     if owner_loop is asyncio.get_running_loop():
         return json.dumps(await operation, ensure_ascii=False)
     try:

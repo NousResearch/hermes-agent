@@ -1075,26 +1075,60 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_timeout_returns_failed_not_completed(self, monkeypatch):
-        """When the agent never replies, the task must FAIL (and count as a
-        failure), not report success."""
+    def test_timeout_detaches_the_task_and_keeps_the_late_reply(self, monkeypatch):
+        """Past A2A_REPLY_TIMEOUT the task is neither failed nor reported as success: it stays WORKING,
+        and the reply that comes later lands in the task store (it used to be dropped)."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
         adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
 
+        def get_task(task_id):
+            return _post_json(base + "/", {"jsonrpc": "2.0", "id": "2", "method": "GetTask", "params": {"id": task_id}})["result"]
+
         async def run():
             assert await adapter.connect() is True
             failed_before = protocol.metrics.tasks_failed
             completed_before = protocol.metrics.tasks_completed
-            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there"))
+            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there", ctx="ctx-late"))
             task = resp["result"]
-            assert task["status"]["state"] == "TASK_STATE_FAILED"
-            assert protocol.metrics.tasks_failed == failed_before + 1
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            assert "artifacts" not in task
+            assert protocol.metrics.tasks_failed == failed_before
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
-            rec = adapter.tasks.get(task["id"])
-            assert rec["state"] == "TASK_STATE_FAILED"
+            await adapter.send("ctx-late", "late answer", metadata={"notify": True})
+            for _ in range(50):
+                done = await asyncio.to_thread(get_task, task["id"])
+                if done["status"]["state"] != protocol.STATE_WORKING:
+                    break
+                await asyncio.sleep(0.1)
+            assert done["status"]["state"] == protocol.STATE_COMPLETED
+            assert protocol.extract_text(done["artifacts"][0]) == "late answer"
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_a_detached_task_that_never_gets_a_reply_fails_at_the_ceiling(self, monkeypatch):
+        """The detached wait is bounded: no reply by the orphan ceiling => FAILED, counted as a failure."""
+        import plugins.platforms.a2a.adapter as adapter_mod
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
+        monkeypatch.setattr(adapter_mod, "_MAX_ORPHAN_TIMEOUT", 2)
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+
+        async def run():
+            assert await adapter.connect() is True
+            failed_before = protocol.metrics.tasks_failed
+            task = (await asyncio.to_thread(_post_json, base + "/", _send_body("silence")))["result"]
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            for _ in range(60):
+                rec = adapter.tasks.get(task["id"])
+                if rec["state"] != protocol.STATE_WORKING:
+                    break
+                await asyncio.sleep(0.1)
+            assert rec["state"] == protocol.STATE_FAILED
+            assert protocol.metrics.tasks_failed == failed_before + 1
             await adapter.disconnect()
 
         asyncio.run(run())
@@ -1611,6 +1645,20 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+class TestExclusivePort:
+    """Two gateways (profiles) must not share one A2A port: on Windows stdlib SO_REUSEADDR let a second
+    server bind the same listening port and requests split between them."""
+
+    def test_a_second_server_on_the_same_port_fails_to_bind(self):
+        from plugins.platforms.a2a.adapter import A2ARequestHandler, _ExclusiveHTTPServer
+        first = _ExclusiveHTTPServer(("127.0.0.1", 0), A2ARequestHandler)
+        try:
+            with pytest.raises(OSError):
+                _ExclusiveHTTPServer(("127.0.0.1", first.server_address[1]), A2ARequestHandler).server_close()
+        finally:
+            first.server_close()
 
 
 # --------------------------------------------------------------------------

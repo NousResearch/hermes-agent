@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 import json
 import logging
 import math
@@ -93,9 +93,13 @@ def _capture_event(event: MessageEvent) -> dict[str, Any]:
     from gateway.session_identity import identity_of
     if not isinstance(event, MessageEvent) or event.source is None:
         raise ValueError("pending snapshot requires a complete MessageEvent")
-    body = {item.name: getattr(event, item.name) for item in fields(event)
-            if item.init and not item.name.startswith("_")
-            and item.name not in {"raw_message", "source"}}
+    body = {
+        item.name: getattr(event, item.name)
+        for item in fields(event)
+        if item.init
+        and not item.name.startswith("_")
+        and item.name not in {"raw_message", "source"}
+    }
     body["message_type"] = event.message_type.value
     body["timestamp"] = event.timestamp.isoformat()
     body["source"] = {item.name: getattr(event.source, item.name) for item in fields(event.source)}
@@ -112,7 +116,23 @@ def _capture_event(event: MessageEvent) -> dict[str, Any]:
             "authorization_home": str(identity.authorization_home), "runtime_home": str(identity.runtime_home),
             "multiplexed": identity.multiplexed,
         }
-    return {"uid": uid, "event": body, "routing": routing, "timestamp": event.timestamp.timestamp()}
+    record = {
+        "uid": uid,
+        "event": body,
+        "routing": routing,
+        "timestamp": event.timestamp.timestamp(),
+    }
+    if event._quoted_media_dependencies or event._inbound_context_dependencies:
+        record["context"] = {
+            "quoted_media": [
+                asdict(dependency) for dependency in event._quoted_media_dependencies
+            ],
+            "snapshots": [
+                snapshot.pending_state()
+                for snapshot in event._inbound_context_dependencies
+            ],
+        }
+    return record
 
 
 def flush_adapter_pending(adapter: Any, reservations: dict[str, list[_PendingDispatchReservation]]) -> set[str]:

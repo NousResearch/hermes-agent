@@ -59,6 +59,14 @@ describe('registerAppLocale', () => {
     expect(actions['nav.settings']).toBe(TRANSLATIONS.en.keybinds.actions['nav.settings'])
   })
 
+  it('ignores string overrides for function entries that return structured values', () => {
+    registerAppLocale('pl', { translations: { 'sidebar.projects.branchOff': 'Branch off' } }, 'backend')
+
+    const branchOff = resolveTranslations('pl').sidebar.projects.branchOff
+
+    expect(branchOff()).toEqual(TRANSLATIONS.en.sidebar.projects.branchOff())
+  })
+
   it('layers a pack over the bundled catalog for a bundled id, not over English', () => {
     registerAppLocale('de', { translations: { common: { save: 'Sichern' } } }, 'backend')
 

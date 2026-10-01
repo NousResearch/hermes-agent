@@ -157,6 +157,28 @@ def release_profile_home(runner, home):
     process_ownership.release(home)
 
 
+def _authority_tasks(authority):
+    """Snapshot every async task family owned directly by one session authority."""
+    tasks = [live.task for live in authority.sessions.values() if live.task is not None]
+    tasks.extend(getattr(authority, '_bot_receipt_tasks', ()))
+    return list(dict.fromkeys(tasks))
+
+
+async def _retire_profile_authority(authority):
+    """Stop profile-local services/tasks before its ownership is released."""
+    from gateway.session_cron import unbind_owner
+
+    service = getattr(authority, 'hosted_room_service', None)
+    if service is not None:
+        await asyncio.to_thread(service.stop, timeout=5)
+    tasks = _authority_tasks(authority)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    unbind_owner(authority)
+
+
 async def serve_profile_runtime(runner, name, home):
     """Hot-serve one reserved profile's runtime: build its authority, recover its durable state and
     publish it in the descriptor/ticket store — the steps boot performs per secondary. Raises when
@@ -180,6 +202,7 @@ async def serve_profile_runtime(runner, name, home):
             await _ensure_hosted_service(runner, authority)
     except BaseException:
         registry.remove(home)
+        await _retire_profile_authority(authority)
         raise
     _publish_served_set(runner)
     start_ready_hosted_services(runner)
@@ -189,21 +212,12 @@ async def serve_profile_runtime(runner, name, home):
 async def unserve_profile_runtime(runner, home):
     """Retire one profile's authority (deleted while running) and shrink the published set.
     No-op for a profile this process never served."""
-    from gateway.session_cron import unbind_owner
     home = Path(home).resolve()
     registry = runner.session_authorities
     authority = registry.remove(home) if home in registry else None
     if authority is None:
         return
-    service = getattr(authority, 'hosted_room_service', None)
-    if service is not None:
-        await asyncio.to_thread(service.stop, timeout=5)
-    tasks = [live.task for live in authority.sessions.values() if live.task is not None]
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    unbind_owner(authority)
+    await _retire_profile_authority(authority)
     _publish_served_set(runner)
 
 
@@ -310,7 +324,6 @@ async def drain_gateway_runtime(runner):
 
 async def settle_gateway_runtime(runner):
     """Keep authority tasks alive until their last durable settlement write."""
-    tasks = [live.task for authority in _authorities(runner)
-             for live in authority.sessions.values() if live.task is not None]
+    tasks = [task for authority in _authorities(runner) for task in _authority_tasks(authority)]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)

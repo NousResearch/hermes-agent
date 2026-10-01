@@ -7,6 +7,11 @@ import uuid
 from hermes_cli.gateway_client import GatewayClientError
 
 
+_BLOCKING_CONTROL_EVENTS = frozenset({
+    "approval.request", "approval.settled", "clarify.request", "clarify.settled",
+})
+
+
 class GatewayChatView:
     def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
         self.usage_file = usage_file
@@ -22,6 +27,8 @@ class GatewayChatView:
         self.quiet = quiet or emitter is not None
         self.finite = False
         self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
+        self.finite_admission = None
+        self._finite_events = []
         self.streams = {}
         self.completions = {}
         self.changed = asyncio.Event()
@@ -64,16 +71,38 @@ class GatewayChatView:
                 continue
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
+            if kind == "session.replay_gap":
+                self.failure = GatewayClientError("session_replay_gap")
+                self.changed.set()
+                return
             admission = params.get("admission_id") or payload.get("admission_id")
-            handler = {
-                "message.delta": self._delta, "message.complete": self._complete,
-                "tool.start": self._tool_start, "tool.complete": self._tool_complete,
-                "approval.request": self._request, "clarify.request": self._request,
-                "approval.settled": self._settled, "clarify.settled": self._settled,
-            }.get(kind)
-            if handler:
-                handler(admission, payload)
+            if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
+                # Approval/clarification gates block the session FIFO, not merely one
+                # admission's output. Track them even when another admission owns the
+                # event so a queued one-shot can detach instead of waiting forever.
+                self._dispatch_event(kind, admission, payload)
+                self.changed.set()
+                continue
+            if self.finite and admission:
+                if self.finite_admission is None:
+                    # The owner can publish before prompt.submit's receipt reaches this client.
+                    # Hold admission-scoped output until we know which admission this invocation owns.
+                    self._finite_events.append((kind, admission, payload))
+                    continue
+                if admission != self.finite_admission:
+                    continue
+            self._dispatch_event(kind, admission, payload)
             self.changed.set()
+
+    def _dispatch_event(self, kind, admission, payload):
+        handler = {
+            "message.delta": self._delta, "message.complete": self._complete,
+            "tool.start": self._tool_start, "tool.complete": self._tool_complete,
+            "approval.request": self._request, "clarify.request": self._request,
+            "approval.settled": self._settled, "clarify.settled": self._settled,
+        }.get(kind)
+        if handler:
+            handler(admission, payload)
 
     def _tool_start(self, admission, payload):
         # Deltas before a tool call are interim commentary the final reply does not repeat;
@@ -128,7 +157,10 @@ class GatewayChatView:
 
     def _request(self, admission, payload):
         self.prompts[payload["prompt_id"]] = payload
-        self.show_prompt(payload)
+        # Finite invocations only need the session-blocking state so they can
+        # detach cleanly; do not print another admission's control details.
+        if not self.finite:
+            self.show_prompt(payload)
 
     def _settled(self, admission, payload):
         self.prompts.pop(payload["prompt_id"], None)
@@ -233,6 +265,12 @@ class GatewayChatView:
                 if receipt is None:
                     raise GatewayClientError("One-shot requires a query")
                 admission = receipt["admission_id"]
+                self.finite_admission = admission
+                for kind, event_admission, payload in self._finite_events:
+                    if event_admission == admission:
+                        self._dispatch_event(kind, event_admission, payload)
+                self._finite_events.clear()
+                self.changed.set()
                 while admission not in self.completions:
                     self.changed.clear()
                     if self.failure:

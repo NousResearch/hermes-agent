@@ -1,15 +1,15 @@
 name: telegram_dashboard_probe
 title: Telegram Dashboard
 repo: https://github.com/bablobanov/hermes-agent-telegram-dashboard
-sha: 682e20b4664c8e70f51faa9db5f89e42c24f0c0c
+sha: 37a48b673629233a1605c60dfd0c072ffb4a7467
 subdir: plugin/telegram_dashboard_probe
-description: "One pinned Telegram message with the state of your Hermes on one phone screen: gateway, backup, config drift, account limits and version. Read-only, no LLM calls, nothing to press. Disclosure — Claude and Codex limits come from Hermes' own account-usage fetcher, called every tick (which, like /usage, may refresh OAuth tokens through Hermes' own auth code); at most once per limits_refresh_seconds (default 900 s) the Grok weekly pool is read from https://cli-chat-proxy.grok.com/v1/billing and /v1/settings with the xai-oauth token Hermes resolves, sending the header x-xai-token-auth xai-grok-cli that identifies the request as the Grok CLI (an undocumented xAI host Hermes itself does not use), and Kimi Code windows from the kimi-coding base URL /v1/usages with the kimi-coding key Hermes resolves and a User-Agent of claude-code/0.1.0 (undocumented provider surfaces); the plugin never reads the Telegram bot token itself and never writes vendor credential files; the latest Hermes release list is read from api.github.com without a token at most once a day; an operator-configured drift_command, if set, runs as a subprocess; the delivery record is written under HERMES_HOME/plugin-data/."
+description: "One pinned Telegram message with the state of your Hermes on one phone screen: gateway, backup, config drift, account limits and version. Read-only, no LLM calls, nothing to press. Disclosure — Claude and Codex limits come from Hermes' own account-usage fetcher, called every tick (which, like /usage, may refresh OAuth tokens through Hermes' own auth code); at most once per limits_refresh_seconds (default 900 s) the Grok weekly pool is read from https://cli-chat-proxy.grok.com/v1/billing and /v1/settings with the xai-oauth token Hermes resolves, sending the header x-xai-token-auth xai-grok-cli that identifies the request as the Grok CLI (an undocumented xAI host Hermes itself does not use), and Kimi Code windows from the kimi-coding base URL /v1/usages with the kimi-coding key Hermes resolves and a User-Agent of claude-code/0.1.0 (undocumented provider surfaces), and up to four operator-configured limits_sources, if set, each with one GET to http on loopback only (127.0.0.1, localhost or ::1), with no proxy and no redirect, optionally sending Authorization: Bearer with the value of an environment variable the operator names (never a *_BOT_TOKEN one); every tick the tail of HERMES_HOME/logs/errors.log (the last 256 KB; the whole file, up to 4 MB, until the first successful read) is read for Gemini HTTP 429 lines, and only their time, limit, retry and model are kept, never the message text; the plugin never reads the Telegram bot token itself and never writes vendor credential files; the latest Hermes release list is read from api.github.com without a token at most once a day; an operator-configured drift_command, if set, runs as a subprocess; the delivery record is written under HERMES_HOME/plugin-data/."
 maintainer: bablobanov
 tier: community
 category: automation
 requires_hermes: ">=0.21.1"
 docs_url: https://github.com/bablobanov/hermes-agent-telegram-dashboard#readme
-version: "0.7.0"
+version: "0.8.2"
 image: https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/682e20b4664c8e70f51faa9db5f89e42c24f0c0c/docs/social-preview.jpg
 screenshots:
   - https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/682e20b4664c8e70f51faa9db5f89e42c24f0c0c/docs/screenshots/01-showcase.png

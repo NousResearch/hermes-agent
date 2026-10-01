@@ -71,7 +71,7 @@ AUDIT_DETAIL_FIELDS = frozenset(
 )
 
 # Regex for emojis that typically prefix system/tool messages.
-_SYSTEM_EMOJIS = r"(?:📋|📚|📖|🔎|🐍|✍️|💻|🔧|⚙️|✓|🔀|🔄|⏳|⌛|🔍|💡|📝)"
+_SYSTEM_EMOJIS = r"(?:📋|📚|📖|🔎|🐍|✍️|💻|🔧|⚙️|✓|🔀|🔄|⏳|⌛|🔍|💡|📝|👁(?:\uFE0F)?)"
 
 _INTERRUPT_NOTICE = "⚡ Interrupting current task. I'll respond to your message shortly."
 
@@ -79,13 +79,14 @@ _INTERRUPT_NOTICE = "⚡ Interrupting current task. I'll respond to your message
 DEFAULT_SYSTEM_PATTERNS = [
     # emoji + known system/tool phrase
     r"^\s*" + _SYSTEM_EMOJIS + r"\s+.*(?:Updating tasks|Reading skill|Reading\s+\S+|Searching files for|Running code|Writing\s+\S+|Editing\s+\S+|Delegating\s+\S+|Context compaction complete|process:\s*\S|wait\s+proc_|terminal)",
+    r"^\s*👁(?:\uFE0F)?\s+Looking at the image\b",
     # agent self-management / redirect notices
     r"^\s*💾\s+Self-improvement review",
     r"^\s*↪\s+Redirected current run",
     # Busy-session acknowledgements are emitted by Hermes itself. Dynamic
     # detail in parentheses means the literal-phrase rule cannot recognize
     # them, so match those variants explicitly before mention/thread routing.
-    r"^\s*⚡\s+Interrupting current task\s*\([^\n)]*\)\.\s+I'll respond to your message shortly\.",
+    r"^\s*⚡\s+Interrupting current task(?:\s*\([^\n)]*\))?\.\s+I'll respond to your message shortly\.",
     r"^\s*⏳\s+(?:Subagent working|Compressing context|Queued for the next turn)\b",
     r"^\s*⏩\s+Steered into current run\b",
     # Delivery recovery wraps an existing lifecycle notice in a second line.

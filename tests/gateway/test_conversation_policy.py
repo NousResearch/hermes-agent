@@ -191,6 +191,51 @@ async def test_approval_lifecycle_messages_are_dropped_before_routing(text, tmp_
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("mentioned", [False, True])
+@pytest.mark.parametrize("text", [
+    "⚡ Interrupting current task. I'll respond to your message shortly.",
+    (
+        "⚡ Interrupting current task. I'll respond to your message shortly.  "
+        "[Relevance assessment: Directly mentioned.]"
+    ),
+    (
+        "⚡ Interrupting current task (iteration 4). "
+        "I'll respond to your message shortly."
+    ),
+    (
+        "👁️ Looking at the image Ist das nur die bereits bekannte Vorschau...  "
+        "[Relevance assessment: Directly mentioned.]"
+    ),
+    "[bearbeitet] 👁️ Looking at the image Check the preview...",
+])
+async def test_peer_progress_messages_are_dropped_even_when_addressed(
+    text, mentioned, tmp_path
+):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._throttled_evaluate = AsyncMock(
+        side_effect=AssertionError("peer progress message reached scorer")
+    )
+    message = event(Platform.MATRIX, text=text)
+    message.metadata["conversation_mentioned"] = mentioned
+    await adapter.handle_message(message)
+
+    assert adapter.delivered == []
+    decisions = [json.loads(line) for line in (
+        tmp_path / "logs/matrix-relevance-decisions.jsonl"
+    ).read_text().splitlines() if json.loads(line)["phase"] == "decision"]
+    assert decisions[-1]["reason_code"] in {
+        "literal_phrase_majority", "system_message_before_routing"
+    }
+    if mentioned:
+        assert decisions[-1]["reason_code"] == "system_message_before_routing"
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
 async def test_configured_pingpong_patterns_reach_worker():
     adapter = Adapter(settings={"pingpong_guard": {
         "enabled": True, "min_chars": 1, "silence_patterns": [r"custom-block"]}})

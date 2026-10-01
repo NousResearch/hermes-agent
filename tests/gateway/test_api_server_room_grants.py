@@ -1,7 +1,7 @@
 """RoomLink grant authority: policy drift, gateway-owned secret, superseded authority."""
 
 import time
-from unittest.mock import MagicMock
+from aiohttp.test_utils import make_mocked_request
 
 import pytest
 
@@ -91,7 +91,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
     )
 
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
-    request = MagicMock(headers={"Authorization": f"HermesRoom {old_grant}"})
+    request = make_mocked_request("GET", "/v1/room-members/capabilities", headers={"Authorization": f"HermesRoom {old_grant}"})
     assert adapter._room_grant_claims(request, permission="status")[
         "authority_gateway_id"
     ] == "gateway-old"

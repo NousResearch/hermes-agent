@@ -22,9 +22,8 @@ import { atom, computed } from 'nanostores'
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
-import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
-  $activeTreeGroup,
   $layoutTree,
   focusedSessionTabAnchor,
   isPaneVisible,
@@ -3024,29 +3023,8 @@ export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
   Boolean(active?.startsWith(TILE_PANE_PREFIX))
 )
 
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId],
-  (groupId, tree, selected) => {
-    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
-
-    if (active?.startsWith(TILE_PANE_PREFIX)) {
-      return active.slice(TILE_PANE_PREFIX.length)
-    }
-
-    // The interaction tracker can point at sidebar or tool CHROME (files,
-    // terminal, sessions list, bots roster) while a chat still holds the main
-    // zone's active tab. In both sessions and Bot Mode, the main zone's active
-    // tile answers so clicks in side chrome do not drop the on-screen session.
-    if (tree) {
-      const mainActive = findGroupOfPane(tree, 'workspace')?.active
-
-      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
-        return mainActive.slice(TILE_PANE_PREFIX.length)
-      }
-    }
-
-    return selected
-  }
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
 )
 
 /** Every session currently OPEN as a surface: the primary's selection plus

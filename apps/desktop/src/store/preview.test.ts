@@ -34,7 +34,7 @@ import {
   setPreviewRenderMode,
   setPreviewTabPinned
 } from './preview'
-import { $selectedStoredSessionId } from './session'
+import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 function fileTarget(source: string): PreviewTarget {
   return { kind: 'file', label: source, path: source, previewKind: 'html', source, url: `file://${source}` }
@@ -509,6 +509,28 @@ describe('preview session scoping (#73890)', () => {
 
     expect($previewTabs.get().map(tab => tab.sessionId)).toEqual(['sess-new', 'sess-new'])
     expect(paths($visiblePreviewTabs.get())).toEqual(['/work/draft.html', 'about:blank'])
+  })
+
+  it('hands an agent tab opened before the stored id to that runtime only', () => {
+    // A live chat whose stored id lags: the agent opens a preview right away.
+    $activeSessionId.set('runtime-r')
+    openPreview(fileTarget('/work/agent.html'), null)
+    expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
+
+    try {
+      // Another session taking the screen (its own runtime) does not take it.
+      $activeSessionId.set('runtime-x')
+      $selectedStoredSessionId.set('stored-x')
+      expect($previewTabs.get()[0]?.sessionId).toBeUndefined()
+
+      $selectedStoredSessionId.set(null)
+      $activeSessionId.set('runtime-r')
+      // The opening runtime's stored id arriving does.
+      $selectedStoredSessionId.set('stored-r')
+      expect($previewTabs.get()[0]?.sessionId).toBe('stored-r')
+    } finally {
+      $activeSessionId.set(null)
+    }
   })
 
   it('owns a strip "+" Browser by the focused session, never adopting it elsewhere', () => {

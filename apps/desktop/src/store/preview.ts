@@ -13,6 +13,7 @@ import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
+import { $activeSessionId, $selectedStoredSessionId } from './session'
 import { $focusedStoredSessionId } from './session-focus'
 import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -509,6 +510,39 @@ export function adoptDraftPreviewTabs(storedSessionId: string): void {
   }
 }
 
+// An ownerless tab opened while a live chat was on screen whose stored id had
+// not arrived yet (the agent's open_preview right after the first send): the
+// runtime it was opened under. Memory-only — runtime ids do not survive a
+// relaunch. A draft opened before any send has no runtime, so its tabs carry
+// no stamp and only adoptDraftPreviewTabs can take them.
+const pendingRuntimeByTab = new Map<string, string>()
+
+function adoptPendingRuntimeTabs(runtimeId: null | string, storedSessionId: null | string): void {
+  if (!runtimeId || !storedSessionId || pendingRuntimeByTab.size === 0) {
+    return
+  }
+
+  const ids = new Set([...pendingRuntimeByTab].filter(([, runtime]) => runtime === runtimeId).map(([id]) => id))
+
+  if (ids.size === 0) {
+    return
+  }
+
+  ids.forEach(id => pendingRuntimeByTab.delete(id))
+  const tabs = $previewTabs.get()
+
+  if (tabs.some(tab => ids.has(tab.id) && tab.sessionId == null)) {
+    $previewTabs.set(
+      tabs.map(tab => (ids.has(tab.id) && tab.sessionId == null ? { ...tab, sessionId: storedSessionId } : tab))
+    )
+  }
+}
+
+// The stored id arriving for the SAME runtime that opened the tab — not any
+// focus change — is what hands it over.
+$selectedStoredSessionId.listen(storedSessionId => adoptPendingRuntimeTabs($activeSessionId.get(), storedSessionId))
+$activeSessionId.listen(runtimeId => adoptPendingRuntimeTabs(runtimeId, $selectedStoredSessionId.get()))
+
 /** The tab the rail actually shows. A stale or missing selection falls back to
  *  the first tab, so the strip, `⌘W`, and the pane never disagree about which
  *  tab is on screen. */
@@ -866,6 +900,14 @@ export function openPreview(target: PreviewTarget, requestedOwner: null | string
   }
 
   $previewTabs.set(existing ? current.map(item => (item === existing ? tab : item)) : [...current, tab])
+
+  const pendingRuntime = tab.sessionId == null && !tab.pinned ? $activeSessionId.get() : null
+
+  if (pendingRuntime) {
+    pendingRuntimeByTab.set(id, pendingRuntime)
+  } else {
+    pendingRuntimeByTab.delete(id)
+  }
 
   if (!tabVisibleTo(tab, $focusedStoredSessionId.get(), $rotatedSessionIds.get())) {
     rememberActiveTab(owner, id)

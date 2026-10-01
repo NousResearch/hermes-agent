@@ -499,6 +499,12 @@ UNSUPPORTED_PARAM_MARKERS = (
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",
     "invalid option: expected one of",
+    # OpenAI-compatible relays that validate the body against a strict schema reject an
+    # unknown *field* by name instead of naming it as an unsupported parameter — e.g.
+    # opencode.ai zen/go answering {"param": "reasoning_config", ... 'json: unknown field
+    # "reasoning_config"'}. The param rule catches that shape; this keeps the wording
+    # rule honest for relays that omit param and say only 'unknown field "x"'.
+    "unknown field", "unknown_field",
 )
 
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
@@ -506,7 +512,7 @@ UNSUPPORTED_PARAM_MARKERS = (
 # using this account" is route gating for the provider-fallback rung) nor the adjective in
 # "... not supported with reasoning models".
 _REASONING_FIELD_TOKEN = re.compile(
-    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"(?<![\w\-/])(?:reasoning_effort|reasoning_config|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
     r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
 )
 
@@ -516,7 +522,7 @@ _REASONING_FIELD_TOKEN = re.compile(
 # message at all (#100536), so no wording rule can match it — and without a match the message-less
 # 400 fell through to the generic large-session overflow heuristic and started compression.
 _REASONING_PARAM_REJECTION = re.compile(
-    r"""['"]param['"]\s*:\s*['"](?:reasoning(?:[._]effort)?|thinking(?:_config|_budget)?|enable_thinking)['"]"""
+    r"""['"]param['"]\s*:\s*['"](?:reasoning(?:[._]effort|_config)?|thinking(?:_config|_budget)?|enable_thinking)['"]"""
     r"""|invalid_reasoning_effort"""
 )
 

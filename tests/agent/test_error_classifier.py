@@ -975,6 +975,22 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.reasoning_mandatory
         assert result.retryable is True and result.should_fallback is False
 
+    def test_opencode_go_unknown_field_reasoning_config(self):
+        """opencode.ai zen/go validates the body against a strict schema and rejects the private
+        ``reasoning_config`` control BY NAME — ``param: reasoning_config`` plus
+        ``json: unknown field "reasoning_config"``. The title generator's disabled-reasoning
+        call rides this every session, so without a match the aux ladder never took the
+        drop-the-disable retry rung and every session start burned a failed 400 (#title 400s)."""
+        body = {"error": {"param": "reasoning_config", "type": "invalid_request_error",
+                          "message": 'Upstream request failed: [unknown_parameter] invalid request body: '
+                                     'json: unknown field "reasoning_config"'}}
+        msg = f"Error code: 400 - {body}"
+        assert is_reasoning_field_rejection(msg)
+        # …and the same verdict from the bare message, for relays that omit ``param``.
+        assert is_reasoning_field_rejection('invalid request body: json: unknown field "reasoning_config"')
+        # An unknown field that is NOT a reasoning control must not be mistaken for one.
+        assert not is_reasoning_field_rejection('invalid request body: json: unknown field "foo_bar"')
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

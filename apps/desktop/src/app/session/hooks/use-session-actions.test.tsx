@@ -5575,7 +5575,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(JSON.stringify(resumedState?.messages)).toContain('partial answer')
   })
 
-  it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {
+  it('falls through to session.resume when warm activate times out (#101408)', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
@@ -5593,9 +5593,34 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['rt-A', state]])
     }
 
+    setSessions([storedSession({ id: 'stored-A', message_count: 1 })])
+
+    // The cold resume on current main requests the transcript over REST and
+    // omits messages on the RPC; the latch at the end of the cold path treats
+    // "a session that should have a transcript" with no rows from ANY source
+    // as a failure — so the REST read must deliver the optimistic turn the
+    // warm path was protecting.
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      messages: [{ content: 'do not lose me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-A'
+    } as never)
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.activate') {
         throw new Error('request timed out: session.activate')
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-A',
+          running: false,
+          session_id: 'rt-fresh',
+          session_key: 'stored-A'
+        } as never
       }
 
       return {} as never
@@ -5613,9 +5638,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-A', true)
 
-    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
-    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
-    expect(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages[0]?.id).toBe('user-optimistic')
+    expect(requestGateway.mock.calls.map(([method]) => method)).toContain('session.resume')
+    await waitFor(() => expect($activeSessionId.get()).toBe('rt-fresh'))
   })
 
   it('never publishes a tail-only warm cache before the full persisted history', async () => {

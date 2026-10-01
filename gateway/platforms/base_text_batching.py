@@ -37,6 +37,7 @@ class BaseTextBatchingMixin:
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.absorb_reply_context(event)
             existing.absorb_channel_context(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]

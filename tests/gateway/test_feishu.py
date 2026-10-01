@@ -2559,3 +2559,103 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert tracker.created == ["Typing"]
     assert tracker.deleted == ["r_typing"]
     assert adapter._pending_processing_reactions["om_msg"] == "r_typing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mime,suffix,inlined", [("text/plain", ".txt", True), ("image/png", ".png", False)]
+)
+async def test_forwarded_document_batch_preserves_each_context_and_attachment(
+    tmp_path, mime, suffix, inlined
+):
+    from dataclasses import replace
+    from datetime import datetime
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageEvent, MessageType
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter(PlatformConfig(enabled=True))
+    adapter._text_batch_delay_seconds = 3600
+    adapter.handle_message = AsyncMock()
+    adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat", "type": "dm"})
+    adapter._resolve_sender_profile = AsyncMock(
+        return_value={"user_id": "alice", "user_name": "Alice", "user_id_alt": None}
+    )
+    paths = []
+    blocks = []
+    for word in ("first", "second"):
+        path = tmp_path / f"{word}{suffix}"
+        path.write_text(f"{word} document @file:example.txt")
+        paths.append(str(path))
+        block = f"[Forwarded messages]\n- Bob: {word} forward"
+        if inlined:
+            block += (
+                f"\n\n[Content of {word}{suffix}]:\n{word} document @file:example.txt"
+            )
+        blocks.append(block)
+    adapter._download_feishu_message_resources = AsyncMock(
+        side_effect=[([path], [mime]) for path in paths]
+    )
+    messages = [
+        SimpleNamespace(
+            content=json.dumps({
+                "messages": [{"sender_name": "Bob", "text": f"{word} forward"}]
+            }),
+            message_type="merge_forward",
+            message_id=word,
+            mentions=[],
+            chat_id="chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+        )
+        for word in ("first", "second")
+    ]
+    try:
+        for message in messages:
+            await adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=SimpleNamespace(open_id="alice", user_id=None, union_id=None),
+                chat_type="p2p",
+                message_id=message.message_id,
+            )
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+        await asyncio.gather(
+            *adapter._pending_text_batch_tasks.values(), return_exceptions=True
+        )
+        await adapter._flush_text_batch_now(next(iter(adapter._pending_text_batches)))
+        stamp = datetime(2026, 1, 1)
+        source = adapter.build_source(
+            chat_id="chat",
+            chat_name="Test Chat",
+            chat_type="dm",
+            user_id="alice",
+            user_name="Alice",
+            message_id="second",
+        )
+        assert [
+            replace(call.args[0], timestamp=stamp)
+            for call in adapter.handle_message.await_args_list
+        ] == [
+            MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=messages[0],
+                message_id="second",
+                timestamp=stamp,
+                media_urls=paths,
+                media_types=[mime, mime],
+                media_text_inlined=[inlined, inlined],
+                channel_context="\n\n".join(blocks),
+            )
+        ]
+    finally:
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+        await asyncio.gather(
+            *adapter._pending_text_batch_tasks.values(), return_exceptions=True
+        )

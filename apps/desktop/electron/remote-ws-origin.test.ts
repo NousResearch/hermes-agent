@@ -6,7 +6,7 @@ import {
   createRemoteWsHeaderStore
 } from './remote-ws-headers'
 
-function harness() {
+function harness(rendererOrigin = 'http://127.0.0.1:47891') {
   const store = createRemoteWsHeaderStore()
   let listener: any
   attachRemoteRequestHeaderListener(
@@ -17,7 +17,8 @@ function harness() {
         }
       }
     },
-    store.headersFor
+    store.headersFor,
+    rendererOrigin
   )
 
   const send = (url: string, requestHeaders: Record<string, string>) => {
@@ -39,13 +40,25 @@ describe('native gateway Origin isolation', () => {
     const accessHeaders = { 'CF-Access-Client-Id': 'id', 'CF-Access-Client-Secret': 'secret' }
     store.remember(wsUrl, accessHeaders)
 
-    for (const origin of ['http://127.0.0.1:47891', 'http://localhost:5174', 'null']) {
+    for (const origin of ['http://127.0.0.1:47891', 'null', 'file://', 'app://hermes', '']) {
       expect(send(wsUrl, { origin, Cookie: 'existing' })).toEqual({
         requestHeaders: { Origin: 'null', Cookie: 'existing', ...accessHeaders }
       })
     }
 
-    for (const origin of ['https://untrusted.example', 'http://127.0.0.1.evil.example:47891', 'not-an-origin']) {
+    for (const origin of [
+      'https://untrusted.example',
+      'http://127.0.0.1.evil.example:47891',
+      'not-an-origin',
+      'http://127.0.0.1:47892',
+      'http://localhost:47891',
+      'http://localhost:5174',
+      'https://127.0.0.1:47891',
+      'http://127.0.0.1:47891/path',
+      'http://user@127.0.0.1:47891',
+      'file:///untrusted.html',
+      'app://untrusted'
+    ]) {
       expect(send(wsUrl, { origin })).toEqual({ requestHeaders: { Origin: origin, ...accessHeaders } })
     }
 
@@ -61,6 +74,19 @@ describe('native gateway Origin isolation', () => {
 
     store.remember(base + '/api/ws?ticket=fresh')
     expect(send(base + '/api/ws?ticket=fresh', { Origin: 'http://127.0.0.1:47891' })).toEqual({})
+
+    // The active dev URL may use another hostname/port. File mode must not
+    // accidentally retain dev's web-origin privilege.
+    for (const rendererOrigin of ['http://localhost:5174', 'https://[::1]:5174', 'null']) {
+      const active = harness(rendererOrigin)
+      for (const url of [wsUrl, 'ws://127.0.0.1:9119/api/ws?token=local', 'ws://127.0.0.1:49200/api/ws?token=ssh']) {
+        active.store.remember(url)
+        expect(active.send(url, { Origin: rendererOrigin })).toEqual({ requestHeaders: { Origin: 'null' } })
+        expect(active.send(url, { Origin: 'http://127.0.0.1:47891' })).toEqual({
+          requestHeaders: { Origin: 'http://127.0.0.1:47891' }
+        })
+      }
+    }
   })
 
   it('registers each fresh OAuth reconnect without extra headers on the final profile-scoped URL', async () => {

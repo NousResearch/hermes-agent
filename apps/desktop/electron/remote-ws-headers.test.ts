@@ -180,10 +180,17 @@ describe('OAuth login and registry extra headers', () => {
     })
 
     store.remember(url)
-    expect(resolveRemoteRequestHeaders(url, { exactHeaders: store.headersFor(url), sources })).toEqual({
-      ...accessHeaders,
-      Origin: 'null'
-    })
+    for (const fallbackSources of [
+      sources,
+      collectRemoteHeaderSources({ v1Remote: { url: 'https://gateway.example', headers: accessHeaders } })
+    ]) {
+      expect(
+        resolveRemoteRequestHeaders(url, { exactHeaders: store.headersFor(url), sources: fallbackSources })
+      ).toEqual({
+        ...accessHeaders,
+        Origin: 'null'
+      })
+    }
     const explicit = { 'CF-Access-Client-Id': 'route-specific' }
     store.remember(url, explicit)
     expect(resolveRemoteRequestHeaders(url, { exactHeaders: store.headersFor(url), sources })).toEqual({

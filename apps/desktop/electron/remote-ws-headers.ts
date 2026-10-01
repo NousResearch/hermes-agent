@@ -110,10 +110,11 @@ export function oauthLoginLoadUrlOptions(headers: Record<string, string> = {}): 
 
 export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rendererOrigin = 'null'
 ) {
   sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest)
+    applyRemoteRequestHeaders(details, callback, headersForRequest, rendererOrigin)
   })
 }
 
@@ -133,9 +134,9 @@ export function createRemoteWsHeaderStore(limit = 100) {
       return
     }
 
-    // Main vouches only for exact authenticated gateway URLs. Native renderers
-    // use loopback HTTP in both dev and packaged builds; a non-web Origin avoids
-    // depending on a reverse proxy's public Host or Host rewriting policy.
+    // Main vouches only for exact authenticated gateway URLs. Dev renderers use
+    // HTTP; packaged renderers use file URLs. A non-web Origin avoids depending
+    // on a reverse proxy's public Host or Host rewriting policy.
     headersByUrl.set(String(wsUrl), { ...headers, Origin: 'null' })
 
     while (headersByUrl.size > limit) {
@@ -169,7 +170,8 @@ export function createRemoteWsHeaderStore(limit = 100) {
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rendererOrigin = 'null'
 ) {
   const headers = headersForRequest(details.url)
 
@@ -186,16 +188,15 @@ export function applyRemoteRequestHeaders(
       ([name]) => name.toLowerCase() === 'origin'
     )?.[1]
 
-    let nativeOrigin = !originalOrigin || originalOrigin === 'null'
-
-    try {
-      const source = new URL(originalOrigin || '')
-      nativeOrigin ||=
-        ['file:', 'app:'].includes(source.protocol) ||
-        (['http:', 'https:'].includes(source.protocol) && ['localhost', '127.0.0.1', '[::1]'].includes(source.hostname))
-    } catch {
-      // Malformed origins are not vouched for as desktop renderer origins.
-    }
+    // Match the serialized Origin main actually loads, not arbitrary loopback
+    // servers. Keep only the explicit legacy file/native spellings; arbitrary
+    // file/app URLs and malformed web origins are not renderer identities.
+    const nativeOrigin =
+      !originalOrigin ||
+      originalOrigin === 'null' ||
+      originalOrigin === 'file://' ||
+      originalOrigin === 'app://hermes' ||
+      originalOrigin === rendererOrigin
 
     for (const name of Object.keys(requestHeaders)) {
       if (name.toLowerCase() === 'origin') {

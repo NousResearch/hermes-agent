@@ -149,6 +149,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._app_id = str(extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")).strip()
         self._client_secret = str(extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
+        at_sender_val = extra.get("at_sender", True)
+        if isinstance(at_sender_val, str):
+            self._at_sender = at_sender_val.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            self._at_sender = bool(at_sender_val)
         self._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
@@ -166,6 +171,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
+        self._last_sender_openid: Dict[str, str] = {}  # last inbound sender member_openid per chat (at_sender)
+        self._msg_id_to_sender: Dict[str, str] = {}  # msg_id -> sender member_openid (at_sender correlation)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
@@ -571,9 +578,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # ── Inbound message handling ──
 
     async def handle_message(self, event: MessageEvent) -> None:
-        """Cache the last message ID per chat, then delegate to base."""
+        """Cache the last message ID and sender per chat, then delegate to base."""
         if event.message_id and event.source.chat_id:
             self._last_msg_id[event.source.chat_id] = event.message_id
+        if event.source.user_id and event.source.chat_id:
+            self._last_sender_openid[event.source.chat_id] = event.source.user_id
+            if event.message_id:
+                if len(self._msg_id_to_sender) >= 500:
+                    old_keys = list(self._msg_id_to_sender.keys())[:100]
+                    for k in old_keys:
+                        self._msg_id_to_sender.pop(k, None)
+                self._msg_id_to_sender[event.message_id] = event.source.user_id
         await super().handle_message(event)
 
     async def _on_message(self, event_type: str, d: Any) -> None:
@@ -768,6 +783,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         member = str(author.get("member_openid", ""))
         if not group_openid or not self._is_group_allowed(group_openid, member):
             return
+        if member:
+            self._last_sender_openid[group_openid] = member
+            if msg_id:
+                if len(self._msg_id_to_sender) >= 500:
+                    old_keys = list(self._msg_id_to_sender.keys())[:100]
+                    for k in old_keys:
+                        self._msg_id_to_sender.pop(k, None)
+                self._msg_id_to_sender[msg_id] = member
         await self._ingest(
             d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
             chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
@@ -1360,11 +1383,28 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send text/markdown: format, split via truncate_message(), retry transient failures."""
-        del metadata
         if not await self._ensure_connected():
             return self._NOT_CONNECTED
         if not content or not content.strip():
             return SendResult(success=True)
+
+        chat_type = self._guess_chat_type(chat_id)
+        if not reply_to and chat_type == "group":
+            reply_to = self._last_msg_id.get(chat_id)
+
+        if self._at_sender and chat_type == "group":
+            sender_id = None
+            if metadata and isinstance(metadata, dict):
+                sender_id = metadata.get("user_id") or metadata.get("sender_id")
+            if not sender_id and reply_to:
+                sender_id = self._msg_id_to_sender.get(reply_to)
+            if not sender_id:
+                sender_id = self._last_sender_openid.get(chat_id)
+
+            if sender_id:
+                at_tag = f'<qqbot-at-user id="{sender_id}" />'
+                if at_tag not in content and "<qqbot-at-user" not in content:
+                    content = f"{at_tag}\n{content}"
 
         chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
         last_result = SendResult(success=False, error="No chunks")
@@ -1375,7 +1415,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             reply_to = None  # only reply_to the first chunk
         return last_result
 
-    _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
+    _PERMANENT_SEND_ERRORS = (
+        "invalid", "forbidden", "not found", "bad request",
+        "无权限", "主动消息", "400",
+    )
 
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None
@@ -1575,6 +1618,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 "msg_type": MSG_TYPE_MEDIA, "media": {"file_info": file_info}, "msg_seq": self._next_msg_seq(chat_id)}
             if caption:
                 body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
+            if not reply_to:
+                reply_to = self._last_msg_id.get(chat_id)
             if reply_to:
                 body["msg_id"] = reply_to
             return await self._post_message(self._messages_path(chat_type, chat_id), body)

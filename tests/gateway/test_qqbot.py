@@ -1253,3 +1253,253 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+# ---------------------------------------------------------------------------
+# Group at_sender and reply_to fallback
+# ---------------------------------------------------------------------------
+
+
+class TestQQBotGroupAtSender:
+    """Tests for group message at_sender injection and passive reply_to fallback."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        cfg = {"app_id": "a", "client_secret": "b", "group_policy": "open"}
+        cfg.update(extra)
+        return QQAdapter(_make_config(**cfg))
+
+    @pytest.mark.asyncio
+    async def test_group_send_prepends_at_sender_tag(self):
+        """send() in group chats should prepend <qqbot-at-user id="..." /> when at_sender is True."""
+        adapter = self._make_adapter(at_sender=True)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id="sent_1")
+
+        adapter._post_message = fake_post_message
+
+        group_id = "GROUP_100"
+        member_id = "USER_200"
+        msg_id = "MSG_300"
+
+        # Inbound group message
+        inbound = {
+            "group_openid": group_id,
+            "id": msg_id,
+            "content": "@bot hello",
+            "author": {"member_openid": member_id},
+        }
+        await adapter._handle_group_message(inbound, msg_id, "@bot hello", inbound["author"], "")
+
+        assert adapter._last_sender_openid[group_id] == member_id
+        assert adapter._last_msg_id[group_id] == msg_id
+        assert adapter._msg_id_to_sender[msg_id] == member_id
+
+        # Send response
+        await adapter.send(chat_id=group_id, content="Response text")
+
+        assert len(sent_payloads) == 1
+        path, body = sent_payloads[0]
+        assert f"/v2/groups/{group_id}/messages" in path
+        content = body.get("markdown", {}).get("content", "")
+        assert content.startswith(f'<qqbot-at-user id="{member_id}" />\n')
+        assert "Response text" in content
+        assert body.get("msg_id") == msg_id
+
+    @pytest.mark.asyncio
+    async def test_group_send_disabled_at_sender(self):
+        """When at_sender is False, no mention tag is added."""
+        adapter = self._make_adapter(at_sender=False)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id="sent_1")
+
+        adapter._post_message = fake_post_message
+
+        group_id = "GROUP_100"
+        adapter._chat_type_map[group_id] = "group"
+        adapter._last_sender_openid[group_id] = "USER_200"
+
+        await adapter.send(chat_id=group_id, content="No mention response")
+
+        assert len(sent_payloads) == 1
+        _, body = sent_payloads[0]
+        content = body.get("markdown", {}).get("content", "")
+        assert "<qqbot-at-user" not in content
+        assert content == "No mention response"
+
+    @pytest.mark.asyncio
+    async def test_c2c_send_never_prepends_at_sender(self):
+        """Direct messages (C2C) should never have at_sender tag prepended."""
+        adapter = self._make_adapter(at_sender=True)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id="sent_1")
+
+        adapter._post_message = fake_post_message
+
+        user_openid = "USER_DM_100"
+        adapter._chat_type_map[user_openid] = "c2c"
+        adapter._last_sender_openid[user_openid] = user_openid
+
+        await adapter.send(chat_id=user_openid, content="C2C reply")
+
+        assert len(sent_payloads) == 1
+        _, body = sent_payloads[0]
+        content = body.get("markdown", {}).get("content", "")
+        assert "<qqbot-at-user" not in content
+        assert content == "C2C reply"
+
+    @pytest.mark.asyncio
+    async def test_group_send_avoids_duplicate_at_tag(self):
+        """If content already contains <qqbot-at-user ...>, do not duplicate."""
+        adapter = self._make_adapter(at_sender=True)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id="sent_1")
+
+        adapter._post_message = fake_post_message
+
+        group_id = "GROUP_100"
+        member_id = "USER_200"
+        adapter._chat_type_map[group_id] = "group"
+        adapter._last_sender_openid[group_id] = member_id
+
+        text = f'<qqbot-at-user id="{member_id}" /> already here'
+        await adapter.send(chat_id=group_id, content=text)
+
+        assert len(sent_payloads) == 1
+        _, body = sent_payloads[0]
+        content = body.get("markdown", {}).get("content", "")
+        assert content.count("<qqbot-at-user") == 1
+
+    @pytest.mark.asyncio
+    async def test_chunked_message_only_first_chunk_has_at(self):
+        """When message is chunked, only the first chunk includes @ tag and reply_to."""
+        adapter = self._make_adapter(at_sender=True)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id=f"sent_{len(sent_payloads)}")
+
+        adapter._post_message = fake_post_message
+
+        group_id = "GROUP_100"
+        member_id = "USER_200"
+        adapter._chat_type_map[group_id] = "group"
+        adapter._last_sender_openid[group_id] = member_id
+        adapter._last_msg_id[group_id] = "MSG_ORIGIN"
+
+        # Over 4000 characters to trigger chunking (4800 chars)
+        long_text = "段落说明文字。\n" * 600
+        await adapter.send(chat_id=group_id, content=long_text)
+
+        assert len(sent_payloads) > 1
+        # First chunk has @ prefix and reply_to msg_id
+        first_body = sent_payloads[0][1]
+        first_content = first_body.get("markdown", {}).get("content", "")
+        assert first_content.startswith(f'<qqbot-at-user id="{member_id}" />\n')
+        assert first_body.get("msg_id") == "MSG_ORIGIN"
+
+        # Subsequent chunks do not have @ prefix and do not have msg_id
+        for _, other_body in sent_payloads[1:]:
+            other_content = other_body.get("markdown", {}).get("content", "")
+            assert "<qqbot-at-user" not in other_content
+            assert "msg_id" not in other_body
+
+    @pytest.mark.asyncio
+    async def test_msg_id_correlation_targets_correct_sender(self):
+        """Replying to a specific message ID mentions that message's sender."""
+        adapter = self._make_adapter(at_sender=True)
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id="sent_1")
+
+        adapter._post_message = fake_post_message
+
+        group_id = "GROUP_100"
+        adapter._chat_type_map[group_id] = "group"
+        adapter._msg_id_to_sender["MSG_A"] = "USER_A"
+        adapter._msg_id_to_sender["MSG_B"] = "USER_B"
+        adapter._last_sender_openid[group_id] = "USER_B"
+
+        await adapter.send(chat_id=group_id, content="Replying to A", reply_to="MSG_A")
+
+        assert len(sent_payloads) == 1
+        _, body = sent_payloads[0]
+        content = body.get("markdown", {}).get("content", "")
+        assert content.startswith('<qqbot-at-user id="USER_A" />\n')
+        assert body.get("msg_id") == "MSG_A"
+
+    @pytest.mark.asyncio
+    async def test_send_media_falls_back_to_last_msg_id(self):
+        """_send_media in group chat should fall back reply_to to _last_msg_id if not provided."""
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._ensure_connected = mock.AsyncMock(return_value=True)
+
+        sent_payloads = []
+
+        async def fake_post_message(path, body):
+            sent_payloads.append((path, body))
+            return mock.MagicMock(success=True, message_id="media_sent")
+
+        adapter._post_message = fake_post_message
+        adapter._upload_media = mock.AsyncMock(return_value={"file_info": "fake_file_info"})
+
+        group_id = "GROUP_100"
+        adapter._chat_type_map[group_id] = "group"
+        adapter._last_msg_id[group_id] = "MSG_PASSIVE_123"
+
+        result = await adapter._send_media(
+            chat_id=group_id,
+            media_source="https://example.com/test.png",
+            file_type=1,
+            kind="image",
+            caption="Test Caption",
+            reply_to=None,
+        )
+
+        assert result.success
+        assert len(sent_payloads) == 1
+        _, body = sent_payloads[0]
+        assert body.get("msg_id") == "MSG_PASSIVE_123"
+        assert body.get("content") == "Test Caption"
+
+

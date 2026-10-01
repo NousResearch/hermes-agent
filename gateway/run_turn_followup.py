@@ -7,6 +7,7 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from gateway.input_owner import gateway_input_owner
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch_record
 from gateway.response_filters import display_kind_for_event, reply_expected_metadata
@@ -240,6 +241,7 @@ class GatewayQueuedFollowupMixin:
                         reply_expected=next_reply_expected,
                         input_snapshot=getattr(pending_event, "_prepared_inbound", None),
                         persist_user_display_metadata={
+                            "gateway_input_owner": gateway_input_owner(pending_event, next_source),
                             **channel_state_metadata(pending_event),
                             **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
                     )

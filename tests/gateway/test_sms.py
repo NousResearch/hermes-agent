@@ -75,6 +75,14 @@ class TestSmsFormatAndTruncate:
         result = adapter.format_message("a\n\n\n\nb")
         assert result == "a\n\nb"
 
+    def test_keeps_link_url(self):
+        """A dropped URL is unreachable, not merely unformatted — SMS still auto-links a bare
+        URL, so format_message must keep it (#73ba6390 parity: strip_markdown(keep_link_targets=True))."""
+        adapter = self._make_adapter()
+        result = adapter.format_message("See [docs](https://example.com/guide) for details")
+        assert "https://example.com/guide" in result
+        assert "docs" in result
+
 
 # ── Echo prevention ────────────────────────────────────────────────
 
@@ -311,3 +319,55 @@ class TestMultiplexProfileScope:
         finally:
             reset_secret_scope(token)
         assert "TWILIO_PHONE_NUMBER required" in result["error"]
+
+
+class TestStandaloneSendMarkdown:
+    """_standalone_send (cron / send_message) must strip markdown the same way format_message
+    does: keep link URLs, and never mangle a snake_case filename via the underscore-italics rule
+    (#73ba6390 parity — a bespoke _SMS_MARKDOWN_SUBS ladder used to drop both)."""
+
+    class _FakeResponse:
+        status = 201
+
+        async def json(self):
+            return {"sid": "SM123"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def post(self, *args, **kwargs):
+            return TestStandaloneSendMarkdown._FakeResponse()
+
+    @pytest.mark.asyncio
+    async def test_keeps_link_url_and_snake_case_filename(self, monkeypatch):
+        import plugins.platforms.sms.adapter as sms_mod
+
+        captured = {}
+
+        def fake_twilio_form(from_number, to_number, body):
+            captured["body"] = body
+            return sms_mod.aiohttp.FormData()
+
+        monkeypatch.setattr(sms_mod, "_twilio_form", fake_twilio_form)
+        monkeypatch.setattr(sms_mod, "_new_session", lambda **kw: self._FakeSession())
+        for key, value in (("TWILIO_ACCOUNT_SID", "AC1"), ("TWILIO_AUTH_TOKEN", "tok"),
+                           ("TWILIO_PHONE_NUMBER", "+15550001111")):
+            monkeypatch.setenv(key, value)
+
+        result = await sms_mod._standalone_send(
+            PlatformConfig(enabled=True), "+15559998888",
+            "See [docs](https://example.com/guide) and edit my_config_file.yaml")
+
+        assert result["success"] is True
+        assert "https://example.com/guide" in captured["body"]
+        assert "my_config_file.yaml" in captured["body"]

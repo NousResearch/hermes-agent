@@ -119,7 +119,7 @@ class MessageEvent:
     # Whether the quoted author passed the adapter's authorisation check; None when the adapter
     # did not check. The reply pointer identifies the author only when this is set.
     reply_to_author_authorized: Optional[bool] = None
-    # IDs of later events merged into this one; ``message_id`` remains the first event's ID.
+    # IDs of other events represented in this turn.
     merged_message_ids: List[str] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.

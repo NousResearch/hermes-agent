@@ -16,8 +16,9 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.followup_context import REPLY_EXCERPT_CHARS
 from plugins.platforms.matrix.reaction_followups import (
-    REGISTRATION_REPLAY_LIMIT, REGISTRATION_REPLAY_SECONDS, REPLY_EXCERPT_CHARS, WATCH_SECONDS,
+    REGISTRATION_REPLAY_LIMIT, REGISTRATION_REPLAY_SECONDS, WATCH_SECONDS,
     ReactionWatchStore,
 )
 

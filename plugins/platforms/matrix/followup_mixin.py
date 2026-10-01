@@ -14,9 +14,11 @@ from typing import Any, Dict, Optional
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from plugins.platforms.matrix.followup_context import LogicalReplyContext, REPLY_EXCERPT_CHARS
+from plugins.platforms.matrix.turn_context import MatrixTurnContext
 from plugins.platforms.matrix.reaction_followups import (
     FinalDeliveryEvents, PendingFollowupReactions, ReactionWatchStore,
-    REGISTRATION_REPLAY_SECONDS, REPLY_EXCERPT_CHARS, reaction_follows_delivery,
+    REGISTRATION_REPLAY_SECONDS, reaction_follows_delivery,
 )
 
 logger = logging.getLogger("plugins.platforms.matrix.adapter")
@@ -136,6 +138,12 @@ class MatrixFollowupMixin:
             requester=action.requester, source=source.to_dict(),
             emoji_filter=action.emoji_filter, text_content=text_content,
             delivery_event_id=delivery_event_id,
+            reply_excerpt=delivery_adapter._followup_delivery_events.excerpt(
+                action.room_id, ids, text_content
+            ) if hasattr(delivery_adapter, "_followup_delivery_events") else None,
+            target_digests=delivery_adapter._followup_delivery_events.target_digests(
+                action.room_id, ids
+            ) if hasattr(delivery_adapter, "_followup_delivery_events") else None,
         )
         delivery_adapter._purge_expired_watches()
         action.pending.registered = True
@@ -251,5 +259,11 @@ class MatrixFollowupMixin:
                 "gateway_session_strict": True,
             },
         )
+        if claimed["reply_excerpt"] is not None:
+            snapshot = MatrixTurnContext.capture(self, followup)
+            snapshot.logical_reply = LogicalReplyContext.capture(
+                self, room_id, reply_text[:REPLY_EXCERPT_CHARS], claimed["reply_excerpt"]
+            )
+            followup._inbound_context_dependencies = (snapshot,)
         return await self._admit(followup)
 

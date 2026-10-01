@@ -100,4 +100,3 @@ class SlackApprovalMixin(BasePlatformAdapter):
         await self._finalize_interactive_message(
             channel_id, msg_ts, self._section_text(message), decision_text,
             "Command approval request", "approval", team_id or None)
-

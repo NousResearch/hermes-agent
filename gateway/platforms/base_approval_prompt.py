@@ -43,4 +43,3 @@ class BaseApprovalPromptMixin:
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
         return await self._send_exec_approval_prompt(prompt)
-

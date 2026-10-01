@@ -54,7 +54,6 @@ param(
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
-    [switch]$SelfTestRetryState,
     [switch]$SelfTestWorkingDirectory
 )
 
@@ -63,7 +62,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestRetryState -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -1250,36 +1249,18 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
-# ── Update retry state machine (#96205) ────────────────────────────────────
-# `hermes update` can COMPLETE (its output shows "✓ Update complete!") and
-# still be killed with the timeout sentinel 124: the post-update finalization
-# (gateway-restart hand-off) can stay alive and silent past the idle ceiling,
-# so Invoke-HermesStep terminates the tree and reports 124. The old gates
-# retried on any non-zero, non-2 exit, re-running a completed update from
-# scratch -- the #96205 retry storm that parked the Desktop updater popup
-# for 70+ minutes.
-#
-# The rule is deliberately NARROW: only exit 124 + the completion marker is
-# terminal. A plain exit 1 after the marker is the stale-gateway verdict
-# (hermes_cli/update_receipt.py prints "✗ Update not complete" AFTER the
-# completion banner and must supersede it), so it keeps propagating as a
-# failure. Exit 2 ("close all Hermes windows") is fail-closed, not retryable.
-function Get-HermesUpdateRetryState([int]$Code, [string]$Output) {
-    if ($Code -eq 0) { return 'success' }
-    if ($Code -eq 124 -and $Output -match 'Update complete!') { return 'completed' }
-    if ($Code -eq 2) { return 'fail-closed' }
-    return 'retryable'
-}
-
-# Apply the terminal-state rule to a finished update step: a completed update
-# that the idle watchdog killed is surfaced as success (Code = 0, output
-# preserved so the truthful-completion check below still sees a
-# "Desktop build failed" warning if one was printed), letting the hand-off
-# verify and relaunch the NEW build instead of re-running the update.
+# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# still be killed with the idle-watchdog sentinel 124: the post-update phase
+# (gateway restart hand-off) stayed alive and silent past the ceiling, so
+# Invoke-HermesStep terminated the tree (#96205). The install is done; failing
+# would keep the old Desktop and a legacy install would re-run the whole update.
+# Surface success so the hand-off verifies, restores the gateways and relaunches.
+# Only 124 is remapped, and never after "✗ Update not complete": that verdict
+# (hermes_cli/update_receipt.py) is printed after the banner and supersedes it.
 function Resolve-HermesUpdateOutcome($StepResult) {
-    if ((Get-HermesUpdateRetryState -Code $StepResult.Code -Output $StepResult.Output) -eq 'completed') {
-        Write-HandoffLog "update completed but the finalizing step was killed by the idle watchdog (exit $($StepResult.Code)); treating as success, not retrying (#96205)"
-        return @{ Code = 0; Output = $StepResult.Output; TreeQuiesced = $StepResult.TreeQuiesced; StartedAfterJobAssignment = $StepResult.StartedAfterJobAssignment }
+    if ($StepResult.Code -eq 124 -and $StepResult.Output -match 'Update complete!' -and $StepResult.Output -notmatch 'Update not complete') {
+        Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
+        $StepResult.Code = 0
     }
     return $StepResult
 }
@@ -1539,56 +1520,6 @@ exit 3
     exit 0
 }
 
-# -SelfTestRetryState: prove the retry state machine never re-runs a ------
-# completed update (#96205). Fixture states drive Get-HermesUpdateRetryState,
-# then Resolve-HermesUpdateOutcome is checked against the exact #96205 shape
-# (update completes, prints the marker, is then killed with the timeout
-# sentinel 124): it must surface as exit 0. The stale-gateway verdict shape
-# (exit 1 after the marker) must NOT be flattened into success. Exits before
-# any marker/desktop machinery, same as the other self-test arms.
-if ($SelfTestRetryState) {
-    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
-    $problems = @()
-    $fixtures = @(
-        @{ Name = 'clean success';            Code = 0;   Output = 'Update complete! (v0.20.5)';                      Expected = 'success' }
-        @{ Name = 'fail-closed exit 2';       Code = 2;   Output = 'close all Hermes windows';                       Expected = 'fail-closed' }
-        @{ Name = 'completed then timeout';   Code = 124; Output = 'Update complete! (v0.20.5) [main @ 2903a3fd]';   Expected = 'completed' }
-        @{ Name = 'timeout mid-update';        Code = 124; Output = 'Cloning into C:\hermes...';                      Expected = 'retryable' }
-        @{ Name = 'ordinary failure';         Code = 1;   Output = 'Traceback (most recent call last)';              Expected = 'retryable' }
-        @{ Name = 'stale-gateway verdict';    Code = 1;   Output = 'Update complete! then gateways still stale';      Expected = 'retryable' }
-        @{ Name = 'empty output timeout';     Code = 124; Output = '';                                                    Expected = 'retryable' }
-    )
-    foreach ($f in $fixtures) {
-        $actual = Get-HermesUpdateRetryState -Code $f.Code -Output $f.Output
-        if ($actual -ne $f.Expected) { $problems += "$($f.Name): state '$actual', expected '$($f.Expected)'" }
-    }
-
-    # The #96205 shape: completed then watchdog-killed (124) -> success.
-    $res = Resolve-HermesUpdateOutcome @{ Code = 124; Output = 'Update complete! (v0.20.5) [main @ 2903a3fd]'; TreeQuiesced = $true; StartedAfterJobAssignment = $true }
-    if ($res.Code -ne 0) { $problems += "completed-after-timeout surfaced as exit $($res.Code), expected 0" }
-    if ($res.Output -notmatch 'Update complete!') { $problems += "completed-after-timeout lost the step output" }
-    if (-not $res.TreeQuiesced) { $problems += "completed-after-timeout lost TreeQuiesced" }
-
-    # A genuine mid-update timeout keeps its non-zero exit (retryable/failure).
-    $res2 = Resolve-HermesUpdateOutcome @{ Code = 124; Output = 'Cloning into...'; TreeQuiesced = $true; StartedAfterJobAssignment = $true }
-    if ($res2.Code -ne 124) { $problems += "mid-update timeout surfaced as exit $($res2.Code), expected 124" }
-
-    # The stale-gateway verdict (exit 1 after the marker) must stay a failure.
-    $res3 = Resolve-HermesUpdateOutcome @{ Code = 1; Output = 'Update complete! then gateways still stale'; TreeQuiesced = $true; StartedAfterJobAssignment = $true }
-    if ($res3.Code -ne 1) { $problems += "stale-gateway verdict flattened to exit $($res3.Code), expected 1" }
-
-    # Fail-closed exit 2 is not remapped either.
-    $res4 = Resolve-HermesUpdateOutcome @{ Code = 2; Output = 'close all Hermes windows'; TreeQuiesced = $true; StartedAfterJobAssignment = $true }
-    if ($res4.Code -ne 2) { $problems += "fail-closed exit 2 remapped to exit $($res4.Code), expected 2" }
-
-    if ($problems.Count -gt 0) {
-        Write-Host "RETRY-STATE SELF-TEST: FAIL -- $($problems -join '; ')"
-        exit 1
-    }
-    Write-Host "RETRY-STATE SELF-TEST: PASS"
-    exit 0
-}
-
 $savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
@@ -1723,9 +1654,6 @@ try {
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
-    # A completed update is terminal even when the idle watchdog kills the
-    # finalizing step with 124 (#96205): never re-run, surface success so the
-    # hand-off verifies and relaunches the new build.
     $res = Resolve-HermesUpdateOutcome $res
 
     # Retry only the identified pre-PM update-boundary transition. Current

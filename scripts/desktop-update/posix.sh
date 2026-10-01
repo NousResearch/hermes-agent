@@ -848,20 +848,6 @@ OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_AR
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
-# A completed update killed by the idle watchdog is terminal (#96205): exit
-# 124 with "✓ Update complete!" already printed means the install state is
-# done and only the silent post-update finalization overran the ceiling.
-# Re-running the update would re-apply the whole install (the retry storm
-# that parks the updater UI for 70+ minutes), and failing would relaunch the
-# old build. Surface success instead. Deliberately NARROW: a plain exit 1
-# after the marker is the stale-gateway verdict (hermes_cli/update_receipt.py
-# prints "✗ Update not complete" after the completion banner and must
-# supersede it), so only the timeout sentinel is remapped.
-if [ "$CODE" -eq 124 ] && printf '%s' "$OUT" | grep -q "Update complete!"; then
-  log "update completed before the watchdog killed the finalizing step (exit $CODE); treating as success, not retrying (#96205)"
-  CODE=0
-fi
-
 if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.

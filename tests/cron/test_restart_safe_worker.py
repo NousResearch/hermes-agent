@@ -253,6 +253,8 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
             return self.returncode
 
         def wait(self, timeout=None):
+            if timeout is None:
+                self.returncode = 0
             if self.returncode is None:
                 raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
             return self.returncode
@@ -456,6 +458,9 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
             return self.returncode
 
         def wait(self, timeout=None):
+            if timeout is None:
+                self.returncode = 0
+                return self.returncode
             raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
 
     monkeypatch.setattr(

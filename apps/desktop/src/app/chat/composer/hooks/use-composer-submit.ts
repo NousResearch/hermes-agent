@@ -175,11 +175,29 @@ export function useComposerSubmit({
             text.trim() &&
             !SLASH_COMMAND_RE.test(text.trim())
           ) {
-            void Promise.resolve(current.onSteer(text))
-              .then(accepted => {
-                if (!accepted) {
-                  enqueue()
+            void runComposerMiddleware({ text })
+              .then(draft => {
+                if (!draft) {
+                  return undefined
                 }
+
+                return Promise.resolve(current.onSteer!(draft.text))
+                  .then(accepted => {
+                    if (!accepted) {
+                      void enqueueQueuedPrompt(queueKey, {
+                        attachments: [],
+                        middlewareApplied: true,
+                        text: draft.text
+                      })
+                    }
+                  })
+                  .catch(() => {
+                    void enqueueQueuedPrompt(queueKey, {
+                      attachments: [],
+                      middlewareApplied: true,
+                      text: draft.text
+                    })
+                  })
               })
               .catch(enqueue)
           } else {

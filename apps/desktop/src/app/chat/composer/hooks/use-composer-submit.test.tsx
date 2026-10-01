@@ -150,9 +150,12 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  const disposers: Array<() => void> = []
+
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')
+    disposers.splice(0).forEach(dispose => dispose())
     vi.restoreAllMocks()
   })
 
@@ -177,6 +180,30 @@ describe('useComposerSubmit external request routing', () => {
     expect(getQueuedPrompts('stored-session').at(-1)?.text).toBe('/status')
     expect(onSteer).toHaveBeenCalledTimes(1)
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])('runs middleware once for an accepted or rejected busy card steer (%s)', async (accepted: boolean) => {
+    disposers.push(
+      registry.register({
+        area: COMPOSER_AREAS.middleware,
+        data: { handler: draft => ({ ...draft, text: `[reply] ${draft.text}` }) } satisfies ComposerMiddleware,
+        id: 'card-steer-rewrite'
+      })
+    )
+
+    const { onSteer } = renderSubmitHook({ busy: true })
+    onSteer.mockResolvedValue(accepted)
+
+    await act(async () => {
+      expect(requestComposerSubmit('card correction', { target: 'main' })).toBe(true)
+    })
+
+    expect(onSteer).toHaveBeenCalledExactlyOnceWith('[reply] card correction')
+    expect(getQueuedPrompts('stored-session')).toEqual(
+      accepted
+        ? []
+        : [expect.objectContaining({ middlewareApplied: true, text: '[reply] card correction' })]
+    )
   })
 
   it.each([true, false])(

@@ -1,0 +1,29 @@
+name: hermes-agent-builder
+title: Hermes Agent Builder
+repo: https://github.com/itsflownium/hermes-agent-builder
+sha: 6ed39da7c7054587cbe2a42e60c3e9cbe4969cf6
+description: >-
+  Guided Desktop workspace in BOTS: tailored questions, reference files,
+  editable instructions and capabilities, version comparisons, model-only
+  trials, and native Bot Chat handoff. Saves specialists as separate Hermes
+  profiles and installs the Builder companion plugin into its own bot profile.
+maintainer: itsflownium
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/itsflownium/hermes-agent-builder#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/itsflownium/hermes-agent-builder/6ed39da7c7054587cbe2a42e60c3e9cbe4969cf6/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/itsflownium/hermes-agent-builder/6ed39da7c7054587cbe2a42e60c3e9cbe4969cf6/docs/builder.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-agent-builder/6ed39da7c7054587cbe2a42e60c3e9cbe4969cf6/docs/compare.png
+readme: true
+platforms: [macos, windows]
+known_issues:
+  - Windows Desktop runtime testing remains; the installer and renderer use portable paths and APIs.
+capabilities:
+  provides_tools:
+    - agent_builder
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

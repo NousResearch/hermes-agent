@@ -645,8 +645,17 @@ class MattermostAdapter(BasePlatformAdapter):
             return None
         if user_id == self._bot_user_id:
             return None  # the bot's own edits are noise, not user events
-        text = post.get("message")
+        is_dm = data.get("channel_type", "O") == "D"
+        if not is_dm:
+            allowed_channels = _channel_id_set(_extra_or_secret(
+                self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
+            if allowed_channels and chat_id not in allowed_channels:
+                logger.debug("Mattermost: ignoring edit in non-allowed channel: %s", chat_id)
+                return None
+        text = post.get("message", "")
         thread_id = post.get("root_id") or None
+        if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:
+            thread_id = post_id
         update_at = post.get("update_at")
         payload = {
             "chat_id": str(chat_id)[:128], "message_id": str(post_id)[:128],

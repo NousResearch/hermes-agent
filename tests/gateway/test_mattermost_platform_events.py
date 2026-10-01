@@ -111,6 +111,26 @@ class TestMessageEdited:
         assert event["payload"]["thread_id"] == "root-1"
         assert source.thread_id == "root-1"
 
+    def test_top_level_edit_promotes_to_thread_in_thread_mode(self):
+        a = _adapter()
+        a._reply_mode = "thread"
+        seen = _capture(a)
+
+        asyncio.run(a._handle_ws_event(_edited_event()))
+
+        event, source = seen[0]
+        assert event["payload"]["thread_id"] == "post-1"
+        assert source.thread_id == "post-1"
+
+    def test_edit_respects_allowed_channels(self):
+        a = _adapter()
+        a.config.extra["allowed_channels"] = ["chan-allowed"]
+        seen = _capture(a)
+
+        asyncio.run(a._handle_ws_event(_edited_event(channel_id="chan-secret")))
+
+        assert seen == []
+
     def test_dm_carries_dm_chat_type(self):
         a = _adapter()
         seen = _capture(a)

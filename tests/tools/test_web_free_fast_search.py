@@ -155,6 +155,20 @@ def test_degraded_portal_lookup_does_not_grant_free_fast_search(monkeypatch, tmp
     assert fast_search_entitled() is False
 
 
+def test_guest_on_a_stored_nous_selection_is_told_it_needs_an_account(monkeypatch, tmp_path, gateway_server):
+    """A guest holds a real Nous identity, so the refusal must not claim it has none."""
+    from hermes_cli.nous_account import FREE_TIER_NEEDS_ACCOUNT
+
+    _write_home(tmp_path / "home", monkeypatch, nous_state=_nous_state(ANON, "anonymous"),
+                config={"web": {"backend": "nous", "keyless_rescue": False}})
+
+    result = _search()
+
+    assert result["success"] is False
+    assert FREE_TIER_NEEDS_ACCOUNT in result["error"]
+    assert "no Nous identity" not in result["error"]
+
+
 def test_free_fast_search_failure_skips_paid_firecrawl_but_keeps_keyless_rescue(monkeypatch, tmp_path, gateway_server):
     from plugins.web import keyless_mcp
 

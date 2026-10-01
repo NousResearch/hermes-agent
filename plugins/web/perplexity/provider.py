@@ -71,12 +71,18 @@ def _missing_key_error() -> str:
     return f"PERPLEXITY_API_KEY is not set. Get a key at {_KEY_URL}"
 
 
-def _managed_gateway(token_reader=None):
-    """Nous Tool Gateway config when web_search is on the managed route, else None."""
-    from tools import managed_tool_gateway as gw
-    from tools.web_tools import _managed_web_search
+def _managed_gateway(token_reader=None, managed=None):
+    """Nous Tool Gateway config when web_search is on the managed route, else None.
 
-    if not _managed_web_search():
+    ``managed`` lets a caller that already resolved the route reuse that answer instead of
+    walking the autodetect ladder again."""
+    from tools import managed_tool_gateway as gw
+
+    if managed is None:
+        from tools.web_tools import _managed_web_search
+
+        managed = _managed_web_search()
+    if not managed:
         return None
     return gw.resolve_free_search_gateway(token_reader=token_reader)
 
@@ -213,11 +219,17 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             from tools.web_tools import _managed_web_search
 
             direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
-            gateway = None if direct else _managed_gateway()
-            if gateway is None and not direct and _managed_web_search():
+            managed = False if direct else _managed_web_search()
+            gateway = _managed_gateway(managed=managed) if managed else None
+            if gateway is None and managed:
+                from hermes_cli.nous_account import FREE_TIER_NEEDS_ACCOUNT, get_nous_portal_account_info
                 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
-                raise ValueError(selection_error(
-                    "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (no Nous identity or unreachable)"))
+
+                # A guest holds a real identity but is excluded by tier, so it must not be told
+                # there is no identity.
+                failure = (FREE_TIER_NEEDS_ACCOUNT if get_nous_portal_account_info().is_anonymous_tier
+                           else "the Nous Tool Gateway is not available (unreachable)")
+                raise ValueError(selection_error("web", NOUS_MANAGED_PROVIDER, failure))
             logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
             payload = {
                 "query": query,

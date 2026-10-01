@@ -1178,20 +1178,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         logger.debug("Codex stream opened (attempt=%s/%s, model=%s)",
             attempt + 1, max_stream_retries + 1, model)
 
-    def _post_terminal_socket(raw_stream: Any):
-        """Return the raw socket for the provider Responses stream, if it can be interrupted safely.
-
-        Only the raw SDK stream carries ``.response``; the ManagedLlmStream wrapper does not."""
-        from agent.agent_runtime_helpers import _socket_from_response
-
-        response = getattr(raw_stream, "response", None)
-        if response is None:
-            return None
-        try:
-            return _socket_from_response(response)
-        except Exception:
-            return None
-
     def _drain_for_finalizer(event_stream: Any) -> None:
         # The final response is already assembled. Keep the finalizer drain on THIS owner thread:
         # moving the reader to a daemon thread and later closing from here releases the FD under that
@@ -1200,8 +1186,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         budget = _stream_drain_timeout()
         if budget <= 0:
             return
-        raw_stream = writer_token.get("raw_stream")
-        sock = _post_terminal_socket(raw_stream)
+        from agent.agent_runtime_helpers import _socket_from_response
+
+        # Only the raw SDK stream carries ``.response``; any lookup failure means "not interruptible".
+        try:
+            sock = _socket_from_response(getattr(writer_token.get("raw_stream"), "response", None))
+        except Exception:
+            sock = None
         if sock is None:
             # Without a shutdown-capable socket a synchronous drain could become unbounded. The drain
             # is only for Relay's finalizer, so skip it and let the owner-thread finally close below.

@@ -919,7 +919,6 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
     """Without an interruptible socket the finalizer drain is skipped, so a relay that keeps SSE
     open after completion can neither hang the turn nor discard the billed response."""
     import threading
-    import time
 
     import agent.codex_runtime as codex_runtime
 
@@ -931,6 +930,7 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
     )
     usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
     closed = threading.Event()
+    post_terminal_reads = []
 
     class _HeldOpenAfterTerminalStream:
         def __init__(self):
@@ -948,7 +948,11 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
             return self
 
         def __next__(self):
-            return next(self._events)
+            try:
+                return next(self._events)
+            except StopIteration:
+                post_terminal_reads.append(1)
+                raise
 
         def close(self):
             closed.set()
@@ -962,16 +966,14 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
     agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
     monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
 
-    started = time.monotonic()
     response = agent._run_codex_stream(_codex_request_kwargs())
-    elapsed = time.monotonic() - started
 
-    assert elapsed < 2.0
     assert calls["count"] == 1
     assert response.status == "completed"
     assert response.usage is usage
     assert response.id == "resp_held_open"
-    assert closed.wait(1.0)
+    assert post_terminal_reads == []
+    assert closed.is_set()
 
 
 def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_raises(monkeypatch):
@@ -1097,8 +1099,8 @@ def test_run_codex_stream_post_terminal_timeout_keeps_close_on_reader_thread(mon
     assert blocked.is_set()
     shutdowns = [entry for entry in timeline if entry[0] == "shutdown"]
     closes = [entry for entry in timeline if entry[0] == "close"]
-    assert shutdowns and {entry[1] for entry in shutdowns} == {"codex-post-terminal-watchdog"}
-    assert closes and {entry[1] for entry in closes} == {owner}
+    assert {entry[1] for entry in shutdowns} == {"codex-post-terminal-watchdog"}
+    assert {entry[1] for entry in closes} == {owner}
     assert timeline.index(shutdowns[0]) < timeline.index(closes[0])
 
 
@@ -1153,7 +1155,6 @@ def test_run_codex_stream_post_terminal_clean_drain_never_shutdowns(monkeypatch)
 
     assert response.id == "resp_clean_drain"
     assert socket_calls == []
-    assert close_threads
     assert set(close_threads) == {threading.current_thread().name}
 
 def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monkeypatch):

@@ -1,12 +1,120 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { User } from '@/lib/icons'
+import { Activity, User } from '@/lib/icons'
 import { $brandSession } from '@/store/brand-session'
+import { $activeConnectionId } from '@/store/connections'
+import { requestGatewayForAgent } from '@/store/gateway'
+import { $gatewayState } from '@/store/session'
+import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+
+interface UsageModelTotal {
+  model: string
+  total_tokens: number
+  cost_usd: number
+}
+
+interface UsageSummary {
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  cost_usd: number
+  chat_count: number
+  models: UsageModelTotal[]
+}
+
+function formatCost(amount: number): string {
+  return `$${amount.toFixed(2)}`
+}
+
+function TokenUsage() {
+  const { t } = useI18n()
+  const copy = t.settings.account
+  const gatewayState = useStore($gatewayState)
+  const connectionId = useStore($activeConnectionId)
+  const scopeProfile = useStore($settingsScopeProfile)
+  const [summary, setSummary] = useState<UsageSummary | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    let cancelled = false
+    setFailed(false)
+
+    void requestGatewayForAgent<UsageSummary>(
+      connectionId,
+      scopeProfile,
+      'usage.summary',
+      scopeProfile ? { profile: scopeProfile } : {},
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+      .then(next => {
+        if (!cancelled) {
+          setSummary(next)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailed(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [connectionId, gatewayState, scopeProfile])
+
+  const cache = (summary?.cache_read_tokens ?? 0) + (summary?.cache_write_tokens ?? 0)
+
+  return (
+    <>
+      <SectionHeading icon={Activity} title={copy.limitsTitle} />
+      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+        {copy.limitsBody}
+      </p>
+      {failed ? (
+        <p className="mb-4 text-sm text-(--ui-text-tertiary)">{copy.usageUnavailable}</p>
+      ) : summary && summary.total_tokens > 0 ? (
+        <>
+          <ListRow description={copy.usageChats(summary.chat_count)} title={copy.usageTotal} action={compactNumber(summary.total_tokens)} />
+          <ListRow title={copy.usageInput} action={compactNumber(summary.input_tokens)} />
+          <ListRow title={copy.usageOutput} action={compactNumber(summary.output_tokens)} />
+          <ListRow title={copy.usageCache} action={compactNumber(cache)} />
+          <ListRow title={copy.usageReasoning} action={compactNumber(summary.reasoning_tokens)} />
+          <ListRow title={copy.usageCost} action={formatCost(summary.cost_usd)} />
+          {summary.models.length > 0 ? (
+            <>
+              <p className="mt-3 mb-1 text-xs font-medium text-(--ui-text-secondary)">{copy.usageModels}</p>
+              {summary.models.map(row => (
+                <ListRow
+                  action={compactNumber(row.total_tokens)}
+                  description={formatCost(row.cost_usd)}
+                  key={row.model}
+                  title={row.model}
+                />
+              ))}
+            </>
+          ) : null}
+        </>
+      ) : (
+        <p className="mb-4 text-sm text-(--ui-text-tertiary)">{summary ? copy.usageEmpty : ''}</p>
+      )}
+    </>
+  )
+}
 
 export function AccountSettings() {
   const brand = useStore($brandSession)
@@ -87,10 +195,6 @@ export function AccountSettings() {
               title={copy.brand}
             />
           ) : null}
-          <SectionHeading icon={User} title={copy.limitsTitle} />
-          <p className="mb-4 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {copy.limitsBody}
-          </p>
           <Button
             disabled={busy || !api}
             onClick={() => {
@@ -123,6 +227,7 @@ export function AccountSettings() {
           {copy.signIn}
         </Button>
       )}
+      <TokenUsage />
     </SettingsContent>
   )
 }

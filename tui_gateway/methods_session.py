@@ -640,6 +640,22 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"facts": None})
 
 
+@method("usage.summary")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Token totals for every stored chat on this profile."""
+    try:
+        with _profile_db(params) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5042)
+            with contextlib.suppress(Exception):
+                db.flush_token_counts()
+            return _ok(rid, db.usage_summary())
+    except Exception:
+        logger.exception("usage.summary failed")
+        return _err(rid, 5042, "Token usage is unavailable right now.")
+
+
 @method("verification.status")
 @_profile_scoped
 def _(rid, params: dict) -> dict:

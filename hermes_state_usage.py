@@ -431,3 +431,60 @@ class SessionUsageMixin:
              WHERE {' AND '.join(where)}
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+
+    def usage_summary(self) -> Dict[str, Any]:
+        """Every stored chat, including archived and child sessions. Cache and reasoning
+        tokens are counted beside input and output; they are stored as separate columns."""
+        totals = self._read_one(
+            """SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                      COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                      COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0) AS cost_usd,
+                      COALESCE(SUM(CASE
+                          WHEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                               + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+                               + COALESCE(reasoning_tokens, 0) > 0 THEN 1
+                          ELSE 0
+                      END), 0) AS chat_count
+                 FROM sessions"""
+        )
+        model_rows = self._read_all(
+            """SELECT COALESCE(NULLIF(model, ''), 'unknown') AS model,
+                      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                      COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                      COALESCE(SUM(estimated_cost_usd), 0) AS cost_usd
+                 FROM session_model_usage
+                GROUP BY model
+                ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
+                          + COALESCE(SUM(cache_read_tokens), 0) + COALESCE(SUM(cache_write_tokens), 0)
+                          + COALESCE(SUM(reasoning_tokens), 0)) DESC
+                LIMIT 8"""
+        )
+
+        def pack(row) -> Dict[str, int]:
+            parts = {
+                "input_tokens": int(row["input_tokens"] or 0),
+                "output_tokens": int(row["output_tokens"] or 0),
+                "cache_read_tokens": int(row["cache_read_tokens"] or 0),
+                "cache_write_tokens": int(row["cache_write_tokens"] or 0),
+                "reasoning_tokens": int(row["reasoning_tokens"] or 0),
+            }
+            parts["total_tokens"] = sum(parts.values())
+            return parts
+
+        summary = pack(totals)
+        summary["cost_usd"] = float(totals["cost_usd"] or 0)
+        summary["chat_count"] = int(totals["chat_count"] or 0)
+        summary["models"] = []
+        for row in model_rows:
+            item = pack(row)
+            item["model"] = str(row["model"] or "unknown")
+            item["cost_usd"] = float(row["cost_usd"] or 0)
+            if item["total_tokens"] > 0:
+                summary["models"].append(item)
+        return summary

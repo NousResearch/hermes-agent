@@ -3530,6 +3530,31 @@ export interface SessionEventsStatsResult {
   max_bytes_per_session: number
   max_bytes_process: number
 }
+/** All chats on this desktop profile. No filter: archived and child sessions count too. */
+export interface UsageSummaryParams {
+  profile?: string | null
+}
+export interface UsageSummaryResult {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  reasoning_tokens?: number
+  total_tokens?: number
+  cost_usd?: number
+  chat_count?: number
+  models?: UsageModelTotal[]
+}
+export interface UsageModelTotal {
+  model?: string
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  reasoning_tokens?: number
+  total_tokens?: number
+  cost_usd?: number
+}
 /** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
 export interface LlmOneshotParams {
   profile?: string | null
@@ -5355,6 +5380,8 @@ export interface RpcMethods {
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
   'usage.bars': { params: ProfileParams; result: UsageModel }
+  /** Token totals across every stored chat on this profile. */
+  'usage.summary': { params: UsageSummaryParams; result: UsageSummaryResult }
   /** Add a login / payment / address item to the local vault. */
   'vault.add': { params: VaultAddParams; result: VaultAddResult }
   /** Metadata-only listing across the local vault and every unlocked password manager. */
@@ -5626,6 +5653,7 @@ export const RPC_METHODS = [
   'tools.show',
   'toolsets.list',
   'usage.bars',
+  'usage.summary',
   'vault.add',
   'vault.list',
   'vault.lock',

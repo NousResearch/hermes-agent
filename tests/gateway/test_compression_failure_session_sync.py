@@ -62,6 +62,17 @@ class _CompressionThenFailureAgent:
         pass
 
 
+class _Selection(SimpleNamespace):
+    """The resolved runtime a turn consumes from its route selection."""
+    fallback_notice = None
+
+    def publish(self):
+        pass
+
+    def release_snapshots(self):
+        pass
+
+
 class _StreamConsumer:
     final_response_sent = False
 
@@ -112,12 +123,12 @@ def _runner(session_store):
     runner._fallback_model = None
     runner._draining = False
     runner._get_proxy_url = lambda: None
-    runner._resolve_session_agent_runtime = lambda **_kwargs: (
-        "gpt-5.4",
-        {"provider": "openai-codex", "api_mode": "codex_responses", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "token"},
+    runner._prepare_session_agent_runtime = lambda **_kwargs: _Selection(
+        model="gpt-5.4",
+        runtime={"provider": "openai-codex", "api_mode": "codex_responses", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "token"},
     )
     runner._resolve_session_reasoning_config = lambda **_kwargs: None
-    runner._resolve_turn_agent_config = lambda message, model, runtime: {"model": model, "runtime": runtime}
+    runner._resolve_turn_agent_config = lambda message, model, runtime, **_kwargs: {"model": model, "runtime": runtime}
     runner._load_service_tier = lambda: None
     runner._agent_config_signature = lambda *_args, **_kwargs: ("sig",)
     runner._extract_cache_busting_config = lambda _config: ()

@@ -394,7 +394,7 @@ class GatewayBusySessionMixin:
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return

@@ -35,6 +35,21 @@ def test_oneshot_hides_skill_manage_and_skill_authoring_coaching(oneshot, intera
     assert "skill_manage" in interactive_prompt and "offer to save as a skill" in interactive_prompt
 
 
+def test_persistent_bot_chat_delivery_keeps_skill_authoring(oneshot, monkeypatch, tmp_path):
+    """A ``-Q`` Bot Chat worker has durable transcript and skill consumers."""
+    monkeypatch.setenv(oneshot_footprint.PERSISTENT_BOT_CHAT_DELIVERY_ENV, "1")
+
+    kept = {t["function"]["name"] for t in oneshot_footprint.prune_oneshot_tools(
+        _tools("skill_manage", "skill_view", "skills_list", "terminal"))}
+    prompt = build_skills_system_prompt(
+        available_tools={"skill_manage", "skill_view", "skills_list"},
+        skills_dir_override=_skills_dir(tmp_path),
+    )
+
+    assert "skill_manage" in kept
+    assert "offer to save as a skill" in prompt
+
+
 def _skills_dir(tmp_path):
     d = tmp_path / "skills" / "misc" / "demo-skill"
     d.mkdir(parents=True, exist_ok=True)

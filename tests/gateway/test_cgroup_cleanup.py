@@ -102,3 +102,12 @@ class TestLiveGatewayGuard:
         monkeypatch.setattr(cgroup_cleanup.os, "kill", lambda pid, sig: killed.append(pid))
         assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
         assert killed == [777]
+
+        # The kill set comes from a fresh cgroup.procs read taken after the
+        # (slow) guard: a PID that exited meanwhile is not signalled (it may be
+        # reused outside the cgroup) and an orphan spawned meanwhile is reaped.
+        reads = iter([[777, os.getpid()], [888, os.getpid()]])
+        monkeypatch.setattr(cgroup_cleanup, "_read_cgroup_pids", lambda _p: next(reads))
+        killed.clear()
+        assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
+        assert killed == [888]

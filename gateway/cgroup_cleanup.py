@@ -97,7 +97,12 @@ def reap_cgroup(cgroup_path: str | None = None) -> int | None:
         )
         return None
     killed = 0
-    for pid in others:
+    # Kill from a fresh read: the guard above can take seconds (status import,
+    # per-PID cmdline/ps fallback), so `others` may hold exited/reused PIDs and
+    # miss orphans spawned meanwhile.
+    for pid in _read_cgroup_pids(cgroup_path):
+        if pid == me:
+            continue
         try:
             os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (reads /proc, /sys/fs/cgroup; runs from a systemd unit)
             killed += 1

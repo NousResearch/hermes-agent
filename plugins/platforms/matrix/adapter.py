@@ -89,6 +89,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.media_content import _is_bare_media_filename
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
@@ -419,47 +420,9 @@ _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+
 
 _E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  (requires libolm C library)"
 
-_MATRIX_IMAGE_FILENAME_EXTS = frozenset({
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
-_MATRIX_MEDIA_FILENAME_EXTS = frozenset({
-    ".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".flac", ".aac", ".amr", ".mp4", ".webm", ".mov", ".mkv"})
 # Keycap 1-9, 🔟; choice pickers (/reasoning, /fast) can need 12 slots, so they add 🅰️ 🅱️.
 _MATRIX_MODEL_PICKER_REACTIONS = tuple(f"{d}\ufe0f\u20e3" for d in "123456789") + ("\U0001f51f",)
 _MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + ("\U0001f170\ufe0f", "\U0001f171\ufe0f")
-
-def _looks_like_matrix_image_filename(text: str) -> bool:
-    """True when an m.image body is just the uploaded filename (no caption) — not user text."""
-    return _looks_like_transport_filename(text, "image/", _MATRIX_IMAGE_FILENAME_EXTS)
-
-
-def _looks_like_transport_filename(text: str, mime_prefixes, exts: frozenset, reject_spaces: bool = False) -> bool:
-    """Bare single-token filename with a known media extension or a matching guessed MIME type."""
-    candidate = str(text or "").strip()
-    if not candidate or "\n" in candidate or candidate.endswith("/"):
-        return False
-    # A genuine caption essentially always contains whitespace; a bare transport filename does not.
-    if reject_spaces and any(ch.isspace() for ch in candidate):
-        return False
-    if Path(candidate).name != candidate:
-        return False
-    suffix = Path(candidate).suffix.lower()
-    if not suffix:
-        return False
-    guessed_type, _ = mimetypes.guess_type(candidate)
-    return bool(guessed_type and guessed_type.startswith(mime_prefixes)) or suffix in exts
-
-
-def _looks_like_matrix_media_filename(text: str) -> bool:
-    """True when an m.audio/m.file/m.video body is just the uploaded filename (no caption)."""
-    return _looks_like_transport_filename(text, ("audio/", "video/"), _MATRIX_MEDIA_FILENAME_EXTS, True)
-
-
-def _is_bare_media_filename(msgtype: str, body: str) -> bool:
-    """True when a media event body is only the uploaded filename for its msgtype."""
-    if msgtype == "m.image":
-        return _looks_like_matrix_image_filename(body)
-    return msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body)
-
 
 def _inbound_media_caption(msgtype: str, body: str, source_content: dict, relates_to: dict) -> str:
     wire_body = str(source_content.get("body") or "")

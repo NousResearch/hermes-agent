@@ -24,7 +24,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, get_env_value_prefer_dotenv, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
@@ -836,8 +836,20 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    api_key = (body.api_key or "").strip()
+    if not api_key:
+        # The form intentionally redacts saved credentials. Reuse one only when
+        # this is still the configured endpoint; a changed destination must not
+        # receive a credential belonging to the old host.
+        cfg = load_config()
+        _stored, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), body.id or body.name)
+        saved_url = str(entry.get("base_url") or "").strip().rstrip("/") if entry else ""
+        if entry and saved_url == base_url:
+            api_key = str(entry.get("api_key") or "").strip()
+            if not api_key and entry.get("key_env"):
+                api_key = str(get_env_value_prefer_dotenv(str(entry["key_env"])) or "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     resolved, resp = await _probe_openai_compatible_models(base_url, headers)
     if resp is None:

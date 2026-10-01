@@ -107,6 +107,21 @@ def _submitted_answer(cli, typed, *, multi_base=None, multi=False):
     return stored if stored is not None else reply["answers"].get("q0")
 
 
+def _assert_answer(stored, expected):
+    """Assert a stored multi-select answer equals *expected*.
+
+    Every element but the last must match exactly. The last is compared on
+    `.strip()`: whether the handler strips the typed text before or after
+    expanding the paste is an implementation detail, but the stored answer must
+    parse as a list and keep every answer the user gave.
+    """
+    parsed = json.loads(stored)
+    assert len(parsed) == len(expected), "answer list collapsed: %r" % (parsed,)
+    for got, want in zip(parsed[:-1], expected[:-1]):
+        assert got == want
+    assert parsed[-1].strip() == expected[-1].strip()
+
+
 class TestClarifyPasteExpansion:
     def test_single_other_answer_reaches_agent_as_content(self, tmp_path):
         """The reported case: a free-text clarify answer holding a collapsed paste."""
@@ -134,9 +149,9 @@ class TestClarifyPasteExpansion:
         stored = _submitted_answer(cli, _placeholder(path, 2),
                                    multi_base=["alpha", "beta"], multi=True)
 
-        assert json.loads(stored) == [
+        _assert_answer(stored, [
             "alpha", "beta", "first pasted line\nsecond pasted line",
-        ]
+        ])
         assert _clean_answer(stored, multi=True) == [
             "alpha", "beta", "first pasted line\nsecond pasted line",
         ]
@@ -157,7 +172,7 @@ class TestClarifyPasteExpansion:
         stored = _submitted_answer(cli, _placeholder(path, 2),
                                    multi_base=["alpha"], multi=True)
 
-        assert json.loads(stored) == ["alpha", content.strip()]
+        _assert_answer(stored, ["alpha", content])
         assert _clean_answer(stored, multi=True) == ["alpha", content.strip()]
 
     def test_expanding_the_serialized_string_breaks_the_answer(self, tmp_path):

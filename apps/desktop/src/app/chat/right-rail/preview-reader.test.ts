@@ -4,10 +4,18 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup, noteHoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
 import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
+import { $selectedStoredSessionId } from '@/store/session'
 
 import { watchPreviewTiles } from '../preview-tile'
 
-import { PREVIEW_READ_MAX_CHARS, readActivePreview, registerPreviewPageReader } from './preview-reader'
+import { activePreviewInput, registerPreviewInput } from './preview-input'
+import { activePreviewNav, registerPreviewNav } from './preview-nav'
+import {
+  PREVIEW_READ_MAX_CHARS,
+  readActivePreview,
+  registerPreviewPageReader,
+  resolveActivePreviewTab
+} from './preview-reader'
 
 function urlTarget(url: string): PreviewTarget {
   return { kind: 'url', label: 'Browser', source: url, url }
@@ -196,6 +204,45 @@ describe('readActivePreview (read_preview tool)', () => {
       url: 'https://example.com/tickets'
     })
     expect($previewTabs.get()).toHaveLength(2)
+  })
+})
+
+describe('agent preview reads stay inside the session (#73890)', () => {
+  beforeEach(() => {
+    closeRightRail()
+    window.localStorage.clear()
+    noteActiveTreeGroup(null)
+    noteHoveredTreeGroup(null)
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('never answers with, or lists, another session hidden tab', async () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(fileTarget('/work/secret-a.txt'))
+    const hidden = $previewTabs.get()[0]!.id
+    const unbindNav = registerPreviewNav(hidden, { back: () => {}, forward: () => {}, reload: () => {} })
+    const unbindInput = registerPreviewInput(hidden, { focus: () => {}, send: () => {} })
+
+    try {
+      $selectedStoredSessionId.set('sess-b')
+      openPreview(fileTarget('/work/b1.txt'))
+      openPreview(fileTarget('/work/b2.txt'))
+      // No visible selection: the fallback must stay in sess-b's drawer.
+      selectRightRailTab(null)
+
+      expect(resolveActivePreviewTab()?.target.path).toMatch(/^\/work\/b/)
+      expect(activePreviewNav()).toBeNull()
+      expect(activePreviewInput()).toBeNull()
+
+      const read = await readActivePreview()
+
+      expect(read?.path).toMatch(/^\/work\/b/)
+      expect(JSON.stringify(read)).not.toContain('secret-a')
+    } finally {
+      unbindNav()
+      unbindInput()
+    }
   })
 })
 

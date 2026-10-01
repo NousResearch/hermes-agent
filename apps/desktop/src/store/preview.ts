@@ -14,7 +14,7 @@ import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { $focusedStoredSessionId } from './session-focus'
-import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
+import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow } from './windows'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -390,6 +390,14 @@ function tabsVisibleTo(tabs: readonly PreviewTab[], sessionId: null | string): P
   const rotated = $rotatedSessionIds.get()
 
   return tabs.filter(tab => tabVisibleTo(tab, sessionId, rotated))
+}
+
+/** The tabs an agent tool acting for `sessionId` (default: the focused
+ *  session) may read or drive: never another session's hidden tab. A
+ *  popped-out Browser renderer holds only the tab it shows, so there every
+ *  tab is its own. */
+export function previewTabsFor(sessionId: null | string = $focusedStoredSessionId.get()): PreviewTab[] {
+  return isBrowserWindow() ? $previewTabs.get() : tabsVisibleTo($previewTabs.get(), sessionId)
 }
 
 /** Tabs the FOCUSED session sees. The layout-tree mirror renders only these,

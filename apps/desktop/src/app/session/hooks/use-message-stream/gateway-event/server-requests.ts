@@ -30,7 +30,7 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
-import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -482,17 +482,19 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request }) => {
+const previewRead: Handler = ({ request, sessionId }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
   // The window that passes the session gate may be the chat window while the
   // live webview lives in the popped-out Browser renderer — forward there
   // first; a null (no pop-out answered) falls back to the legacy local read.
+  // A local read sees only the tabs the requesting session can see.
   const opts = { count: num(request.params.count), start: num(request.params.start) }
+  const owner = (sessionId && storedSessionIdForRuntimeId(sessionId)) || undefined
 
   void (async () => {
     const result = hasLivePreviewSurface()
-      ? await readActivePreview(opts)
-      : ((await requestPopoutPreviewRead(opts)) ?? (await readActivePreview(opts)))
+      ? await readActivePreview(opts, owner)
+      : ((await requestPopoutPreviewRead(opts)) ?? (await readActivePreview(opts, owner)))
 
     answerValue(request, result)
   })()

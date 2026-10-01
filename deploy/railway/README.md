@@ -12,7 +12,7 @@ Create three services in one Railway environment when ready:
 
 | Service | Build/config | Persistent storage | Public ports |
 | --- | --- | --- | --- |
-| `hermes` | Repository `Dockerfile`; start command `sleep infinity` | `/opt/data` | Dashboard `9119`; webhook listener `8648` on a separate domain |
+| `hermes` | Repository `Dockerfile`; start command `/opt/hermes/docker/entrypoint-dispatch.sh sleep infinity` | `/opt/data` | Dashboard `9119`; webhook listener `8648` on a separate domain |
 | `hindsight` | `deploy/railway/hindsight/Dockerfile`; image's default start command | Database below | None |
 | `postgres` | PostgreSQL with pgvector installed | PostgreSQL data directory | None |
 
@@ -27,6 +27,8 @@ as shown above. Railway rejects the old `railwayConfigFile` setting; no TOML
 deployment config is used. Keep one replica, disable service sleeping, and select
 the on-failure restart policy with 10 retries. Mount volumes explicitly before
 the first deployment; the Hermes Dockerfile does not create an anonymous volume.
+Railway's start-command override replaces the image entrypoint, so invoke the
+dispatcher explicitly; bare `sleep infinity` leaves all supervised services off.
 For Hermes, set `PORT=9119` and the healthcheck path to `/api/health` with a
 300-second timeout. For Hindsight, use `PORT=8888` and `/health` after Hermes is
 available. These probes check service startup, not model access. Enable daily

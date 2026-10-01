@@ -10,10 +10,10 @@ import {
   alreadyHasNoSandbox,
   BOOT_ABORTS_BEFORE_FALLBACK,
   buildIcaclsGrantArgs,
-  GPU_CHILD_SANDBOX_SIGTERM_EXIT,
   buildNoSandboxRelaunchArgs,
   decideWindowsSandboxLaunch,
   fallbackMarker,
+  GPU_CHILD_SANDBOX_SIGTERM_EXIT,
   grantAllApplicationPackagesAcl,
   isWindowsSandboxBreakpointExit,
   markerAfterSuccessfulBoot,
@@ -381,6 +381,7 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
     env,
     appVersion
   })
+
   assert.equal(first.enable, false)
   assert.deepEqual(first.nextMarker, { state: 'booting', bootAborts: 1 })
 
@@ -391,6 +392,7 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
     env,
     appVersion
   })
+
   assert.equal(second.enable, true)
   assert.equal(second.reason, 'boot-loop')
   assert.equal(second.nextMarker.state, 'fallback')
@@ -403,6 +405,7 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
     env,
     appVersion
   })
+
   assert.equal(sticky.enable, true)
   assert.equal(sticky.reason, 'sticky-fallback')
 
@@ -414,6 +417,7 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
     env,
     appVersion: '0.22.0'
   })
+
   assert.equal(reprobe.enable, false)
   assert.deepEqual(reprobe.nextMarker, { state: 'booting', reprobe: true, bootAborts: 0 })
 
@@ -424,6 +428,7 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
     env,
     appVersion: '0.22.0'
   })
+
   assert.equal(reprobeFailed.enable, true)
   assert.equal(reprobeFailed.reason, 'reprobe-failed')
 })

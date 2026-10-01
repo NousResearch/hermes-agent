@@ -326,6 +326,17 @@ import type { InstallStamp } from './install-stamp'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
+import {
+  decideLinuxGpuLaunch,
+  disableGpuSwitchNeededForReason,
+  LINUX_GPU_SILENT_RETRY_GRACE_S,
+  linuxGpuChildDeathPath,
+  linuxGpuFallbackMarker,
+  linuxGpuMarkerAfterSuccessfulBoot,
+  readLinuxGpuMarker,
+  shouldEngageSilentGpuRetryFallback,
+  writeLinuxGpuMarker
+} from './linux-gpu-fallback'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import {
   decideNvidiaEglFallback,
@@ -659,17 +670,6 @@ import {
   shouldSurfaceErrorForRendererStackCookieCrashLoop,
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
-import {
-  decideLinuxGpuLaunch,
-  disableGpuSwitchNeededForReason,
-  LINUX_GPU_SILENT_RETRY_GRACE_S,
-  linuxGpuChildDeathPath,
-  linuxGpuFallbackMarker,
-  linuxGpuMarkerAfterSuccessfulBoot,
-  readLinuxGpuMarker,
-  shouldEngageSilentGpuRetryFallback,
-  writeLinuxGpuMarker
-} from './linux-gpu-fallback'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -726,6 +726,7 @@ if (REMOTE_DISPLAY_REASON) {
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
+
   // #97616: disableHardwareAcceleration() alone does NOT stop a GPU child
   // from spawning (it then dies error_code=1002 on AMD/Mesa). For the explicit
   // HERMES_DESKTOP_DISABLE_GPU override, fully spawn-block it. Remote-display
@@ -733,6 +734,7 @@ if (REMOTE_DISPLAY_REASON) {
   if (disableGpuSwitchNeededForReason(REMOTE_DISPLAY_REASON)) {
     app.commandLine.appendSwitch('disable-gpu')
   }
+
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
@@ -1095,6 +1097,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
 
     const alreadySoftware =
       LINUX_GPU_SOFTWARE_ACTIVE || linuxGpuFallbackActive || alreadyHasDisableGpu(process.argv, process.env)
+
     const path = linuxGpuChildDeathPath({
       details,
       alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
@@ -15108,6 +15111,7 @@ function createWindow() {
               linuxGpuFallbackActive ||
               alreadyHasDisableGpu(process.argv, process.env) ||
               isHermesDesktopGpuOverrideOff(process.env)
+
             const gpuChildPresent = app
               .getAppMetrics()
               .some(metric => String(metric?.type || '').toLowerCase() === 'gpu')

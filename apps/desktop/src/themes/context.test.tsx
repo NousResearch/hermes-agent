@@ -58,9 +58,11 @@ describe('ThemeProvider ← backend skin sync', () => {
 
     render(
       <ThemeProvider>
-        <ThemeProbe onReady={api => {
-          latest = api
-        }} />
+        <ThemeProbe
+          onReady={api => {
+            latest = api
+          }}
+        />
       </ThemeProvider>
     )
 
@@ -80,9 +82,7 @@ describe('ThemeProvider ← backend skin sync', () => {
     expect(latest!.themeName).toBe('default')
     expect(latest!.themeName).not.toBe(DEFAULT_SKIN_NAME)
     expect(latest!.theme.label.toLowerCase()).toContain('classic hermes')
-    expect(latest!.availableThemes.some(t => t.name === 'default' && t.label === 'Classic Hermes')).toBe(
-      true
-    )
+    expect(latest!.availableThemes.some(t => t.name === 'default' && t.label === 'Classic Hermes')).toBe(true)
     // Classic gold palette reaches CSS (ui_accent / ui_text → primary / foreground).
     // Light-mode derivation may mix the navy background; accent/text stay gold.
     expect(cssVar('--theme-foreground').toLowerCase()).toBe('#fff8dc')

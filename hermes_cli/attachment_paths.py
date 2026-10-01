@@ -44,7 +44,6 @@ def _split_path_input(raw: str) -> tuple[str, str]:
     return raw[:pos].replace('\\ ', ' '), raw[pos:].strip()
 
 
-
 def _resolve_attachment_path(raw_path: str) -> Path | None:
     """Resolve a user-supplied attachment path (quotes, ``~``, env vars, ``file://``; relative to TERMINAL_CWD).
 
@@ -69,8 +68,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
                 if parsed.netloc and os.name == "nt":
                     expanded = f"//{parsed.netloc}{expanded}"
                 elif os.name == "nt" and len(expanded) >= 3 and expanded[0] == "/" and expanded[1].isalpha() and expanded[2] == ":":
-                    # file:///C:/... parses to path "/C:/..." — drop the leading slash
-                    # so it resolves as a drive-letter path.
+                    # Windows file URIs encode a drive-letter path with a leading slash.
                     expanded = expanded[1:]
         except Exception:
             expanded = token
@@ -89,8 +87,6 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     except Exception:
         resolved = path
 
-    # ENAMETOOLONG for a pasted `/goal <long prose>` that passed the `/` prefilter
-    # would otherwise reach process_loop and silently lose the input.
     try:
         if not resolved.exists() or not resolved.is_file():
             return None
@@ -99,16 +95,12 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     return resolved
 
 
-
 def _file_drop_result(path: Path, remainder: str) -> dict:
-    from cli import _IMAGE_EXTENSIONS
     return {"path": path, "is_image": path.suffix.lower() in _IMAGE_EXTENSIONS, "remainder": remainder}
 
 
-
 def _detect_file_drop(user_input: str) -> dict | None:
-    """Detect a dragged/pasted file path at the start of *user_input* -> ``{path, is_image, remainder}`` or None."""
-    from cli import _file_drop_result, _resolve_attachment_path, _split_path_input
+    """Detect a leading attachment path and any trailing message text."""
     if not isinstance(user_input, str):
         return None
 

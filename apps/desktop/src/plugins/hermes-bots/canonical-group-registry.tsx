@@ -1,5 +1,5 @@
 import { atom, Button, gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { groupCreationSource } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -45,6 +45,14 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
+  const socketGenerationRef = useRef(0)
+  const [socketGeneration, setSocketGeneration] = useState(0)
+  useEffect(() => host.state.gateway.listen(() => {
+    // React can batch closed -> open into the same rendered value. Fence
+    // outstanding reads immediately and retain every readiness transition.
+    socketGenerationRef.current++
+    setSocketGeneration(socketGenerationRef.current)
+  }), [])
   useEffect(() => {
     let cancelled = false
     setRooms([])
@@ -52,7 +60,8 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
 
     if (gateway !== 'open') {return}
 
-    const isCurrent = groupCreationSource({ connectionId: connectionId ?? '', profile }, activationEpoch)
+    const sourceIsCurrent = groupCreationSource({ connectionId: connectionId ?? '', profile }, activationEpoch)
+    const isCurrent = () => socketGenerationRef.current === socketGeneration && sourceIsCurrent()
     void (async () => {
       const route = captureCanonicalGroupRoute()
       // Socket readiness does not advance the route epoch. Refresh the
@@ -63,7 +72,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
     })().catch(e => { if (!cancelled && isCurrent()) {setError(e instanceof Error ? e.message : String(e))} })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, gateway, activationEpoch, refresh])
+  }, [connectionId, profile, gateway, activationEpoch, socketGeneration, refresh])
 
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>

@@ -1,0 +1,20 @@
+# plugin-catalog/hermes-beads.yaml — catalog PR: 1 commit, 1 file.
+# sha = the v0.1.0 annotated tag's 40-hex commit (84ddfc60c..., merged release/v0.1.0@98c9fbd).
+name: hermes-beads
+repo: https://github.com/jacobhausler/hermes-beads
+sha: "84ddfc60ce838209a26e66c955a8fe5713227dc5"
+subdir: ""
+description: "Native Beads (bd) work-graph backend — fixed-argv adapter, scoped ready frontier, claim with read-back, heartbeat"
+maintainer: jacobhausler
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - beads_smoke
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

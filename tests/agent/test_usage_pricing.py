@@ -439,6 +439,19 @@ class TestFormatCostLabel:
 class TestSubscriptionIncludedNotes:
     """Subscription-included costs should carry a note clarifying no invoice."""
 
+    def test_fixed_price_routes_are_included(self):
+        usage = CanonicalUsage(input_tokens=1000, output_tokens=500)
+        for provider in ("copilot", "github-copilot", "copilot-acp", "opencode-go", "nvidia"):
+            result = estimate_usage_cost("model", usage, provider=provider)
+            assert result.status == "included", provider
+            assert result.amount_usd == Decimal("0"), provider
+
+        cloudflare = estimate_usage_cost(
+            "model", usage, provider="custom:cloudflare", base_url="https://api.cloudflare.com/client/v4"
+        )
+        assert cloudflare.status == "included"
+        assert cloudflare.amount_usd == Decimal("0")
+
     def test_included_cost_has_note(self):
         """estimate_usage_cost for subscription-included route includes a note."""
         # openai-codex is subscription_included

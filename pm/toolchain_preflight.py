@@ -80,6 +80,15 @@ def _build_env_uses_clang(build_env: Mapping[str, str], python: Path | None) -> 
     return cxx is not None and "clang" in Path(cxx).name
 
 
+def _build_env_uses_clang_from_resolved(build_env: Mapping[str, str], resolved_cxx: str | None) -> bool:
+    """Check if build env uses clang, given an already-resolved CXX value."""
+    for key in ("CXX", "CC"):
+        value = build_env.get(key, "")
+        if value and "clang" in _first_executable(value):
+            return True
+    return resolved_cxx is not None and "clang" in Path(resolved_cxx).name
+
+
 def require_native_cxx_for_sync(
     extras: Sequence[str],
     *,
@@ -89,11 +98,14 @@ def require_native_cxx_for_sync(
     """Raise before ``uv sync`` when a C++ compiler is required but missing."""
     env = dict(build_env if build_env is not None else os.environ)
     needs_matrix = _sync_needs_matrix_native_build(extras)
-    uses_clang = _build_env_uses_clang(env, python)
+    
+    # Resolve CXX once upfront to avoid redundant subprocess calls
+    cxx = _resolve_cxx(env, python)
+    uses_clang = _build_env_uses_clang_from_resolved(env, cxx)
+    
     if not needs_matrix and not uses_clang:
         return
 
-    cxx = _resolve_cxx(env, python)
     if needs_matrix and sys.platform == "linux":
         candidate = cxx or "clang++"
     elif uses_clang:

@@ -49,3 +49,41 @@ stage_repository
         assert result.returncode == 0, result.stdout + result.stderr
         assert (dest / "README").read_text() == "complete checkout\n"
     assert not list(tmp_path.glob(".hermes-clone-*"))
+
+
+def test_existing_treeless_checkout_is_refetched_before_update(tmp_path):
+    origin = tmp_path / "origin.git"
+    source = tmp_path / "source"
+    install = tmp_path / "install"
+
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], check=True,
+                              capture_output=True, text=True)
+
+    source.mkdir()
+    git(source, "init", "-b", "main")
+    git(source, "config", "user.email", "fixture@example.invalid")
+    git(source, "config", "user.name", "Fixture")
+    for index in range(5):
+        (source / "history.txt").write_text(f"commit {index}\n")
+        git(source, "add", "history.txt")
+        git(source, "commit", "-m", f"history {index}")
+    git(source, "remote", "add", "origin", origin.as_posix())
+    git(source, "push", "origin", "main")
+    git(origin, "config", "uploadpack.allowFilter", "true")
+    git(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+
+    subprocess.run(["git", "clone", "--filter=tree:0", origin.as_posix(), install.as_posix()],
+                   check=True, capture_output=True, text=True)
+    assert git(install, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "tree:0"
+
+    env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
+               HERMES_INSTALL_DIR=install.as_posix(), HERMES_REPO_URL=origin.as_posix())
+    script = f'''source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest
+stage_repository
+GIT_NO_LAZY_FETCH=1 git -C {shlex.quote(install.as_posix())} rev-list HEAD -- history.txt
+'''
+    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert git(install, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"

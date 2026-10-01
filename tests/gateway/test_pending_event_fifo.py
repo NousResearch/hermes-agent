@@ -3,6 +3,7 @@
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -31,18 +32,24 @@ def _queue(adapter, runner, key):
         ("flush-plugin", MessageType.TEXT),
         ("buffer-control", MessageType.TEXT),
         ("buffer-plugin", MessageType.TEXT),
+        ("buffer-reply", MessageType.TEXT),
         ("runnerless-control", MessageType.TEXT),
         ("runnerless-plugin", MessageType.TEXT),
         ("runnerless-sender", MessageType.TEXT),
         ("runnerless-reply", MessageType.TEXT),
     ],
 )
-async def test_pending_events_preserve_arrival_order_and_context(scenario, kind):
+async def test_pending_events_preserve_arrival_order_and_context(
+    scenario, kind, monkeypatch: pytest.MonkeyPatch
+):
     adapter = _make_initialized_adapter()
     runner = _QueueRunner(adapter)
     runnerless = scenario.startswith("runnerless-")
     adapter.gateway_runner = None if runnerless else runner
     adapter._active_sessions["shared"] = asyncio.Event()
+    adapter._busy_text_mode = "queue"
+    monkeypatch.setattr(adapter, "_event_session_key", lambda event: "shared")
+    adapter.set_message_handler(AsyncMock(return_value=None))
     first = _make_event("first", chat_type="group", user_id="alice")
     second = _make_event("second", chat_type="group", user_id="alice")
     if scenario in {"intervening", "reply", "flush-control"}:
@@ -84,8 +91,8 @@ async def test_pending_events_preserve_arrival_order_and_context(scenario, kind)
         else:
             if runnerless:
                 adapter._pending_messages["shared"] = events[0]
-            await adapter._queue_text_debounce("shared", first)
-            await adapter._queue_text_debounce("shared", second)
+            await adapter.handle_message(first)
+            await adapter.handle_message(second)
             await adapter._flush_text_debounce_now("shared")
         actual = _queue(adapter, runner, "shared")
         state = adapter._text_debounce.get("shared")

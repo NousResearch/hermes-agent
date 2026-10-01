@@ -662,7 +662,10 @@ def test_discard_retires_only_proven_nonadmission_without_contacting_target(case
     assert current(c)['status'] == 'deferred' and tasks.is_proven_nonadmission(current(c))
     before = len(c.peer.dispatches)
     assert dict(kind='discard', **{k: v for k, v in exact.items() if k != 'room_id'}) in actions(c)
+    from tui_gateway.contracts.groups_bot_relay import GroupsDiscardParams, GroupsDiscardResult
+    GroupsDiscardParams.model_validate(exact)
     reply = rpc(c, 'groups.discard', exact)
+    GroupsDiscardResult.model_validate(reply.get('result'))
     assert reply.get('result', {}).get('discarded') is True, reply
     assert current(c)['status'] == 'cancelled'
     assert c.peer.stops == [] and len(c.peer.dispatches) == before

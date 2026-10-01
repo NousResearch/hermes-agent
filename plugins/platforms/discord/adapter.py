@@ -4115,6 +4115,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""
         from tools.voice_mode_transcript import is_whisper_hallucination
+        # The callback routes by the binding as it is when it runs; a /voice join elsewhere during
+        # STT would hand this utterance to that other conversation, so stale work is dropped.
+        captured_for = self._voice_text_channels.get(guild_id)
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
         tmp_f.close()
@@ -4128,6 +4131,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             if not transcript or is_whisper_hallucination(transcript):
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            if self._voice_text_channels.get(guild_id) != captured_for:
+                logger.info("Dropping voice input from user %d: the voice binding moved during transcription",
+                            user_id)
+                return
             if self._voice_input_callback:
                 await self._voice_input_callback(
                     guild_id=guild_id, user_id=user_id, transcript=transcript,

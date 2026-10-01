@@ -15,6 +15,7 @@ import {
   deleteSession,
   fetchStoredTranscriptAcrossBackends,
   getAllSessionMessages,
+  getHermesConfig,
   getLatestSessionMessages,
   setSessionArchived
 } from '@/hermes'
@@ -177,6 +178,7 @@ import {
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
+  type BranchMode,
   cachedSessionRow,
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
@@ -190,6 +192,7 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
+  resolveBranchMode,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
@@ -198,6 +201,7 @@ import {
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
+  toBranchSeedPayloads,
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
 } from './utils'
@@ -280,6 +284,15 @@ function branchCreateKey({
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
+
+async function loadBranchMode(profile?: null | string): Promise<BranchMode> {
+  try {
+    const config = await getHermesConfig(profile ?? undefined)
+    return resolveBranchMode(config.session?.branch_mode)
+  } catch {
+    return 'spine'
+  }
+}
 
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
@@ -497,6 +510,7 @@ export function useSessionActions({
   const transcriptHydrationByRuntimeRef = useRef(new Map<string, symbol>())
   const coldDisplayReadsRef = useRef(new Map<string, symbol>())
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
+  const branchModeFlightsRef = useRef(new Map<string, Promise<BranchMode>>())
 
   // Stored id we just created/forked and navigated to. creatingSessionRef stays
   // true until routedSessionId + selection both agree on this id — clearing via
@@ -2767,6 +2781,17 @@ export function useSessionActions({
         })
 
         let createFlight = branchCreateFlightsRef.current.get(createKey)
+        let modeFlight = branchModeFlightsRef.current.get(createKey)
+        if (!modeFlight) {
+          modeFlight = loadBranchMode(profile)
+          branchModeFlightsRef.current.set(createKey, modeFlight)
+        }
+        const branchMode = await modeFlight
+        // A concurrent caller may have installed the creation flight while this
+        // caller awaited configuration; re-read before deciding to create.
+        createFlight = branchCreateFlightsRef.current.get(createKey) ?? createFlight
+        const seedMidThreadFull = branchMode === 'full' && branchCount !== undefined
+        const useBranchRpc = Boolean(sourceSessionId) && !seedMidThreadFull
 
         // No title: the backend auto-names the branch from its parent's lineage.
         if (!createFlight) {
@@ -2784,10 +2809,10 @@ export function useSessionActions({
           }
 
           createFlight = (
-            sourceSessionId
+            useBranchRpc
               ? requestBranchGateway<SessionCreateResponse>(
                   branchCount === undefined ? 'session.branch_whole' : 'session.branch',
-                  branchParams
+                  { ...branchParams, ...(branchMode === 'full' ? { branch_mode: 'full' } : {}) }
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
                     throw err
@@ -2798,7 +2823,7 @@ export function useSessionActions({
               : branchMessages.length
                 ? requestBranchGateway<SessionCreateResponse>('session.create', {
                     ...createParams,
-                    messages: branchMessages.map(({ content, role }) => ({ content, role }))
+                    messages: toBranchSeedPayloads(branchMessages, branchMode)
                   })
                 : requestBranchGateway<SessionCreateResponse>('session.branch_stored', createParams).catch(
                     async err => {
@@ -2822,6 +2847,7 @@ export function useSessionActions({
             // Drop the flight so a genuine retry re-issues the create; a
             // resolved flight is cleared once the child is fully published.
             branchCreateFlightsRef.current.delete(createKey)
+            branchModeFlightsRef.current.delete(createKey)
             throw err
           })
           branchCreateFlightsRef.current.set(createKey, createFlight)
@@ -2923,6 +2949,7 @@ export function useSessionActions({
         }
 
         branchCreateFlightsRef.current.delete(createKey)
+            branchModeFlightsRef.current.delete(createKey)
         broadcastSessionsChanged()
 
         return true
@@ -3012,7 +3039,8 @@ export function useSessionActions({
         return false
       }
 
-      const branchMessages = messageId ? selectBranchMessages(messages, authoritativeMessages, messageId) : []
+      const branchMode = await loadBranchMode(profile)
+      const branchMessages = messageId ? selectBranchMessages(messages, authoritativeMessages, messageId, branchMode) : []
 
       if (messageId && !branchMessages.length) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
@@ -3101,10 +3129,22 @@ export function useSessionActions({
           await ensureGatewayProfile(profile)
         }
 
-        // Ask the owning backend to read and copy the parent transcript. The
-        // renderer deliberately does not materialize the complete history.
+        const branchMode = await loadBranchMode(profile)
+        // Spine retains backend-side whole-history copying and lazy hydration.
+        // Full mode materializes a pair-safe seed so tool bindings survive.
+        const branchMessages =
+          branchMode === 'full'
+            ? toBranchMessages(
+                toChatMessages((await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)).messages),
+                branchMode
+              )
+            : []
+        if (branchMode === 'full' && !branchMessages.length) {
+          notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
+          return false
+        }
         return await forkBranch(
-          [],
+          branchMessages,
           null,
           stored?.id ?? storedSessionId,
           stored?.cwd?.trim(),

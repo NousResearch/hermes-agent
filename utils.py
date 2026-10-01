@@ -174,7 +174,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     then in-place rewrite).
     """
     target_str = str(target)
-    real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+    real_path = _publish_path(target_str)
     tmp_str = str(tmp_path)
     try:
         os.replace(tmp_str, real_path)
@@ -206,6 +206,11 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
+def _publish_path(target_str: str) -> str:
+    """The path :func:`atomic_replace` renames onto: a symlink's real file, else the target itself."""
+    return os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+
+
 def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
     """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
 
@@ -217,7 +222,7 @@ def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
     """
     target_str = str(target)
     link_dir = str(Path(target_str).parent)
-    stage_dir = os.path.dirname(os.path.realpath(target_str)) if os.path.islink(target_str) else link_dir
+    stage_dir = os.path.dirname(_publish_path(target_str)) or link_dir
     try:
         return tempfile.mkstemp(dir=stage_dir, **kw)
     except PermissionError:

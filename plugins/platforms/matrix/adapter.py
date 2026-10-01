@@ -90,6 +90,7 @@ from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
+from plugins.platforms.matrix.redaction_mixin import MatrixRedactionMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
@@ -811,7 +812,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(MatrixFollowupMixin, MatrixContextMixin, BasePlatformAdapter):
+class MatrixAdapter(MatrixRedactionMixin, MatrixFollowupMixin, MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -2768,18 +2769,6 @@ class MatrixAdapter(MatrixFollowupMixin, MatrixContextMixin, BasePlatformAdapter
         room_id = str(getattr(event, "room_id", ""))
         if room_id:
             self._invalidate_room_identities(room_id)
-
-    async def _on_redaction(self, event: Any) -> None:
-        room_id = str(getattr(event, "room_id", "") or "")
-        target = str(getattr(event, "redacts", "") or "")
-        if not target:
-            content = getattr(event, "content", None)
-            target = str(content.get("redacts") or "") if isinstance(content, dict) else ""
-        if room_id and target:
-            self._event_context_cache.redact(room_id, target)
-            for action in self._reaction_followup_actions.values():
-                if action.room_id == room_id:
-                    action.pending.discard(target)
 
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""

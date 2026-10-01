@@ -424,6 +424,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms import base_pending_merge
 from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
@@ -1645,11 +1646,6 @@ class TextDebounceState:
             self.task.cancel()
 
 
-def _append_text(existing: Optional[str], new: Optional[str]) -> str:
-    """``existing\\nnew`` when both non-empty; the non-empty one otherwise."""
-    return f"{existing}\n{new}" if existing else new
-
-
 @dataclass
 class _ExtractedResponse:
     """Deliverable parts of a handler response (see ``_extract_response_content``)."""
@@ -1804,49 +1800,6 @@ class EphemeralReply(str):
         """The underlying text (explicit form of ``str(reply)``)."""
         return str.__str__(self)
 
-
-def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
-                                event: MessageEvent, *, merge_text: bool = False) -> None:
-    """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
-    turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
-    replace."""
-    existing = pending_messages.get(session_key)
-    if existing:
-        existing_type = getattr(existing, "message_type", None)
-        existing_is_photo = existing_type == MessageType.PHOTO
-        incoming_is_photo = event.message_type == MessageType.PHOTO
-        both_photo = existing_is_photo and incoming_is_photo
-        incoming_has_media = bool(event.media_urls)
-
-        # A photo burst always absorbs; otherwise merge only when media is involved on either
-        # side. Captions merge in every absorbing case.
-        if both_photo or existing.media_urls or incoming_has_media:
-            if both_photo or incoming_has_media:
-                existing.absorb_media(event)
-            if event.text:
-                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            existing.absorb_message_ids(event)
-            existing.absorb_reply_context(event)
-            existing.absorb_reply_expected(event)
-            if existing_is_photo or incoming_is_photo:
-                existing.message_type = MessageType.PHOTO
-            elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
-                existing.message_type = event.message_type
-            # Drop the *derived* STT cache (event changed); the echo ledger must survive or
-            # notes echo twice.
-            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
-                if hasattr(existing, attr):
-                    delattr(existing, attr)
-            return
-        both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
-        if merge_text and both_text:
-            if event.text:
-                existing.text = _append_text(existing.text, event.text)
-            existing.absorb_message_ids(event)
-            existing.absorb_reply_context(event)
-            existing.absorb_reply_expected(event)
-            return
-    pending_messages[session_key] = event
 
 
 # Transient *connection* failures worth retrying. Plain/read/write "timeout" excluded on purpose:
@@ -2580,7 +2533,7 @@ class BasePlatformAdapter(ABC):
             existing = self._pending_text_batches[key] = event
         else:
             if event.text:
-                existing.text = _append_text(existing.text, event.text)
+                existing.text = base_pending_merge._append_text(existing.text, event.text)
             if event.media_urls:
                 existing.absorb_media(event)
             existing.absorb_message_ids(event)
@@ -3884,7 +3837,7 @@ class BasePlatformAdapter(ABC):
             store[session_key] = state
         else:
             if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
+                state.event.text = base_pending_merge._append_text(state.event.text, event.text)
             if event.media_urls:
                 state.event.media_text_inlined.extend(
                     [None] * (len(state.event.media_urls) - len(state.event.media_text_inlined))
@@ -3947,7 +3900,7 @@ class BasePlatformAdapter(ABC):
             state.earlier_events.pop(0)
         else:
             store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+        base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
         return True
 
     def _discard_text_debounce(self, session_key: str) -> None:
@@ -4248,7 +4201,7 @@ class BasePlatformAdapter(ABC):
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event)
+            base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event)
             event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
@@ -4267,7 +4220,7 @@ class BasePlatformAdapter(ABC):
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event,
+            base_pending_merge.merge_pending_message_event(self._pending_messages, session_key, event,
                                         merge_text=event.message_type == MessageType.TEXT)
             event._gateway_accepted = True
 

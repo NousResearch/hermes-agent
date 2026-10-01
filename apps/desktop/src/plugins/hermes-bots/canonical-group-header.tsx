@@ -62,11 +62,16 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
   }
 
   const disband = () => void run(async () => {
-    const result = await canonicalGroupRequest<{ tombstone?: boolean } | undefined>(binding, 'groups.disband', {
+    const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
       room_id: binding.roomId, cancel_id: crypto.randomUUID()
     })
 
-    if (result?.tombstone !== true) {throw new Error(labels.disbandUnconfirmed)}
+    const tombstone = result?.tombstone
+
+    if (tombstone?.room_id !== binding.roomId || !Number.isFinite(tombstone.disbanded_at)) {
+      throw new Error(labels.disbandUnconfirmed)
+    }
+
     onDisbanded?.()
   })
 

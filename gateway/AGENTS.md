@@ -19,6 +19,8 @@ listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`
 
 The agent-thread approval notification implementation is in
 `run_turn_runner_approval_notify.py`. `TurnRunner._approval_notify_sync` forwards to it.
+Matrix picker state and shared reaction gates are in
+`plugins/platforms/matrix/reaction_controls.py`; the adapter inherits that mixin.
 
 ## The gateway has TWO message guards — both must bypass approval/control commands
 

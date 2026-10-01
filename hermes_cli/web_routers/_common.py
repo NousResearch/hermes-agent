@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import HTTPException
 
+from hermes_cli.config_backend import ConfigLockedError, ConfigValueError, ConfigWriteError
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_profiles import _profile_cli_args
 
@@ -84,11 +85,28 @@ def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:
     return profile
 
 
+def config_refusal_http(exc: ConfigWriteError) -> Optional[HTTPException]:
+    """The HTTP error for an EXPECTED config-backend refusal, or None for an unexpected failure.
+
+    A lock (403), a value the backend cannot store (400) and a lost CAS race (409) are the
+    caller's to fix, and their messages are ours or the config plane's own refusal text (a path
+    and the level that locks it; never a value or a credential), so they pass through (design
+    §4.3: v1 shows the server's 403 message). Anything else stays opaque."""
+    if isinstance(exc, ConfigLockedError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, ConfigValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if exc.code == "config_version_conflict":
+        return HTTPException(status_code=409, detail=str(exc))
+    return None
+
+
 @contextlib.contextmanager
 def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, detail: Optional[str] = None):
     """Map unexpected exceptions to an ``HTTPException``.
 
-    ``HTTPException`` passes through; anything else is logged with ``log_msg`` (traceback),
+    ``HTTPException`` passes through; an expected config-backend refusal becomes its own status
+    and message (:func:`config_refusal_http`); anything else is logged with ``log_msg`` (traceback),
     then re-raised as ``HTTPException(status, f"{prefix}: {exc}")`` — or ``detail`` when given
     (fixed message, exception text only in the log).
     """
@@ -96,6 +114,12 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
         yield
     except HTTPException:
         raise
+    except ConfigWriteError as exc:
+        refusal = config_refusal_http(exc)
+        if refusal is None:
+            log.exception(log_msg)
+            raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")
+        raise refusal from exc
     except Exception as exc:
         log.exception(log_msg)
         raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")

@@ -16,6 +16,10 @@ from plugins.config_backends.remote.values import secret_literal_path
 
 VENDOR = Path(__file__).resolve().parents[3] / "plugins" / "config_backends" / "remote" / "vendor"
 MANIFEST = VENDOR / "conformance" / "config-fixtures.sha256"
+# contract.md §13.4: a LITERAL pin (an imported constant would make the check a tautology). This
+# is the digest P1 shipped and review approved (gateway-gateway 9151149d7f); a fixture change in gg
+# is a reviewed bump here.
+APPROVED_FIXTURE_DIGEST = "e7e92b9b356c509b58b3e64f859922aff1c9cdd97924d53b756e4113de06c0af"
 RESOLUTION = sorted((VENDOR / "conformance" / "config-resolution").glob("*.json"))
 
 
@@ -25,7 +29,9 @@ def _load(name: str):
 
 def test_vendored_fixtures_match_manifest_and_source():
     source = json.loads((VENDOR / "SOURCE.json").read_text(encoding="utf-8"))
-    assert hashlib.sha256(MANIFEST.read_bytes()).hexdigest() == source["fixtureDigest"]
+    manifest_digest = hashlib.sha256(MANIFEST.read_bytes()).hexdigest()
+    assert manifest_digest == APPROVED_FIXTURE_DIGEST, "vendored manifest is not the approved fixture set"
+    assert source["fixtureDigest"] == APPROVED_FIXTURE_DIGEST, "SOURCE.json names a different fixture set"
     listed = {}
     for line in MANIFEST.read_text(encoding="utf-8").splitlines():
         digest, rel = line.split(None, 1)

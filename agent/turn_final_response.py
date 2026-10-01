@@ -11,8 +11,11 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Dict, Optional
 
+from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 from agent.message_metadata import append_message
-from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.repetition_guard import (
+    STOP_PATH_MIN_CHARS, is_runaway_repetition, replays_prior_answer,
+)
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
@@ -28,7 +31,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_prior_answer_replay_nudge",
 )
 
 
@@ -67,7 +70,7 @@ def finish_text_response(
     stop gates accept it."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
-        _join_truncated_parts
+        _PRIOR_ANSWER_REPLAY_NUDGE, _join_truncated_parts
     )
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> FinalResponseVerdict:
@@ -187,8 +190,21 @@ def finish_text_response(
         and _tool_rows > 0
         and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
-    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
-    if _stall_continue_intent:
+    # Prior-answer replay (#7619): in a long session a topic switch came back answered with an
+    # earlier turn's answer, verbatim. No shape guard sees it, so the candidate text itself is
+    # compared against the answers this conversation already gave. Rides the same scope knob and
+    # the SAME bounded counter as the ack continuation: a user who asked for a repeat pays one
+    # call, and a model that keeps copying ends the turn on whatever it said.
+    _prior_answer_replay = (
+        bool(getattr(agent, "_stall_guards", True))
+        and codex_ack_continuations < 2
+        and replays_prior_answer(_stall_text, messages)
+    )
+    # Precedence: a copy of an earlier answer outranks the shape guards (it is never a valid
+    # answer), then an announced next action outranks the fragment shape, then the codex ack.
+    if _prior_answer_replay:
+        _continuation_kind = "prior_replay"
+    elif _stall_continue_intent:
         _continuation_kind = "stall"
     elif _degenerate_final:
         _continuation_kind = "degenerate"
@@ -205,7 +221,13 @@ def finish_text_response(
     else:
         _continuation_kind = None
     if _continuation_kind:
-        if _continuation_kind == "stall":
+        if _continuation_kind == "prior_replay":
+            logger.warning(
+                "Prior-answer replay: the final text copies an earlier answer in this "
+                "conversation (%d chars) — re-prompting to answer the current request (%d/2)",
+                len(_stall_text), codex_ack_continuations + 1,
+            )
+        elif _continuation_kind == "stall":
             logger.info(
                 "Stall guard: turn ending on trailing continue-"
                 "intent with no tool calls — re-prompting to act "
@@ -218,20 +240,40 @@ def finish_text_response(
                 codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
-        interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-        if _promoted:
-            # Same sidecar as the final row: the wire copy must carry the promoted text, not only
-            # ``reasoning_content``, or the continuation replays an empty assistant turn.
-            interim_msg["api_content"] = final_response
+        if _continuation_kind == "prior_replay":
+            # The copied text never becomes a durable or visible row: the turn owes an answer
+            # to the CURRENT request, so the tail is a hidden placeholder plus the nudge. Same
+            # shape as the interrupt redirect placeholder, neutral api_content so the pre-call
+            # sanitizer does not re-heal the empty row.
+            interim_msg = {
+                "role": "assistant", "content": "", "display_kind": "hidden",
+                "api_content": _INTERRUPTED_PLACEHOLDER,
+                "_prior_answer_replay_nudge": True,
+            }
+        else:
+            interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+            if _promoted:
+                # Same sidecar as the final row: the wire copy must carry the promoted text, not only
+                # ``reasoning_content``, or the continuation replays an empty assistant turn.
+                interim_msg["api_content"] = final_response
+            agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, interim_msg)
-        agent._emit_interim_assistant_message(interim_msg)
-        append_message(messages, {
+        nudge_msg = {
             "role": "user",
             "content": (
-                _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
+                _PRIOR_ANSWER_REPLAY_NUDGE if _continuation_kind == "prior_replay"
+                else _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
                 else _CODEX_ACK_CONTINUATION_NUDGE
             ),
-        })
+        }
+        if _continuation_kind == "prior_replay":
+            # Both halves of the pair are ephemeral scaffolding, exactly like the
+            # ``_dropped_toolcall_nudge`` pair below: the interim row here is hidden and never
+            # persists, so the nudge must carry the flag too. Leaving it unflagged left the
+            # finalization pop staring at an unflagged tail (it removes nothing) and the
+            # synthetic instruction reached SQLite as a real user turn.
+            nudge_msg["_prior_answer_replay_nudge"] = True
+        append_message(messages, nudge_msg)
         agent._session_messages = messages
         # An acknowledgment is non-final: its text must not suppress iteration-limit
         # summarization if the continuation exhausts budget.

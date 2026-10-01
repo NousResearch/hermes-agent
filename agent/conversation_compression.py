@@ -2260,7 +2260,7 @@ def _message_text(message: Any) -> str:
 
 _SYNTHETIC_USER_FLAGS = (
     "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_prior_answer_replay_nudge",
 )
 
 

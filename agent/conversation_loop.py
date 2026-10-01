@@ -972,6 +972,14 @@ _DEGENERATE_FINAL_NUDGE = (
     "WAS your complete answer, send it again exactly as before.]"
 )
 
+# Re-prompt when the turn's answer copies an answer this conversation already gave (#7619): a
+# copy cannot answer a different question, so ask for the current request instead. A user who
+# genuinely asked for a repeat gets the text on the next call.
+_PRIOR_ANSWER_REPLAY_NUDGE = (
+    "[System: Your previous message repeated an earlier answer from this conversation verbatim "
+    "instead of responding to the current request. Answer the current request now.]"
+)
+
 # Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
 _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was included. Do not narrate a plan or "

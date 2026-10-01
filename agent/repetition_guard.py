@@ -5,12 +5,16 @@ the ``finish_reason=length`` continuation would then stitch it into the final re
 "continue" nudge (one incident: a 60k-char turn delivered as 31 Discord messages). This detects
 repetition-dominated fragments BEFORE the nudge so the turn aborts with a clear error. Deliberately
 conservative: only LONG verbatim repeats (60+ chars) covering a majority of the fragment trip it.
+
+:func:`replays_prior_answer` is the cross-turn sibling: it cannot see a copy by looking inside one
+fragment, so it compares the candidate against the answers this conversation already gave (#7619).
 """
 
 from __future__ import annotations
 
 import math
 from collections import Counter
+from typing import Any
 
 # Below this length the check doesn't run: short truncations trivially
 # contain repeated tokens and are legitimately continued.
@@ -154,3 +158,62 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
     """True when a single normalized line covers half the fragment via repeats."""
     counts = Counter(norm for norm in (line.strip() for line in text.splitlines()) if norm)
     return any(c >= _MIN_REPEAT_COUNT and c * len(line) >= n * _DOMINANCE_RATIO for line, c in counts.items())
+
+
+# Cross-turn verbatim replay (#7619): a long conversation on one topic, then a switch, and the
+# model answers the new question with an earlier turn's answer. Nothing inside one fragment can
+# see that, so the check is a comparison against the conversation's own earlier answers.
+# Below this length a shared answer is coincidence ("Done.", a fixed greeting), not a replay.
+PRIOR_ANSWER_MIN_CHARS = 200
+# How much of the longer text the shared answer must cover. A re-emitted answer that grew a
+# lead-in still qualifies; a different answer that happens to reuse one paragraph does not.
+_PRIOR_ANSWER_COVERAGE = 0.8
+# A replay copies something still in context, so the tail of the transcript holds it. Bounding
+# the scan keeps the check O(1) in transcript length on a 150-turn session.
+_PRIOR_ANSWER_SCAN_ROWS = 24
+
+
+def _normalize_for_replay(text: str) -> str:
+    """Collapse whitespace so wire-level line wrapping is not a difference."""
+    return " ".join((text or "").split())
+
+
+def _same_answer(candidate: str, prior: str) -> bool:
+    """Whether two normalized answers are the same text.
+
+    The model re-emits an answer with a lead-in ("Sure, here it is again:") or a truncated tail,
+    so containment at EITHER end counts — bounded by the coverage ratio, so a different answer
+    that happens to share one paragraph does not.
+    """
+    shorter, longer = sorted((len(candidate), len(prior)))
+    if shorter < PRIOR_ANSWER_MIN_CHARS or shorter < _PRIOR_ANSWER_COVERAGE * longer:
+        return False
+    return (
+        candidate.startswith(prior) or prior.startswith(candidate)
+        or candidate.endswith(prior) or prior.endswith(candidate)
+    )
+
+
+def replays_prior_answer(text: str, messages: Any) -> bool:
+    """True when ``text`` copies an answer this conversation already gave.
+
+    Tool-call narration and hidden scaffolding rows are skipped: they are not answers. A row this
+    turn produced earlier is compared too — the candidate is only ever the turn's FINAL text, and
+    a copy of a copy is the same failure. The caller bounds how often it re-prompts, so a user who
+    genuinely asked for a repeat pays one extra call and then gets the text delivered.
+    """
+    candidate = _normalize_for_replay(text)
+    if len(candidate) < PRIOR_ANSWER_MIN_CHARS or not messages:
+        return False
+    compared = 0
+    for msg in reversed(list(messages)):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        if msg.get("tool_calls") or msg.get("display_kind") == "hidden":
+            continue
+        if _same_answer(candidate, _normalize_for_replay(msg.get("content") or "")):
+            return True
+        compared += 1
+        if compared >= _PRIOR_ANSWER_SCAN_ROWS:
+            break
+    return False

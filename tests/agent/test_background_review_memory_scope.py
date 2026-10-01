@@ -71,6 +71,45 @@ class TestSpawnForwardsScope:
             assert captured["review_memory"] is True
 
 
+def test_review_prompt_uses_owning_profile_and_reaches_worker(tmp_path, monkeypatch):
+    from agent.employee_review import PROMPT
+    from agent.knowledge import guides_root
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    ambient = tmp_path / "ambient"
+    homes = [tmp_path / "a", tmp_path / "b"]
+    monkeypatch.setenv("HERMES_HOME", str(ambient))
+    history = [{"role": "user", "content": "Remember my correction."}]
+    agent = SimpleNamespace(_cached_system_prompt="warm system prompt")
+    calls = []
+    monkeypatch.setattr(bg, "_run_review_in_thread", lambda *args, **kwargs: calls.append(args))
+    prompts = []
+    for home in [*homes, homes[0]]:
+        token = set_hermes_home_override(home)
+        try:
+            target, prompt = bg.spawn_background_review_thread(
+                agent, history, review_memory=True, focus="Check the correction", task_cfg={})
+        finally:
+            reset_hermes_home_override(token)
+        # The thread receives the prompt rendered in the owning profile, even after scope exits.
+        target()
+        assert calls[-1][0] is agent
+        assert calls[-1][1] is history
+        assert calls[-1][2] == prompt
+        rendered = PROMPT.replace("{profile_home}", str(home)).replace("{guides_root}", str(guides_root()))
+        assert prompt.startswith(rendered)
+        assert prompt.endswith("Check the correction")
+        assert str(home / "connections") in prompt
+        assert str(home / "responsibilities") in prompt
+        assert str(ambient) not in prompt
+        assert str(next(other for other in homes if other != home)) not in prompt
+        prompts.append(prompt)
+    assert prompts[0] == prompts[2]
+    assert prompts[0] != prompts[1]
+    assert agent._cached_system_prompt == "warm system prompt"
+    assert history == [{"role": "user", "content": "Remember my correction."}]
+
+
 class TestExplicitRefineOrigin:
     """``/refine`` (explicit) must not inherit the unattended-review origin: the user asked
     for that review, so its fork keeps the full memory operation set and the delete gate

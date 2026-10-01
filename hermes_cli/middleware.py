@@ -170,7 +170,7 @@ def apply_outbound_message_middleware(
     and the last writer would silently win — unacceptable at a boundary
     documented as a security choke point).
     """
-    from hermes_cli.plugins import _delivery_manager, has_middleware
+    from hermes_cli.plugins import has_middleware
 
     if not has_middleware(OUTBOUND_MESSAGE_MIDDLEWARE):
         return OutboundMessageResult(text=text, original_text=text)
@@ -179,7 +179,7 @@ def apply_outbound_message_middleware(
     current_text = text
     trace: List[Dict[str, Any]] = []
 
-    for callback in list(_delivery_manager()._middleware.get(OUTBOUND_MESSAGE_MIDDLEWARE, [])):
+    for callback in _get_middleware_callbacks(OUTBOUND_MESSAGE_MIDDLEWARE):
         try:
             result = callback(**middleware_payload(
                 text=current_text,
@@ -219,6 +219,13 @@ def apply_outbound_message_middleware(
         changed=current_text != original_text,
         trace=trace,
     )
+
+
+def _get_middleware_callbacks(kind: str) -> List[Callable]:
+    """Registered callbacks for ``kind``, from the same manager the execution chains read."""
+    from hermes_cli.plugins import _delivery_manager
+
+    return list(_delivery_manager()._middleware.get(kind, []))
 
 
 def _outbound_trace_entry(result: Dict[str, Any]) -> Dict[str, Any]:

@@ -1981,7 +1981,7 @@ class BasePlatformAdapter(ABC):
             fn = cls.__dict__.get(method_name)
             if fn is None or getattr(fn, "_egress_guarded", False):
                 continue
-            if not asyncio.iscoroutinefunction(fn):
+            if not inspect.iscoroutinefunction(fn):
                 continue
             setattr(cls, method_name, _wrap_with_egress_guard(fn, method_name))
 

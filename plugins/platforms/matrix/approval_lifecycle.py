@@ -7,7 +7,7 @@ import asyncio
 import enum
 import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, TypeVar

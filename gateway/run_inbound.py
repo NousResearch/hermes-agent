@@ -1803,6 +1803,11 @@ class GatewayInboundMixin:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
+        if defer_context_references:
+            # Keep the authored/pre-reply body separate from the reply pointer. Deferred
+            # expansion runs after route selection; the quoted reply is another person's
+            # text and must remain literal even when it contains an ``@`` reference.
+            setattr(event, "_gateway_context_reference_message", message_text)
         if "@" in message_text and not defer_context_references:
             message_text = await self._expand_inbound_context_references(source, session_key, message_text)
             if message_text is None:

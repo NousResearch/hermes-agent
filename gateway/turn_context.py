@@ -107,3 +107,6 @@ class TurnContext:
     # Fallback cleanup compares against the route this turn actually realized, not durable config.
     realized_route: Optional[dict] = None
     context_reference_blocked: bool = False
+    # Raw body before the reply pointer/Discord attribution is prepended. Deferred context
+    # expansion must operate on this body only so quoted text stays literal.
+    context_reference_message: Optional[str] = None

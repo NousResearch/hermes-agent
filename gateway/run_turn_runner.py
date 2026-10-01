@@ -1712,21 +1712,35 @@ class TurnRunner:
         enrichment, so reference I/O cannot block the gateway event loop.
         """
         ctx = self._ctx
-        if "@" not in (ctx.message or ""):
+        reference_message = ctx.context_reference_message
+        if reference_message is None:
+            reference_message = ctx.message
+        if not isinstance(reference_message, str) or "@" not in reference_message:
             return True
 
         async def expand():
             return await self._runner._expand_inbound_context_references(
-                ctx.source, ctx.session_key, ctx.message, turn_route=turn_route,
+                ctx.source, ctx.session_key or "", reference_message, turn_route=turn_route,
                 warning_sender=self._send_context_reference_warning,
             )
 
-        original_message = ctx.message
+        original_message = reference_message
         expanded_message = asyncio.run(expand())
         if expanded_message is None:
             ctx.context_reference_blocked = True
             return False
-        ctx.message = expanded_message
+        if ctx.context_reference_message is None:
+            ctx.message = expanded_message
+        elif ctx.message == original_message:
+            ctx.message = expanded_message
+        elif isinstance(ctx.message, str) and ctx.message.endswith(original_message):
+            ctx.message = ctx.message[:-len(original_message)] + expanded_message
+        else:
+            logger.warning(
+                "Could not splice deferred context expansion into the turn message; "
+                "leaving the raw reference in place"
+            )
+            return True
         # Keep the durable authored row aligned with the pre-route behavior. The
         # timestamp/Discord prefix may differ between the API and persisted forms, so
         # replace the original body when it is present rather than overwriting blindly.
@@ -1734,10 +1748,13 @@ class TurnRunner:
         if isinstance(persisted, str) and original_message and expanded_message != original_message:
             if persisted == original_message:
                 ctx.persist_user_message = expanded_message
-            elif expanded_message.startswith(original_message):
+            elif ctx.context_reference_message is None and expanded_message.startswith(original_message):
                 # Timestamp/Discord attribution may prefix ctx.message but is absent
                 # from the clean durable row; preserve only the attached suffix.
                 ctx.persist_user_message = persisted + expanded_message[len(original_message):]
+            elif persisted.endswith(original_message):
+                # Deferred expansion keeps the raw body as the durable-row suffix.
+                ctx.persist_user_message = persisted[:-len(original_message)] + expanded_message
         return True
 
     def _prepare_images_for_realized_route(self, turn_route):

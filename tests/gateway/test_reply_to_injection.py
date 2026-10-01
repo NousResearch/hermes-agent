@@ -152,3 +152,69 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_deferred_expansion_keeps_reply_quote_literal_and_expands_typed_body():
+    """The composed deferred path must isolate the user's body from the reply pointer."""
+    import asyncio
+
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = _make_runner()
+    source = _source()
+    calls = []
+
+    async def expand(_source, _session_key, message, *, turn_route, warning_sender):
+        calls.append((message, turn_route, warning_sender))
+        return message + "\n\nEXPANDED-CONTEXT"
+
+    runner._expand_inbound_context_references = expand  # type: ignore[method-assign]
+    quoted = "Please inspect @file:quoted.txt; it belongs to the other author."
+
+    quoted_event = MessageEvent(
+        text="what does this say?", source=source, reply_to_message_id="7", reply_to_text=quoted,
+    )
+    quoted_staged = await runner._prepare_inbound_message_text(
+        event=quoted_event, source=source, history=[], defer_context_references=True,
+    )
+    assert quoted_staged is not None
+    quoted_ref = getattr(quoted_event, "_gateway_context_reference_message")
+    quoted_ctx = TurnContext(
+        source=source, session_key="session", message=quoted_staged,
+        persist_user_message=quoted_staged, context_reference_message=quoted_ref,
+    )
+    assert await asyncio.to_thread(
+        TurnRunner(runner, quoted_ctx)._prepare_context_references_for_realized_route,
+        {"model": "selected", "runtime": {}},
+    )
+    assert calls == []
+    assert isinstance(quoted_ctx.message, str)
+    assert isinstance(quoted_ctx.persist_user_message, str)
+    assert quoted in quoted_ctx.message
+    assert "EXPANDED-CONTEXT" not in quoted_ctx.message
+    assert "EXPANDED-CONTEXT" not in quoted_ctx.persist_user_message
+
+    typed_event = MessageEvent(
+        text="read @file:notes.txt", source=source, reply_to_message_id="8", reply_to_text="short",
+    )
+    typed_staged = await runner._prepare_inbound_message_text(
+        event=typed_event, source=source, history=[], defer_context_references=True,
+    )
+    assert typed_staged is not None
+    typed_ref = getattr(typed_event, "_gateway_context_reference_message")
+    typed_ctx = TurnContext(
+        source=source, session_key="session", message=typed_staged,
+        persist_user_message=typed_staged, context_reference_message=typed_ref,
+    )
+    assert await asyncio.to_thread(
+        TurnRunner(runner, typed_ctx)._prepare_context_references_for_realized_route,
+        {"model": "selected", "runtime": {}},
+    )
+    assert [call[0] for call in calls] == ["read @file:notes.txt"]
+    assert isinstance(typed_ctx.message, str)
+    assert isinstance(typed_ctx.persist_user_message, str)
+    assert typed_ctx.message.startswith('[Replying to: "short"]')
+    assert typed_ctx.message.endswith("read @file:notes.txt\n\nEXPANDED-CONTEXT")
+    assert typed_ctx.persist_user_message.endswith("read @file:notes.txt\n\nEXPANDED-CONTEXT")
+
+

@@ -2163,6 +2163,7 @@ class GatewayTurnMixin:
                 channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 title_user_message=prepared.title_user_message,
                 persist_user_message=prepared.persist_user_message,
+                context_reference_message=getattr(event, "_gateway_context_reference_message", None),
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
@@ -3792,6 +3793,7 @@ class GatewayTurnMixin:
         next_inbound_id = None
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
+        next_context_reference_message = None
         next_display_kind = display_kind_for_event(pending_event)
         next_reply_expected = pending_event.reply_expected if pending_event is not None else None
         # See #60671.
@@ -3820,6 +3822,9 @@ class GatewayTurnMixin:
                 return result
             from gateway.run_inbound import strip_discord_triggering_note
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
+            next_context_reference_message = getattr(
+                pending_event, "_gateway_context_reference_message", None,
+            )
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
@@ -3883,6 +3888,7 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
+                context_reference_message=next_context_reference_message,
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
@@ -4211,6 +4217,7 @@ class GatewayTurnMixin:
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
+        context_reference_message: Optional[str] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
@@ -4222,8 +4229,29 @@ class GatewayTurnMixin:
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
         if self._get_proxy_url():
+            proxy_message = message
+            reference_message = message if context_reference_message is None else context_reference_message
+            if "@" in reference_message:
+                expanded_message = await self._expand_inbound_context_references(  # type: ignore[attr-defined]
+                    source, session_key, reference_message,
+                )
+                if expanded_message is None:
+                    return {
+                        "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+                        "context_reference_blocked": True,
+                    }
+                if expanded_message != reference_message:
+                    if proxy_message == reference_message:
+                        proxy_message = expanded_message
+                    elif proxy_message.endswith(reference_message):
+                        proxy_message = proxy_message[:-len(reference_message)] + expanded_message
+                    else:
+                        logger.warning(
+                            "Could not splice deferred context expansion into proxy message; "
+                            "forwarding the raw reference"
+                        )
             return await self._run_agent_via_proxy(
-                message=message, context_prompt=context_prompt, history=history, source=source,
+                message=proxy_message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )

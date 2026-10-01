@@ -89,6 +89,8 @@ def can_join_pending_event(first: MessageEvent, second: MessageEvent) -> bool:
     """Whether coalescing preserves sender, control permissions and reply context."""
     return (
         same_message_sender(first, second)
+        and not first._queue_at_turn_boundary
+        and not second._queue_at_turn_boundary
         and _same_pending_security_context(first, second)
         and not first.reply_context_conflicts(second)
     )

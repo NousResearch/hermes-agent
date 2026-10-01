@@ -257,7 +257,7 @@ class GatewayAuthorizationMixin:
         only the targets that a primary profile route maps to it. Call it inside *profile*'s scope: the
         routes are read for the current home."""
         adapters = self._adapters_for_profile(profile)
-        if not self._is_shared_bot_satellite(profile):
+        if profile is None or not self._is_shared_bot_satellite(profile):
             return adapters
         from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
         return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())

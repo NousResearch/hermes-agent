@@ -21,6 +21,7 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
+import { applyChatLayoutOnce } from './app/brand/chat-layout'
 import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
@@ -83,6 +84,8 @@ if (winParam === 'overlay') {
   // main window's visibility state to :root so decorative infinite
   // animations stop producing frames when nobody can see them.
   installRendererAnimationPauseState()
+  // Chat layout is applied once per install, before the first paint.
+  applyChatLayoutOnce()
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

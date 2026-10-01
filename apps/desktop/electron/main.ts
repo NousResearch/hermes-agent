@@ -1346,10 +1346,9 @@ function getWindowBackgroundColor() {
 // to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
 const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
-// WSLg returns false: the RDP host paints nothing for a frameless window and
-// Electron's own overlay drifts its hit-region under RAIL, so the renderer
-// paints its own min/max/close (wslg-window-controls.tsx) over the
-// hermes:window-control IPC channel. See titleBarOverlayOptions.
+// Windows and WSLg return false. The renderer paints min/max/close
+// (wslg-window-controls.tsx) over hermes:window-control so the hover stays
+// inside the navbar. See titleBarOverlayOptions.
 function getTitleBarOverlayOptions() {
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
@@ -6511,7 +6510,7 @@ function getWindowState(win = mainWindow) {
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition(win),
     darwinMajor: IS_MAC ? DARWIN_MAJOR : 0,
-    ...windowControlState(win, !IS_WINDOWS && IS_WSL)
+    ...windowControlState(win, IS_WINDOWS || IS_WSL)
   }
 }
 

@@ -786,6 +786,18 @@ export interface Translations {
     layoutEditorTitle: (modifier: string) => string
   }
 
+  menuBar: {
+    file: string
+    edit: string
+    selection: string
+    view: string
+    tools: string
+    undo: string
+    openFolder: string
+    showFiles: string
+    hideFiles: string
+  }
+
   keybinds: {
     title: string
     subtitle: (open: string) => string

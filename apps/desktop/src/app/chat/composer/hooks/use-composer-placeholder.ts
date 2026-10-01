@@ -1,7 +1,9 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 
 import { pickPlaceholder } from '../composer-utils'
 
@@ -20,6 +22,7 @@ interface UseComposerPlaceholderOptions {
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
@@ -57,5 +60,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
-    : restingPlaceholder
+    : showsAdvancedChrome
+      ? restingPlaceholder
+      : t.composer.message
 }

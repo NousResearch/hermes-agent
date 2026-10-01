@@ -202,32 +202,34 @@ const NON_SESSION_LOAD_STEP = 10
 // screen — has the connection to itself first.
 const PROJECT_TREE_WARM_MS = 2_000
 
-// A row's `tier` is the one mode it belongs to (Simple keeps the setup rows,
-// Advanced adds the readouts); the list filters once, nothing is passed down.
+// A row's `tier` is the one mode it belongs to. Simple keeps the chat list.
+// New session lives on the chat tab's + and under File. Setup and developer
+// rows wait for Advanced.
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: '',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session',
-    keybindActionId: 'session.new'
+    keybindActionId: 'session.new',
+    tier: 'advanced'
   },
   {
     id: 'capabilities',
     label: '',
     icon: props => <Codicon name="symbol-misc" {...props} />,
     route: CAPABILITIES_ROUTE,
-    keybindActionId: 'nav.capabilities'
+    keybindActionId: 'nav.capabilities',
+    tier: 'advanced'
   },
   {
     id: 'messaging',
     label: '',
     icon: props => <Codicon name="comment" {...props} />,
     route: MESSAGING_ROUTE,
-    keybindActionId: 'nav.messaging'
+    keybindActionId: 'nav.messaging',
+    tier: 'advanced'
   },
-  // Artifacts and Scheduled jobs are outputs of running Hermes the developer
-  // way; Capabilities and Messaging are how anyone sets it up.
   {
     id: 'artifacts',
     label: '',
@@ -469,7 +471,8 @@ export function ChatSidebar({
   // The active sort key as an id order. The flat list applies it within its
   // dividers; groups apply it to their own lanes.
   const sortOrderIds = useStore($sidebarSessionRankIds)
-  const agentsGrouped = grouping === 'project'
+  // Simple mode is a chat list. The stored project grouping stays for Advanced.
+  const agentsGrouped = showsAdvancedChrome && grouping === 'project'
   const showAllSessions = useStore($sidebarShowAllSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
@@ -728,9 +731,10 @@ export function ChatSidebar({
   // backend snapshot can surface either side of a compression tip rotation.
   const isPinnedSession = useCallback(
     (session: SessionInfo) =>
-      pinnedIdentitySet.has(session.id) ||
-      (session._lineage_root_id != null && pinnedIdentitySet.has(session._lineage_root_id)),
-    [pinnedIdentitySet]
+      showsAdvancedChrome &&
+      (pinnedIdentitySet.has(session.id) ||
+        (session._lineage_root_id != null && pinnedIdentitySet.has(session._lineage_root_id))),
+    [pinnedIdentitySet, showsAdvancedChrome]
   )
 
   // What the project tree drops: pins (they live in their own section) plus
@@ -1732,7 +1736,7 @@ export function ChatSidebar({
         <SidebarStorageCorruptNotice />
 
         {showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          <div className="shrink-0 px-2 pb-1 pt-1" data-sidebar-session-search="">
             <SearchField
               aria-label={s.searchAria}
               inputRef={searchInputRef}
@@ -1779,7 +1783,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
+            {!trimmedQuery && showsAdvancedChrome && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 // Inbox style rides whichever view is active — pinned rows
@@ -1955,9 +1959,11 @@ export function ChatSidebar({
                             }
                           }}
                         />
-                        <div className="grid size-6 place-items-center">
-                          <SidebarFilterMenu className={HEADER_NAV_BTN} />
-                        </div>
+                        {showsAdvancedChrome && (
+                          <div className="grid size-6 place-items-center">
+                            <SidebarFilterMenu className={HEADER_NAV_BTN} />
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
@@ -2006,6 +2012,7 @@ export function ChatSidebar({
             )}
 
             {!trimmedQuery &&
+              showsAdvancedChrome &&
               !worktreeGroupingActive &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS

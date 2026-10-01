@@ -30,11 +30,6 @@ const TAB_VERTICAL =
 
 const TAB_ACTIVE = 'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
-// Horizontal only: the active tab is the sole seam on the strip — a
-// theme-primary underline drawn as an inset shadow in its own last pixel row,
-// so it costs no layout and can't shift the tab.
-const TAB_ACTIVE_UNDERLINE = 'shadow-[inset_0_-2px_0_var(--pane-tab-active-accent,var(--theme-primary))]'
-
 // Inactive = gutter, defaulting to the shared chrome surface so a strip that
 // sets no vars still matches the sidebar/titlebar instead of falling through to
 // the raw (unmixed) card seed. Hover DARKENS: surfaces this close in value need
@@ -51,12 +46,10 @@ const TAB_SELECTED =
 interface PaneTabProps extends React.ComponentProps<'div'> {
   active?: boolean
   dirty?: boolean
-  /** Close verb. Horizontal tabs reveal a hover ✕ over the label's masked
-   *  right edge; middle-click and ⌘-click always work,
-   *  and stay the only gestures on vertical rails (no room for a chip ✕).
-   *  There is no way to take the ✕ off a tab that HAS this verb: the chip and
-   *  the pointer gestures are one affordance, so a closeable tab always says
-   *  so. Omit `onClose` to make a tab uncloseable. */
+  /** Close verb. The active horizontal tab keeps its ✕ visible; inactive
+   *  tabs reveal it on hover. Middle-click and ⌘-click always work, and stay
+   *  the only gestures on vertical rails (no room for a chip ✕).
+   *  Omit `onClose` to make a tab uncloseable. */
   onClose?: () => void
   /** Part of a multi-tab selection (⌥/Ctrl-click, Shift-click) — an accent
    *  wash marks every tab that a drag would carry, Chrome-style. */
@@ -104,9 +97,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         vertical ? TAB_VERTICAL : TAB_HORIZONTAL,
         !vertical && onClose && TAB_CLOSEABLE,
         edge,
-        active
-          ? cn(TAB_ACTIVE, !vertical && TAB_ACTIVE_UNDERLINE)
-          : cn(TAB_IDLE, edge && `${edge}-(--ui-stroke-tertiary)`),
+        active ? TAB_ACTIVE : cn(TAB_IDLE, edge && `${edge}-(--ui-stroke-tertiary)`),
         selected && TAB_SELECTED,
         className
       )}
@@ -170,12 +161,19 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         </span>
       )}
       {onClose && !vertical && (
-        // Mask the content beneath the close button instead of painting over it.
-        // Geometry stays fixed; the same fade works on solid and glass surfaces.
-        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
+        // In the tab row, not painted over the title, so the label truncates
+        // before the icon instead of running underneath it.
+        <span
+          className={cn(
+            'flex h-full shrink-0 items-center justify-center bg-(--tab-bg)',
+            active
+              ? 'w-(--pane-tab-close-width)'
+              : 'w-0 overflow-hidden opacity-0 group-hover/tab:w-(--pane-tab-close-width) group-hover/tab:opacity-100'
+          )}
+        >
           <button
             aria-label={translateNow('common.close')}
-            className="grid w-(--pane-tab-close-width) cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) outline-none hover:text-foreground"
+            className="grid size-5 cursor-pointer place-items-center rounded-sm bg-transparent text-foreground outline-none hover:bg-(--ui-control-hover-background)"
             onClick={event => {
               event.preventDefault()
               event.stopPropagation()
@@ -192,7 +190,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
             tabIndex={-1}
             type="button"
           >
-            <Codicon name="close" size="0.6875rem" />
+            <Codicon name="close" size="1rem" />
           </button>
         </span>
       )}
@@ -207,8 +205,8 @@ interface PaneTabLabelProps extends React.ComponentProps<'button'> {
 }
 
 /** Truncating label inside a `PaneTab`. `className` merges into the text span
- *  (e.g. `normal-case tracking-normal` for filenames). On a closeable tab the
- *  text clips instead of ellipsizing, so the hover mask can fade its right edge. */
+ *  (e.g. `normal-case tracking-normal` for filenames). A closeable tab keeps
+ *  the close control in the row, so the title ellipsizes before that icon. */
 export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(function PaneTabLabel(
   { as = 'span', className, children, ...props },
   ref
@@ -223,7 +221,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
     >
       <span
         className={cn(
-          'block min-w-0 truncate text-[9px] font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
+          'block min-w-0 truncate text-[11px] font-medium tracking-normal uppercase',
           className
         )}
       >

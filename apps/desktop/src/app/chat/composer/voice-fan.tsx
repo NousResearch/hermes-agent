@@ -62,7 +62,11 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
     () => ({
       id: 'dictate',
       active: dictating,
-      className: cn(GHOST_ICON_BTN, 'rounded-full p-0', dictating && ACTIVE_ICON_BTN),
+      className: cn(
+        GHOST_ICON_BTN,
+        'size-(--composer-control-primary-size)! rounded-full p-0',
+        dictating && ACTIVE_ICON_BTN
+      ),
       disabled: disabled || !state.voice.enabled || voiceStatus === 'transcribing',
       icon:
         voiceStatus === 'recording' ? (

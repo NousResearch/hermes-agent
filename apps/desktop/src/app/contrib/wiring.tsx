@@ -150,6 +150,7 @@ import {
   titlebarToolsRightCss,
   titlebarToolsWidthCss
 } from '../shell/titlebar'
+import { MenuBar } from '../shell/menu-bar'
 import { TitlebarControls } from '../shell/titlebar-controls'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
@@ -1342,6 +1343,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             tools={rightTitlebarTools}
           />
         )}
+        {!isHudWindow() && !isBrowserWindow() && <MenuBar startFreshSession={() => startFreshSessionDraft()} />}
         {!isHudWindow() && customWindowControls && (
           <WslgWindowControls
             isFullscreen={Boolean(connection?.isFullscreen)}

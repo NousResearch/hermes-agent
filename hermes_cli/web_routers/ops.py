@@ -208,6 +208,12 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
             status_code=400, detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
         )
 
+    def _snapshot():
+        subscriptions = wh._load_subscriptions()
+        return subscriptions.get(name, wh._MISSING_SUBSCRIPTION)
+
+    expected = await config_scoped_to_thread(profile, _snapshot)
+
     secret = body.secret or secrets.token_urlsafe(32)
     route: Dict[str, Any] = {
         "description": body.description or f"Dashboard-created subscription: {name}",
@@ -224,11 +230,14 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_only"] = True
     if body.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
+    if isinstance(expected, dict) and expected.get("enabled") is False:
+        route["enabled"] = False
 
     def _save():
-        subs = wh._load_subscriptions()
-        subs[name] = route
-        wh._save_subscriptions(subs)
+        try:
+            wh._replace_subscription(name, route, expected)
+        except wh.SubscriptionMutationConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _webhook_route_summary(name, route, wh._get_webhook_base_url())
 
     summary = await config_scoped_to_thread(profile, _save)
@@ -236,16 +245,12 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     return summary
 
 
-def _webhook_subs_with(name: str):
-    """(module, subscriptions, key) for an existing route; 404 otherwise. Call inside the
-    request's profile scope — ``_load_subscriptions`` resolves the home at call time."""
-    import hermes_cli.webhook as wh
-
+def _webhook_key_in(subscriptions: Dict[str, dict], name: str) -> str:
+    """Normalized key for an existing route in a lock-held subscription snapshot."""
     key = (name or "").strip().lower()
-    subs = wh._load_subscriptions()
-    if key not in subs:
+    if key not in subscriptions:
         raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
-    return wh, subs, key
+    return key
 
 
 @router.delete("/api/webhooks/{name}")
@@ -253,9 +258,12 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
     profile = destructive_profile(profile, "DELETE /api/webhooks/{name}")
 
     def _run():
-        wh, subs, key = _webhook_subs_with(name)
-        del subs[key]
-        wh._save_subscriptions(subs)
+        import hermes_cli.webhook as wh
+
+        def remove(subscriptions):
+            del subscriptions[_webhook_key_in(subscriptions, name)]
+
+        wh._mutate_subscriptions(remove)
 
     await config_scoped_to_thread(profile, _run)
     return {"ok": True}
@@ -266,10 +274,14 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
     """Disabled routes stay on disk (re-enable later) but the gateway rejects
     their events with 403; it hot-reloads the file, so no restart is needed."""
     def _run():
-        wh, subs, key = _webhook_subs_with(name)
-        subs[key]["enabled"] = bool(body.enabled)
-        wh._save_subscriptions(subs)
-        return key
+        import hermes_cli.webhook as wh
+
+        def toggle(subscriptions):
+            key = _webhook_key_in(subscriptions, name)
+            subscriptions[key]["enabled"] = bool(body.enabled)
+            return key
+
+        return wh._mutate_subscriptions(toggle)
 
     key = await config_scoped_to_thread(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}

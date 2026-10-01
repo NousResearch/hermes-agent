@@ -61,6 +61,7 @@ DEFAULT_HOST = None
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+_DYNAMIC_ROUTES_UNLOADED = object()
 _RATE_WINDOW_SECONDS = 60.0
 # Hosts that only serve same-machine connections; anything else is a public bind.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "ip6-localhost", "ip6-loopback"})
@@ -197,7 +198,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._global_secret: str = extra.get("secret", "")
         self._static_routes: Dict[str, dict] = extra.get("routes", {})
         self._dynamic_routes: Dict[str, dict] = {}
-        self._dynamic_routes_mtime: float = 0.0
+        self._dynamic_routes_revision: object = _DYNAMIC_ROUTES_UNLOADED
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
@@ -395,25 +396,19 @@ class WebhookAdapter(BasePlatformAdapter):
         return True
 
     def _reload_dynamic_routes(self) -> None:
-        """Reload agent-created subscriptions from disk if the file changed."""
-        from hermes_constants import get_hermes_home
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
-        if not subs_path.exists():
-            if self._dynamic_routes:
-                self._dynamic_routes, self._routes = {}, dict(self._static_routes)
-                logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
-            return
+        """Publish one coherent, lock-held subscription snapshot when its content changes."""
         try:
-            mtime = subs_path.stat().st_mtime
-            if mtime <= self._dynamic_routes_mtime:
+            from hermes_cli.webhook import _load_subscriptions_snapshot
+
+            data, revision = _load_subscriptions_snapshot()
+            if revision == self._dynamic_routes_revision:
                 return  # No change
-            data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
-            if not isinstance(data, dict):
-                return
             self._dynamic_routes = {  # static routes take precedence
-                k: v for k, v in data.items() if k not in self._static_routes and self._dynamic_route_allowed(k, v)}
+                k: v for k, v in data.items()
+                if isinstance(v, dict) and k not in self._static_routes and self._dynamic_route_allowed(k, v)
+            }
             self._routes = {**self._dynamic_routes, **self._static_routes}
-            self._dynamic_routes_mtime = mtime
+            self._dynamic_routes_revision = revision
             logger.info("[webhook] Reloaded %d dynamic route(s): %s", len(self._dynamic_routes),
                         ", ".join(self._dynamic_routes.keys()) or "(none)")
         except Exception as e:

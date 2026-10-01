@@ -4,6 +4,7 @@ import json
 import os
 import pytest
 import stat
+import threading
 from argparse import Namespace
 
 from hermes_cli.webhook import (
@@ -90,6 +91,119 @@ class TestSubscribe:
         ))
 
         assert _load_subscriptions()["notifier"]["secret"] == "original"
+
+    def test_stale_update_cannot_restore_concurrently_removed_or_disabled_route(self, monkeypatch):
+        import hermes_cli.webhook as webhook_module
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="original"
+        ))
+        original_load = _load_subscriptions
+        pause = {"loaded": threading.Event(), "allow": threading.Event()}
+        errors = []
+
+        def load_with_paused_update():
+            subscriptions = original_load()
+            if threading.current_thread().name == "stale-webhook-update":
+                pause["loaded"].set()
+                if not pause["allow"].wait(timeout=5):
+                    raise AssertionError("timed out waiting to resume stale update")
+            return subscriptions
+
+        monkeypatch.setattr("hermes_cli.webhook._load_subscriptions", load_with_paused_update)
+
+        def update_route():
+            try:
+                webhook_command(_make_args(
+                    webhook_action="subscribe", name="notifier", description="stale update"
+                ))
+            except BaseException as exc:  # surfaced in the test thread below
+                errors.append(exc)
+
+        def start_stale_update():
+            worker = threading.Thread(target=update_route, name="stale-webhook-update")
+            worker.start()
+            assert pause["loaded"].wait(timeout=5)
+            return worker
+
+        worker = start_stale_update()
+        webhook_command(_make_args(webhook_action="remove", name="notifier"))
+        pause["allow"].set()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert "notifier" not in original_load()
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="replacement"
+        ))
+        pause = {"loaded": threading.Event(), "allow": threading.Event()}
+        worker = start_stale_update()
+
+        def disable(subscriptions):
+            subscriptions["notifier"]["enabled"] = False
+
+        webhook_module._mutate_subscriptions(disable)
+        pause["allow"].set()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert original_load()["notifier"]["enabled"] is False
+
+    def test_profile_rebind_rotates_secret_without_exposing_mixed_record(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.webhook import WebhookAdapter
+
+        profile_dir = tmp_path / "profiles" / "compta"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="old-profile-secret"
+        ))
+
+        old_record = _load_subscriptions()["notifier"]
+        old_state = (old_record["profile"], old_record["secret"])
+        adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"secret": "global"}))
+        adapter._reload_dynamic_routes()
+        initial_stat = _subscriptions_path().stat()
+        observed = [old_state]
+        stop = threading.Event()
+        monkeypatch.setattr("hermes_cli.webhook.secrets.token_urlsafe", lambda _n: "rotated-profile-secret")
+
+        def read_records():
+            while not stop.is_set():
+                record = _load_subscriptions()["notifier"]
+                observed.append((record["profile"], record["secret"]))
+
+        reader = threading.Thread(target=read_records)
+        reader.start()
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", route_profile="compta"
+        ))
+        stop.set()
+        reader.join(timeout=5)
+
+        new_record = _load_subscriptions()["notifier"]
+        new_state = (new_record["profile"], new_record["secret"])
+        observed.append(new_state)
+        # A coarse or restored mtime must not leave a revoked snapshot live in the gateway.
+        os.utime(
+            _subscriptions_path(),
+            ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns),
+        )
+        adapter._reload_dynamic_routes()
+        assert not reader.is_alive()
+        assert new_state == ("compta", "rotated-profile-secret")
+        assert new_record["secret"] != old_record["secret"]
+        assert set(observed) <= {old_state, new_state}
+        assert (
+            adapter._routes["notifier"]["profile"],
+            adapter._routes["notifier"]["secret"],
+        ) == new_state
 
 class TestCronJobSubscribe:
     """--cron-job: event-triggered cron jobs."""

@@ -42,7 +42,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived, pinned
+                           pricing_version, title, api_call_count, archived, pinned, hidden
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -53,7 +53,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived, :pinned
+                           :api_call_count, :archived, :pinned, :hidden
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
@@ -66,7 +66,9 @@ _IMPORT_INT_COLS = (
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
 # Durable user decisions, not live runtime state: a restore that drops ``pinned`` hands the "keep"
 # session to the next startup prune and the stale-archive sweep, the two things the pin opts out of.
-_IMPORT_FLAG_COLS = ("archived", "pinned")
+# ``hidden`` is what makes an adopted Bot Mode chat canonical: without it the chat shows in every
+# listing, loses its rename guard and becomes a stale-archive candidate.
+_IMPORT_FLAG_COLS = ("archived", "pinned", "hidden")
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:

@@ -895,7 +895,6 @@ export interface TurnStats {
   cacheRead?: number
   cacheWrite?: number
   calls?: number
-  costUsd?: number
 }
 
 /** One graph node in the star map (learned skill or memory chunk). */

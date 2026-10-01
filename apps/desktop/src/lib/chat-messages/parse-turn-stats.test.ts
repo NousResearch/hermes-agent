@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { parseTurnStats, toChatMessages } from './index'
 
 describe('parseTurnStats', () => {
-  it('maps a snake_case dict, dropping negative, non-numeric and unrendered keys', () => {
+  it('maps a snake_case dict, dropping negative and unrendered keys', () => {
     expect(
       parseTurnStats({
         duration_s: 12,
@@ -13,7 +13,6 @@ describe('parseTurnStats', () => {
         cache_read: 2890,
         cache_write: 0,
         calls: 6,
-        cost_usd: 'n/a',
         model: 'kimi-k3',
         provider: 'kimi'
       })
@@ -30,7 +29,7 @@ describe('parseTurnStats', () => {
   it('returns undefined for empty, null, or fully invalid payloads', () => {
     expect(parseTurnStats(undefined)).toBeUndefined()
     expect(parseTurnStats(null)).toBeUndefined()
-    expect(parseTurnStats({ input: -4, output: Number.NaN })).toBeUndefined()
+    expect(parseTurnStats({ input: -4, output: Number.NaN, calls: 'n/a' })).toBeUndefined()
   })
 })
 

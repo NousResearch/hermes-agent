@@ -44,8 +44,6 @@ export const arAssistant = {
       turnStatsHit: n => `${n} إصابة`,
       turnStatsTime: 'الوقت',
       turnStatsCalls: 'الاستدعاءات',
-      turnStatsCost: 'التكلفة',
-      turnStatsEstimate: 'تقديري',
       today: time => `اليوم ${time}`,
       yesterday: time => `أمس ${time}`,
       copy: 'نسخ',

@@ -9,8 +9,7 @@ const NUMERIC_FIELDS: ReadonlyArray<readonly [string, keyof TurnStats]> = [
   ['reasoning', 'reasoning'],
   ['cache_read', 'cacheRead'],
   ['cache_write', 'cacheWrite'],
-  ['calls', 'calls'],
-  ['cost_usd', 'costUsd']
+  ['calls', 'calls']
 ]
 
 /** Lenient snake_case dict → TurnStats. Negative and non-numeric values are dropped, so a

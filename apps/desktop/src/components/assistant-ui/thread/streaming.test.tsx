@@ -5,7 +5,7 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime
 } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -563,7 +563,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(baseElement.querySelector('[data-slot="aui_turn-stats"]')?.textContent).toContain('12s')
   })
 
-  it('renders every row the payload carries, and drops a zero cost', () => {
+  it('renders every row the payload carries', () => {
     // Shape and figures taken from a real deepseek turn: 14 calls against a warm prefix cache.
     const withStats = (turnStats: Record<string, number>) =>
       ({
@@ -597,7 +597,6 @@ describe('assistant-ui streaming renderer', () => {
       withStats({
         cacheRead: 609_920,
         calls: 14,
-        costUsd: 0.01662936,
         durationS: 89,
         input: 53_132,
         output: 11_383,
@@ -611,20 +610,12 @@ describe('assistant-ui streaming renderer', () => {
       Output: '11.4k',
       Reasoning: '7.5k',
       Time: '1:29',
-      Calls: '14',
-      // The cost delta is an estimate, and the card says so — readers must not
-      // take the figure as billing truth.
-      Cost: 'est.$0.0166'
+      Calls: '14'
     })
 
     // The hit meter tracks the same ratio the hint prints.
     const meter = screen.getByText('Cached').parentElement?.querySelector<HTMLElement>('[aria-hidden] > div')
     expect(meter?.style.width).toBe('92%')
-
-    cleanup()
-
-    // Free route: the cost delta is zero, so the row is absent rather than `$0.0000`.
-    expect(card(withStats({ costUsd: 0, durationS: 3, input: 10 }))).toEqual({ Input: '10', Time: '3s' })
   })
 
   it('renders assistant provider errors inline', () => {

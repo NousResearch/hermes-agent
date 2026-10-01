@@ -5033,7 +5033,7 @@ class TestMatrixInboundMediaDownloadFailure:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "msgtype, source_content, relates_to, download, expected_text, expected_reply_to",
+        "msgtype, source_content, relates_to, download, expected_text, expected_reply_to, expected_downloads",
         [
             pytest.param(
                 "m.image",
@@ -5042,6 +5042,7 @@ class TestMatrixInboundMediaDownloadFailure:
                 AsyncMock(return_value=b"<html>not an image</html>"),
                 "[matrix image attachment could not be downloaded: 30.png]",
                 None,
+                1,
                 id="plain-image-not-cacheable",
             ),
             pytest.param(
@@ -5051,6 +5052,7 @@ class TestMatrixInboundMediaDownloadFailure:
                 AsyncMock(side_effect=TimeoutError()),
                 "please see\n[matrix file attachment could not be downloaded: report.pdf]",
                 None,
+                1,
                 id="plain-file-timeout",
             ),
             pytest.param(
@@ -5066,12 +5068,83 @@ class TestMatrixInboundMediaDownloadFailure:
                 AsyncMock(side_effect=ConnectionResetError("connection reset")),
                 "[matrix audio attachment could not be downloaded: note.ogg]",
                 "$earlier",
+                1,
                 id="encrypted-audio-reply-network-error",
+            ),
+            pytest.param(
+                "m.image",
+                {"body": "30.png"},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "[matrix image attachment could not be downloaded: 30.png]",
+                None,
+                0,
+                id="image-no-url",
+            ),
+            pytest.param(
+                "m.file",
+                {"body": "please see", "filename": "report.pdf"},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "please see\n[matrix file attachment could not be downloaded: report.pdf]",
+                None,
+                0,
+                id="file-no-url",
+            ),
+            pytest.param(
+                "m.audio",
+                {"body": "note.ogg"},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "[matrix audio attachment could not be downloaded: note.ogg]",
+                None,
+                0,
+                id="audio-no-url",
+            ),
+            pytest.param(
+                "m.audio",
+                {"body": "note.ogg", "org.matrix.msc3245.voice": {}},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "[matrix audio attachment could not be downloaded: note.ogg]",
+                None,
+                0,
+                id="voice-no-url",
+            ),
+            pytest.param(
+                "m.video",
+                {"body": "clip.mp4"},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "[matrix video attachment could not be downloaded: clip.mp4]",
+                None,
+                0,
+                id="video-no-url",
+            ),
+            pytest.param(
+                "m.sticker",
+                {"body": "sticker.webp"},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "[sticker: sticker.webp]\n[matrix sticker attachment could not be downloaded: sticker.webp]",
+                None,
+                0,
+                id="sticker-no-url",
+            ),
+            pytest.param(
+                "m.audio",
+                {"body": "note.ogg", "file": {"key": {"k": "a2V5"}, "hashes": {"sha256": "aGFzaA"}, "iv": "aXY"}},
+                {},
+                AsyncMock(side_effect=AssertionError("An attachment without a URL must not download")),
+                "[matrix audio attachment could not be downloaded: note.ogg]",
+                None,
+                0,
+                id="encrypted-audio-no-url",
             ),
         ],
     )
     async def test_media_download_failure_reaches_agent_as_marker(
-        self, msgtype, source_content, relates_to, download, expected_text, expected_reply_to,
+        self, msgtype, source_content, relates_to, download, expected_text, expected_reply_to, expected_downloads,
     ):
         captured_event: MessageEvent | None = None
 
@@ -5096,7 +5169,8 @@ class TestMatrixInboundMediaDownloadFailure:
         assert event is not None
         assert (
             event.text, event.message_type, event.media_urls, event.media_types, event.reply_to_message_id,
-        ) == (expected_text, MessageType.TEXT, [], [], expected_reply_to)
+            download.await_count,
+        ) == (expected_text, MessageType.TEXT, [], [], expected_reply_to, expected_downloads)
 
 
 

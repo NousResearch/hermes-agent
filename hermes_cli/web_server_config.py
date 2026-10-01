@@ -134,6 +134,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "OpenAI transcription model", "whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"
     ),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
+    "compression.mode": _select(
+        "Applies when context.engine=compressor (built-in ContextCompressor). "
+        "How compacted turns are represented: standard LLM summary, "
+        "extractive catalog (no summarizer), or hybrid (summary plus a "
+        "unique-handle index). Provider-native Codex compaction may bypass "
+        "this setting. Invalid values fall back to standard.",
+        "standard", "catalog", "hybrid",
+    ),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"

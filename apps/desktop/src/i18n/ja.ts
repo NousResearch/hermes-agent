@@ -998,6 +998,7 @@ export const ja = defineLocale({
       },
       compression: {
         enabled: '自動圧縮',
+        mode: '圧縮モード',
         threshold: '圧縮しきい値',
         codexGpt55Autoraise: 'Codex 圧縮の自動引き上げ',
         targetRatio: '圧縮目標',
@@ -1067,6 +1068,7 @@ export const ja = defineLocale({
       },
       compression: {
         enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
+        mode: 'context.engine=compressor（組み込み ContextCompressor）のときだけ適用されます。標準 LLM 要約、抽出カタログ、またはハイブリッド。プロバイダーネイティブの Codex 圧縮はこの設定を迂回する場合があります。',
         codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
       },
       auxiliary: {

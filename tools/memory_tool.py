@@ -206,16 +206,43 @@ def _background_delete_gate(store, action, operations, target="memory", content=
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                store: Optional[MemoryStore] = None, user_requested: Any = False) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
-    whole matched entry is overwritten; old_text only locates it)."""
+    whole matched entry is overwritten; old_text only locates it). ``user_requested`` marks an
+    explicit user "remember this" write -- observability only, never a reason to reject."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
+    if outcome == "success" and _is_user_requested_mutation(user_requested, action, operations):
+        result = json.dumps(_record_user_requested_write(store, json.loads(result)), ensure_ascii=False)
     from hermes_cli.observability.shared_metrics_loop import record_builtin_memory_call
     record_builtin_memory_call(action, operations, outcome=outcome)
+    return result
+
+
+def _coerce_user_requested(value: Any) -> bool:
+    """Only explicit true-like values mark a user-requested write."""
+    if value is True:
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}
+
+
+def _is_user_requested_mutation(user_requested: Any, action: Any, operations: Any) -> bool:
+    if not _coerce_user_requested(user_requested):
+        return False
+    if operations:
+        return isinstance(operations, list) and any(
+            isinstance(op, dict) and op.get("action") in {"add", "replace"} for op in operations)
+    return action in {"add", "replace"}
+
+
+def _record_user_requested_write(store: "MemoryStore", result: Dict[str, Any]) -> Dict[str, Any]:
+    """Count a successful user-requested mutation and surface the running total."""
+    if result.get("success"):
+        store.user_requested_write_count += 1
+        result["user_requested_write_count"] = store.user_requested_write_count
     return result
 
 
@@ -307,11 +334,15 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
-    if action not in _STORE_ACTIONS:
+        result = store.apply_batch(target, payload.get("operations") or [])
+    elif action not in _STORE_ACTIONS:
         return {"success": False, "error": f"Unknown staged action '{action}'."}
-    return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "",
-                                     payload.get("matched_entry"))
+    else:
+        result = _STORE_ACTIONS[action][0](store, target, payload.get("content") or "",
+                                           payload.get("old_text") or "", payload.get("matched_entry"))
+    if _is_user_requested_mutation(payload.get("user_requested"), action, payload.get("operations")):
+        result = _record_user_requested_write(store, result)
+    return result
 
 
 MEMORY_SCHEMA = {
@@ -336,9 +367,11 @@ MEMORY_SCHEMA = {
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "ROUTING: autonomously prefer session_search for task progress, "
+        "completed-work logs, temporary TODO state, and one-off finished tasks. "
+        "This is a model/tool contract for autonomous routing — explicit "
+        "user-authored memory writes are still accepted. Set user_requested=true "
+        "when honoring an explicit user request to remember something."
     ),
     "parameters": {
         "type": "object",
@@ -364,6 +397,14 @@ MEMORY_SCHEMA = {
             "new_text": {
                 "type": "string",
                 "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
+            },
+            "user_requested": {
+                "type": "boolean",
+                "description": (
+                    "Set true when honoring an explicit user request to remember this. "
+                    "Observability only; does not change whether the write is accepted."
+                ),
+                "default": False,
             },
             "operations": {
                 "type": "array",
@@ -422,6 +463,7 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""), target=args.get("target", "memory"), store=kw.get("store"),
+        user_requested=args.get("user_requested", False),
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
     check_fn=check_memory_requirements,
     emoji="🧠",

@@ -919,6 +919,7 @@ export const ar = defineLocale({
       'memory.provider': 'مزود الذاكرة',
       'context.engine': 'محرك السياق',
       'compression.enabled': 'الضغط التلقائي',
+      'compression.mode': 'وضع الضغط',
       'compression.threshold': 'عتبة الضغط',
       'compression.codexGpt55Autoraise': 'الرفع التلقائي لضغط Codex',
       'compression.targetRatio': 'هدف الضغط',
@@ -958,6 +959,7 @@ export const ar = defineLocale({
       'memory.userProfileEnabled': 'يحافظ على ملف مختصر لتفضيلات المستخدم.',
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
+      'compression.mode': 'ينطبق عند context.engine=compressor. ملخص قياسي، فهرس استخراجي، أو الاثنان. ضغط Codex الأصلي قد يتجاوز هذا الإعداد.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
       'auxiliary.compression.timeout':
         'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',

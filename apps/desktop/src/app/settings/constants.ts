@@ -236,6 +236,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
+  'compression.mode': ['standard', 'catalog', 'hybrid'],
   // '' = inherit the agent's own effort; the rest is the shared scale.
   'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
   // NOTE: memory.provider is intentionally NOT listed here. Its options are
@@ -560,6 +561,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   compression: {
     enabled: 'Auto-Compression',
+    mode: 'Compression Mode',
     threshold: 'Compression Threshold',
     codexGpt55Autoraise: 'Codex Compression Auto-Raise',
     targetRatio: 'Compression Target',
@@ -638,6 +640,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   compression: {
     enabled: 'Summarize older context when conversations get large.',
+    mode: 'Applies when context.engine=compressor (built-in ContextCompressor). Standard LLM summary, extractive catalog, or hybrid. Provider-native Codex compaction may bypass this setting.',
     codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.'
   },
   auxiliary: {
@@ -750,6 +753,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'memory.provider',
       'context.engine',
       'compression.enabled',
+      'compression.mode',
       'compression.threshold',
       'compression.codex_gpt55_autoraise',
       'compression.target_ratio',

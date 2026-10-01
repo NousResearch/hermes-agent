@@ -6259,6 +6259,24 @@ class TestFtsRebuildFinishWithoutTrigram:
 
 
 
+
+def test_reopen_session_keeps_queued_prompt_that_reached_provider(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s", source="desktop")
+        prompt_id = db.append_message(
+            "s", "user", "retry this prompt", display_metadata={"_queued_prompt": 1}
+        )
+        db.append_message("s", "assistant", "Your request was not processed.")
+        db.end_session("s", "gateway_restart")
+        db.reopen_session("s")
+
+        row = next(message for message in db.get_messages("s", include_inactive=True) if message["id"] == prompt_id)
+        assert row["active"] == 1
+    finally:
+        db.close()
+
+
 class TestPerformancePragmasEndToEnd:
     """E2E guard for PR #71755: config-gated cache_size / mmap_size /
     temp_store must reach EVERY connection type (writer, read-only

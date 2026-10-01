@@ -1288,14 +1288,15 @@ async def test_quoted_image_is_the_file_in_the_cache_of_a_routed_profile(
                 prepared = await runner._prepare_inbound_message_text(
                     event=event, source=source, history=[], session_key=session_key
                 )
-            [quoted] = event.media_urls
-            prior_files.append(Path(quoted))
+            quoted = event.media_urls[0] if event.media_urls else None
+            if quoted is not None:
+                prior_files.append(Path(quoted))
             turns.append(
                 {
                     "retained_files": [path.is_file() for path in prior_files],
-                    "own": Path(quoted).parent == home / "cache" / "images" and Path(quoted).is_file(),
+                    "own": quoted is not None and Path(quoted).parent == home / "cache" / "images" and Path(quoted).is_file(),
                     "pixels": runner._session_state(session_key).persistent.native_image_paths,
-                    "description": f"<pixels of {quoted}>" in prepared,
+                    "description": quoted is not None and f"<pixels of {quoted}>" in prepared,
                 }
             )
             visible = move == "moved" or home == launch

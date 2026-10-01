@@ -51,6 +51,7 @@ import {
   $connection,
   $cronSessions,
   $gatewayState,
+  $kanbanSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -952,13 +953,13 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
   // its title through the tree, which loads after the tiles register.
-  // $cronSessions/$messagingSessions: `tileStoredRow` reads every sidebar
-  // slice, so the strip must re-sync when the slice that owns a gateway
-  // conversation lands — it arrives on its own fetch, after the tiles register,
+  // $cronSessions/$messagingSessions/$kanbanSessions: `tileStoredRow` reads
+  // every sidebar slice, so the strip must re-sync when the slice that owns a
+  // gateway conversation lands — it arrives on its own fetch, after the tiles register,
   // and without it the tab stays stuck on its "New session" placeholder.
   // (The tab's status dot subscribes to color/state itself, so it needs no
   // `also` entry.)
-  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
+  also: [$sessions, $cronSessions, $messagingSessions, $kanbanSessions, $projectTree, $workspaceOwnerLabels],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

@@ -86,6 +86,7 @@ import {
 import {
   $cronSessions,
   $currentCwd,
+  $kanbanSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -552,11 +553,12 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
-// The cron and messaging slices arrive on their OWN fetch, after a restored
+// The cron, messaging and kanban slices arrive on their OWN fetch, after a restored
 // tab has already registered. Without these listens the workspace tab keeps
 // whatever it resolved at register time — "New session" for a gateway chat.
 $cronSessions.listen(syncWorkspaceTitle)
 $messagingSessions.listen(syncWorkspaceTitle)
+$kanbanSessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)

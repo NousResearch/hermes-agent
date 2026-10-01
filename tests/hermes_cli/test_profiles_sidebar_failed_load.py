@@ -106,7 +106,7 @@ class TestSidebarFailedLoad:
         payload = _sidebar(client, "worker")
 
         assert payload["storage"] == {}
-        for key in ("recents", "cron", "messaging"):
+        for key in ("recents", "cron", "messaging", "kanban"):
             _assert_failed_load(payload[key], "worker")
         assert payload["errors"][0]["profile"] == "worker"
 
@@ -128,7 +128,7 @@ class TestSidebarFailedLoad:
 
         payload = _sidebar(client, "worker")
 
-        for key in ("recents", "cron", "messaging"):
+        for key in ("recents", "cron", "messaging", "kanban"):
             _assert_failed_load(payload[key], "worker")
         assert "heal exhausted" in payload["errors"][0]["error"]
 

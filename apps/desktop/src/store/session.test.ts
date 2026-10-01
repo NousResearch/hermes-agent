@@ -26,6 +26,7 @@ import {
   $currentModel,
   $currentProvider,
   $freshDraftKey,
+  $kanbanSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -66,6 +67,7 @@ import {
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
+  setKanbanSessions,
   setMessagingSessions,
   setRememberedRoute,
   setRememberedSessionId,
@@ -879,14 +881,17 @@ describe('applySessionTitle', () => {
     setSessions([session({ id: 'tip', _lineage_ids: ['root', 'tip'], _lineage_root_id: 'root', title: 'Old' })])
     setCronSessions([session({ id: 'cron-1', source: 'cron', title: 'Old' })])
     setMessagingSessions([session({ id: 'tg-1', source: 'telegram', title: 'Old' })])
+    setKanbanSessions([session({ id: 'kb-1', source: 'kanban', title: 'Old' })])
 
     applySessionTitle('root', 'Fresh')
     applySessionTitle('cron-1', 'Fresh')
     applySessionTitle('tg-1', 'Fresh')
+    applySessionTitle('kb-1', 'Fresh')
 
     expect($sessions.get()[0].title).toBe('Fresh')
     expect($cronSessions.get()[0].title).toBe('Fresh')
     expect($messagingSessions.get()[0].title).toBe('Fresh')
+    expect($kanbanSessions.get()[0].title).toBe('Fresh')
   })
 
   it('keeps the slice reference when no row matches or the title is current', () => {

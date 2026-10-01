@@ -487,8 +487,18 @@ class GatewayTopicThreadsMixin:
         # id tiebreak) in the owning profile's store — never from callback completion time.
         async with self._telegram_group_rename_lock(source):
             for attempt in range(1, self._TELEGRAM_GROUP_TITLE_MAX_ATTEMPTS + 1):
-                # Revalidate before EVERY attempt, retries included: a delayed retry must never
-                # restore an older session's title after a newer session opens.
+                # The kill-switch is re-read per attempt, retries included: a lane parked in a
+                # guided retry wait (up to the cap) must not issue its next set_chat_title after
+                # the operator flipped disable_group_auto_rename. The entry check above only
+                # avoids scheduling the work at all.
+                if self._telegram_group_auto_rename_disabled(source):
+                    logger.info(
+                        "Telegram group title rename skipped (kill-switch flipped): session=%s", session_id)
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id, "skipped:disabled")
+                    return
+                # Revalidate ownership before EVERY attempt, retries included: a delayed retry
+                # must never restore an older session's title after a newer session opens.
                 owned = await asyncio.to_thread(self._telegram_group_title_owned_by, source, session_id)
                 if not owned:
                     logger.debug(

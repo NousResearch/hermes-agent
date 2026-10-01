@@ -357,6 +357,9 @@ class PythonEnvironment:
         ``frozen=False`` is reserved for the caller-owned generated workspace,
         never the original project's lock. Seed/replay policy belongs to PM.
         """
+        from pm.toolchain_preflight import require_native_cxx_for_sync
+
+        require_native_cxx_for_sync(extras, build_env=self.env, python=self.python)
         if not frozen:
             self.lock(source, timeout=timeout)
         # Locking members alone is insufficient: plain sync only installs root deps.

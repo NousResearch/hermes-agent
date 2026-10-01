@@ -26,6 +26,8 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.session import SessionSource
+from gateway.session_identity import replace_source
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -871,6 +873,29 @@ class TurnRunner:
             session_id = getattr(agent, "session_id", None)
             source = ctx.source
             runner = self._runner
+            # Native Discord only stamps auto-thread markers on the opening parent-channel event. A
+            # title retry arrives as an ordinary in-thread event; when the agent was rebuilt, there
+            # is no first-turn callback left to rename it. Recover only those immutable markers from
+            # this same thread's persisted origin, while keeping the live source's transport owner.
+            if (
+                getattr(source, "platform", None) == Platform.DISCORD
+                and getattr(source, "chat_type", None) == "thread"
+                and getattr(source, "thread_id", None)
+                and getattr(source, "delivered_via_upstream_relay", False) is not True
+                and not runner._is_discord_auto_thread_lane(source)
+            ):
+                with suppress(Exception):
+                    row = agent._session_db.get_session(session_id)
+                    origin = SessionSource.from_dict(json.loads((row or {}).get("origin_json") or "{}"))
+                    if (
+                        runner._is_discord_auto_thread_lane(origin)
+                        and str(origin.thread_id) == str(source.thread_id)
+                    ):
+                        source = replace_source(
+                            source,
+                            auto_thread_created=True,
+                            auto_thread_initial_name=origin.auto_thread_initial_name,
+                        )
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
@@ -1699,6 +1724,8 @@ class TurnRunner:
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
                 kwargs["turn_author"] = {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                          "is_bot": bool(getattr(ctx.source, "is_bot", False))}
+            if ctx.title_user_message is not None:
+                kwargs["title_user_message"] = ctx.title_user_message
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:

@@ -191,7 +191,8 @@ _BUSY_MODES = ("queue", "steer", "interrupt")
 # /fast argument -> (service_tier value, persisted config value)
 _FAST_TIERS = {
     "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
-    "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
+    "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold"),
+    "ultrafast": ("ultrafast", "ultrafast")}
 
 # /reasoning display toggles: arg -> (attr, value, headline key, follow-up note key or None);
 # the keys resolve under ``cli.commands.reasoning.*`` at call time.
@@ -1986,6 +1987,9 @@ class CLICommandsMixin:
                             self._app.invalidate()
 
                 bg_agent.thinking_callback = _bg_thinking
+                # /bg prompts paint on this terminal: they wait until answered, like the foreground turn's.
+                from tools.approval_context import reset_prompts_wait_for_answer, set_prompts_wait_for_answer
+                prompts_token = set_prompts_wait_for_answer()
                 try:
                     result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
                     response = result.get("final_response", "") if result else ""
@@ -1993,6 +1997,7 @@ class CLICommandsMixin:
                         response = _gt("model.error_prefix", error=result["error"])
                     return response
                 finally:
+                    reset_prompts_wait_for_answer(prompts_token)
                     # One agent per /bg task in a long-lived CLI process: close()
                     # is the owner boundary (memory shutdown, tool subprocesses,
                     # httpx clients); an unclosed side agent leaks all of them
@@ -2391,10 +2396,16 @@ class CLICommandsMixin:
                 if initial_text:
                     fh.write(initial_text)
             try:
-                subprocess.call([*shlex.split(editor), path])
-            except Exception:
-                # Fall back to a bare invocation (editor value may not be argv-splittable everywhere).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+                editor_argv = [*shlex.split(editor), path]
+            except ValueError:
+                return ""  # unbalanced quotes in $EDITOR: cancel, never retry through a shell
+            try:
+                status = subprocess.call(editor_argv)
+            except OSError:
+                return ""  # editor not runnable: cancel the compose (#81364)
+            # A failed editor may leave seeded or abandoned text in the buffer.
+            if status != 0:
+                return ""
             with open(path, "r", encoding="utf-8-sig") as fh:
                 raw = fh.read()
         finally:
@@ -2638,11 +2649,16 @@ class CLICommandsMixin:
         raw = _command_arg(cmd)
         usage = _dim_line(_t("fast.usage"))
         if not raw or raw.lower() == "status":
-            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
+            from agent.fast_mode import service_tier_word
+            status = service_tier_word(self.service_tier)
             return _cp(_accent_line(_t("fast.status", feature=feature_name, status=status)), usage)
         arg, explicit_global = _split_scope_flags(raw)
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(_t("shared.unknown_argument", arg=arg)), usage)
+        if arg == "ultrafast":
+            if not _probe("hermes_cli.models", "model_supports_ultrafast", False, model):
+                return _cp(_dim_line(_t("fast.ultrafast_not_supported", model=model or "?")), usage)
+            feature_name = _t("fast.feature_ultrafast")
         self.service_tier, saved_value = _FAST_TIERS[arg]
         _retire_agent(self)  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)

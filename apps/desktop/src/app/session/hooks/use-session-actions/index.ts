@@ -29,7 +29,7 @@ import {
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
@@ -47,6 +47,7 @@ import {
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
+import { prunePreviewTabsForSession } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -80,8 +81,10 @@ import {
   $yoloActive,
   getCurrentModelSource,
   getSessionOwnerHint,
+  idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
+  rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -123,6 +126,7 @@ import {
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
+  $focusedStoredSessionId,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -152,15 +156,17 @@ import type {
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
-import { sessionContextDrift } from '../session-context-drift'
+import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
+import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { createGatewaySession } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -209,6 +215,10 @@ interface SessionActionsOptions {
   onFreshDraftRouteIntent?: () => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resetViewSync: () => void
+  // Live route session id from the router. Used to drop creatingSessionRef only
+  // after navigate to a freshly created/forked stored id has actually landed
+  // (setTimeout(0) cleared the guard before the route caught up — #66057).
+  routedSessionId: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -221,14 +231,15 @@ interface SessionActionsOptions {
   ) => ClientSessionState
 }
 
-// Stored ids created in THIS renderer run. A brand-new session lives only in the
-// gateway's in-memory map until its first turn persists a state.db row — so if a
-// respawning/flapping backend drops it, both resume RPC and the REST transcript
-// 404 even though the user just made it. We must NOT treat that as "gone" (which
-// yanks them to a fresh draft — the "new sessions clear themselves" bug); the
-// bounded retry rebinds it when the backend returns. Boot-into-a-stale-last-id
-// (NOT in this set) still legitimately drops to a draft.
-const createdThisRun = new Set<string>()
+export interface BranchLoadedSessionOptions {
+  busy: boolean
+  contextDrift?: () => null | string
+  cwd?: string
+  messageId?: string
+  messages: ChatMessage[]
+  runtimeId: null | string
+  storedSessionId: null | string
+}
 
 const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
   JSON.stringify(messages.map(({ content, role }) => [role, content]))
@@ -265,6 +276,10 @@ function branchCreateKey({
     sourceSessionId
   })
 }
+
+// How long we keep creatingSessionRef after create/fork navigate before giving up
+// if the router never lands on the pending stored id (stuck navigate / lost race).
+const CREATE_GUARD_RELEASE_MS = 3_000
 
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
@@ -381,6 +396,7 @@ async function desktopSessionCreateParams(
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
+  rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
@@ -467,6 +483,7 @@ export function useSessionActions({
   onFreshDraftRouteIntent,
   requestGateway,
   resetViewSync,
+  routedSessionId,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
@@ -481,12 +498,106 @@ export function useSessionActions({
   const coldDisplayReadsRef = useRef(new Map<string, symbol>())
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
 
+  // Stored id we just created/forked and navigated to. creatingSessionRef stays
+  // true until routedSessionId + selection both agree on this id — clearing via
+  // setTimeout(0) let use-route-resume resume the stale route as "stuck" (#66057).
+  const pendingCreatedStoredSessionIdRef = useRef<string | null>(null)
+  // Route id at the moment we armed pending (often the stale previous session).
+  // Distinguishes "router still lagging on A" from "user navigated to C".
+  const pendingCreatedFromRouteRef = useRef<string | null>(null)
+  const pendingGuardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const releaseCreatingSessionGuard = useCallback(() => {
+    if (pendingGuardTimeoutRef.current != null) {
+      clearTimeout(pendingGuardTimeoutRef.current)
+      pendingGuardTimeoutRef.current = null
+    }
+
+    pendingCreatedStoredSessionIdRef.current = null
+    pendingCreatedFromRouteRef.current = null
+    creatingSessionRef.current = false
+  }, [creatingSessionRef])
+
+  // Arm the create/fork hold: keep creatingSessionRef until the route lands on
+  // `storedId`, the user leaves for another route, navigate throws, or the
+  // safety timeout fires (so a stuck router can't block resumes forever).
+  const armPendingCreatedSession = useCallback(
+    (storedId: string) => {
+      pendingCreatedStoredSessionIdRef.current = storedId
+      pendingCreatedFromRouteRef.current = routedSessionId
+
+      if (pendingGuardTimeoutRef.current != null) {
+        clearTimeout(pendingGuardTimeoutRef.current)
+      }
+
+      pendingGuardTimeoutRef.current = setTimeout(() => {
+        pendingGuardTimeoutRef.current = null
+
+        if (pendingCreatedStoredSessionIdRef.current !== storedId) {
+          return
+        }
+
+        // Route never caught up. Retry navigate so ChatView can leave the
+        // route/selection mismatch loading state; then drop the guard so
+        // use-route-resume can self-heal to the URL if navigate still fails.
+        try {
+          navigate(sessionRoute(storedId), { replace: true })
+        } catch {
+          // Ignore — release below still unblocks recovery.
+        }
+
+        releaseCreatingSessionGuard()
+      }, CREATE_GUARD_RELEASE_MS)
+    },
+    [navigate, releaseCreatingSessionGuard, routedSessionId]
+  )
+
+  useEffect(
+    () => () => {
+      if (pendingGuardTimeoutRef.current != null) {
+        clearTimeout(pendingGuardTimeoutRef.current)
+      }
+    },
+    []
+  )
+
+  // Drop the create/fork guard once the router catches up — or if the user
+  // navigates somewhere other than the pending id (left the pre-create route).
+  useEffect(() => {
+    const pending = pendingCreatedStoredSessionIdRef.current
+
+    if (!creatingSessionRef.current || !pending) {
+      return
+    }
+
+    if (routedSessionId === pending && selectedStoredSessionIdRef.current === pending) {
+      releaseCreatingSessionGuard()
+
+      return
+    }
+
+    const fromRoute = pendingCreatedFromRouteRef.current
+
+    if (routedSessionId !== fromRoute && routedSessionId !== pending) {
+      releaseCreatingSessionGuard()
+    }
+  }, [
+    creatingSessionRef,
+    releaseCreatingSessionGuard,
+    routedSessionId,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef
+  ])
+
   // Follow auto-compression's stored-id rotation only while the exact runtime,
   // selection, and route intent still belong to the rotating conversation.
   // The previous implementation carried only the next stored id and navigated
   // unconditionally; a fast A → B → C switch could therefore be overwritten
   // by A's delayed session.info event and visibly jump back to A.
   const storedIdRotation = useStore($activeSessionStoredIdRotation)
+  const storedSessions = useStore($sessions)
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const routedStoredSessionId = getRoutedStoredSessionId()
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -494,21 +605,39 @@ export function useSessionActions({
       return
     }
 
-    // Consume the event even when it is stale. Rotation is an edge, not durable
-    // state; replaying it after a later remount/selection would steal focus.
-    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
+    const selectedAtEffect = selectedStoredSessionIdRef.current
+    const previousId = storedIdRotation.previousStoredSessionId
+    const nextId = storedIdRotation.nextStoredSessionId
 
-    const selectedStoredSessionId = selectedStoredSessionIdRef.current
-    const routedStoredSessionId = getRoutedStoredSessionId()
+    // A tile can adopt the exact successor before the refreshed sessions list
+    // contains it. The rotation itself proves that this focus is the same live
+    // runtime; unrelated focused chats still fail the foreground check.
+    const focusedOnRotatedLineage = Boolean(
+      focusedStoredSessionId &&
+      (focusedStoredSessionId === nextId || idsShareLineage(focusedStoredSessionId, nextId, storedSessions))
+    )
 
-    if (
+    const rotationIsStale =
       activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
-      selectedStoredSessionId !== storedIdRotation.previousStoredSessionId ||
-      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId) ||
-      !isSessionInForeground(storedIdRotation.previousStoredSessionId)
-    ) {
+      selectedAtEffect !== previousId ||
+      (routedStoredSessionId !== null && routedStoredSessionId !== previousId)
+
+    if (rotationIsStale) {
+      // The user moved to another conversation, so this proof must not replay.
+      setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
+
       return
     }
+
+    if (!isSessionInForeground(previousId) && !focusedOnRotatedLineage) {
+      // Focus moved to an unrelated tile, but route and selection still name
+      // this conversation. Keep the proof so steering can use it until focus
+      // or the session list catches up.
+      return
+    }
+
+    // Consume only once the successor can safely take over the visible session.
+    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
 
     // Park unsent draft/queue on the durable lineage key (not the new tip).
     // ChatBar scopes composer state on resolveComposerSessionKey(); migrating
@@ -516,15 +645,12 @@ export function useSessionActions({
     // live editor text on a brief remount. If the new tip row is not in
     // $sessions yet, resolveComposerSessionKey falls back to the tip id — prefer
     // the previous id (usually the lineage root) in that gap.
-    const previousId = storedIdRotation.previousStoredSessionId
-    const nextId = storedIdRotation.nextStoredSessionId
-    const sessions = $sessions.get()
-    const resolvedNext = resolveComposerSessionKey(nextId, sessions)
+    const resolvedNext = resolveComposerSessionKey(nextId, storedSessions)
 
     const durableKey =
       resolvedNext && resolvedNext !== nextId
         ? resolvedNext
-        : (resolveComposerSessionKey(previousId, sessions) ?? previousId)
+        : (resolveComposerSessionKey(previousId, storedSessions) ?? previousId)
 
     migrateSessionDraft(previousId, durableKey)
     migrateSessionDraft(nextId, durableKey)
@@ -540,7 +666,18 @@ export function useSessionActions({
     if (routedStoredSessionId === previousId) {
       navigate(sessionRoute(nextId), { replace: true })
     }
-  }, [activeSessionIdRef, getRoutedStoredSessionId, navigate, selectedStoredSessionIdRef, storedIdRotation])
+  }, [
+    activeSessionId,
+    activeSessionIdRef,
+    focusedStoredSessionId,
+    getRoutedStoredSessionId,
+    navigate,
+    routedStoredSessionId,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
+    storedIdRotation,
+    storedSessions
+  ])
 
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
@@ -554,6 +691,10 @@ export function useSessionActions({
       const workspaceTarget = hasWorkspaceTarget
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
+
+      if (draftOptions.rotateFreshDraftKey !== false) {
+        rotateFreshDraftKey()
+      }
 
       resetViewSync()
       busyRef.current = false
@@ -701,17 +842,7 @@ export function useSessionActions({
         let stored: null | string
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params,
-                undefined,
-                undefined,
-                { spawnPriority: 'foreground' }
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          created = await createGatewaySession(capturedRoute, params, requestGateway)
 
           stored = created.stored_session_id ?? null
 
@@ -778,7 +909,7 @@ export function useSessionActions({
         ensureSessionState(created.session_id, stored)
 
         if (stored) {
-          createdThisRun.add(stored)
+          markSessionCreatedThisRun(stored)
           // Seed the sidebar preview with the user's first message so the row
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
@@ -789,7 +920,18 @@ export function useSessionActions({
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)
-          navigate(sessionRoute(stored), { replace: true })
+          createOverrides?.onComposerScopeAssigned?.(stored)
+          // Hold creatingSessionRef until the route lands on `stored` (release
+          // effect above). setTimeout(0) raced use-route-resume back onto the
+          // previous session (#66057).
+          armPendingCreatedSession(stored)
+
+          try {
+            navigate(sessionRoute(stored), { replace: true })
+          } catch {
+            releaseCreatingSessionGuard()
+          }
+
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
           broadcastSessionsChanged()
@@ -818,21 +960,90 @@ export function useSessionActions({
 
         return created.session_id
       } finally {
-        window.setTimeout(() => {
+        // Keep the guard up while a navigate to the new stored id is pending;
+        // otherwise clear immediately (abort, error, or create without stored id).
+        if (!pendingCreatedStoredSessionIdRef.current) {
           creatingSessionRef.current = false
-        }, 0)
+        }
       }
     },
     [
       activeSessionIdRef,
+      armPendingCreatedSession,
       creatingSessionRef,
       ensureSessionState,
       getRouteToken,
       navigate,
+      releaseCreatingSessionGuard,
       requestGateway,
       resetViewSync,
       selectedStoredSessionIdRef,
       updateSessionState
+    ]
+  )
+
+  const submitTextToNewSession = useCallback(
+    async (text: string, owner?: string): Promise<{ runtimeSessionId: string; sessionId: string }> => {
+      // IPC delivers the quick-entry submit as one task, and the drift guard
+      // classifies by route/selection tokens. Capture them BEFORE the create:
+      // the session.create round-trip is seconds long, and this call's own
+      // re-home onto the created session must never read as user drift
+      // (same contract as createBackendSessionForSend's starting tokens).
+      const startingRouteToken = getRouteToken()
+      const startingSelectedStoredId = selectedStoredSessionIdRef.current
+      const params = await desktopSessionCreateParams(resolveNewSessionCwd())
+      const created = await requestGateway<SessionCreateResponse>('session.create', params)
+      const stored = created.stored_session_id
+
+      if (!stored) {
+        throw new Error('The new session did not return a stored id.')
+      }
+
+      // Only a genuine user move to a DIFFERENT chat mid-create orphans the
+      // minted session; our own re-home below names it, so it is not drift.
+      const drift = sessionContextDrift({
+        startRouteToken: startingRouteToken,
+        nowRouteToken: getRouteToken(),
+        startSelectedStoredId: startingSelectedStoredId,
+        nowSelectedStoredId: selectedStoredSessionIdRef.current,
+        submitTargetStoredId: stored
+      })
+
+      if (drift) {
+        console.warn('[submit-drift-abort]', drift, { phase: 'quick-entry-new' })
+        throw new Error(`Quick Entry destination changed mid-create: ${drift}`)
+      }
+
+      // The owner is the requesting submit's correlation when the caller knows
+      // it (quick entry); otherwise this call owns its own generation.
+      const pinOwner = owner ?? `new-session-${created.session_id}`
+      pinStoredSessionForOwner(pinOwner, stored)
+
+      try {
+        markSessionCreatedThisRun(stored)
+        runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
+        ensureSessionState(created.session_id, stored)
+        upsertOptimisticSession(created, stored, null, text.trim())
+        // Submit the exact runtime id returned by session.create so this
+        // atomic path cannot fall back to a route token (#85590).
+        await requestGateway('prompt.submit', { session_id: created.session_id, text })
+        navigate(sessionRoute(stored), { replace: true })
+
+        return { runtimeSessionId: created.session_id, sessionId: stored }
+      } finally {
+        // Terminal transition for this owner: accepted, failed, or cancelled.
+        // Owner-scoped pins cannot strand another request, so no tick budget is
+        // needed to force-release.
+        releaseStoredSessionPins(pinOwner)
+      }
+    },
+    [
+      ensureSessionState,
+      getRouteToken,
+      navigate,
+      requestGateway,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef
     ]
   )
 
@@ -989,17 +1200,7 @@ export function useSessionActions({
         let stored: string | undefined
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params,
-                undefined,
-                undefined,
-                { spawnPriority: 'foreground' }
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          created = await createGatewaySession(capturedRoute, params, requestGateway)
 
           stored = created.stored_session_id
 
@@ -1031,7 +1232,7 @@ export function useSessionActions({
           return
         }
 
-        createdThisRun.add(stored)
+        markSessionCreatedThisRun(stored)
 
         // Seed the per-runtime cache so the tile renders immediately without a
         // redundant resume. Only add the row to the SIDEBAR when `listed` — an
@@ -1131,12 +1332,11 @@ export function useSessionActions({
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
-      // $selectedStoredSessionId) and, for a cold target, drop the previous
-      // transcript so the thread shows its loader instead of the old session
-      // lingering until resume lands. A warm-cached target keeps its transcript —
-      // the cached fast-path repaints it this same tick. Setting the ref here is
-      // also what use-route-resume's self-heal assumes ("set synchronously at
-      // resume entry").
+      // $selectedStoredSessionId) and drop the previous session's transcript so
+      // the thread shows this session's proven warm transcript or its loader
+      // instead of the old session lingering until resume lands. Setting the
+      // ref here is also what use-route-resume's self-heal assumes ("set
+      // synchronously at resume entry").
       setFreshDraftReady(false)
       clearNotifications()
       resetViewSync()
@@ -1194,7 +1394,18 @@ export function useSessionActions({
         return { runtimeId, state }
       }
 
-      if (!takeWarmCache()) {
+      // The selection moved above, but a warm runtime is only (re)bound after
+      // the awaits below. Until then the foreground may stay on a runtime only
+      // if it already IS this session's own warm runtime (a same-session
+      // re-resume). Leaving another chat's runtime bound is #89696: the primary
+      // view reads the active runtime's slice and the view sync admits only the
+      // active runtime, so a turn still streaming there keeps painting under
+      // this session's route, and a re-entrant resume of this target would
+      // snapshot it as this session's local pending turn (resumeStartMessages).
+      const warmAtEntry = takeWarmCache()
+      const foregroundIsTarget = warmAtEntry !== null && warmAtEntry.runtimeId === activeSessionIdRef.current
+
+      if (!foregroundIsTarget) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         // History load is not turn-busy. Drop the previous session's leftover
@@ -1232,6 +1443,23 @@ export function useSessionActions({
 
       if (ownerRoute || listedStored?.profile) {
         provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
+      }
+
+      // An unbound warm target whose transcript is already persisted-display
+      // authority paints now, display-only, instead of waiting out the awaits
+      // below; the fast path re-proves it against the resolved owner before
+      // binding. An unproven warm cache can be a compressed runtime tail, so it
+      // keeps the loader (#73646).
+      if (warmAtEntry && !foregroundIsTarget && listedStored) {
+        const entryProvenance = createPersistedDisplayTranscriptProvenance({
+          lineageRootId: listedStored._lineage_root_id ?? null,
+          scope: transcriptRestScope(ownerRoute, listedStored, ambientConnectionId),
+          storedSessionId
+        })
+
+        if (hasPersistedDisplayTranscriptProvenance(warmAtEntry.state, entryProvenance)) {
+          setMessages(warmAtEntry.state.messages)
+        }
       }
 
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
@@ -2407,7 +2635,7 @@ export function useSessionActions({
           }
 
           const verdict = goneSessionVerdict({
-            createdThisRun: createdThisRun.has(storedSessionId),
+            createdThisRun: sessionCreatedThisRun(storedSessionId),
             stillListed,
             switchInFlight:
               $gatewaySwitching.get() ||
@@ -2699,13 +2927,16 @@ export function useSessionActions({
 
         return true
       } catch (err) {
+        // Navigate throw or earlier failure after arming pending — never leave
+        // creatingSessionRef stuck true.
+        releaseCreatingSessionGuard()
         notifyError(err, copy.branchFailed)
 
         return false
       } finally {
-        window.setTimeout(() => {
+        if (!pendingCreatedStoredSessionIdRef.current) {
           creatingSessionRef.current = false
-        }, 0)
+        }
       }
     },
     [
@@ -2720,26 +2951,30 @@ export function useSessionActions({
     ]
   )
 
-  // Branch the open chat — optionally from a specific message — off its live transcript.
-  const branchCurrentSession = useCallback(
-    async (messageId?: string): Promise<boolean> => {
-      if (!activeSessionIdRef.current) {
+  // Branch a session whose live transcript is already loaded in this renderer.
+  // Both the main chat and session tiles use this path so a clicked message id
+  // is resolved against the exact message array that rendered the action bar.
+  const branchLoadedSession = useCallback(
+    async ({
+      busy,
+      contextDrift,
+      cwd,
+      messageId,
+      messages,
+      runtimeId,
+      storedSessionId
+    }: BranchLoadedSessionOptions) => {
+      if (!runtimeId) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNeedsChat })
 
         return false
       }
 
-      if (busyRef.current) {
+      if (busy) {
         notify({ kind: 'warning', title: copy.sessionBusy, message: copy.branchStopCurrent })
 
         return false
       }
-
-      const startingActiveSessionId = activeSessionIdRef.current
-      const messages = $messages.get()
-      const storedSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
-      const startingCwd = $currentCwd.get().trim()
 
       // Message-level branches still need the local message id to choose their
       // prefix. Whole-chat branches send only the parent identity below; the
@@ -2767,18 +3002,10 @@ export function useSessionActions({
         }
       }
 
-      const drift = sessionContextDrift({
-        startRouteToken: startingRouteToken,
-        nowRouteToken: getRouteToken(),
-        startSelectedStoredId: storedSessionId,
-        nowSelectedStoredId: selectedStoredSessionIdRef.current
-      })
+      const drift = contextDrift?.()
 
-      const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
-      const selectionChanged = selectedStoredSessionIdRef.current !== storedSessionId
-
-      if (drift || runtimeChanged || selectionChanged) {
-        console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
+      if (drift) {
+        console.warn('[branch-drift-abort]', drift, {
           phase: 'transcript-hydration'
         })
 
@@ -2795,20 +3022,54 @@ export function useSessionActions({
 
       clearNotifications()
 
-      // The open chat's owning profile, NOT the picker's / launch profile —
-      // /profile only retargets new chats, so a branch of an existing thread
-      // must stay on that thread's backend (cache hit for an open session).
       return forkBranch(
         branchMessages,
-        startingActiveSessionId,
+        runtimeId,
         storedSessionId,
-        startingCwd,
+        cwd?.trim(),
         profile,
         messageId ? branchMessages.length : undefined,
         ownerRoute
       )
     },
-    [activeSessionIdRef, busyRef, copy, forkBranch, getRouteToken, selectedStoredSessionIdRef]
+    [copy, forkBranch]
+  )
+
+  // Branch the open chat — optionally from a specific message — off its live transcript.
+  const branchCurrentSession = useCallback(
+    (messageId?: string): Promise<boolean> => {
+      const runtimeId = activeSessionIdRef.current
+      const storedSessionId = selectedStoredSessionIdRef.current
+      const routeToken = getRouteToken()
+
+      return branchLoadedSession({
+        busy: busyRef.current,
+        contextDrift: () => {
+          const drift = sessionContextDrift({
+            startRouteToken: routeToken,
+            nowRouteToken: getRouteToken(),
+            startSelectedStoredId: storedSessionId,
+            nowSelectedStoredId: selectedStoredSessionIdRef.current
+          })
+
+          if (drift) {
+            return drift
+          }
+
+          if (activeSessionIdRef.current !== runtimeId) {
+            return 'runtime-changed'
+          }
+
+          return selectedStoredSessionIdRef.current === storedSessionId ? null : 'selection-changed'
+        },
+        cwd: $currentCwd.get(),
+        messageId,
+        messages: $messages.get(),
+        runtimeId,
+        storedSessionId
+      })
+    },
+    [activeSessionIdRef, branchLoadedSession, busyRef, getRouteToken, selectedStoredSessionIdRef]
   )
 
   // Branch any listed session, not just the open one. Reads the target's stored
@@ -2992,6 +3253,21 @@ export function useSessionActions({
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, profile)
         clearQueuedPrompts(storedSessionId)
+        // The journaled in-flight tail holds this session's prompt and tool
+        // calls in localStorage; a deleted session must not leave that copy
+        // behind to age out on its own. Purge after the RPC lands (same
+        // rollback argument as the unread watermark above), passing every id
+        // the delete holds: the stored tip, the row id, the lineage root, and
+        // the closing runtime id — the journal keys on the stored id.
+        purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
+
+        // Preview tabs are session-owned: drop them with the session (pinned
+        // tabs survive — they belong to the workspace, not the session).
+        for (const id of removedIds) {
+          if (id) {
+            prunePreviewTabsForSession(id)
+          }
+        }
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
@@ -3175,6 +3451,7 @@ export function useSessionActions({
   return {
     archiveSession,
     branchCurrentSession,
+    branchLoadedSession,
     branchStoredSession,
     closeSettings,
     createBackendSessionForSend,
@@ -3184,6 +3461,7 @@ export function useSessionActions({
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,
+    submitTextToNewSession,
     unarchiveSession
   }
 }

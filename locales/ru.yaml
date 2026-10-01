@@ -179,11 +179,13 @@ gateway:
     label_normal: "ОБЫЧНЫЙ"
     status_fast: "быстрый"
     status_normal: "обычный"
-    picker_title: "⚡ **Priority Processing**\\n\\nТекущий режим: `{mode}`\\n\\nВыберите вариант:"
+    picker_title: "⚡ **Priority Processing**\n\nТекущий режим: `{mode}`\n\nВыберите вариант:"
     choice_fast: "fast — Priority Processing включён"
     choice_normal: "normal — стандартная обработка"
     choice_auto: "auto — быстро в первые секунды каждого хода"
     choice_cold: "cold — быстро только на первом ходе сессии"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, цена ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступен только для GPT-6 Astra (текущая модель: `{model}`)."
   footer:
     status: "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Использование: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` не поддерживается. Используйте `/reasoning <level> --global`, чтобы изменить глобальное значение по умолчанию."
     reset_done: "🧠 ✓ Переопределение рассуждений для сеанса сброшено; возврат к глобальной конфигурации."
     unknown_arg: "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые уровни:** none, minimal, low, medium, high, xhigh, max, ultra\n**Отображение:** show, hide\n**Сохранение:** добавьте `--global`, чтобы сохранить за пределами этого сеанса"
-    picker_title: "🧠 **Настройки рассуждений**\\n\\n**Усилия:** `{level}`\\n**Область:** {scope}\\n**Отображение:** {display}\\n\\nВыберите вариант:"
+    picker_title: "🧠 **Настройки рассуждений**\n\n**Усилия:** `{level}`\n**Область:** {scope}\n**Отображение:** {display}\n\nВыберите вариант:"
     choice_none: "none — отключить рассуждения"
     choice_reset: "reset — сбросить переопределение сессии"
     choice_show: "показывать рассуждения в ответах"
@@ -1598,7 +1600,7 @@ slash:
   reasoning:
     description: "Управлять уровнем и отображением рассуждений"
   fast:
-    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показать или сменить скин/тему оформления"
   indicator:
@@ -2250,8 +2252,6 @@ cli:
   approval:
     bell_context: "одобрение"
     label: "Одобрение"
-    timeout_denying: "⏱ Тайм-аут — команда отклонена"
-    timed_out_no_response: "тайм-аут (нет ответа)"
     outcome_once: "разрешено один раз"
     outcome_session: "разрешено на сеанс"
     outcome_always: "добавлено в список разрешённых"
@@ -2259,7 +2259,6 @@ cli:
   clarify:
     bell_context: "уточняющий вопрос"
     label: "Уточнение"
-    timed_out_locked_answers: "(уточняющий вопрос: тайм-аут через {timeout} с — возвращены зафиксированные ответы)"
   connect:
     bell_context: "настройка подключения"
     cannot_restart: "Это подключение нельзя запустить повторно. Отмените и попросите агента ещё раз."
@@ -2651,7 +2650,9 @@ cli:
       feature_generic: "Быстрый режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Использование: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступен только для GPT-6 Astra (текущая модель: {model})."
+      usage: "Использование: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: установлено {value} {scope}"
     hatch:

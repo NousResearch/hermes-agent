@@ -386,6 +386,61 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
+    """Record one attempt as ``unknown`` with a cause this process actually observed.
+
+    ``recover_interrupted_executions`` sweeps every attempt whose owner is provably
+    dead, and knows nothing but that absence — so all it can write is
+    ``_OWNER_GONE_REASON``, which asserts a scheduler restart. A waiter that held the
+    worker's ``Popen`` knows more: the owner was that external worker, and it exited
+    with a known status. Without this, a manual run whose worker dies is filed as
+    "Scheduler restarted ..." (a restart that never happened) and, because the sweep
+    leaves the row terminal, the waiter reports success and never records the run —
+    the job's ``fire_claim`` then blocks the next manual fire for the whole lease
+    (#128509).
+
+    The attempt stays ``unknown``, not ``failed``: whether side effects ran is still
+    unknown. Only the CAUSE becomes truthful. Returns False — leaving the caller to
+    fall back to the generic sweep — when the row is absent, already terminal, owned by
+    this process, inside the handoff adoption grace, or owned by a live process: a
+    worker that is still running must never be terminalized out from under itself.
+    """
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        row = conn.execute(
+            """SELECT id, status, process_id, pid, process_started_at,
+                      handoff_pending, handoff_started_at
+               FROM executions WHERE id=?""",
+            (execution_id,),
+        ).fetchone()
+        if row is None or row["status"] not in ("claimed", "running"):
+            return False
+        if row["process_id"] == _PROCESS_ID:
+            return False
+        if _owner_is_live(int(row["pid"]), row["process_started_at"]):
+            return False
+        handoff_started_at = row["handoff_started_at"]
+        if (
+            row["handoff_pending"]
+            and handoff_started_at is not None
+            and time.time() - float(handoff_started_at) < HANDOFF_ADOPTION_GRACE_SECONDS
+        ):
+            return False
+        cur = conn.execute(
+            """UPDATE executions
+               SET status='unknown', finished_at=?, error=?,
+                   handoff_pending=0, handoff_started_at=NULL
+               WHERE id=? AND status=? AND process_id=? AND pid=?""",
+            (now, reason, row["id"], row["status"], row["process_id"], row["pid"]),
+        )
+        if cur.rowcount != 1:
+            return False
+        record = _fetch(conn, execution_id)
+        _prune_unlocked(conn)
+    _emit_execution_state(record)
+    return True
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
 ) -> List[Dict[str, Any]]:

@@ -21,6 +21,9 @@ GROUP_METHODS = {
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
+    'groups.peer.register': 'session:control',
+    'groups.peer.invite': 'session:operator',
+    'groups.peer.revoke': 'session:operator',
 }
 _FIELDS = {
     'groups.capabilities': set(),
@@ -39,6 +42,10 @@ _FIELDS = {
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
                        'choice', 'request_id'},
+    'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
+    'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
+    'groups.peer.revoke': {'grant'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -74,10 +81,13 @@ async def dispatch_group_control(connection, method, params, *, author=None, rem
     def invoke():
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
+        from gateway import session_group_peers as peers
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
+                if method in peers.TARGET_METHODS:
+                    return peers.dispatch_target(authority, method, supplied)
                 return _group(authority, actor, home, method, supplied, author=author, remember=remember)
             except RuntimeStoreError:
                 raise
@@ -119,11 +129,17 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
         return _execution_control(service, method, params, author=author, remember=remember)
+    if method == 'groups.peer.register':
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_group_peers import register
+        return register(service, params)
 
     def capabilities():
+        from gateway.session_group_peers import room_link
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
-                'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
+                'room_link': room_link(authority),
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
 
@@ -163,6 +179,12 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
 
     def disband():
+        from contextlib import nullcontext
+        # Registration publishes under this lock too, so no peer route appears mid-Disband.
+        with getattr(service, 'peer_route_lock', None) or nullcontext():
+            return disband_unlocked()
+
+    def disband_unlocked():
         from gateway.hosted_room_driver import list_tasks
         if rooms.quarantine_reason(db_path, room_id=params.get('room_id')) is not None:
             # Stop and route revocation would act as the room's authority: a quarantined room only
@@ -171,13 +193,20 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
                 db_path, room_id=params.get('room_id'), confirmed=params.get('confirm_quarantined') is True)}
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         if service is not None and state.get('disbanded_at') is None:
+            begin = getattr(service, 'begin_disband', None)
+            if begin is not None:
+                begin(params.get('room_id'))
             service.stop_room(params.get('room_id'),
                               cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)
             service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not destroy an active execution or bypass Stop.
+        # Metadata control must not destroy an active execution or bypass Stop,
+        # nor forget a peer route whose target grant only the driver can revoke.
         if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
                for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
+            raise RuntimeStoreError('runtime_coordination_required')
+        if service is None and state.get('disbanded_at') is None and any(
+                link['room_id'] == params.get('room_id') for link in rooms.list_room_link_records(db_path)):
             raise RuntimeStoreError('runtime_coordination_required')
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
@@ -186,7 +215,7 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
-        if service is not None and room.get('disbanded_at') is None:
+        if service is not None:
             result['driver_status'] = service.status(room['room_id'])
         return result
 

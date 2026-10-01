@@ -261,15 +261,15 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms.api_server_group_owner_stop import http_routes as owner_stop_routes
-
-    return [
+    from gateway.platforms.api_server_room_proof import wrap
+    return [(method, path, wrap(self, handler)) for method, path, handler in [
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run), *owner_stop_routes(self)]
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + owner_stop_routes(self)
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -667,6 +667,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     gateway_session_key, key_err = self._parse_session_key_header(request)
     if key_err is not None:
         return key_err
+    if gateway_session_key and self._room_grant_token(request):
+        return _json_error(_openai_error, "Room grants cannot select an unrelated conversation.",
+                           code="invalid_room_dispatch", status=403)
     try:
         body = await request.json()
     except Exception:
@@ -800,6 +803,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
     if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
         from gateway.session_api_turn import admit_api_turn
+        from gateway.platforms.api_server_room_grants import authorize_room_admission
         from hermes_state_runtime import RuntimeStoreError
         try:
             with self._profile_scope(launch.request_profile):
@@ -810,6 +814,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',
                     bind_declared_conversation=_declared_selected,
+                    _authorize_write=authorize_room_admission(self, request),
                     **launch.agent_kwargs)
         except RuntimeStoreError as exc:
             # A refused admission owns no run: drop every reservation so an exact

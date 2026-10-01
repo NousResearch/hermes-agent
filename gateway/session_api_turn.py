@@ -136,7 +136,8 @@ def admit_api_turn(adapter, **kwargs):
     ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
-                              session_id=sid, request_id=request_id, payload=payload)
+                              session_id=sid, request_id=request_id, payload=payload,
+                              _authorize_write=kwargs.get("_authorize_write"))
     return authority, ref, row
 
 

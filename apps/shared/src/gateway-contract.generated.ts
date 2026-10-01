@@ -1246,6 +1246,7 @@ export interface GroupsCapabilitiesResult {
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
   enabled: boolean
+  authentication?: 'proof-v1' | null
   profile?: string | null
   catalog?: RoomLinkCatalog | null
   endpoint?: RoomLinkEndpoint | null
@@ -1370,6 +1371,8 @@ export interface RoomDriverStatus {
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
   peer_routes: PeerRouteStatus[]
+  peer_cleanup?: Record<string, unknown>[] | null
+  retiring?: boolean | null
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1541,6 +1544,7 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  status_ttl_seconds?: number | null
 }
 export interface GroupsPeerInviteResult {
   grant: string

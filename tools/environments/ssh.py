@@ -54,6 +54,9 @@ class SSHEnvironment(BaseEnvironment):
     # they stay out of the remote snapshot under multiplex.
     _profile_scoped_passthrough = True
     _sudo_nopasswd_probe_supported = True
+    # Overridden per-instance by _detect_tar_extract_flags; GNU-capable default preserves
+    # StrictModes protection even if a subclass skips the probe.
+    _tar_extract_flags = "--no-overwrite-dir"
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
@@ -78,6 +81,7 @@ class SSHEnvironment(BaseEnvironment):
             return
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
+        self._tar_extract_flags = self._detect_tar_extract_flags()
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
             upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
@@ -162,6 +166,20 @@ class SSHEnvironment(BaseEnvironment):
         self._run_ssh(quoted_mkdir_command([base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]),
                       timeout=10)
 
+    def _detect_tar_extract_flags(self) -> str:
+        """Probe once whether the remote tar accepts ``--no-overwrite-dir``.
+
+        GNU tar supports it (and needs it to keep the staging dir's mode off
+        existing remote dirs — a umask-002 0775 home breaks sshd StrictModes);
+        macOS/FreeBSD bsdtar rejects the option outright, which killed the
+        extract mid-pipe and surfaced as a host-side 'tar: Write error' on
+        every sync (per-call retry storm, ~100s overhead per tool call).
+        """
+        probe = self._run_ssh("tar --help 2>&1 | grep -q -- --no-overwrite-dir && echo yes", timeout=10)
+        flags = "--no-overwrite-dir" if probe.returncode == 0 and "yes" in probe.stdout else ""
+        logger.debug("SSH: remote tar --no-overwrite-dir supported=%s", bool(flags))
+        return flags
+
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via scp over ControlMaster."""
         self._run_ssh(f"mkdir -p {shlex.quote(str(Path(remote_path).parent))}", timeout=10)
@@ -204,7 +222,9 @@ class SSHEnvironment(BaseEnvironment):
 
             # --no-overwrite-dir keeps tar from stamping the staging dir's mode onto
             # existing dirs (e.g. /home/<user>); a umask-002 0775 home breaks sshd StrictModes.
-            ssh_cmd = self._build_ssh_command() + [f"tar xf - --no-overwrite-dir -C {shlex.quote(base)}"]
+            # bsdtar remotes reject that GNU-only flag and kill the pipe (see
+            # _detect_tar_extract_flags), so the flags come from the per-remote probe.
+            ssh_cmd = self._build_ssh_command() + [f"tar xf - {self._tar_extract_flags} -C {shlex.quote(base)}"]
             tar_proc = subprocess.Popen(["tar", "-chf", "-", "-C", staging, "."], stdin=subprocess.DEVNULL,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:

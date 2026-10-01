@@ -31,6 +31,8 @@ def mock_env(monkeypatch):
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/testuser")
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_tar_extract_flags",
+                        lambda self: "--no-overwrite-dir")
     monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
     monkeypatch.setattr(
         ssh_env, "FileSyncManager",
@@ -204,6 +206,8 @@ class TestSSHBulkUploadWiring:
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/root")
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_tar_extract_flags",
+                            lambda self: "--no-overwrite-dir")
         monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
 
         captured_kwargs = {}

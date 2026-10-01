@@ -146,4 +146,3 @@ def notify_approval(self, approval_data: dict) -> None:
     except Exception as e:
         logger.error("Failed to send approval request: %s", e)
         raise
-

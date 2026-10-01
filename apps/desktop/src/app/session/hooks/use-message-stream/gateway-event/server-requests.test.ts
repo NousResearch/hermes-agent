@@ -12,6 +12,16 @@ import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
+const hasLivePreviewSurface = vi.hoisted(() => vi.fn((): boolean => false))
+const requestPopoutPreviewAct = vi.hoisted(() => vi.fn(async (_payload: unknown): Promise<unknown> => null))
+const requestPopoutPreviewRead = vi.hoisted(() => vi.fn(async (_payload: unknown): Promise<unknown> => null))
+
+vi.mock('@/app/chat/right-rail/preview-popout-bridge', () => ({
+  hasLivePreviewSurface: () => hasLivePreviewSurface(),
+  requestPopoutPreviewAct: (payload: unknown) => requestPopoutPreviewAct(payload),
+  requestPopoutPreviewRead: (payload: unknown) => requestPopoutPreviewRead(payload)
+}))
+
 const deps = {
   activeSessionIdRef: { current: null },
   sessionInterrupted: () => false,
@@ -321,6 +331,53 @@ describe('window.read claim tolerance (#121609)', () => {
   })
 })
 
+describe('preview pop-out forwarding', () => {
+  beforeEach(() => {
+    hasLivePreviewSurface.mockReturnValue(false)
+    requestPopoutPreviewAct.mockClear()
+    requestPopoutPreviewAct.mockResolvedValue(null)
+    requestPopoutPreviewRead.mockClear()
+    requestPopoutPreviewRead.mockResolvedValue(null)
+  })
+
+  it('forwards an active-session act to the pop-out when this window has no live surface', async () => {
+    requestPopoutPreviewAct.mockResolvedValue({ acted: 'elements', success: true })
+
+    const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(expect.objectContaining({ kind: 'elements' }))
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'elements', success: true })
+  })
+
+  it('runs the act locally when this window has a live surface', async () => {
+    hasLivePreviewSurface.mockReturnValue(true)
+
+    const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewAct).not.toHaveBeenCalled()
+  })
+
+  it('reads from the pop-out when the chat window has no live surface', async () => {
+    requestPopoutPreviewRead.mockResolvedValue({ kind: 'url', text: 'page' })
+
+    const { respond } = deliver('preview.read', { count: 100, session_id: 'session-a', start: 0 }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewRead).toHaveBeenCalledWith({ count: 100, start: 0 })
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ kind: 'url', text: 'page' })
+  })
+
+  it('falls back to the local read when no pop-out answers', async () => {
+    const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewRead).toHaveBeenCalled()
+    expect(respond.mock.calls[0][0].value).toBe('')
+  })
+})
+
 describe('tour request routing', () => {
   afterEach(() => {
     $toursEnabled.set(true)
@@ -353,7 +410,7 @@ describe('tour request routing', () => {
       const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'stored-root')
 
       expect(handled).toBe(true)
-      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
       expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ ok: true })
     } finally {
       deps.sessionStateByRuntimeIdRef.current.clear()

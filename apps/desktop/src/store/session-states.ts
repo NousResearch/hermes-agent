@@ -51,9 +51,11 @@ import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait
 import {
   $activeSessionId,
   $connection,
+  $currentCwd,
   $lastReadAtBySessionId,
   $selectedStoredSessionId,
   $sessions,
+  $workspaceCwdOwner,
   clearReadBaseline,
   getSessionOwnerHint,
   knownSessionOwner,
@@ -3050,6 +3052,52 @@ export const $focusedRuntimeId = computed(
 /** The focused session's state slice (undefined while unresolved/unbound). */
 export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates], (runtimeId, states) =>
   runtimeId ? states[runtimeId] : undefined
+)
+
+/** The workspace CWD of the currently focused session (the focused tile's cwd,
+ *  else the primary session's confirmed workspace cwd, with fallback to historical session cwd). */
+export const $focusedWorkspaceCwd = computed(
+  [
+    $focusedStoredSessionId,
+    $selectedStoredSessionId,
+    $focusedSessionState,
+    $sessions,
+    $currentCwd,
+    $workspaceCwdOwner
+  ],
+  (focusedStoredId, selectedStoredId, focusedSessionState, sessions: readonly SessionInfo[], currentCwd, workspaceCwdOwner) => {
+    const isTile = Boolean(focusedStoredId && focusedStoredId !== selectedStoredId)
+
+    if (isTile && focusedStoredId) {
+      const tileCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, focusedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      return tileCwd
+    }
+
+    const hasPrimaryWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredId ?? null)
+
+    if (hasPrimaryWorkspace) {
+      return currentCwd.trim()
+    }
+
+    if (selectedStoredId) {
+      const fallbackCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, selectedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      if (fallbackCwd) {
+        return fallbackCwd
+      }
+    }
+
+    return ''
+  }
 )
 
 /** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to

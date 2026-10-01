@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 
 import { renameSessionPreferringRpc } from './session-actions-menu'
@@ -56,6 +56,7 @@ afterEach(() => {
   $selectedStoredSessionId.set(null)
   $sessionTiles.set([])
   $sessionStates.set({})
+  $sessions.set([])
 })
 
 describe('renameSessionPreferringRpc', () => {
@@ -68,6 +69,17 @@ describe('renameSessionPreferringRpc', () => {
     expect(request).toHaveBeenCalledWith('session.title', { session_id: RUNTIME_ID, title: 'My branch' })
     expect(renameSession).not.toHaveBeenCalled()
     expect(result.title).toBe('rpc-title')
+  })
+
+  it('resolves the owning profile from $sessions when profile argument is omitted', async () => {
+    $selectedStoredSessionId.set('some-other-active-session')
+    $sessions.set([
+      { id: STORED_ID, profile: 'personal', title: 'Own Google Docs document' } as never
+    ])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Prep Butler')
+
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Prep Butler', 'personal')
   })
 
   it('falls back to REST when the RPC fails (e.g. socket mid-reconnect)', async () => {

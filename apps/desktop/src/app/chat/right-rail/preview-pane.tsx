@@ -26,6 +26,7 @@ import {
   endAnnotateMode,
   flushAnnotateStack
 } from '@/lib/preview-annotate'
+import { handoffPreviewAnnotateStack } from '@/lib/preview-annotate/handoff'
 import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
@@ -555,17 +556,34 @@ export function PreviewPane({
 
     const guest = annotateGuest()
 
-    await flushAnnotateStack(
-      pins,
-      {
-        attachImage: blob => {
-          requestComposerAttachImages([blob])
+    if (isBrowserWindow()) {
+      const result = tabId
+        ? await handoffPreviewAnnotateStack(tabId, pins, currentUrl)
+        : { error: 'This Browser window has no tab identity.', ok: false }
+
+      if (!result.ok) {
+        notify({
+          kind: 'warning',
+          message: result.error || 'Could not add Browser comments to the original chat.',
+          title: copy.annotate
+        })
+
+        return
+      }
+    } else {
+      await flushAnnotateStack(
+        pins,
+        {
+          attachImage: blob => {
+            requestComposerAttachImages([blob])
+          },
+          insertText: text => requestComposerInsert(text, { mode: 'block' })
         },
-        insertText: text => requestComposerInsert(text, { mode: 'block' })
-      },
-      currentUrl
-    )
-    requestComposerFocus()
+        currentUrl
+      )
+      requestComposerFocus()
+    }
+
     setAnnotate(session => ({ ...session, draft: null, stack: clearAnnotatePins(session.stack) }))
     setDraftNote('')
 
@@ -573,7 +591,7 @@ export function PreviewPane({
       await hideAnnotateDraft(guest).catch(() => undefined)
       await syncAnnotatePins(guest, []).catch(() => undefined)
     }
-  }, [annotateGuest, currentUrl])
+  }, [annotateGuest, copy.annotate, currentUrl, tabId])
 
   const startAnnotate = useCallback(async () => {
     const guest = annotateGuest()

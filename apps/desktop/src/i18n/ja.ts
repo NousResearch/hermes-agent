@@ -3046,6 +3046,7 @@ export const ja = defineLocale({
       scopeUncommitted: '未コミット',
       scopeBranch: 'ブランチ',
       scopeLastTurn: '前のターン',
+      readOnlyScope: '読み取り専用ビュー — ステージ・復元・コミットは「未コミット」のみ対象です',
       commit: 'コミット',
       commitAndPush: 'コミットしてプッシュ',
       commitPlaceholder: shortcut => `メッセージ（${shortcut} でコミット）`,

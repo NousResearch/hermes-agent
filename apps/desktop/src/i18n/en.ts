@@ -4186,6 +4186,7 @@ export const en: Translations = {
       scopeUncommitted: 'Uncommitted',
       scopeBranch: 'Branch',
       scopeLastTurn: 'Last turn',
+      readOnlyScope: 'Read-only view — stage, revert, and commit apply to Uncommitted',
       commit: 'Commit',
       commitAndPush: 'Commit & Push',
       commitPlaceholder: shortcut => `Message (${shortcut} to commit)`,

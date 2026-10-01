@@ -1,5 +1,6 @@
 """Host-wide singleton invariants (multiplex-only): one lock per host, staleness is proved."""
 
+import dataclasses
 import json
 import os
 import signal
@@ -108,7 +109,7 @@ def test_stale_record_is_never_attachable(host_dir, pid, create_time):
     assert hr.read_record(hr.ROLE_SERVE, include_stale=True) is not None
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("posix")
 def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkeypatch):
     """WSL can shift psutil.create_time() for the same live PID while /proc start ticks stay fixed.
 
@@ -118,14 +119,11 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
     record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
     assert record is not None
 
-    # Model the exact WSL failure family: the legacy epoch check says the same PID changed,
-    # while a liveness-only PID probe still proves the process itself is alive.
-    monkeypatch.setattr(
-        hr, "_pid_incarnation_matches",
-        lambda _pid, create_time: True if create_time is None else False,
-    )
-    assert hr.record_is_stale(record) is False
-    assert hr.liveness_is_proven(record) is True
+    # Model the exact WSL failure family: the recorded epoch create_time drifted away from the
+    # live process's, while the stable start fingerprint is unchanged.
+    drifted = dataclasses.replace(record, create_time=record.create_time - 5)
+    assert hr.record_is_stale(drifted) is False
+    assert hr.liveness_is_proven(drifted) is True
     assert hr.read_record(hr.ROLE_GATEWAY) is not None
 
     assert record.start_time is not None

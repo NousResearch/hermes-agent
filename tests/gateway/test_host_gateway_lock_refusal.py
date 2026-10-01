@@ -185,8 +185,7 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
         _claim_host_gateway_role()
     finally:
         handle.close()
-    assert len(calls) >= 2
-    assert calls[-1] is None
+    assert calls == [None, None]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")

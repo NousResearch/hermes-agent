@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from contextlib import closing
@@ -147,6 +148,13 @@ async def reaction_follows_delivery(
     return False
 
 
+@dataclass(frozen=True)
+class ReactionWatchClaim:
+    turn_id: str
+    token: str
+    watch: dict[str, Any]
+
+
 class ReactionWatchStore:
     """Watches for reactions to delivered replies, one row per visible reply event.
 
@@ -161,6 +169,7 @@ class ReactionWatchStore:
 
         self.path = path
         self.clock = clock
+        self._active_claims: set[str] = set()
         path.parent.mkdir(parents=True, exist_ok=True)
         _secure_state_db_files(path, create_main=True)
         with closing(self._connect()) as db, db:
@@ -190,6 +199,9 @@ class ReactionWatchStore:
                 db.execute("ALTER TABLE watches ADD COLUMN delivery_event_id TEXT NOT NULL DEFAULT ''")
             if "reply_excerpt_json" not in columns:
                 db.execute("ALTER TABLE watches ADD COLUMN reply_excerpt_json TEXT NOT NULL DEFAULT ''")
+            for column in ("claim_event_id", "claim_token"):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE watches ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
 
     def purge_expired(self) -> float | None:
@@ -261,15 +273,17 @@ class ReactionWatchStore:
         sender: str,
         emoji: str,
         *,
+        reaction_event_id: str,
         verified_delivery_event_id: str = "",
-    ) -> dict[str, Any] | None:
+    ) -> ReactionWatchClaim | None:
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
             row = db.execute(
                 """
                 SELECT turn_id, thread_id, session_key, session_id, requester,
-                       source_json, emoji_json, expires_at, text_content, delivery_event_id, reply_excerpt_json
+                       source_json, emoji_json, expires_at, text_content, delivery_event_id, reply_excerpt_json,
+                       claim_event_id, claim_token
                 FROM watches WHERE event_id = ? AND profile = ? AND room_id = ?
             """,
                 (target_event_id, profile, room_id),
@@ -281,8 +295,15 @@ class ReactionWatchStore:
             allowed = tuple(json.loads(row[6]))
             if allowed and emoji not in allowed:
                 return None
-            db.execute("DELETE FROM watches WHERE turn_id = ?", (row[0],))
-        return {
+            if not reaction_event_id or (row[11] and row[11] != reaction_event_id):
+                return None
+            if row[12] in self._active_claims:
+                return None
+            token = uuid.uuid4().hex
+            db.execute("UPDATE watches SET claim_event_id = ?, claim_token = ? WHERE turn_id = ?",
+                       (reaction_event_id, token, row[0]))
+        self._active_claims.add(token)
+        return ReactionWatchClaim(row[0], token, {
             "profile": profile,
             "room_id": room_id,
             "thread_id": row[1],
@@ -294,7 +315,17 @@ class ReactionWatchStore:
             "target_event_id": target_event_id,
             "text_content": row[8],
             "reply_excerpt": ReplyExcerpt.from_json(json.loads(row[10])) if row[10] else None,
-        }
+        })
+
+    def finish_claim(self, claim: ReactionWatchClaim, *, consumed: bool) -> None:
+        self._active_claims.discard(claim.token)
+        with closing(self._connect()) as db, db:
+            if consumed:
+                db.execute("DELETE FROM watches WHERE turn_id = ? AND claim_token = ?",
+                           (claim.turn_id, claim.token))
+                return
+            db.execute("UPDATE watches SET claim_event_id = '', claim_token = '' "
+                       "WHERE turn_id = ? AND claim_token = ?", (claim.turn_id, claim.token))
 
     def candidate(self, room_id: str, target_event_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as db, db:

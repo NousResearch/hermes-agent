@@ -91,6 +91,9 @@ class DurableSyncStore:
         self._reserved_events.add(event_id)
         return True
 
+    def intake_accepted(self, event_id: str) -> bool:
+        return event_id in self._accepted_events
+
     def release_intake(self, event_id: str) -> None:
         self._reserved_events.discard(event_id)
 

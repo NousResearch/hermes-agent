@@ -157,3 +157,18 @@ class DiscordPlatformEventsMixin:
                 "new_name": new_name[:256],
             })
         await self._emit_platform_event("thread_renamed", _build)
+
+    async def _on_raw_message_delete(self: DiscordAdapter, payload) -> None:
+        self._withdraw_discord_messages(payload, (str(payload.message_id),))
+
+    async def _on_raw_bulk_message_delete(self: DiscordAdapter, payload) -> None:
+        self._withdraw_discord_messages(payload, tuple(str(mid) for mid in payload.message_ids))
+
+    def _withdraw_discord_messages(self: DiscordAdapter, payload, message_ids: tuple[str, ...]) -> None:
+        from gateway.native_message_deletion import NativeMessageDeletion
+        channel = self._client.get_channel(payload.channel_id) if self._client else None
+        thread_id, _ = self._thread_id_and_chat_for_channel(channel)
+        self.withdraw_native_messages(NativeMessageDeletion(
+            platform=self.platform,
+            scope_id=str(payload.guild_id) if payload.guild_id is not None else None,
+            chat_id=str(payload.channel_id), message_ids=message_ids, thread_id=thread_id))

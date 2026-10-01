@@ -206,11 +206,13 @@ class SlackInboundContextMixin:
             att_parts.append(section)
         return att_parts
 
-
     async def _handle_slack_message(self: SlackAdapter, event: dict, payload: Optional[dict] = None) -> None:
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
+        if event.get("subtype") == "message_deleted":
+            self._withdraw_slack_message(event, payload)
+            return
         _ts = str((event or {}).get("ts") or "")
         # getattr: bare test doubles (object.__new__) may lack the map.
         _claims = getattr(self, "_processed_message_ts", None)
@@ -316,7 +318,26 @@ class SlackInboundContextMixin:
             return None
         return event, dedup_team_id, channel_id
 
+    def _withdraw_slack_message(self: SlackAdapter, event: dict, payload: Optional[dict]) -> None:
+        from gateway.native_message_deletion import NativeMessageDeletion
 
+        team_id = self._event_team_id({}, payload)
+        event_team_id = self._event_team_id(event)
+        if not team_id or (event_team_id and event_team_id != team_id):
+            return
+        if team_id not in self._team_clients:
+            return
+        channel_id = event.get("channel")
+        message_id = event.get("deleted_ts")
+        if not isinstance(channel_id, str) or not channel_id or not isinstance(message_id, str) or not message_id:
+            return
+        previous = event.get("previous_message")
+        thread_id = previous.get("thread_ts") if isinstance(previous, dict) else None
+        if not isinstance(thread_id, str) or not thread_id:
+            thread_id = None
+        self.withdraw_native_messages(NativeMessageDeletion(
+            platform=self.platform, scope_id=team_id, chat_id=channel_id,
+            message_ids=(message_id,), thread_id=thread_id))
 
 
 def _is_shared_slack_attachment(att: dict) -> bool:

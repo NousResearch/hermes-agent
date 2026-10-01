@@ -509,11 +509,14 @@ async def test_text_between_two_corrections_runs_before_the_second(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["admission", "validation", "persistence"])
-@pytest.mark.parametrize("change", ["unchanged", "sender", "original", "opt_out"])
+@pytest.mark.parametrize("change", ["unchanged", "sender", "original", "opt_out", "notice", "allowlist"])
 async def test_correction_policy_is_current_after_context_reads(monkeypatch, phase, change):
     adapter = adapter_for(monkeypatch, {ROOM: True})
     adapter.handle_message = AsyncMock()
     incoming = edit_event()
+    if change == "notice":
+        adapter._process_notices = True
+        adapter._client.events["$original"]["content"]["msgtype"] = "m.notice"
     adapter._client.events["$edit"] = {"room_id": ROOM, "sender": ALICE, "event_id": "$edit",
         "type": "m.room.message", "content": incoming.content}
     if phase == "validation":
@@ -527,6 +530,10 @@ async def test_correction_policy_is_current_after_context_reads(monkeypatch, pha
             adapter._event_context_cache.redact(ROOM, "$original")
         elif change == "opt_out":
             adapter._process_edits = frozenset()
+        elif change == "notice":
+            adapter._process_notices = False
+        elif change == "allowlist":
+            adapter._allowed_room_ids = {"!other:example.org"}
         return "Alice"
     if phase == "persistence":
         mark = adapter._threads.mark_async

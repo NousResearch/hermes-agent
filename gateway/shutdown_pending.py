@@ -134,6 +134,8 @@ def _capture_event(event: MessageEvent) -> dict[str, Any]:
                 for snapshot in event._inbound_context_dependencies
             ],
         }
+    from gateway.shutdown_pending_codec import capture_pending_provenance
+    record.update(capture_pending_provenance(event))
     return record
 
 

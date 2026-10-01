@@ -4829,7 +4829,9 @@ def _start_gateway_housekeeping(
         chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
-        (60, "Media cache cleanup", _housekeeping_media_caches),
+        # Per served profile: every cache dir resolves from get_hermes_home(), and a served profile's
+        # turns (TTS replies, inbound media, spillover) write into its OWN home.
+        (60, "Media cache cleanup", profile_scoped_chore(runner, _housekeeping_media_caches)),
         (60, "Paste sweep", _housekeeping_paste_sweep)]
     if cron_provider is not None:
         chores.append((5, "Misfire catch-up sweep", lambda: _housekeeping_misfire_catch_up(cron_provider, adapters, loop)))

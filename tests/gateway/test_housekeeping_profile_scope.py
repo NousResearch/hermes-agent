@@ -178,6 +178,39 @@ def test_multiplexed_maintenance_tick_prunes_every_served_profile_store(two_home
             db.close()
 
 
+def test_multiplexed_media_cache_sweep_prunes_every_served_profile_cache(two_homes):
+    """The hourly media-cache sweep reaches each served profile's OWN cache dirs.
+
+    A served profile's TTS replies land in ITS ``cache/audio`` (the tool resolves the output dir
+    under the turn's scope), but the unscoped sweep resolved ``get_hermes_home()`` to the launch
+    home only, so a secondary's audio cache grew without bound. Real files, nothing patched.
+    """
+    import os
+    import time
+
+    import tools.tts_tool as tts
+    from agent.secret_scope import set_multiplex_active
+
+    stale = time.time() - 48 * 3600
+    replies = []
+    for home in two_homes:
+        with gateway_run._profile_runtime_scope(home):
+            reply = Path(tts._default_output_dir()) / "tts_stale.mp3"
+        reply.parent.mkdir(parents=True, exist_ok=True)
+        reply.write_bytes(b"ID3")
+        os.utime(reply, (stale, stale))
+        replies.append(reply)
+    assert replies[1].is_relative_to(two_homes[1])
+
+    set_multiplex_active(True)
+    try:
+        _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    finally:
+        set_multiplex_active(False)
+
+    assert [r for r in replies if r.exists()] == []
+
+
 def test_a_failing_profile_does_not_strand_the_profiles_after_it(two_homes, monkeypatch):
     """One served profile's broken store must not cost every profile after it its maintenance.
 

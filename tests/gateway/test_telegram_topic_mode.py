@@ -710,7 +710,215 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         chat_id="208214988",
         thread_id="42",
         name="Build Telegram Topic UX",
+        icon_custom_emoji_id=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_rename_resolves_semantic_icon_from_title(tmp_path, monkeypatch):
+    """The lane picks the icon from the title's own words and hands it to the same
+    ``rename_dm_topic`` call — no second platform call, no extra model call."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988", thread_id="42", user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42", session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    bot = MagicMock()
+    bot.get_forum_topic_icon_stickers = AsyncMock(return_value=(
+        SimpleNamespace(emoji="🏠", custom_emoji_id="540210001"),
+        SimpleNamespace(emoji="🔧", custom_emoji_id="540210005"),
+    ))
+    runner.adapters[Platform.TELEGRAM]._bot = bot
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Home renovation photos")
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988", thread_id="42", name="Home renovation photos",
+        icon_custom_emoji_id="540210001",
+    )
+    bot.get_forum_topic_icon_stickers.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_rename_no_icon_eligible_leaves_icon_untouched(tmp_path):
+    """A title whose faces are absent from the allowed set (or an empty mapping)
+    renames with ``icon_custom_emoji_id=None`` — never an empty string, which
+    editForumTopic treats as "remove the icon"."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988", thread_id="42", user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42", session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    bot = MagicMock()
+    bot.get_forum_topic_icon_stickers = AsyncMock(return_value=(
+        SimpleNamespace(emoji="🏠", custom_emoji_id="540210001"),
+    ))
+    runner.adapters[Platform.TELEGRAM]._bot = bot
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Trip planning")
+
+    call = runner.adapters[Platform.TELEGRAM].rename_dm_topic.await_args
+    assert call.kwargs["icon_custom_emoji_id"] is None
+    assert call.kwargs["name"] == "Trip planning"
+
+
+@pytest.mark.asyncio
+async def test_auto_rename_icon_fetch_failure_still_renames(tmp_path):
+    """A failing getForumTopicIconStickers must degrade to a name-only rename."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988", thread_id="42", user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42", session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    bot = MagicMock()
+    bot.get_forum_topic_icon_stickers = AsyncMock(side_effect=RuntimeError("network down"))
+    runner.adapters[Platform.TELEGRAM]._bot = bot
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Home renovation photos")
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988", thread_id="42", name="Home renovation photos",
+        icon_custom_emoji_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_declared_topic_is_never_renamed_or_iconed(tmp_path):
+    """Operator topics (extra.dm_topics) keep their operator-chosen name and icon:
+    the lane returns before any rename/icon edit, exactly as on main."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    # The guard looks the method up on type(adapter): a hand-built fake mirrors
+    # the real TelegramAdapter surface without importing the plugin.
+    class _OperatorTopicAdapter:
+        def __init__(self):
+            self.rename_dm_topic = AsyncMock()
+            self._bot = None
+
+        def _get_dm_topic_info(self, chat_id, thread_id):
+            return {"name": "Operator Topic", "thread_id": int(thread_id),
+                    "icon_custom_emoji_id": "540210999"}
+
+    operator_adapter = _OperatorTopicAdapter()
+    runner.adapters[Platform.TELEGRAM] = operator_adapter
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Home renovation photos")
+
+    operator_adapter.rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_chosen_icon_is_preserved_on_auto_rename(tmp_path):
+    """A user-set ad-hoc topic icon (observed via service messages) survives the
+    auto-rename: name-only edit, icon left untouched. The Bot API has no
+    read-back for the current icon, so protection covers observed icons."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988", thread_id="42", user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42", session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    bot = MagicMock()
+    bot.get_forum_topic_icon_stickers = AsyncMock(return_value=(
+        SimpleNamespace(emoji="🏠", custom_emoji_id="540210001"),
+    ))
+    # The user-icon guard reads the method from type(adapter), like the
+    # operator-topic guard: set it on a real class, not a MagicMock instance.
+    class _UserIconAdapter:
+        def __init__(self):
+            self.rename_dm_topic = AsyncMock()
+            self._bot = bot
+
+        def get_dm_topic_user_icon(self, chat_id, thread_id):
+            return "5317777777777"  # user's own icon
+
+    adapter = _UserIconAdapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Home renovation photos")
+
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988", thread_id="42", name="Home renovation photos",
+        icon_custom_emoji_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_cleared_icon_means_no_auto_icon(tmp_path):
+    """The user explicitly removed the icon (service message showed none): the
+    lane must not re-add one. An empty observed value also blocks auto-icon."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988", thread_id="42", user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42", session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    bot = MagicMock()
+    bot.get_forum_topic_icon_stickers = AsyncMock(return_value=(
+        SimpleNamespace(emoji="🏠", custom_emoji_id="540210001"),
+    ))
+    # The user-icon guard reads the method from type(adapter), like the
+    # operator-topic guard: set it on a real class, not a MagicMock instance.
+    class _ClearedIconAdapter:
+        def __init__(self):
+            self.rename_dm_topic = AsyncMock()
+            self._bot = bot
+
+        def get_dm_topic_user_icon(self, chat_id, thread_id):
+            return ""  # user explicitly cleared the icon
+
+    adapter = _ClearedIconAdapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Home renovation photos")
+
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988", thread_id="42", name="Home renovation photos",
+        icon_custom_emoji_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_rename_disabled_kills_icon_too(tmp_path):
+    """``extra.disable_topic_auto_rename`` already blocks the rename; the icon
+    lane must not slip an icon edit through when the rename is suppressed."""
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***", extra={
+            "disable_topic_auto_rename": True})})
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"), "sess-topic", "Home renovation photos")
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
 
 
 @pytest.mark.asyncio

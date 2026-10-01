@@ -676,6 +676,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded: bool = False
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: Dict[str, int] = {}  # topic_name -> message_thread_id
+        self._dm_topic_user_icons: Dict[str, str] = {}  # "chat_id:thread_id" -> user-chosen icon_custom_emoji_id ("" = user cleared it)
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
         self._command_menu_fingerprint: str = ""  # language + menu payload last pushed via set_my_commands
         self._forum_lock = asyncio.Lock()
@@ -2664,16 +2665,40 @@ class TelegramAdapter(BasePlatformAdapter):
         self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id), replace_existing=force_create)
         return str(thread_id)
 
-    async def rename_dm_topic(self, chat_id: int, thread_id: int, name: str) -> None:
-        """Rename a forum topic in a private (DM) chat."""
+    async def rename_dm_topic(
+        self, chat_id: int, thread_id: int, name: str, icon_custom_emoji_id: Optional[str] = None
+    ) -> bool:
+        """Rename a forum topic in a private (DM) chat; optionally set its icon.
+
+        ``icon_custom_emoji_id`` must come from ``getForumTopicIconStickers`` (the Bot API rejects
+        identifiers outside that set). One edit call carries name + icon; if the API rejects the
+        call with the icon, one retry without it still lands the rename — a bad icon must never
+        cost the semantic name. Returns True when the topic ended up renamed or re-iconged.
+        """
         if not self._bot:
-            return
+            return False
         try:
             chat_id_arg = int(chat_id)
         except (TypeError, ValueError):
             chat_id_arg = chat_id
-        await self._bot.edit_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name)
-        logger.info("[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'", self.name, chat_id, thread_id, name)
+        try:
+            await self._bot.edit_forum_topic(
+                chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name,
+                icon_custom_emoji_id=icon_custom_emoji_id,
+            )
+        except Exception as e:
+            if not icon_custom_emoji_id:
+                raise
+            # The icon is best-effort: retry name-only so a rejected/unknown custom emoji id
+            # never blocks the semantic rename (there is no "read topic icon back" API).
+            logger.warning(
+                "[%s] DM topic icon edit failed in chat %s thread_id=%s; retrying name-only: %s",
+                self.name, chat_id, thread_id, _redact_telegram_error_text(e))
+            await self._bot.edit_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name)
+        logger.info(
+            "[%s] Renamed DM topic in chat %s thread_id=%s -> '%s' (icon=%s)",
+            self.name, chat_id, thread_id, name, icon_custom_emoji_id or "unchanged")
+        return True
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int, replace_existing: bool = False) -> None:
         """Save a newly created thread_id back into config.yaml so it survives restarts."""
@@ -7003,6 +7028,33 @@ class TelegramAdapter(BasePlatformAdapter):
             self._dm_topics[cache_key] = int(thread_id)
             logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
 
+    def _cache_dm_topic_user_icon_from_message(self, chat_id: str, thread_id: str, icon_custom_emoji_id: Optional[str]) -> None:
+        """Remember the icon a user set on an ad-hoc DM topic (via service messages).
+
+        ``forum_topic_created`` / ``forum_topic_edited`` carry ``icon_custom_emoji_id``;
+        None on an *edited* topic means the user removed the icon. The Bot API has no
+        read-back for a topic's current icon, so this cache is the only signal that a
+        user chose an icon themselves — auto-icon selection must not overwrite it.
+        """
+        cache_key = f"{chat_id}:{int(thread_id)}"
+        if cache_key in self._dm_topic_user_icons:
+            return  # first observed value wins: later service messages may echo bot edits
+        self._dm_topic_user_icons[cache_key] = icon_custom_emoji_id or ""
+        logger.info("[%s] Cached DM topic user icon: thread %s icon=%s", self.name, cache_key, icon_custom_emoji_id or "<none>")
+
+    def get_dm_topic_user_icon(self, chat_id: str, thread_id: Optional[str]) -> Optional[str]:
+        """The icon the USER set on this ad-hoc DM topic, if observed; None when unknown.
+
+        Empty string means "user explicitly cleared the icon"; None means no service
+        message was observed for this topic (icon state unknown).
+        """
+        if not thread_id:
+            return None
+        try:
+            return self._dm_topic_user_icons.get(f"{str(chat_id)}:{int(thread_id)}")
+        except (TypeError, ValueError):
+            return None
+
     @classmethod
     def _flatten_rich_inline_text(cls, value: Any) -> str:
         """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
@@ -7074,6 +7126,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
                     if not chat_topic:
                         chat_topic = created_name
+                self._cache_dm_topic_user_icon_from_message(
+                    str(chat.id), thread_id_str, getattr(message.forum_topic_created, "icon_custom_emoji_id", None))
+            # forum_topic_edited service messages track later user icon changes; an edit
+            # with no icon field leaves the icon as-is, so only an explicit icon counts.
+            if hasattr(message, "forum_topic_edited") and message.forum_topic_edited:
+                edited_icon = getattr(message.forum_topic_edited, "icon_custom_emoji_id", None)
+                if edited_icon:
+                    self._cache_dm_topic_user_icon_from_message(str(chat.id), thread_id_str, edited_icon)
         elif chat_type == "group" and thread_id_str:
             # Forum topic skill binding via config.extra['group_topics']; accepts both
             # [{"chat_id": ..., "topics": [...]}] and legacy {"-100...": [{"thread_id": 12}]}.

@@ -53,7 +53,7 @@ def test_single_restart_still_reissues_the_iteration(flag):
 
 
 @pytest.mark.parametrize("flag", RESTART_FLAGS)
-def test_restart_refunds_are_bounded_per_turn(flag):
+def test_back_to_back_restart_refunds_are_bounded(flag):
     """Re-arming the flag every iteration breaks after ``max_retries`` refunds instead of
     refunding forever (the turn ends, so the session turn lease is released)."""
     agent = _agent()
@@ -112,7 +112,3 @@ def test_response_between_restarts_resets_the_bound(flag):
         restart_count = verdict.restart_count
     assert actions == ["continue"] * (3 * MAX_RETRIES)
     assert agent.steered == []
-    # Back-to-back restarts with no response in between still hit the cap.
-    for _ in range(MAX_RETRIES):
-        restart_count = _apply(agent, flag, restart_count).restart_count
-    assert _apply(agent, flag, restart_count).action == "break"

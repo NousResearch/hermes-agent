@@ -2371,7 +2371,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
         room_execution_policy: Optional[Dict[str, Any]] = None,
-        disable_tools: bool = False) -> Any:
+        disable_tools: bool = False,
+        allowed_tools: Optional[tuple[str, ...]] = None) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2412,6 +2413,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             max_iterations = policy.max_iterations
         if disable_tools:
             enabled_toolsets = []
+        elif allowed_tools is not None:
+            enabled_toolsets = sorted(set(enabled_toolsets).intersection(allowed_tools))
         # Reasoning resolves against the model that actually runs (per-model overrides), so only
         # after the precedence chain settles; an explicit request wins.
         if request_reasoning_config is None:

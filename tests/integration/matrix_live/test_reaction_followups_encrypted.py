@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from plugins.platforms.matrix.reaction_followups import REPLY_EXCERPT_CHARS
+from plugins.platforms.matrix.followup_context import REPLY_EXCERPT_CHARS
 from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import (
     LinuxNioObserver,

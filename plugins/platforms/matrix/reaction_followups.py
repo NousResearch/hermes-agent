@@ -10,19 +10,20 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from plugins.platforms.matrix.reaction_context import Method
+from plugins.platforms.matrix.followup_context import (
+    EXCERPT_PART_LIMIT, REPLY_EXCERPT_CHARS, ReplyExcerpt, ReplyExcerptPart, body_digest, source_characters,
+)
 
 
 WATCH_SECONDS = 600
 REGISTRATION_REPLAY_SECONDS = 10
 REGISTRATION_REPLAY_LIMIT = 32
-# The follow-up turn quotes at most this much of the reply it reacts to.
-REPLY_EXCERPT_CHARS = 500
 # Source fields that the follow-up needs to rebuild the original session key. Room and user
 # names are resolved again when the reaction arrives.
 _SOURCE_BINDING_KEYS = ("chat_type", "scope_id", "parent_chat_id")
@@ -69,6 +70,7 @@ class PendingFollowupReactions:
 class FinalDeliveryEvents:
     def __init__(self) -> None:
         self.events: OrderedDict[tuple[str, str], str | None] = OrderedDict()
+        self.parts: OrderedDict[tuple[str, str], tuple[str, int]] = OrderedDict()
 
     def remember(
         self, room_id: str, event_id: str, content: dict[str, Any], *, finalize: bool,
@@ -78,8 +80,32 @@ class FinalDeliveryEvents:
         key = (room_id, target)
         self.events.pop(key, None)
         self.events[key] = event_id if finalize else None
+        body = (content.get("m.new_content", {}) if target != event_id else content).get("body", "")
+        self.parts[key] = (body_digest(body), source_characters(body))
         if len(self.events) > 512:
-            self.events.popitem(last=False)
+            removed, _ = self.events.popitem(last=False)
+            self.parts.pop(removed, None)
+
+    def excerpt(self, room_id: str, visible_ids: tuple[str, ...], text: str) -> ReplyExcerpt | None:
+        targets = set(visible_ids)
+        ordered = [(key, value) for key, value in self.parts.items()
+                   if key[0] == room_id and key[1] in targets]
+        if len(ordered) != len(targets):
+            return None
+        parts = []
+        covered = 0
+        required = min(len(text), REPLY_EXCERPT_CHARS)
+        for key, (digest, count) in ordered[:EXCERPT_PART_LIMIT]:
+            parts.append(ReplyExcerptPart(key[1], digest))
+            covered += count
+            if covered >= required:
+                break
+        complete = covered >= required or len(parts) == len(ordered)
+        return ReplyExcerpt(tuple(parts), complete)
+
+    def target_digests(self, room_id: str, visible_ids: tuple[str, ...]) -> dict[str, str]:
+        return {event_id: self.parts[(room_id, event_id)][0] for event_id in visible_ids
+                if (room_id, event_id) in self.parts}
 
     def latest(self, room_id: str, visible_ids: tuple[str, ...]) -> str | None:
         targets = set(visible_ids)
@@ -162,6 +188,8 @@ class ReactionWatchStore:
                 db.execute("ALTER TABLE watches ADD COLUMN text_content TEXT NOT NULL DEFAULT ''")
             if "delivery_event_id" not in columns:
                 db.execute("ALTER TABLE watches ADD COLUMN delivery_event_id TEXT NOT NULL DEFAULT ''")
+            if "reply_excerpt_json" not in columns:
+                db.execute("ALTER TABLE watches ADD COLUMN reply_excerpt_json TEXT NOT NULL DEFAULT ''")
             db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
 
     def purge_expired(self) -> float | None:
@@ -189,6 +217,8 @@ class ReactionWatchStore:
         emoji_filter: tuple[str, ...],
         delivery_event_id: str,
         text_content: str = "",
+        reply_excerpt: ReplyExcerpt | None = None,
+        target_digests: dict[str, str] | None = None,
     ) -> None:
         rows = [
             (
@@ -204,6 +234,8 @@ class ReactionWatchStore:
                 json.dumps(emoji_filter),
                 text_content[:REPLY_EXCERPT_CHARS],
                 delivery_event_id,
+                json.dumps(replace(reply_excerpt, target_digest=(target_digests or {}).get(event_id, "")).to_json())
+                if reply_excerpt is not None else "",
                 self.clock() + WATCH_SECONDS,
             )
             for event_id in event_ids
@@ -216,8 +248,8 @@ class ReactionWatchStore:
             db.executemany(
                 """INSERT OR REPLACE INTO watches
                    (event_id, turn_id, profile, room_id, thread_id, session_key,
-                    session_id, requester, source_json, emoji_json, text_content, delivery_event_id, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    session_id, requester, source_json, emoji_json, text_content, delivery_event_id, reply_excerpt_json, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -237,7 +269,7 @@ class ReactionWatchStore:
             row = db.execute(
                 """
                 SELECT turn_id, thread_id, session_key, session_id, requester,
-                       source_json, emoji_json, expires_at, text_content, delivery_event_id
+                       source_json, emoji_json, expires_at, text_content, delivery_event_id, reply_excerpt_json
                 FROM watches WHERE event_id = ? AND profile = ? AND room_id = ?
             """,
                 (target_event_id, profile, room_id),
@@ -261,6 +293,7 @@ class ReactionWatchStore:
             "emoji": emoji,
             "target_event_id": target_event_id,
             "text_content": row[8],
+            "reply_excerpt": ReplyExcerpt.from_json(json.loads(row[10])) if row[10] else None,
         }
 
     def candidate(self, room_id: str, target_event_id: str) -> dict[str, Any] | None:

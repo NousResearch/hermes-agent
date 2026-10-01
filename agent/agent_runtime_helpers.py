@@ -1024,15 +1024,36 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
 
 
 def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
-    """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
-    from agent.anthropic_adapter import build_anthropic_client
+    """Rebuild the Anthropic client from a ``_primary_runtime`` snapshot.
+
+    Both rebuild paths — ``try_recover_primary_transport`` and
+    ``restore_primary_runtime`` — reach it via ``_rebuild_primary_client``, so
+    the vertex dispatch below must stay in this function rather than at either
+    call site. Bedrock never gets here: ``_rebuild_primary_client`` routes it to
+    ``bind_bedrock_runtime`` first.
+    """
     agent._anthropic_api_key = rt["anthropic_api_key"]
     agent._anthropic_base_url = rt["anthropic_base_url"]
-    agent._anthropic_client = build_anthropic_client(
-        rt["anthropic_api_key"], rt["anthropic_base_url"],
-        timeout=get_provider_request_timeout(agent.provider, agent.model),
-    )
     agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
+    # Anthropic-on-Vertex uses the shared ``vertex`` provider — the
+    # dispatch to AnthropicVertex vs. the OpenAI-compat Gemini path is
+    # decided at runtime-resolution time by ``is_anthropic_vertex_model``.
+    # Inside this ``anthropic_messages`` path, ``provider=="vertex"``
+    # is unambiguous: it means Claude-on-Vertex.
+    if agent.provider == "vertex":
+        from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+        agent._vertex_project_id = rt.get("vertex_project_id")
+        agent._vertex_region = rt.get("vertex_region") or "global"
+        agent._anthropic_client = build_anthropic_vertex_client(
+            agent._vertex_project_id, agent._vertex_region,
+            timeout=get_provider_request_timeout(agent.provider, agent.model),
+        )
+    else:
+        from agent.anthropic_adapter import build_anthropic_client
+        agent._anthropic_client = build_anthropic_client(
+            rt["anthropic_api_key"], rt["anthropic_base_url"],
+            timeout=get_provider_request_timeout(agent.provider, agent.model),
+        )
     agent.client = None
 
 
@@ -2283,6 +2304,18 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        # Anthropic-on-Vertex: stash project + region so restore/rebuild
+        # can reconstruct AnthropicVertex without re-reading config.yaml.
+        # Guarded above by ``api_mode == "anthropic_messages"``, so
+        # ``provider == "vertex"`` here can only mean Claude-on-Vertex.
+        # Written into ``rt``, not ``agent._primary_runtime``: the caller
+        # REPLACES the snapshot with this return value, so mutating the old
+        # one here would drop both fields.
+        if agent.provider == "vertex":
+            rt.update({
+                "vertex_project_id": getattr(agent, "_vertex_project_id", None),
+                "vertex_region": getattr(agent, "_vertex_region", None),
+            })
     return rt
 
 

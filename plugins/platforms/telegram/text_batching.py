@@ -1,20 +1,26 @@
 """Telegram text batching and tracked delayed dispatch."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from gateway.platforms.event import MessageEvent
+
+if TYPE_CHECKING:
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
 
 class TelegramTextBatchingMixin:
-    def _text_batch_key(self, event: MessageEvent) -> str:
+    def _text_batch_key(self: TelegramAdapter, event: MessageEvent) -> str:
         """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
         self._apply_topic_recovery(event)
         return super()._text_batch_key(event)
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
+    def _enqueue_text_event(self: TelegramAdapter, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
@@ -37,7 +43,7 @@ class TelegramTextBatchingMixin:
         self._accept_update()
 
     async def _flush_buffered(
-        self,
+        self: TelegramAdapter,
         pending: dict,
         tasks: dict,
         key: str,
@@ -75,7 +81,7 @@ class TelegramTextBatchingMixin:
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
 
-    async def _flush_text_batch(self, key: str) -> None:
+    async def _flush_text_batch(self: TelegramAdapter, key: str) -> None:
         """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
         (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
         the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
@@ -109,7 +115,7 @@ class TelegramTextBatchingMixin:
         )
 
     def _text_batch_context_compatible(
-        self,
+        self: TelegramAdapter,
         existing: MessageEvent,
         incoming: MessageEvent,
     ) -> bool:

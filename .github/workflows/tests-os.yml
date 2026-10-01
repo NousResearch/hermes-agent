@@ -174,7 +174,11 @@ jobs:
         env:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
-          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
+          # This caps concurrent PowerShell trees, not CPU use, so it does not
+          # scale with runner size: at 16 a bare install.ps1 stage went from
+          # ~2s to 20-38s and PowerShell subprocess tests timed out. x64 and
+          # arm64 both run on 32-core runners.
+          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && '8' || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''

@@ -113,6 +113,17 @@ def _plan_goal_compression_recovery(
         "Run /compress, then /goal resume to continue.")
 
 
+def _cancel_pending_prompt_turn(sid: str, session: dict, turn_claim: int | None) -> bool:
+    """Release a cancelled turn before execution. Call under ``history_lock``."""
+    if not _owns_turn_claim(session, turn_claim) or not session.get("_turn_cancel_requested"):
+        return False
+    session["running"] = False
+    session.pop("_submit_user_row", None)
+    _clear_inflight_turn(session)
+    _emit("error", sid, {"message": "Turn cancelled before the agent started"})
+    return True
+
+
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
@@ -121,9 +132,11 @@ def _admit_prompt_turn(
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn.
 
-    A stopped or replaced claim cannot start a turn."""
+    The turn runs only while ``turn_claim`` is live. A replaced claim is refused without changing the session.
+    A cancelled current claim is released and its client receives a terminal error."""
+
     with session["history_lock"]:
-        if not _holds_turn_claim(session, turn_claim):
+        if _cancel_pending_prompt_turn(sid, session, turn_claim) or not _holds_turn_claim(session, turn_claim):
             return None
     held_lease = session.get("active_session_lease")
     # When the session already holds its lease this is a cheap dict check. See #94778.
@@ -140,7 +153,7 @@ def _admit_prompt_turn(
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
-        if not _holds_turn_claim(session, turn_claim):
+        if _cancel_pending_prompt_turn(sid, session, turn_claim) or not _holds_turn_claim(session, turn_claim):
             return None
         if session.get("_closing") or (
             queued_prompt_generation is not None

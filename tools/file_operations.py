@@ -171,6 +171,8 @@ def _split_segments(output: str, sentinel: str) -> list[str]:
 def _json_nonstandard_constant(text: str) -> Optional[str]:
     """First NaN/Infinity/-Infinity in ``text`` when it is otherwise valid JSON,
     else None. ``json.loads`` accepts these JavaScript extensions by default."""
+    if "NaN" not in text and "Infinity" not in text:
+        return None
     found: list[str] = []
 
     def note_constant(value: str) -> float:
@@ -178,8 +180,8 @@ def _json_nonstandard_constant(text: str) -> Optional[str]:
         return float("nan")
 
     try:
-        json.loads(text.lstrip(_UTF8_BOM), parse_constant=note_constant)
-    except Exception:  # noqa: BLE001 — unparseable text has no constant to report
+        json.loads(_strip_bom(text)[0], parse_constant=note_constant)
+    except (ValueError, RecursionError):  # unparseable text has no constant to report
         return None
     return found[0] if found else None
 

@@ -7,7 +7,7 @@ from typing import Callable
 
 
 def _non_negative_keep(value: str) -> int:
-    # The one --keep validation: cmd_backup -> run_backup is the only caller.
+    # A negative keep would slice away the NEWEST archives instead of the oldest.
     if not value.isdecimal():
         raise ArgumentTypeError("must be a non-negative integer (0 keeps everything)")
     return int(value)

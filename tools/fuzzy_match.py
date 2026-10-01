@@ -392,7 +392,8 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         new_content = _apply_replacements(
             content, matches, effective_new,
             old_string=old_string if strategy_name != "exact" else None,
-            preserve_unicode=strategy_name == "unicode_normalized")
+            unicode_plan=(_unicode_edit_plan(old_string, effective_new)
+                          if strategy_name == "unicode_normalized" else None))
         _note_edit_match(strategy_name)
         return new_content, len(matches), strategy_name, None
 
@@ -557,12 +558,12 @@ def _unicode_edit_plan(old_string: str, new_string: str) -> tuple[str, list]:
     return norm_old, SequenceMatcher(None, norm_old, new_string).get_opcodes()
 
 
-def _preserve_unicode_in_replacement(file_region: str, old_string: str, new_string: str,
-                                     plan: Optional[tuple[str, list]] = None) -> str:
+def _preserve_unicode_in_replacement(file_region: str, new_string: str,
+                                     plan: tuple[str, list]) -> str:
     """Apply only the old->new edits onto ``file_region``'s original (Unicode) text,
     so a unicode_normalized match doesn't flatten the file's em-dashes/smart quotes.
-    ``plan`` is a precomputed ``_unicode_edit_plan(old_string, new_string)``."""
-    norm_old, opcodes = plan or _unicode_edit_plan(old_string, new_string)
+    ``plan`` is ``_unicode_edit_plan(old_string, new_string)``."""
+    norm_old, opcodes = plan
     if norm_old != _unicode_normalize(file_region):
         return new_string  # strategy shouldn't have fired; fall back
 
@@ -582,19 +583,19 @@ def _preserve_unicode_in_replacement(file_region: str, old_string: str, new_stri
 
 def _apply_replacements(content: str, matches: list[Span],
                         new_string: str, old_string: Optional[str] = None,
-                        preserve_unicode: bool = False) -> str:
+                        unicode_plan: Optional[tuple[str, list]] = None) -> str:
     """Splice ``new_string`` over each span (end-to-start so offsets stay valid);
-    ``old_string`` non-None (non-exact match) re-indents it per region."""
+    ``old_string`` non-None (non-exact match) re-indents it per region, and
+    ``unicode_plan`` (unicode_normalized match) keeps each region's typography."""
     result = content
-    plan = _unicode_edit_plan(old_string, new_string) if preserve_unicode and old_string is not None else None
     for start, end in sorted(matches, key=lambda x: x[0], reverse=True):
         adjusted = new_string
         if old_string is not None:
             region = content[start:end]
-            if plan is not None:
+            if unicode_plan is not None:
                 # Each occurrence may use different typographic characters even
                 # though all normalize to the same old_string.
-                adjusted = _preserve_unicode_in_replacement(region, old_string, adjusted, plan)
+                adjusted = _preserve_unicode_in_replacement(region, adjusted, unicode_plan)
             adjusted = _reindent_replacement(region, old_string, adjusted)
         result = result[:start] + adjusted + result[end:]
     return result

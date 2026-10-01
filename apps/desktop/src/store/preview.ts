@@ -990,14 +990,14 @@ export function closeBrowserPreviewMatchingLiveUrl(...candidates: string[]): boo
   return true
 }
 
-function closePreviewMatchingTabs(candidates: string[]): boolean {
+function closePreviewMatchingTabs(tabs: readonly PreviewTab[], candidates: string[]): boolean {
   const queries = [...new Set(candidates.map(value => value.trim()).filter(Boolean))]
 
   if (queries.length === 0) {
     return false
   }
 
-  const tab = $visiblePreviewTabs.get().find(item => {
+  const tab = tabs.find(item => {
     const fields = [item.target.source, item.target.url, item.target.label]
 
     return queries.some(query => fields.includes(query))
@@ -1016,13 +1016,18 @@ function closePreviewMatchingTabs(candidates: string[]): boolean {
  *  Empty candidates are a no-op so a missed match cannot wipe the rail —
  *  closing the whole pane is `closeRightRail`. */
 export function closePreviewMatching(...candidates: string[]): boolean {
-  return closePreviewMatchingTabs(candidates)
+  return closePreviewMatchingTabs($visiblePreviewTabs.get(), candidates)
 }
 
 /** Agent-driven close is scoped to the docked rail; an independent Browser
  *  window owns popped tabs and must not lose its backing state here. */
 export function closeDockedPreviewMatching(...candidates: string[]): boolean {
-  return closePreviewMatchingTabs(candidates)
+  const popped = $poppedBrowserTabIds.get()
+
+  return closePreviewMatchingTabs(
+    $visiblePreviewTabs.get().filter(tab => !popped.has(tab.id)),
+    candidates
+  )
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it

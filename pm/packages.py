@@ -712,7 +712,10 @@ class Gh(BinaryPackage):
         # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
         # so the generic Linux archive is libc-independent.
         lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
-        osname, arch = lookup_target.split("-")
+        # Some Linux targets carry a libc/runtime suffix (for example
+        # linux-arm64-bionic).  GitHub CLI publishes the same archive for
+        # those variants, so only the platform and architecture identify it.
+        osname, arch = lookup_target.split("-", 2)[:2]
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"

@@ -528,6 +528,15 @@ def test_python_package_url_carries_release_tag():
         pass
 
 
+def test_gh_package_url_accepts_linux_target_suffix():
+    from pm.registry import get_package
+
+    gh = get_package("gh")
+    assert gh.fetch_url("2.80.0", "linux-arm64-bionic").endswith(
+        "/gh_2.80.0_linux_arm64.tar.gz"
+    )
+
+
 @pytest.mark.platforms("macos")
 def test_python_package_stably_signs_macos_runtime(tmp_path):
     import shutil

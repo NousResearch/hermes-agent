@@ -412,30 +412,11 @@ def test_context_pruned_effectful_call_blocks_before_dispatch():
         "write_file",
         {"content": f"template {_COMPRESSION_MARKER_PREFIX} {{omitted:,}} of {{total:,}}"},
     ) == []
-
-
-@pytest.mark.parametrize("suffix", [" 1,800", " 1,800 of", " 1,800 of 2,000 chars omitted"])
-def test_partial_counted_context_marker_blocks_before_dispatch(suffix):
-    from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-
-    agent = _make_agent("test_effectful_write")
-    pruned = {"body": f"prefix {_COMPRESSION_MARKER_PREFIX}{suffix}"}
-    tc = _mock_tool_call(
-        "test_effectful_write", json.dumps(pruned, ensure_ascii=False), "c-pruned-partial"
-    )
-    msg = SimpleNamespace(content="", tool_calls=[tc])
-    messages = []
-
-    with (
-        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks", return_value=(None, pruned)),
-        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
-    ):
-        agent._execute_tool_calls_sequential(msg, messages, "task-1")
-
-    dispatch.assert_not_called()
-    payload = json.loads(messages[0]["content"])
-    assert payload["error"] == "suspected_pruned_tool_arguments"
-    assert payload["argument_paths"] == ["$.body"]
+    # A marker cut before its fixed sentence is still an artifact once a count is rendered.
+    for suffix in (" 1,800", " 1,800 of", " 1,800 of 2,000 chars omitted"):
+        assert _context_pruned_argument_paths(
+            "write_file", {"body": f"prefix {_COMPRESSION_MARKER_PREFIX}{suffix}"}
+        ) == ["$.body"]
 
 
 def test_read_only_tool_may_quote_current_context_prune_marker():

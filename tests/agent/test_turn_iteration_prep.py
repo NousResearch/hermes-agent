@@ -18,11 +18,13 @@ RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messa
 MAX_RETRIES = 3
 
 
-def _apply(agent, flag: str, restart_count: int):
+def _apply(agent, flag: str | None, restart_count: int, response=None):
+    """Run one iteration's restart handling; ``flag=None`` with a response means the model answered."""
     _retry = TurnRetryState()
-    setattr(_retry, flag, True)
+    if flag:
+        setattr(_retry, flag, True)
     return apply_retry_restarts(
-        agent, _retry=_retry, response=None, interrupted=False, messages=[],
+        agent, _retry=_retry, response=response, interrupted=False, messages=[],
         conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
         final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
         restart_count=restart_count, length_continue_retries=0,
@@ -92,17 +94,6 @@ def test_interrupt_exit_reason_names_the_system_issuer(tool_interrupt_reason, ex
     assert (verdict.action, verdict.interrupted, verdict._turn_exit_reason) == ("break", True, expected)
 
 
-def _respond(agent, restart_count: int):
-    """No restart flag and a response in hand: the iteration proceeds to process it."""
-    return apply_retry_restarts(
-        agent, _retry=TurnRetryState(), response=SimpleNamespace(), interrupted=False, messages=[],
-        conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
-        final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
-        restart_count=restart_count, length_continue_retries=0,
-        _preflight_compression_blocked=True, _turn_exit_reason="unknown",
-    )
-
-
 @pytest.mark.parametrize("flag", RESTART_FLAGS)
 def test_response_between_restarts_resets_the_bound(flag):
     """#128000: the user answering clarify cards / sending follow-ups while the model works
@@ -116,7 +107,7 @@ def test_response_between_restarts_resets_the_bound(flag):
             verdict = _apply(agent, flag, restart_count)
             actions.append(verdict.action)
             restart_count = verdict.restart_count
-        verdict = _respond(agent, restart_count)
+        verdict = _apply(agent, None, restart_count, response=SimpleNamespace())
         assert (verdict.action, verdict.restart_count) == ("fallthrough", 0)
         restart_count = verdict.restart_count
     assert actions == ["continue"] * (3 * MAX_RETRIES)

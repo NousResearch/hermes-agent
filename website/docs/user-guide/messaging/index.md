@@ -343,7 +343,7 @@ platforms:
 
 Details:
 
-- All four keys are optional — set `model`, `provider`, `reasoning_effort`, `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- All five keys are optional — set `model`, `provider`, `reasoning_effort`, `system_prompt`, or any combination. Unset fields fall back to the global defaults.
 - `reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. YAML `false` also disables reasoning for that channel/topic.
 - Lookup checks the composite `chat_id:thread_id` topic key first when both IDs are available, then the chat/channel id, thread id, and parent channel/forum id. This lets a Telegram forum topic beat its chat-level default while preserving parent inheritance.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.

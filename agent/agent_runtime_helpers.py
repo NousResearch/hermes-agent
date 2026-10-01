@@ -1366,7 +1366,7 @@ def restore_primary_runtime(agent) -> bool:
         )
         # Older snapshots have no reasoning_config; keep the current value.
         saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
+        if saved_reasoning is not None and getattr(agent, "_reasoning_config_fixed", False) is not True:
             agent.reasoning_config = dict(saved_reasoning)
         agent._fallback_activated = False
         agent._fallback_index = 0

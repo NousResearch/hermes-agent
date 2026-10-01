@@ -8,6 +8,8 @@ Tests that switch_model:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestSwitchModelReasoningOverride:
     """Test switch_model re-resolves reasoning_config on model switch."""
@@ -87,7 +89,8 @@ class TestSwitchModelReasoningOverride:
         assert agent.reasoning_config == {"enabled": False}
         assert agent._primary_runtime["reasoning_config"] == {"enabled": False}
 
-    def test_restore_primary_runtime_restores_reasoning(self):
+    @pytest.mark.parametrize("scoped", [False, True])
+    def test_restore_primary_runtime_restores_reasoning(self, scoped):
         """restore_primary_runtime should restore reasoning_config from snapshot."""
         from agent.agent_runtime_helpers import restore_primary_runtime
 
@@ -123,6 +126,7 @@ class TestSwitchModelReasoningOverride:
         agent.model = "fallback-model"
         agent.provider = "openai"
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        agent._reasoning_config_fixed = scoped
         agent.context_compressor = MagicMock()
         agent.base_url = ""
         # Mock the methods restore_primary_runtime calls
@@ -132,5 +136,5 @@ class TestSwitchModelReasoningOverride:
 
         result = restore_primary_runtime(agent)
         assert result is True
-        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium" if scoped else "xhigh"}
 

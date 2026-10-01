@@ -170,16 +170,7 @@ class TestMemoryManager:
         assert aware.turn_starts == [(1, "hello", "bot:scout")]
 
 
-    @staticmethod
-    def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
-        monkeypatch.setattr(
-            "agent.memory_manager.get_spill_config",
-            lambda: {"enabled": True, "max_chars": max_chars, "preview_head": 12,
-                     "preview_tail": 12, "directory": str(tmp_path)},
-        )
-
-    def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
-        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+    def test_oversized_external_prefetch_is_preserved(self, tmp_path):
         mgr = MemoryManager()
         provider = FakeMemoryProvider("external")
         provider._prefetch_result = "recalled " * 20
@@ -187,20 +178,16 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("what do you remember?", session_id="session-1")
 
-        assert "external memory prefetch output truncated" in result
-        spill_files = list((tmp_path / "session-1").glob("*.txt"))
-        assert len(spill_files) == 1
-        assert spill_files[0].read_text(encoding="utf-8") == provider._prefetch_result + "\n"
+        assert result == provider._prefetch_result
+        assert not (tmp_path / "hook_outputs").exists()
 
-    def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
-        self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
+    def test_builtin_prefetch_is_not_spilled(self):
         mgr = MemoryManager()
         provider = FakeMemoryProvider("builtin")
         provider._prefetch_result = "built-in memory has its own configured limit"
         mgr.add_provider(provider)
 
         assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
-        assert not list(tmp_path.rglob("*.txt"))
 
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()

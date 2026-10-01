@@ -6,16 +6,26 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from gateway.platforms.base import SendResult
-
-if TYPE_CHECKING:
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.send_retry import MatrixSendRetryMixin
 
 logger = logging.getLogger("plugins.platforms.matrix.adapter")
 
 
-class MatrixMediaUploadMixin:
+class MatrixMediaUploadMixin(MatrixSendRetryMixin):
+    if TYPE_CHECKING:
+        _max_media_bytes: int
+
+        def _media_too_large(self, size: int) -> SendResult: ...
+
+        async def _room_needs_encrypted_upload(self, room_id: str) -> bool: ...
+
+        def _apply_relation_metadata(
+            self, room_id: str, msg_content: Dict[str, Any], *,
+            reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        ) -> None: ...
+
     async def _upload_and_send(
-        self: MatrixAdapter, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
+        self, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
         caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False, voice_metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if len(data) > self._max_media_bytes:

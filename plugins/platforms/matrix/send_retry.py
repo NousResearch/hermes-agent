@@ -28,13 +28,9 @@ class MatrixSendRetryMixin(BasePlatformAdapter):
             *, level: str = "warning",
         ) -> bool: ...
 
-    async def _call_with_rate_limit_backoff(self, op, *, label: str, retries: int = 3,
+    async def _call_with_rate_limit_backoff(self, op: Callable[[], Awaitable[Any]], *, label: str, retries: int = 3,
                                             base_delay: float = 1.5) -> Any:
-        """Run ``await op()`` and retry while the homeserver answers 429/M_LIMIT_EXCEEDED.
-
-        mautrix 0.21's ``MLimitExceeded`` no longer carries ``retry_after_ms``, so retries
-        use capped exponential backoff (1.5s/3s/6s) — enough to ride out a matrix.org burst
-        limit instead of dropping the send (e.g. a reaction-based approval prompt)."""
+        """Retry rate-limited Matrix writes with capped exponential backoff."""
         from .adapter import asyncio, logger
         from mautrix.errors.request import MLimitExceeded, MatrixRequestError
         for attempt in range(retries + 1):
@@ -70,7 +66,6 @@ class MatrixSendRetryMixin(BasePlatformAdapter):
         self._remember_followup_delivery(chat_id, event_id, msg_content, finalize=finalize)
         return event_id
 
-
     async def _send_reaction(self, room_id: str, event_id: str, emoji: str) -> Optional[str]:
         """Send an emoji reaction; returns the reaction event_id, or None on failure."""
         from .adapter import RoomID, EventType, logger
@@ -87,7 +82,6 @@ class MatrixSendRetryMixin(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
             return None
-
 
     async def redact_message(self, room_id: str, event_id: str, reason: str = "") -> bool:
         from .adapter import RoomID, EventID

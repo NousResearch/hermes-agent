@@ -37,7 +37,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
-from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, ScriptOutcome, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,10 @@ _RATE_WINDOW_SECONDS = 60.0
 # Hosts that only serve same-machine connections; anything else is a public bind.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "ip6-localhost", "ip6-loopback"})
 _V2_REPLAY_WINDOW_SECONDS = 300
+# Retry-After on a retry_on_script_failure 503. Short: the usual causes (a timeout under load, a dependency
+# being reinstalled) clear quickly, each retry costs only one script launch, and the route rate limit caps a
+# retry burst. A hint, not a contract: queue-based senders often retry on their own schedule.
+_SCRIPT_FAILURE_RETRY_AFTER_SECONDS = 60
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
@@ -605,12 +609,19 @@ class WebhookAdapter(BasePlatformAdapter):
             if script:
                 # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
                 # copies contextvars so the profile scope follows.
-                keep, transformed_payload = await asyncio.to_thread(
-                    self._route_processor.run_route_script, script, payload)
-                if not keep:
+                result = await asyncio.to_thread(self._route_processor.run_route_script, script, payload)
+                if result.outcome is ScriptOutcome.FAILED and route_config.get("retry_on_script_failure") is True:
+                    # Opt-in: a failed run is no verdict on the event, so a 2xx would make a queueing sender
+                    # delete it. Returning before the delivery ID is recorded lets that same ID retry.
+                    logger.warning("[webhook] script failed event=%s route=%s — answering 503 so the sender retries",
+                                   event_type, route_name)
+                    return web.json_response({"status": "error", "reason": "script_failed", "route": route_name},
+                                             status=503,
+                                             headers={"Retry-After": str(_SCRIPT_FAILURE_RETRY_AFTER_SECONDS)})
+                if result.outcome is not ScriptOutcome.ACCEPTED:
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
-                payload = transformed_payload or payload
+                payload = result.payload or payload
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):

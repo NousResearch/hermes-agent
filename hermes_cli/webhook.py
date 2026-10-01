@@ -178,6 +178,13 @@ def _cmd_subscribe(args):
     script = (getattr(args, "script", "") or "").strip()
     if script:
         route["script"] = script
+    if getattr(args, "retry_on_script_failure", False):
+        if not script:
+            print(
+                "Error: --retry-on-script-failure requires --script. It only changes how a failed "
+                "script run is answered (HTTP 503 so the sender retries, instead of 200).")
+            return
+        route["retry_on_script_failure"] = True
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
     subs[name] = route
@@ -200,6 +207,8 @@ def _cmd_subscribe(args):
         print(f"  {'Message' if route.get('deliver_only') else 'Prompt'}: {prompt_preview}")
     if route.get("script"):
         print(f"  Script: {route['script']}")
+    if route.get("retry_on_script_failure"):
+        print("  Script failure: HTTP 503 + Retry-After (the sender retries; exit 0 silently to drop an event)")
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")

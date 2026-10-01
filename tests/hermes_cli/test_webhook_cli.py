@@ -4,8 +4,9 @@ import json
 import os
 import pytest
 import stat
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 
+from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.webhook import (
     webhook_command,
     _get_webhook_base_url,
@@ -125,6 +126,26 @@ class TestCronJobSubscribe:
             deliver="telegram",
         ))
         assert "ev" not in _load_subscriptions()
+
+class TestRetryOnScriptFailureSubscribe:
+    """--retry-on-script-failure only changes how a failed --script run is answered (503, not 200)."""
+
+    @staticmethod
+    def _run(*argv):
+        parser = ArgumentParser()
+        build_webhook_parser(parser.add_subparsers(dest="command"), cmd_webhook=webhook_command)
+        args = parser.parse_args(["webhook", *argv])
+        args.func(args)
+
+    def test_rejected_without_script(self, capsys):
+        self._run("subscribe", "ot", "--retry-on-script-failure")
+        assert "ot" not in _load_subscriptions()
+        assert "--script" in capsys.readouterr().out
+
+    def test_stored_with_script_and_shown_in_summary(self, capsys):
+        self._run("subscribe", "ot", "--script", "ot.py", "--retry-on-script-failure")
+        assert _load_subscriptions()["ot"]["retry_on_script_failure"] is True
+        assert "503" in capsys.readouterr().out
 
 class TestRemove:
 

@@ -47,6 +47,11 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "payload is passed as JSON on stdin; empty stdout, [SILENT], or a "
         "nonzero exit code ignores the webhook.")
     wh_sub.add_argument(
+        "--retry-on-script-failure", action="store_true",
+        help="Answer a failed --script run (nonzero exit, timeout, missing script) with HTTP 503 + "
+        "Retry-After instead of 200, so senders that retry on 5xx keep the event. The script then drops "
+        "events only by exiting 0 with empty or [SILENT] output. Requires --script.")
+    wh_sub.add_argument(
         "--cron-job", default="",
         help="Fire an existing cron job (by ID or name) when this route receives an event, instead of "
         "starting a fresh agent run. The rendered --prompt template is passed to the job as transient "

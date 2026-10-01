@@ -13,7 +13,9 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 """
 
 import importlib
+import itertools
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,7 +49,7 @@ def _load_lib():
     return mod
 
 
-_CALL_IDS = iter(range(1, 10**6))
+_CALL_IDS = itertools.count(1)
 
 
 def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
@@ -232,8 +234,10 @@ class TestProtectedDirsNeverRmtreed:
         # A stale pre-fix entry must be dropped by re-validation instead of deleted.
         dg.save_tracked([{"path": str(att), "category": "test",
                           "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
-        _run_tool(pi, "write_file", {"path": str(att), "content": "x"},
-                  create=lambda: att.write_text("y"), task_id="t1", session_id="s_kb")
+        # A kanban file the call itself CREATES must not be tracked either.
+        new_att = att.with_name("test_new.sh")
+        _run_tool(pi, "write_file", {"path": str(new_att), "content": "x"},
+                  create=lambda: new_att.write_text("y"), task_id="t1", session_id="s_kb")
         scratch = _isolate_env / "test_scratch.py"
         _run_tool(pi, "write_file", {"path": str(scratch), "content": "x"},
                   create=lambda: scratch.write_text("x"), task_id="t1", session_id="s_kb")
@@ -241,6 +245,7 @@ class TestProtectedDirsNeverRmtreed:
         pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
 
         assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert new_att.exists(), "kanban files a call created are never tracked or deleted"
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
 
@@ -522,7 +527,6 @@ class TestPostToolCallHook:
         """'test' items are deleted at age 0 when the turn ends (rmtree for dirs), so only what a
         call CREATED may be tracked. A user's cron script the agent patched, and a hook dir it
         merely listed (by argument or in `find` output), must survive the turn."""
-        import os
         pi = _load_plugin_init()
         script = _isolate_env / "scripts" / "test_uptime.py"
         script.parent.mkdir()

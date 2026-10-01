@@ -1,7 +1,7 @@
 # Hosted settings
 
 - Status: active
-- Scope: `web/src/settings`, `hermes_cli/web_settings.py`, `hermes_cli/web_routers/settings.py`, native pairing/Basic-auth/Telegram owners, `deploy/railway`
+- Scope: `web/src/settings`, `hermes_cli/web_settings.py`, `hermes_cli/dashboard_auth/login_page.py` styling, `hermes_cli/web_routers/settings.py`, native pairing/Basic-auth/Telegram owners, `deploy/railway`
 - Introduced: hosted configuration implementation
 
 ## Downstream intent
@@ -16,7 +16,8 @@ sessions and survives restart. See [behavior](../../specs/hosted-settings.md).
 
 Absorb native API, config, credential and gateway fixes. Do not introduce a second
 config store or OAuth owner. Preserve pinned Hindsight policy except the three
-editable inference fields and deployment credentials. Keep warm prompts unchanged.
+editable inference fields and deployment credentials. Keep warm prompts unchanged. Absorb
+upstream login-page logic; keep the settings styling.
 
 ## Validation
 

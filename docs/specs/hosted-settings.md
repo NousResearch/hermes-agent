@@ -19,6 +19,10 @@ configuration database or chat surface.
 - Previously the native dashboard exposed these settings through several pages
   and a configuration editor. The new page edits the same owners through focused
   authenticated `/api/settings` routes, reusing native OAuth and model endpoints.
+- The server-rendered `/login` and sign-in-unavailable pages use the settings
+  look and Hermes branding instead of the native Nous Research styling, subtitle
+  and footer. Providers, form fields, error messages and the sign-in flow are
+  unchanged.
 - Instructions edit native `SOUL.md` verbatim, without a separate name field or
   generated prefix. Native ephemeral overlays/personality remain separate. No
   core prompt assembly changes. Edits affect future conversations; warm prompts

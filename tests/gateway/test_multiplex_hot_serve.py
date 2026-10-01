@@ -252,6 +252,69 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monkeypatch):
+    """#130244: the multiplexer process itself routes per-profile logs and owns the profile's
+    scoped MCP servers, so unserving must release BOTH here — the CLI-side delete only
+    releases the deleting process's copies and otherwise leaves the gateway holding
+    ``logs/.__agent.lock`` / ``logs/.__errors.lock`` / ``mcp-stderr.log`` (WinError 32)."""
+    import logging as _logging
+
+    import hermes_logging
+    from hermes_constants import (
+        hermes_home_key,
+        mark_named_profile_deleted,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+    shutdowns = []
+    monkeypatch.setattr(
+        "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
+        lambda **kw: shutdowns.append(kw.get("scope")),
+    )
+    hermes_logging._reset_queued_handlers()  # a prior test's routers would route to stale homes
+    try:
+        hermes_logging.setup_logging(hermes_home=home)
+        assert hermes_logging.enable_profile_log_routing([home, alpha_dir, gamma_dir]) is True
+        logger = _logging.getLogger("agent.unserve-handle-release")
+        for profile_home in (alpha_dir, gamma_dir):
+            token = set_hermes_home_override(profile_home)
+            try:
+                logger.warning("open routed handles for %s", profile_home.name)
+            finally:
+                reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+        routers = [
+            handler for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        ]
+        assert len(routers) == 2  # agent.log and errors.log, as in test_hermes_logging
+        assert all(gamma_dir.resolve() in handler._profile_handlers for handler in routers)
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            await runner._start_secondary_profile_adapters()
+            mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
+            result = await runner.reconcile_served_profiles()
+
+        assert result["removed"] == ["gamma"]
+        # The gateway-side scoped MCP servers (whose children write mcp-stderr.log) are stopped
+        # for exactly the deleted profile's scope, never a sibling's.
+        assert shutdowns == [hermes_home_key(gamma_dir)]
+        # This process's routed log files for the deleted home are closed and forgotten while a
+        # still-served sibling keeps its handles.
+        assert all(gamma_dir.resolve() not in handler._profile_handlers for handler in routers)
+        assert all(gamma_dir.resolve() not in handler._profile_homes for handler in routers)
+        assert all(alpha_dir.resolve() in handler._profile_handlers for handler in routers)
+        assert "open routed handles for alpha" in (alpha_dir / "logs" / "agent.log").read_text()
+    finally:
+        hermes_logging._reset_queued_handlers()
+        hermes_logging._logging_initialized = False
+
+
+@pytest.mark.asyncio
 async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, monkeypatch):
     """A hot-added profile whose adapter start raises a transient error (secret backend
     unreachable, a half-written config.yaml) must not be recorded as scanned: the next

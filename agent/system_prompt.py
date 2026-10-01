@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
-    ASYNC_HANDOFF_GUIDANCE, DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
@@ -36,6 +36,41 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
     re.MULTILINE,
 )
 _GATE_WORDS = {**dict.fromkeys(("true", "always", "yes", "on"), True), **dict.fromkeys(("false", "never", "no", "off"), False)}
+
+# Process-lifetime once-flag: auto + unmatched model logs at most once.
+_tool_use_enforcement_auto_skip_logged = False
+
+
+def _reset_tool_use_enforcement_auto_skip_log() -> None:
+    """Test helper: allow the auto-skip notice to fire again."""
+    global _tool_use_enforcement_auto_skip_logged
+    _tool_use_enforcement_auto_skip_logged = False
+
+
+def _is_tool_use_enforcement_auto_path(setting: Any) -> bool:
+    """True when *setting* is the implicit auto path (not bool / gate-word / list)."""
+    if setting is True or setting is False:
+        return False
+    if isinstance(setting, str) and setting.lower() in _GATE_WORDS:
+        return False
+    if isinstance(setting, list):
+        return False
+    return True
+
+
+def _log_tool_use_enforcement_auto_skip(model: Optional[str]) -> None:
+    """One-time WARNING when auto enforcement does not apply for this model."""
+    global _tool_use_enforcement_auto_skip_logged
+    if _tool_use_enforcement_auto_skip_logged:
+        return
+    _tool_use_enforcement_auto_skip_logged = True
+    logger.warning(
+        "tool_use_enforcement is auto and model %r matched none of the known-family "
+        "list %s; Tool-use enforcement guidance was not injected. "
+        "Set tool_use_enforcement: true to force it.",
+        model,
+        TOOL_USE_ENFORCEMENT_MODELS,
+    )
 
 
 def _model_gate(setting: Any, model: Optional[str], default_models) -> bool:
@@ -195,8 +230,7 @@ def _session_start_like(agent: Any, now: Any) -> Any:
     def _to_display_tz(dt: Any) -> Any:
         if dt.tzinfo is None:
             try:
-                # The offset in force at dt, not today's: a stamp from the other DST half differs by an hour.
-                dt = dt.astimezone()
+                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
             except (ValueError, OSError):
                 pass
         if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:
@@ -573,13 +607,11 @@ def _guidance_parts(agent: Any) -> List[str]:
         parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+    elif _is_tool_use_enforcement_auto_path(agent._tool_use_enforcement):
+        _log_tool_use_enforcement_auto_skip(agent.model)
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text())
-    # delegate_task background delivery is intentionally between turns. Put this after the generic persistence
-    # blocks so their "keep working" rule cannot turn the required yield into no-op/polling activity.
-    if "delegate_task" in agent.valid_tool_names:
-        parts.append(ASYNC_HANDOFF_GUIDANCE)
     return parts
 
 
@@ -696,7 +728,7 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
 def _post_workspace_parts(agent: Any) -> List[str]:
     """Blocks that follow the worktree-specific context: environment probe
     (config.yaml agent.environment_probe; one line, nothing when clean, skipped
-    for remote backends), bot-mode protocol, platform hint."""
+    for remote backends), bot-mode protocol, profile line, platform hint."""
     parts: List[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
@@ -706,7 +738,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts.append(platform_hint(agent))
+    parts += [_active_profile_line(agent), platform_hint(agent)]
     return parts
 
 
@@ -714,15 +746,13 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
     """Project context files (AGENTS.md etc.) for the context tier. TERMINAL_CWD
     when set (gateway); None lets discovery fall back to the launch dir.  The
     install-tree fallback is only legitimate for cli/tui where the launch dir
-    IS the user's shell cwd. Desktop launch artifacts skip the session cwd but
-    still honor the profile-scoped TERMINAL_CWD; without one, the fallback guard
-    can reject Hermes's bundled AGENTS.md."""
+    IS the user's shell cwd; desktop-pinned launch dirs are treated as the
+    fallback they really are so the guard can reject Hermes's bundled AGENTS.md."""
     if agent.skip_context_files:
         return []
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
-    cwd = resolve_context_cwd(include_session_override=not launch_artifact)
     return [_pb.build_context_files_prompt(
-        cwd=cwd, skip_soul=soul_loaded, context_length=ctx_len,
+        cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=soul_loaded, context_length=ctx_len,
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 
@@ -784,9 +814,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
-    # The profile line names this home's path, so it rides in the volatile tier: the stable
-    # prefix then stays byte-identical across every profile (and home) on the host.
-    volatile_parts.append(_active_profile_line(agent))
     volatile_parts.append(_timestamp_line(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.
@@ -871,3 +898,25 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 __all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
            "platform_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'OPENAI_MODEL_EXECUTION_GUIDANCE': ('agent.prompt_builder', 'OPENAI_MODEL_EXECUTION_GUIDANCE'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

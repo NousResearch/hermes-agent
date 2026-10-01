@@ -29,7 +29,12 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
-  return { $narrowViewport: atom(false) }
+  return {
+    $collapsedTreeSides: atom(new Set()),
+    $hiddenTreePanes: atom(new Set()),
+    $layoutTree: atom(null),
+    $narrowViewport: atom(false)
+  }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))

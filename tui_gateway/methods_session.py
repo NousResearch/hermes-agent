@@ -115,13 +115,15 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
             "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
-def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
-    """Compact session.list row; ``tip_row``/``resolved_id`` come from the compression tip."""
+def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None, db=None) -> dict:
+    """Compact session.list row; ``tip_row``/``resolved_id`` come from the compression tip.
+    ``db`` adds ``live_message_count`` (see ``_live_count_field``)."""
     tip_row = tip_row or row
     return {"id": row["id"], **({} if resolved_id is None else {"resolved_id": resolved_id}),
             "title": row.get("title") or "", "preview": tip_row.get("preview") or "",
             "started_at": row.get("started_at") or 0, "message_count": tip_row.get("message_count") or 0,
-            "source": row.get("source") or ""}
+            "source": row.get("source") or "",
+            **({} if db is None else _live_count_field(db, row["id"] if resolved_id is None else resolved_id))}
 
 
 from hermes_state_sessions import INTERNAL_LISTING_SOURCES
@@ -243,6 +245,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
     from agent.message_metadata import message_identity
+    from agent.transcript_repair import sync_flushed_message_markers
 
     # The child sends the parent's exact system prompt: a row without one makes the branch's first
     # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
@@ -262,14 +265,14 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         # path can retry cleanly on first submit.
         # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
         # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        db.append_messages_batch(
-            new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                       **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)}
-                      for msg in history], chunk_rows=500)
+        rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
+                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
+        db.append_messages_batch(new_key, rows, chunk_rows=500)
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
             db.set_auto_title(new_key, title, source=title_source)
+        sync_flushed_message_markers(history, rows)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -355,6 +358,45 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     from .methods_session_model_guard import model_override_conflict
     if conflict := model_override_conflict(params, _profile_build_scope(profile_home)):
         return _err(rid, -32602, conflict.pop("message"), conflict)
+    # Idempotency: a client retrying a create whose first response was lost
+    # should get back the SAME session, not a fresh one (which would leave a
+    # duplicate child). The caller supplies a stable key per logical create.
+    idem_key = _str_param(params, "idempotency_key") or None
+    if idem_key is not None:
+        with _sessions_lock:
+            # Drop expired entries while we're here.
+            now_for_gc = time.time()
+            expired = [k for k, (_, ts) in _idempotency_keys.items() if now_for_gc - ts > _IDEMPOTENCY_KEY_TTL]
+            for k in expired:
+                _idempotency_keys.pop(k, None)
+            existing = _idempotency_keys.get(idem_key)
+            if existing is not None:
+                existing_sid, _ = existing
+                session = _sessions.get(existing_sid)
+                if session is not None:
+                    # Refresh the TTL so back-to-back retries don't age out mid-flight.
+                    _idempotency_keys[idem_key] = (existing_sid, now_for_gc)
+                    history = session["history"]
+                    override = session.get("model_override") or {}
+                    # Same result shape as the fresh-create path below: branch_stored
+                    # (copy_parent_history) answers messages_omitted and NEVER puts the
+                    # copied transcript on the wire — its result contract forbids
+                    # ``messages``, and serializing the parent's history through the
+                    # renderer is exactly what the method exists to avoid.
+                    return _ok(rid, {
+                        "session_id": existing_sid, "stored_session_id": session["session_key"],
+                        "message_count": len(history),
+                        **({"messages_omitted": True} if copy_parent_history
+                           else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
+                        "info": {"model": override.get("model") if override else _session_default_model(session),
+                                 **({"provider": override["provider"]} if override.get("provider") else {}),
+                                 "tools": {}, "skills": {}, "cwd": session["cwd"], "branch": git_probe.branch(session["cwd"]),
+                                 "project": _project_info_for_cwd(session["cwd"]), "lazy": True,
+                                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                                 "profile_name": _response_profile_name(profile)}})
+                # The session was closed between the original create and the retry —
+                # fall through and create a fresh one under the same key.
+                _idempotency_keys.pop(idem_key, None)
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
@@ -415,6 +457,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+        if idem_key is not None:
+            _idempotency_keys[idem_key] = (sid, now)
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;
         # name both so agent.log alone explains which model a new chat runs, and why (#107410).
@@ -517,7 +561,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
         # Real compression continuation only: the resolver's unmarked-child fallback could redirect Bot Chat.
         tip = db.get_compression_tip(row["id"]) or row["id"]
     tip_row = (db.get_session(tip) or row) if tip != row["id"] else row
-    return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip)]})
+    return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip, db=db)]})
 
 
 @method("session.list")
@@ -539,6 +583,9 @@ def _(rid, params: dict, db) -> dict:
         include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
         rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
                              include_subagents=include_subagents)[:limit]
+        # No live_message_count here on purpose: the bulk listing serves rows whose open
+        # paths never demand history (expectHistory defaults false); the count is a
+        # per-session scan and would turn one listing call into hundreds of them.
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:
         return _err(rid, 5006, str(e))
@@ -735,6 +782,35 @@ def _resume_adopt_stranded(ctx: _Resume) -> None:
         logger.exception("stranded-session adoption failed for %s", ctx.target)
 
 
+def _resume_materialize_minted(ctx: _Resume) -> None:
+    """Row for a minted-but-never-persisted key (#96793): adopt the id, not 4007.
+
+    ``session.create`` mints the stored key but intentionally writes no state.db row
+    until the first prompt (no "Untitled" litter). If the backend dies in that window,
+    the key exists client-side (pinned tile, stored id) but has no row anywhere — and
+    after a restart the in-memory live-lazy lookup above can't find it either, so the
+    resume 4007ed forever. When the target is a well-formed server-minted key, mint
+    the row here and let the normal resume path continue with empty history. Abandoned
+    drafts still leave no row: nothing is written until a client explicitly resumes
+    the exact key. ``create_session`` is an upsert, so a concurrently persisted row is
+    not clobbered (only its NULL model/source columns would fill in).
+    """
+    try:
+        ctx.db.create_session(
+            ctx.target,
+            source=_resolve_session_source(_str_param(ctx.params, "source") or None),
+            model=_resolve_model(),
+            profile_name=profile_name_for_home(ctx.profile_home) or _response_profile_name(ctx.profile),
+        )
+        ctx.found = ctx.db.get_session(ctx.target)
+        logger.info(
+            "materialized session row for minted-but-unpersisted key %s (resume no longer 4007s)",
+            ctx.target,
+        )
+    except Exception:
+        logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
+
+
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
     ctx.found = ctx.db.get_session(ctx.target)
@@ -754,6 +830,9 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
         _resume_adopt_stranded(ctx)
+    if not ctx.found and not ctx.lazy and _is_server_minted_key(ctx.target) \
+            and not _any_live_session_claims_key(ctx.target):
+        _resume_materialize_minted(ctx)
     return None if ctx.found else _err(ctx.rid, 4007, "session not found")
 
 
@@ -1242,12 +1321,16 @@ def _(rid, params: dict, session: dict) -> dict:
     with _session_db(session) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
+        # The row lookup and the reaction are both session-qualified, and the newest live row lives in
+        # the session the agent writes to — which a compression rotation moves off session_key mid-session
+        # (#123545). Same stale-key hazard as the submit row.
+        row_session = _submit_row_target_key(session)
         try:
             if row_id is None:
-                row_id = db.latest_message_row_id(session["session_key"], role=newest_role)
+                row_id = db.latest_message_row_id(row_session, role=newest_role)
                 if row_id is None:
                     return _err(rid, 4040, "no message to react to yet")
-            reactions = db.set_message_reaction(session["session_key"], int(row_id), emoji, author=author)
+            reactions = db.set_message_reaction(row_session, int(row_id), emoji, author=author)
         except Exception as e:
             return _err(rid, 5007, str(e))
     if reactions is None:
@@ -1910,7 +1993,12 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
     history = list(session.get("history", []))
-    if session.get("session_key"):
+    # Address the session the live agent writes to, not session_key: a compression rotation moves the
+    # tip mid-session, and include_ancestors walks parent pointers, so a stale parent materializes
+    # root..parent and NEVER the continuation — a reconnect in that window renders a transcript missing
+    # every turn since the rotation (#123545).
+    row_session = _submit_row_target_key(session)
+    if row_session:
         with _session_db(session) as db:
             if db is not None:
                 # include_row_ids: the durable row id is how clients address a persisted turn (reactions,
@@ -1920,7 +2008,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     # stamp, so an unstamped read here silently strips the one durable address clients can
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True, include_row_ids=True)
+                        row_session, include_ancestors=True, include_row_ids=True)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
@@ -2143,6 +2231,10 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
             _sessions[new_sid]["auth_user_id"] = parent_user_id
+            # The parent's STORED key: the idempotent-hit reply for a retried
+            # session.branch answers the same ``parent`` as the fresh path, and
+            # later readers (lineage, retry) get the linkage from the runtime.
+            _sessions[new_sid]["parent_session_id"] = session.get("session_key")
         return agent
     finally:
         if branch_owns_db and branch_db is not None:
@@ -2176,6 +2268,21 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
 
 
 def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
+    # Idempotency (#65410, same registry as session.create): a client retrying a
+    # branch whose first response was lost gets the SAME child, not a duplicate.
+    idem_key = _str_param(params, "idempotency_key") or None
+    if idem_key is not None:
+        with _sessions_lock:
+            now_gc = time.time()
+            existing_sid, ts = _idempotency_keys.get(idem_key, (None, 0.0))
+            if existing_sid is not None and existing_sid in _sessions:
+                if now_gc - ts <= _IDEMPOTENCY_KEY_TTL:
+                    # Refresh the TTL so back-to-back retries don't age out mid-flight.
+                    _idempotency_keys[idem_key] = (existing_sid, now_gc)
+                    return _ok(rid, _branch_idempotent_hit(existing_sid, _sessions[existing_sid], omit_messages))
+                _idempotency_keys.pop(idem_key, None)
+            # Stale key (child closed) or first attempt: fall through to a fresh
+            # branch, which re-registers the key below.
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
     with _session_db(session) as db:
         if db is None:
@@ -2201,6 +2308,13 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
+    if idem_key is not None:
+        with _sessions_lock:
+            _idempotency_keys[idem_key] = (new_sid, time.time())
+            # The fresh reply's title, so an idempotent hit answers the SAME one
+            # without a DB round-trip.
+            if new_sid in _sessions:
+                _sessions[new_sid]["branch_title"] = title
     response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
                 "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
     if omit_messages:
@@ -2208,6 +2322,30 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
     else:
         response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
     return _ok(rid, response)
+
+
+def _branch_idempotent_hit(existing_sid: str, session: dict, omit_messages: bool) -> dict:
+    """The SAME result shape a fresh ``_branch_live`` returns for the existing child."""
+    history = session.get("history") or []
+    key = session.get("session_key") or ""
+    response = {"session_id": existing_sid, "stored_session_id": key,
+                "title": session.get("branch_title") or _branch_title_for(session),
+                "parent": session.get("parent_session_id"), "message_count": len(history),
+                "info": _fallback_session_info(session)}
+    if omit_messages:
+        response["messages_omitted"] = True
+    else:
+        response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
+    return response
+
+
+def _branch_title_for(session: dict) -> str:
+    """The child's persisted title from its stored row, best-effort."""
+    with contextlib.suppress(Exception):
+        with _session_db(session) as db:
+            if db is not None:
+                return db.get_session_title(session.get("session_key") or "") or ""
+    return ""
 
 
 @_session_method("session.branch", live=True)

@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from contextlib import suppress
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.i18n import t
 from gateway.config import Platform
@@ -17,11 +17,15 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
+    from gateway.run_inbound import GatewayInboundMixin
+
 logger = logging.getLogger("gateway.run")
 
 
 class GatewayInboundContextMixin:
-    def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
+    def _prefix_inbound_sender_context(self: GatewayRunner, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
         _is_shared_multi_user = is_shared_multi_user_session(
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
@@ -65,7 +69,7 @@ class GatewayInboundContextMixin:
         return image_paths, audio_paths, audio_file_paths, video_paths
 
     async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
+        self: GatewayRunner, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
     ) -> str:
         """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
         # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
@@ -111,7 +115,7 @@ class GatewayInboundContextMixin:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
     async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
+        self: GatewayRunner, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
             message_text, audio_paths,
@@ -218,7 +222,7 @@ class GatewayInboundContextMixin:
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
         return message_text
 
-    async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
+    async def _inbound_model_context_length(self: GatewayRunner, source: SessionSource, session_key: str) -> int:
         """Context length of the model this turn runs on. A global ``model.context_length`` pin
         belongs to the configured model, not a /model or channel override; custom-provider limits win."""
         from gateway.run import _load_gateway_config
@@ -278,7 +282,7 @@ class GatewayInboundContextMixin:
         )
 
     async def _expand_inbound_context_references(
-        self, source: SessionSource, session_key: str, message_text: str
+        self: GatewayRunner, source: SessionSource, session_key: str, message_text: str
     ) -> Optional[str]:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
         try:
@@ -309,7 +313,7 @@ class GatewayInboundContextMixin:
         return message_text
 
     async def _prepare_inbound_message_text(
-        self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
+        self: GatewayRunner, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
         session_key: Optional[str] = None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent. Shared by the normal inbound and queued
@@ -320,7 +324,7 @@ class GatewayInboundContextMixin:
 
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
-        message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""
+        message_text: str = getattr(event, "_gateway_pending_stt_text", event.text) or ""
         # Prefer the caller's resolved session key so this write key matches the consume key at the
         # run_conversation site; derive it here only for tests and legacy standalone callers.
         session_key = session_key or self._session_key_for_source(source)
@@ -336,15 +340,16 @@ class GatewayInboundContextMixin:
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
-            if message_text is None:
+            expanded_message_text = await self._expand_inbound_context_references(source, session_key, message_text)
+            if expanded_message_text is None:
                 return None
+            message_text = expanded_message_text
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         return self._prepend_inbound_reply_context(event, source, message_text)
 
     async def _prepare_profile_scoped_inbound_message_text(
-        self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
+        self: GatewayRunner, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],
         session_key: Optional[str] = None,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
@@ -355,16 +360,18 @@ class GatewayInboundContextMixin:
                 return await self._prepare_inbound_message_text(**kwargs)
         return await self._prepare_inbound_message_text(**kwargs)
 
-    async def _prepare_clarify_reply_text(self, event) -> str:
+    async def _prepare_clarify_reply_text(self: GatewayInboundMixin, event) -> str:
         """Return raw text or successful voice transcripts for a clarify reply."""
         if not self._pending_event_audio_paths(event):
             return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
 
-    def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
+    def _consume_pending_native_image_paths(self: GatewayRunner, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
-        paths = list(state.persistent.native_image_paths or []) if state is not None else []
+        if state is None:
+            return []
+        paths = list(state.persistent.native_image_paths or [])
         if paths:
             state.persistent.native_image_paths = []
         return paths

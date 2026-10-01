@@ -5206,6 +5206,8 @@ export const esOverrides = {
     remotePickerCreateFolder: 'Crear carpeta',
     remotePickerInvalidFolderName: 'Escribe un solo nombre de carpeta, sin barras.',
     remotePickerCreateFolderFailed: error => `No se pudo crear la carpeta (${error}).`,
+    remotePickerSearch: 'Buscar carpetas…',
+    remotePickerNoMatches: 'Ninguna carpeta coincide con la búsqueda.',
     folderTip: cwd => cwd,
     openFolder: 'Abrir carpeta',
     refreshTree: 'Actualizar árbol',

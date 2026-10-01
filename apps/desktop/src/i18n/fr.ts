@@ -5229,6 +5229,8 @@ export const frOverrides = {
     remotePickerCreateFolder: 'Créer le dossier',
     remotePickerInvalidFolderName: 'Saisissez un seul nom de dossier, sans barre oblique.',
     remotePickerCreateFolderFailed: error => `Impossible de créer le dossier (${error}).`,
+    remotePickerSearch: 'Rechercher des dossiers…',
+    remotePickerNoMatches: 'Aucun dossier ne correspond à la recherche.',
     folderTip: cwd => cwd,
     openFolder: 'Ouvrir le dossier',
     refreshTree: "Actualiser l'arbre",

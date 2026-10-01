@@ -4521,6 +4521,8 @@ export const zh = defineLocale({
     remotePickerCreateFolder: '创建文件夹',
     remotePickerInvalidFolderName: '请输入单个文件夹名称，不要包含斜杠。',
     remotePickerCreateFolderFailed: error => `无法创建文件夹 (${error})。`,
+    remotePickerSearch: '搜索文件夹…',
+    remotePickerNoMatches: '没有与搜索匹配的文件夹。',
     folderTip: cwd => cwd,
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',

@@ -3726,6 +3726,8 @@ export const zhHant = defineLocale({
     remotePickerCreateFolder: '建立資料夾',
     remotePickerInvalidFolderName: '請輸入單一資料夾名稱，不要包含斜線。',
     remotePickerCreateFolderFailed: error => `無法建立資料夾 (${error})。`,
+    remotePickerSearch: '搜尋資料夾…',
+    remotePickerNoMatches: '沒有符合搜尋的資料夾。',
     folderTip: cwd => cwd,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopFsRemotePicker } from '@/lib/desktop-fs'
 
-import { RemoteFolderPicker } from './remote-picker'
+import { filterFolderEntries, RemoteFolderPicker } from './remote-picker'
 
 // A tiny backend filesystem: the picker reads it through readDesktopDir and
 // grows it through createRemoteDir, the same two calls it makes for real.
@@ -123,5 +123,90 @@ describe('RemoteFolderPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select folder' }))
 
     await expect(selection).resolves.toEqual(['/home/me'])
+  })
+})
+
+describe('filterFolderEntries', () => {
+  const entries = [{ name: 'project-alpha' }, { name: '.config' }, { name: 'Downloads' }]
+
+  it('returns every entry for a blank query', () => {
+    expect(filterFolderEntries(entries, '')).toBe(entries)
+    expect(filterFolderEntries(entries, '   ')).toBe(entries)
+  })
+
+  it('matches case-insensitive substrings of the folder name', () => {
+    expect(filterFolderEntries(entries, 'PROJECT').map(e => e.name)).toEqual(['project-alpha'])
+    expect(filterFolderEntries(entries, 'o').map(e => e.name)).toEqual(['project-alpha', '.config', 'Downloads'])
+  })
+
+  it('trims the query before matching', () => {
+    expect(filterFolderEntries(entries, '  config ').map(e => e.name)).toEqual(['.config'])
+  })
+
+  it('returns an empty list when nothing matches', () => {
+    expect(filterFolderEntries(entries, 'zzz')).toEqual([])
+  })
+})
+
+describe('RemoteFolderPicker search', () => {
+  beforeEach(() => {
+    dirs.add('/home/me/project-alpha')
+    dirs.add('/home/me/project-beta')
+    dirs.add('/home/me/.config')
+  })
+
+  it('filters the folder rows as the query is typed and highlights the match', async () => {
+    render(<RemoteFolderPicker />)
+    void openPicker('/home/me')
+
+    await screen.findByText('project-alpha')
+    expect(screen.getByText('.config')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search folders…' }), { target: { value: 'beta' } })
+
+    expect(screen.queryByText('project-alpha')).toBeNull()
+    expect(screen.queryByText('.config')).toBeNull()
+    // The matched substring gets accent emphasis (semantic <mark>).
+    expect(screen.getByText('beta').tagName).toBe('MARK')
+    // The parent-navigation row is not filtered away.
+    expect(screen.getByText('..')).toBeTruthy()
+  })
+
+  it('shows a dedicated empty state when the filter matches nothing', async () => {
+    render(<RemoteFolderPicker />)
+    void openPicker('/home/me')
+
+    await screen.findByText('project-alpha')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search folders…' }), { target: { value: 'zzz' } })
+
+    expect(screen.getByText('No folders match your search.')).toBeTruthy()
+    expect(screen.queryByText('This folder is empty.')).toBeNull()
+  })
+
+  it('Escape clears the query first instead of closing the picker', async () => {
+    render(<RemoteFolderPicker />)
+    void openPicker('/home/me')
+
+    await screen.findByText('project-alpha')
+    const input = screen.getByRole('textbox', { name: 'Search folders…' })
+    fireEvent.change(input, { target: { value: 'beta' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+
+    expect((input as HTMLInputElement).value).toBe('')
+    // All rows are back and the picker is still open.
+    expect(screen.getByText('project-alpha')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Select folder' })).toBeTruthy()
+  })
+
+  it('resets the query when navigating into a folder', async () => {
+    render(<RemoteFolderPicker />)
+    void openPicker('/home/me')
+
+    const input = screen.getByRole('textbox', { name: 'Search folders…' })
+    fireEvent.change(input, { target: { value: 'beta' } })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'project-beta' }))
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe(''))
+    expect(screen.queryByText('project-alpha')).toBeNull()
   })
 })

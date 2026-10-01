@@ -1614,6 +1614,7 @@ async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch
             connect = asyncio.create_task(adapter.connect())
         assert await connect
         await asyncio.gather(*adapter._background_tasks)
+        await adapter._sync_checkpoints.settled()
         assert (admitted, await adapter._client.sync_store.get_next_batch()) == (
             [("$prime", "Prime encrypted thread")],
             "primed",

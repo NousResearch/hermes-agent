@@ -91,7 +91,12 @@ async def read_matrix_context(
     if client is None:
         return {"error": "Matrix client is disconnected"}
 
-    root = await _thread_root(client, room_id, event_id) if kind == "thread" else None
+    root = None
+    if kind != "room":
+        if event_id is None:
+            return {"error": "event_id is required for thread and event reads"}
+        if kind == "thread":
+            root = await _thread_root(client, room_id, event_id)
     remaining = limit - (root is not None)
     try:
         if kind == "event":

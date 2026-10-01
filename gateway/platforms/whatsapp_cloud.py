@@ -3,7 +3,8 @@ aiohttp webhook). Complements the Baileys bridge plugin; both share gating / men
 formatting behavior via ``WhatsAppBehaviorMixin``.
 
 Required env: WHATSAPP_CLOUD_PHONE_NUMBER_ID, WHATSAPP_CLOUD_ACCESS_TOKEN. Optional:
-WHATSAPP_CLOUD_APP_ID, _APP_SECRET (HMAC key for X-Hub-Signature-256), _WABA_ID,
+WHATSAPP_CLOUD_APP_ID, _APP_SECRET (HMAC key for X-Hub-Signature-256),
+_WABA_ID (when set, inbound webhooks must match it),
 _VERIFY_TOKEN (hub.verify_token), _WEBHOOK_HOST (unset → dual-stack all interfaces),
 _WEBHOOK_PORT (8090), _WEBHOOK_PATH (/whatsapp/webhook), _API_VERSION (v20.0)."""
 
@@ -253,7 +254,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         incoming_phone_number_id = str(metadata.get("phone_number_id") or "").strip()
         incoming_waba_id = str(entry_id or "").strip()
         return (
-            (not self._phone_number_id or incoming_phone_number_id == self._phone_number_id)
+            incoming_phone_number_id == self._phone_number_id
             and (not self._waba_id or incoming_waba_id == self._waba_id)
         )
 
@@ -775,12 +776,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not isinstance(change, dict) or change.get("field") != "messages":
                     continue  # account_alerts, template_status_update, … — not message ingress
                 value = change.get("value") or {}
-                if not isinstance(value, dict) or not self._webhook_identity_matches(
-                    entry.get("id"), value.get("metadata")
-                ):
-                    logger.warning(
-                        "[whatsapp_cloud] ignoring signed webhook whose WABA or phone-number identity "
-                        "does not match this adapter"
+                if not isinstance(value, dict):
+                    continue
+                metadata = value.get("metadata") or {}
+                if not self._webhook_identity_matches(entry.get("id"), metadata):
+                    # A shared Meta app delivers sibling numbers' status receipts here too;
+                    # only a foreign *message* is worth an operator-visible warning.
+                    logger.log(
+                        logging.WARNING if value.get("messages") else logging.DEBUG,
+                        "[whatsapp_cloud] ignoring signed webhook for waba=%r phone_number_id=%r "
+                        "(configured waba=%s phone_number_id=%r)",
+                        entry.get("id"),
+                        metadata.get("phone_number_id") if isinstance(metadata, dict) else None,
+                        self._waba_id or "<any>",
+                        self._phone_number_id,
                     )
                     continue
                 contacts_by_waid = {
@@ -790,7 +799,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 }
                 for raw_message in value.get("messages") or []:
                     if isinstance(raw_message, dict):
-                        await self._ingest_message(raw_message, contacts_by_waid, value.get("metadata") or {})
+                        await self._ingest_message(raw_message, contacts_by_waid, metadata)
                 for status in value.get("statuses") or []:
                     if isinstance(status, dict):
                         logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), status.get("id"))

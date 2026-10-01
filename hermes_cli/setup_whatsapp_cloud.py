@@ -230,7 +230,7 @@ def _credential_step(step) -> bool:
 def _step_optional_ids() -> dict:
     """STEP 4: optional App ID / WABA ID. Returns {env var: effective value or None}."""
     from hermes_cli.config import get_env_value
-    _header("STEP 4 — App ID & WABA ID (optional, for analytics)")
+    _header("STEP 4 — App ID & WABA ID (optional; WABA ID binds inbound webhooks)")
     ids = {}
     for label, env_var, validator, help_text in _OPTIONAL_ID_STEPS:
         current = get_env_value(env_var) or None

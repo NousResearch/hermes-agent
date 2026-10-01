@@ -28,6 +28,24 @@ hosted runtime with local adapters. Keep ordinary native jobs distinct from
 file-owned responsibility jobs so CLI/UI edits cannot silently create a second
 source of truth.
 
+Scheduled runs use the native cron instruction block. Only its delivery section
+changes for responsibility jobs: a configured report destination permits
+task-required messages to additional destinations, without duplicating the final
+report; muted reporting keeps the final response in the run log and permits
+messages required by the work, not routine run reports. Native silence,
+delegated-failure and recursion instructions remain unchanged. Ordinary native
+jobs retain their original delivery instructions. The retained `report: local`
+spelling uses the muted instructions too.
+
+After that block, the employee Schedule framing identifies the job and whether
+it is one-time or recurring. It directs the agent to read references for duties
+in this run's scope, establish what is due and already done, and verify dates
+before counting earlier work. The fresh responsibility document and STATE.md
+follow, then the declaration's scope in `<schedule_scope>` and the existing
+reference, state and finite-completion rules. Reporting instructions are not
+repeated in the responsibility context. This is new-run user-message assembly;
+saved conversations and warm system prompts are not rewritten.
+
 Adapt paths and removed-capability references according to the agreed
 [layout](local-layout.md), [tool surface](tool-surface.md) and
 [guides](guides.md). Preserve model-visible instructions and feedback otherwise.

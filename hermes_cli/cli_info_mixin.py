@@ -890,7 +890,7 @@ class CLIInfoMixin:
 
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
         """Interactive /reload-mcp — confirm (Approve Once / Always Approve / Cancel, gated by
-        ``approvals.mcp_reload_confirm``, default on), then reload. The config watcher's
+        ``approvals.mcp_reload_confirm``, default off), then reload. The config watcher's
         auto-reload calls ``_reload_mcp`` directly. Reloading invalidates the provider prompt cache
         (tool schemas are baked into the system prompt), hence the warning."""
         choice = _gated_confirm(

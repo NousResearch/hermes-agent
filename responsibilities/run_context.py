@@ -93,9 +93,17 @@ def build_run_prompt(job):
     package = read_responsibility_package(root, owner["name"])
     if not package.get("found") or package.get("malformed"):
         raise ValueError(f"Responsibility {owner['name']} is missing or malformed: {package.get('errors', [])}")
-    blocks = responsibility_blocks(str(root / owner["name"]), package["responsibility_document"], package["state_document"])
-    blocks.append(f"<scope>\n{job['prompt']}\n</scope>")
+    rhythm = "a one-time run of its work" if job["schedule"]["kind"] == "once" else "one of its recurring rhythms"
+    blocks = [
+        f"You are running as Schedule '{job['name']}' (ID {job['id']}) of the "
+        f"responsibility below — {rhythm}, running in the background. "
+        "Read the references for every duty in this run's scope. "
+        "For each duty, establish what is due now, what is already done, "
+        "and what remains. Check the dates and periods in saved state "
+        "before counting earlier work toward what is due now; verify "
+        "anything unclear. Carry out the remaining work."
+    ]
+    blocks.extend(responsibility_blocks(str(root / owner["name"]), package["responsibility_document"], package["state_document"]))
+    blocks.append(f"<schedule_scope>\n{job['prompt']}\n</schedule_scope>")
     blocks.append(responsibility_operating_rules(responsibility_document=package["responsibility_document"], state_nonempty=bool(package["state_entries"])))
-    report = owner["report"]
-    blocks.append("Reporting is muted: your final response is not delivered. Use send_message only when the work itself requires a message, not for a routine run report." if report == "muted" else f"Your final response will be delivered to {report}. Do not duplicate that delivery with send_message.")
     return "\n\n".join(blocks)

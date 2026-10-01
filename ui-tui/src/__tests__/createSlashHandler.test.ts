@@ -426,9 +426,11 @@ describe('createSlashHandler', () => {
   })
 
   it('passes /new <title> through to the session lifecycle', () => {
+    patchUiState({ destructiveSlashConfirm: true })
     const ctx = buildCtx()
 
     createSlashHandler(ctx)('/new sprint planning')
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
     getOverlayState().confirm?.onConfirm()
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
@@ -438,8 +440,7 @@ describe('createSlashHandler', () => {
   it.each([
     ['/new sprint planning', 'new session started', 'sprint planning'],
     ['/clear', undefined, undefined]
-  ])('skips the confirmation for %s when config disables it', (command, message, title) => {
-    patchUiState({ destructiveSlashConfirm: false })
+  ])('skips the confirmation for %s by default', (command, message, title) => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)(command)).toBe(true)

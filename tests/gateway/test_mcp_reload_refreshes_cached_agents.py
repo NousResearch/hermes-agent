@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -80,6 +80,27 @@ def _make_runner_with_cached_agents(num_agents: int = 2):
         runner._agent_cache[f"session-{i}"] = (agent, f"sig-{i}")
 
     return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config, confirm", [
+    ({}, False),
+    ({"approvals": {"mode": "off"}}, False),
+    ({"approvals": {"mcp_reload_confirm": False}}, False),
+    ({"approvals": {"mcp_reload_confirm": True}}, True),
+])
+async def test_reload_confirmation_is_opt_in(config, confirm):
+    runner = _make_runner_with_cached_agents()
+    runner._read_user_config = lambda: config
+    runner._session_key_for_source = lambda source: "session-1"
+    runner._execute_mcp_reload = AsyncMock(return_value="reloaded")
+    runner._request_slash_confirm = AsyncMock(return_value="confirmation")
+
+    result = await runner._handle_reload_mcp_command(_make_event())
+
+    assert result == ("confirmation" if confirm else "reloaded")
+    assert runner._request_slash_confirm.await_count == int(confirm)
+    assert runner._execute_mcp_reload.await_count == int(not confirm)
 
 
 @pytest.mark.asyncio

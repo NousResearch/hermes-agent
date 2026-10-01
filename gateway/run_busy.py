@@ -1279,9 +1279,9 @@ class GatewayBusySessionMixin:
         """
         confirm_required = True
         try:
-            approvals = self._read_user_config().get("approvals")
+            approvals = self._read_user_config().get("approvals", {})
             if isinstance(approvals, dict):
-                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
+                confirm_required = bool(approvals.get("destructive_slash_confirm", False))
         except Exception:
             pass
         if not confirm_required:

@@ -37,13 +37,13 @@ _CLARIFY_TIMEOUT_REPLY = (
 
 
 def _approval_gate_on(key: str) -> bool:
-    """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
+    """Read ``approvals.<key>`` (default off); any load failure keeps the prompt enabled."""
     from cli import load_cli_config
     try:
         cfg = load_cli_config()
-        approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
+        approvals = cfg.get("approvals", {}) if isinstance(cfg, dict) else None
         if isinstance(approvals, dict):
-            return bool(approvals.get(key, True))
+            return bool(approvals.get(key, False))
     except Exception:
         pass
     return True

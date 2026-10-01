@@ -220,12 +220,16 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     return parts
 
 
-_CRON_HINT = (
-    "[IMPORTANT: You are running as a scheduled cron job. "
+_CRON_DELIVERY = (
     "DELIVERY: Your final response will be automatically delivered "
     "to the user — do NOT use send_message or try to deliver "
     "the output yourself. Just produce your report/output as your "
     "final response and the system handles the rest. "
+)
+
+_CRON_HINT = (
+    "[IMPORTANT: You are running as a scheduled cron job. "
+    "{delivery}"
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
     "[SILENT] is a literal ASCII control token — never translate or "
@@ -297,7 +301,25 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = ("" if job.get("responsibility") else _CRON_HINT) + prompt
+    delivery = _CRON_DELIVERY
+    owner = job.get("responsibility")
+    if owner:
+        if owner["report"] in {"muted", "local"}:
+            delivery = (
+                "DELIVERY: Reporting is muted: your final response is recorded in "
+                "the run log, not posted anywhere. Use send_message only when the "
+                "work itself requires a message, not for a routine run report. "
+            )
+        else:
+            delivery = (
+                "DELIVERY: Your final response will be automatically delivered "
+                f"to this schedule's configured report destination ({owner['report']}). "
+                "Use send_message only when the task itself requires an additional "
+                "destination; do not duplicate the final response. "
+                "Just produce your report/output as your final response and the "
+                "system handles the ordinary delivery. "
+            )
+    prompt = _CRON_HINT.format(delivery=delivery) + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

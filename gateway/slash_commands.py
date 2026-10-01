@@ -1063,13 +1063,14 @@ class GatewaySlashCommandsMixin(
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent. Reloading
         invalidates the provider prompt cache (tool schemas live in the system prompt), so it routes
-        through slash-confirm; "Always Approve" persists ``approvals.mcp_reload_confirm: false``."""
+        through slash-confirm only when opted in; "Always Approve" persists
+        ``approvals.mcp_reload_confirm: false``."""
         session_key = self._session_key_for_source(event.source)
         # Read the gate fresh from disk so a prior "always" click takes effect on the next
         # invocation without restarting the gateway.
         user_config = self._read_user_config()
-        approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
-        if isinstance(approvals, dict) and not approvals.get("mcp_reload_confirm", True):
+        approvals = user_config.get("approvals", {}) if isinstance(user_config, dict) else None
+        if isinstance(approvals, dict) and not approvals.get("mcp_reload_confirm", False):
             return await self._execute_mcp_reload(event)
         # Route through slash-confirm. The primitive sends the prompt and stores the resume handler;
         # the button/text response triggers ``_resolve_slash_confirm`` which invokes the handler

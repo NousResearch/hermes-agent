@@ -75,16 +75,16 @@ describe('applyDisplay', () => {
     expect($uiState.get().destructiveSlashConfirm).toBe(true)
   })
 
-  it('defaults destructive slash confirmation on and preserves it across config RPC failure', () => {
+  it('defaults destructive slash confirmation off and preserves opt-in across config RPC failure', () => {
     const setBell = vi.fn()
 
     applyDisplay({ config: { display: {} } }, setBell)
-    expect($uiState.get().destructiveSlashConfirm).toBe(true)
+    expect($uiState.get().destructiveSlashConfirm).toBe(false)
 
     applyDisplay(
       {
         config: {
-          approvals: { destructive_slash_confirm: false },
+          approvals: { destructive_slash_confirm: true },
           display: {}
         }
       },
@@ -92,7 +92,7 @@ describe('applyDisplay', () => {
     )
     applyDisplay(null, setBell)
 
-    expect($uiState.get().destructiveSlashConfirm).toBe(false)
+    expect($uiState.get().destructiveSlashConfirm).toBe(true)
   })
 
   it('applies v1 parity defaults when display fields are missing', () => {

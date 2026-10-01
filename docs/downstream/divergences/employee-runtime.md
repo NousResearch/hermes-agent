@@ -18,6 +18,11 @@ native. Restore exact Git blobs when no exception remains; inspect individual
 hunks in mixed files. Preserve warm prompts and profile isolation. Do not
 reintroduce the deferred delivery queue or custom filesystem conventions.
 
+Responsibility schedules share native cron instructions, changing only the
+delivery section for task-required additional messages and muted reports. Keep
+the employee's scoped Schedule framing and fresh charter/state context after
+that block; do not replace native silence, failure or recursion guidance.
+
 ## Validation
 
 Run focused memory, prompt, responsibility, messaging and deployment tests via

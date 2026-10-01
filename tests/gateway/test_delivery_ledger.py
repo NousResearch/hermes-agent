@@ -808,3 +808,29 @@ class TestOwnerAlivePidProbe:
 
         monkeypatch.setattr(status, "_pid_exists", boom)
         assert dl._owner_alive(12345, 999) is False
+
+
+class TestTerminalMessageErrors:
+    """Verify that permanent single-message failures (e.g. expired msg_id) are never retried."""
+
+    def test_is_terminal_message_error(self):
+        assert dl.is_terminal_message_error("msgid已经过期,不能回复")
+        assert dl.is_terminal_message_error("回复消息msg_id已过期")
+        assert dl.is_terminal_message_error("QQ Bot API error [400]: msg_id expired")
+        assert not dl.is_terminal_message_error("network timeout")
+        assert not dl.is_terminal_message_error("")
+
+    def test_retry_not_before_returns_none_for_terminal_errors(self):
+        now = time.time()
+        assert dl.retry_not_before(now, "msgid已经过期,不能回复", attempts=0) is None
+        assert dl.retry_not_before(now, "回复消息msg_id已过期", attempts=1) is None
+
+    def test_sweep_recoverable_abandons_terminal_errors(self, monkeypatch):
+        _record("ob-terminal-1", content="answer")
+        dl.mark_failed("ob-terminal-1", error="msgid已经过期,不能回复")
+        monkeypatch.setattr(dl, "_owner_alive", lambda pid, started: False)
+
+        claimed = dl.sweep_recoverable()
+        assert claimed == []
+        assert _row("ob-terminal-1")["state"] == "abandoned"
+

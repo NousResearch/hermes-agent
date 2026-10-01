@@ -4265,7 +4265,9 @@ class BasePlatformAdapter(ABC):
         backoff has passed instead of waiting for the next restart (#91653)."""
         try:
             from gateway.dead_targets import classify_dead_error
-            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+            from gateway.delivery_ledger import (
+                is_reconnect_only, mark_delivered, mark_failed, is_terminal_message_error,
+            )
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -4278,11 +4280,12 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
-            elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
+            elif classify_dead_error(error) is None and not is_terminal_message_error(error):  # a dead chat or terminal error is never retried: no timer to wake
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):
                     schedule(event.source.platform,
                              profile=getattr(delivery_adapter, "_owner_profile", None))
+
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 

@@ -1417,8 +1417,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     _PERMANENT_SEND_ERRORS = (
         "invalid", "forbidden", "not found", "bad request",
-        "无权限", "主动消息", "400",
+        "无权限", "主动消息", "400", "过期", "msgid", "msg_id",
     )
+
+    def _send_retry_is_final(self, result: "SendResult") -> bool:
+        """True when a failed send must be returned as-is: neither a retry nor the plain-text
+        fallback can fix it (e.g. msg_id expired, permissions, bad request)."""
+        error = (result.error or "").lower()
+        return any(k in error for k in self._PERMANENT_SEND_ERRORS)
+
 
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None

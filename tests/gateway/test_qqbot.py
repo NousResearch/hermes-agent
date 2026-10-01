@@ -1502,4 +1502,35 @@ class TestQQBotGroupAtSender:
         assert body.get("msg_id") == "MSG_PASSIVE_123"
         assert body.get("content") == "Test Caption"
 
+    def test_send_retry_is_final(self):
+        """_send_retry_is_final should identify expired msg_id, 400, permissions, and passive message errors as final."""
+        adapter = self._make_adapter()
+        from gateway.platforms.base import SendResult
+
+        assert adapter._send_retry_is_final(SendResult(success=False, error="msgid已经过期,不能回复"))
+        assert adapter._send_retry_is_final(SendResult(success=False, error="回复消息msg_id已过期"))
+        assert adapter._send_retry_is_final(SendResult(success=False, error="QQ Bot API error [400] /v2/groups/...: 主动消息失败, 无权限"))
+        assert adapter._send_retry_is_final(SendResult(success=False, error="400 Bad Request"))
+        assert not adapter._send_retry_is_final(SendResult(success=False, error="Connection reset by peer"))
+
+    @pytest.mark.asyncio
+    async def test_send_with_retry_bypasses_fallback_on_expired_msgid(self):
+        """_send_with_retry must not trigger plain text fallback when send fails with expired msgid."""
+        adapter = self._make_adapter()
+        send_calls = []
+
+        async def fake_send(chat_id, content, reply_to=None, metadata=None):
+            send_calls.append((content, reply_to))
+            from gateway.platforms.base import SendResult
+            return SendResult(success=False, error="QQ Bot API error [400] ...: msgid已经过期,不能回复", retryable=False)
+
+        adapter.send = fake_send
+        result = await adapter._send_with_retry("group_123", "Hello", reply_to="EXPIRED_ID")
+
+        assert result.success is False
+        assert "msgid已经过期" in result.error
+        # Must only call send once, without secondary plain text fallback attempt
+        assert len(send_calls) == 1
+
+
 

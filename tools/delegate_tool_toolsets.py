@@ -6,7 +6,7 @@ import logging
 from typing import List, Optional
 
 from toolsets import TOOLSETS, resolve_toolset
-from tools.delegate_tool_config import _get_inherit_mcp_toolsets
+from tools.delegate_tool_config import _get_delegation_mcp_servers, _get_inherit_mcp_toolsets
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -108,6 +108,10 @@ def _resolve_child_toolsets(
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
     child_toolsets = _strip_blocked_tools(child_toolsets)
+    # delegation.mcp_servers never reach the parent, so they cannot be inherited; grant them here.
+    child_toolsets += [
+        ts for ts in (f"mcp-{server}" for server in _get_delegation_mcp_servers()) if ts not in child_toolsets
+    ]
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
     inherited_disabled = (

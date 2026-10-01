@@ -1359,6 +1359,10 @@ DEFAULT_CONFIG = {
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
+        # Names of mcp_servers entries reserved for subagents: their tools reach delegate_task children
+        # only, never the main agent. The servers stay defined under mcp_servers (add lazy: true there to
+        # defer connecting until a child first calls one).
+        "mcp_servers": [],
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each

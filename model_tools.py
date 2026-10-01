@@ -332,6 +332,12 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     from toolsets import profile_role_toolsets
     for ts_name in profile_role_toolsets()[1]:
         tools.difference_update(resolve_toolset(ts_name))
+    # Same choke point for delegation.mcp_servers: those servers are reserved for delegate_task children,
+    # so every other selection (main agent on any surface, cron, ACP, None/"all", /reload-mcp) drops them.
+    if not _is_delegated_child_context():
+        from tools.delegate_tool_config import _get_delegation_mcp_servers
+        for server in _get_delegation_mcp_servers():
+            tools.difference_update(resolve_toolset(f"mcp-{server}"))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a

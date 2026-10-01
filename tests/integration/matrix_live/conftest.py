@@ -470,8 +470,6 @@ def gateway(
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )
-            if isinstance(getattr(request, "param", None), int):
-                stream.write(f"MATRIX_MAX_MEDIA_BYTES={request.param}\n")
             if settings.max_message_length is not None:
                 stream.write(f"MATRIX_MAX_MESSAGE_LENGTH={settings.max_message_length}\n")
         if context_pause:

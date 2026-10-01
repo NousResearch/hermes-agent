@@ -246,7 +246,10 @@ def _worker_completion_evidence(
     # Current Hermes centralizes that distinction in delegation_context; if
     # this execution is not the dispatcher-owned worker, fail closed rather
     # than treating the inherited identity as either trusted or inapplicable.
-    if not _is_dispatcher_owned_worker():
+    # Use a completion-specific fail-closed default here. Other callers use
+    # _is_dispatcher_owned_worker() for tool visibility and implicit task
+    # resolution, where its legacy fail-open default remains unchanged.
+    if not _delegation_ctx("is_dispatcher_owned_worker_context", False):
         return True, None
     # At this point the current execution owns
     # HERMES_KANBAN_TASK == task_id. Missing or unparseable

@@ -196,9 +196,44 @@ def test_non_dispatcher_context_with_inherited_task_fails_closed(
     monkeypatch, worker_env,
 ):
     """An in-process child/cron context must not borrow the worker's env identity."""
+    from agent.delegation_context import non_dispatcher_owned_context
     from tools import kanban_tools as kt
 
-    monkeypatch.setattr(kt, "_is_dispatcher_owned_worker", lambda: False)
+    with non_dispatcher_owned_context():
+        assert kt._worker_completion_evidence(worker_env) == (True, None)
+
+
+def test_worker_ownership_predicate_failure_refuses_passing_receipt(
+    monkeypatch, worker_env, tmp_path,
+):
+    """Uncertain ownership must not accept an otherwise passing receipt."""
+    from agent import delegation_context
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-uncertain-owner")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+
+    def raise_ownership_error():
+        raise RuntimeError("ownership context unavailable")
+
+    monkeypatch.setattr(
+        delegation_context,
+        "is_dispatcher_owned_worker_context",
+        raise_ownership_error,
+    )
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {
+            "status": "passed",
+            "root": str(tmp_path),
+            "session_id": "session-uncertain-owner",
+            "evidence": {
+                "id": 74,
+                "kind": "test",
+                "created_at": "2100-01-01T00:00:00+00:00",
+            },
+        },
+    )
 
     assert kt._worker_completion_evidence(worker_env) == (True, None)
 

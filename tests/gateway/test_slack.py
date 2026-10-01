@@ -196,6 +196,9 @@ def adapter():
     # Mock the Slack app client
     a._app = MagicMock()
     a._app.client = AsyncMock()
+    a._app.client.conversations_replies = AsyncMock(
+        return_value={"ok": True, "messages": [], "has_more": False},
+    )
     a._app.client.users_info = AsyncMock(
         return_value={
             "user": {
@@ -506,6 +509,9 @@ class TestSlackConnectCleanup:
 
         # Simulate state left over from a prior connect() call.
         first_handler = AsyncMock()
+        first_handler.client = SimpleNamespace(
+            current_session_monitor=None, message_processor=None, message_receiver=None,
+        )
         first_handler.close_async = AsyncMock()
         adapter._handler = first_handler
 
@@ -2790,6 +2796,9 @@ class TestThreadReplyHandling:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": True, "messages": [], "has_more": False},
+        )
         a._app.client.users_info = AsyncMock(
             return_value={
                 "user": {
@@ -3013,6 +3022,9 @@ class TestAssistantThreadLifecycle:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": True, "messages": [], "has_more": False},
+        )
         a._app.client.users_info = AsyncMock(
             return_value={
                 "user": {

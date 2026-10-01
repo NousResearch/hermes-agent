@@ -379,6 +379,7 @@ function RotationHarness({ activeSessionId, onReady, selectedStoredSessionId }: 
     navigate: vi.fn() as never,
     requestGateway: async () => ({}) as never,
     resetViewSync: cache.resetViewSync,
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,

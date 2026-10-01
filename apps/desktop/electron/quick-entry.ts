@@ -28,6 +28,86 @@ const QUICK_ENTRY_WINDOW_HEIGHT = 168
 // comfortable fraction down from the top rather than dead center.
 const QUICK_ENTRY_TOP_FRACTION = 0.22
 
+export interface QuickEntrySubmitRelayResult {
+  ok: boolean
+  [key: string]: unknown
+}
+
+export interface QuickEntrySubmitRelay {
+  begin: (forward: (correlationId: string) => void) => Promise<QuickEntrySubmitRelayResult>
+  acknowledge: (correlationId: string, result: QuickEntrySubmitRelayResult) => void
+  pendingCount: () => number
+  /** Correlations whose outcome is UNKNOWN: the relay timed out but the backend
+   *  may still have accepted the prompt. Kept so a late ack reconciles instead
+   *  of being silently dropped. */
+  reconcilableCount: () => number
+}
+
+export function createQuickEntrySubmitRelay(options: {
+  onLateResult?: (correlationId: string, result: QuickEntrySubmitRelayResult) => void
+  onSuccess: () => void
+  timeoutMs?: number
+}): QuickEntrySubmitRelay {
+  const pending = new Map<
+    string,
+    { resolve: (result: QuickEntrySubmitRelayResult) => void; timer: NodeJS.Timeout }
+  >()
+  // Timed-out correlations. Delivery is UNCONFIRMED, so a late ack must
+  // reconcile; a correlation is never resolved twice.
+  const reconcilable = new Set<string>()
+  let sequence = 0
+
+  return {
+    acknowledge(correlationId, result) {
+      const request = pending.get(correlationId)
+
+      if (!request) {
+        // A late ack for a timed-out submit: the outcome is now known. Do NOT
+        // hide the window here — the user may already be typing again. The
+        // renderer reconciles the unknown outcome itself.
+        if (reconcilable.delete(correlationId)) {
+          options.onLateResult?.(correlationId, result)
+        }
+
+        return
+      }
+
+      clearTimeout(request.timer)
+      pending.delete(correlationId)
+      request.resolve(result)
+      if (result.ok === true) {
+        options.onSuccess()
+      }
+    },
+    begin(forward) {
+      const correlationId = ['qe', Date.now(), ++sequence].join('-')
+
+      return new Promise(resolve => {
+        const timer = setTimeout(() => {
+          pending.delete(correlationId)
+          // UNKNOWN, not failed: the prompt may already be accepted, so this
+          // must never invite a retry. Keep the correlation for late acks.
+          reconcilable.add(correlationId)
+          resolve({
+            code: 'timeout',
+            message: 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+            ok: false,
+            retryable: false
+          })
+        }, options.timeoutMs ?? 15_000)
+        pending.set(correlationId, { resolve, timer })
+        forward(correlationId)
+      })
+    },
+    pendingCount() {
+      return pending.size
+    },
+    reconcilableCount() {
+      return reconcilable.size
+    }
+  }
+}
+
 // Electron accelerator vocabulary (electronjs.org/docs/latest/api/accelerator).
 // Kept as data so validation and the settings UI agree on one list.
 const ACCELERATOR_MODIFIERS = new Set([

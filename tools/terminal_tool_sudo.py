@@ -315,15 +315,21 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
 
     Follow ordinary env options/assignments, not shell payloads or env split strings:
     interpreting those requires a second parser and rewriting inside another quoting layer.
+    A heredoc body is data, not commands, so it is masked out before scanning (the same
+    masking the self-repo guard uses): `ssh host 'bash -s' <<'EOF' … sudo -n … EOF` pipes a
+    script to a REMOTE shell, and reading that `sudo` as a local one pops a password prompt
+    the local sudo could never use. Offsets survive masking, so the original text is emitted.
     """
+    from tools.self_repo_guard import _mask_heredocs
+    masked, _ = _mask_heredocs(command)
     out: list[str] = []
     sudo_count = 0
     in_env = env_operand = env_options = False
     value_options = {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}
     flag_options = {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"}
-    for kind, start, end, at_start in _scan_shell(command):
-        text = command[start:end]
-        out.append(text)
+    for kind, start, end, at_start in _scan_shell(masked):
+        text = masked[start:end]
+        out.append(command[start:end])
         if kind == "op" or (kind == "ws" and text == "\n"):
             in_env = env_operand = env_options = False
         if kind != "word" or not (at_start or in_env):

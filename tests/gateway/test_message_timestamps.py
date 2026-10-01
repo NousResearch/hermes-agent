@@ -55,3 +55,25 @@ def test_build_history_injects_only_when_enabled():
     assert agent_history[0]["content"].endswith("hello")
     # Assistant message is never timestamped.
     assert agent_history[1]["content"] == "hi"
+
+
+def test_compaction_summary_replays_without_timestamp():
+    from gateway.run import _build_gateway_agent_history
+
+    summary = {
+        "role": "user",
+        "content": "[CONTEXT COMPACTION] prior turns",
+        "timestamp": 1.0,
+        "_compressed_summary": True,
+    }
+    history, _ = _build_gateway_agent_history([summary], inject_timestamps=True)
+    assert history[0]["content"] == summary["content"]
+
+
+def test_regular_user_message_still_replays_with_timestamp():
+    from gateway.run import _build_gateway_agent_history
+
+    message = {"role": "user", "content": "what is next?", "timestamp": 1.0}
+    history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
+    assert history[0]["content"].endswith(message["content"])
+    assert history[0]["content"] != message["content"]

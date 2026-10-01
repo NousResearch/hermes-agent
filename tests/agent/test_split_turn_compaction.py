@@ -83,14 +83,14 @@ def _tool_group(index: int) -> list[dict]:
     ]
 
 
-def _oversized_active_turn() -> list[dict]:
+def _oversized_active_turn(request: Any = _ACTIVE_REQUEST, groups: int = 10) -> list[dict]:
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "older request"},
         {"role": "assistant", "content": "older request completed"},
-        {"role": "user", "content": _ACTIVE_REQUEST},
+        {"role": "user", "content": request},
     ]
-    for index in range(10):
+    for index in range(groups):
         messages.extend(_tool_group(index))
     return messages
 
@@ -301,18 +301,6 @@ def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = Non
         return GatewayRunner._prepend_inbound_reply_context(event, source, text)
 
 
-def _reply_turn(request: str, groups: int = 30) -> list[dict[str, Any]]:
-    messages = [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "older request"},
-        {"role": "assistant", "content": "older request completed"},
-        {"role": "user", "content": request},
-    ]
-    for index in range(groups):
-        messages.extend(_tool_group(index))
-    return messages
-
-
 @pytest.mark.parametrize(
     "gateway_kwargs",
     [{}, {"own": True}, {"discord_id": "42"}],
@@ -328,9 +316,12 @@ def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: di
     request = _gateway_reply(_ACTIVE_REQUEST, **gateway_kwargs)
     assert len(request) > _ACTIVE_TASK_MAX_CHARS
     assert _authored_request_text(request) == _ACTIVE_REQUEST
+    # Past the cap the deterministic snapshot must drop the quote, not elide the request away.
+    snapshot = ContextCompressor._latest_user_task_snapshot([{"role": "user", "content": request}])
+    assert _ACTIVE_REQUEST in (snapshot or "")
     compressor = _make_compressor()
     compressor.tail_token_budget = 1_000
-    messages = _reply_turn(request)
+    messages = _oversized_active_turn(request, 30)
     active_user_idx = 3
 
     cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
@@ -356,7 +347,7 @@ def test_restated_reply_keeps_splitting_on_later_compactions() -> None:
     """
     compressor = _make_compressor(protect_first_n=3)
     compressor.tail_token_budget = 1_000
-    messages = _reply_turn(_gateway_reply(_ACTIVE_REQUEST))
+    messages = _oversized_active_turn(_gateway_reply(_ACTIVE_REQUEST), 30)
     for cycle in range(3):
         with patch.object(compressor, "_generate_summary", return_value=None):
             compressed = compressor.compress(messages, current_tokens=90_000)

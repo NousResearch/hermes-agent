@@ -436,28 +436,139 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("claimed_by", [
-    None, "_handle_approval_reaction", "_handle_model_picker_reaction", "_handle_choice_picker_reaction",
-])
+@pytest.mark.parametrize(
+    "claimed_by",
+    [
+        None,
+        "_handle_approval_reaction",
+        "_handle_model_picker_reaction",
+        "_handle_choice_picker_reaction",
+    ],
+)
 async def test_reaction_reaches_prompt_handlers_without_starting_a_turn(claimed_by):
     from tests.gateway.test_matrix import _make_adapter
 
     adapter = _make_adapter()
     adapter._user_id = "@bot:example.org"
     adapter.handle_message = AsyncMock()
-    handlers = ("_handle_approval_reaction", "_handle_model_picker_reaction", "_handle_choice_picker_reaction")
+    handlers = (
+        "_handle_approval_reaction",
+        "_handle_model_picker_reaction",
+        "_handle_choice_picker_reaction",
+    )
     for name in handlers:
         setattr(adapter, name, AsyncMock(return_value=name == claimed_by))
     event = SimpleNamespace(
-        sender="@alice:example.org", event_id="$reaction", room_id="!room:example.org",
-        content={"m.relates_to": {"rel_type": "m.annotation", "event_id": "$message", "key": "👍"}},
+        sender="@alice:example.org",
+        event_id="$reaction",
+        room_id="!room:example.org",
+        content={
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": "$message",
+                "key": "👍",
+            }
+        },
     )
 
     await adapter._on_reaction(event)
 
-    reached = handlers if claimed_by is None else handlers[:handlers.index(claimed_by) + 1]
+    reached = (
+        handlers if claimed_by is None else handlers[: handlers.index(claimed_by) + 1]
+    )
     assert {name: getattr(adapter, name).await_args_list for name in handlers} == {
-        name: [call("!room:example.org", "$message", "👍", "@alice:example.org")] if name in reached else []
+        name: [call("!room:example.org", "$message", "👍", "@alice:example.org")]
+        if name in reached
+        else []
         for name in handlers
     }
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("root_state", ["marked", "ordinary", "unavailable"])
+@pytest.mark.parametrize("catch_up", [False, True])
+@pytest.mark.asyncio
+async def test_marked_thread_root_is_not_context_or_reaction_target(
+    warm, catch_up, root_state
+):
+    from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+    from plugins.platforms.matrix.thread_context import fetch_thread_entries
+
+    root = {
+        "event_id": "$root",
+        "room_id": "!room:example.org",
+        "sender": "@bot:example.org",
+        "type": "m.room.message",
+        "content": {
+            "msgtype": "m.text",
+            "body": "Status root",
+            NON_CONVERSATIONAL_KEY: root_state == "marked",
+        },
+    }
+    requests = []
+    server_available = root_state != "unavailable"
+
+    async def request(method, path, **kwargs):
+        requests.append(path)
+        if "/event/" in path:
+            if not server_available:
+                raise RuntimeError("Temporary server error")
+            return root
+        return {"events_before": [], "chunk": []}
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request))
+    )
+    cache = MatrixEventContextCache()
+    if warm:
+        cache.store(
+            "!room:example.org",
+            "$root",
+            MatrixEventContext("@bot:example.org", "Status root"),
+        )
+    entries = await fetch_thread_entries(
+        client,
+        cache,
+        "!room:example.org",
+        "$root",
+        limit=5,
+        before_event_id="$trigger",
+        is_previous_turn=(lambda sender, content: False) if catch_up else None,
+    )
+
+    included = root_state == "ordinary" or (
+        root_state == "unavailable" and warm and not catch_up
+    )
+    expected = (
+        [MatrixEventContext("@bot:example.org", "Status root", event_id="$root")]
+        if included
+        else []
+    )
+    reaction_requests = (
+        [
+            "/_matrix/client/v1/rooms/%21room%3Aexample.org/relations/%24root/m.annotation",
+        ]
+        if included
+        else []
+    )
+    assert (entries, [path for path in requests if "/m.annotation" in path]) == (
+        expected,
+        reaction_requests,
+    )
+    if root_state == "marked":
+        server_available = False
+        requests.clear()
+        after_failure = await fetch_thread_entries(
+            client,
+            cache,
+            "!room:example.org",
+            "$root",
+            limit=5,
+            before_event_id="$trigger",
+            is_previous_turn=(lambda sender, content: False) if catch_up else None,
+        )
+        assert (
+            after_failure,
+            [path for path in requests if "/m.annotation" in path],
+        ) == ([], [])

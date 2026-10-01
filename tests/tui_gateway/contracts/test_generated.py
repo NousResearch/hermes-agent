@@ -88,4 +88,7 @@ def test_catalog_covers_the_whole_wire():
     from tui_gateway import server
     from tui_gateway.contracts import registry
 
-    registry.assert_complete(server._methods, emitted_event_names(), sent_server_requests())
+    from gateway.session_group_controls import GROUP_METHODS
+
+    # Canonical controls share this wire catalog without requiring legacy TUI handlers.
+    registry.assert_complete({**server._methods, **GROUP_METHODS}, emitted_event_names(), sent_server_requests())

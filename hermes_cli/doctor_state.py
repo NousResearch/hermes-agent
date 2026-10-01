@@ -109,7 +109,8 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
         detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
         stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
                          and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
-        if stats.get("fts_rebuild_pending") or stale_trigram:
+        structural_fts_upgrade = bool(stats.get("fts_storage_upgrade_needed"))
+        if stats.get("fts_rebuild_pending") or stale_trigram or structural_fts_upgrade:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
         lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.

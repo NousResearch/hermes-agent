@@ -50,3 +50,16 @@ def test_update_notice_offers_v1_trigram_tool_calls_rebuild(tmp_path, monkeypatc
 
     assert "hermes sessions optimize-storage" in capsys.readouterr().out
     conn.close()
+
+
+def test_doctor_notice_uses_structural_fts_upgrade_status():
+    from hermes_cli.doctor_state import _render_state_db_stats
+
+    rows = _render_state_db_stats({
+        "logical_size_bytes": 2 * 1024 ** 3,
+        "fts_tables": {"messages_fts_trigram": True},
+        "fts_storage_version": 3,
+        "fts_storage_upgrade_needed": True,
+    })
+
+    assert "hermes sessions optimize-storage" in rows[-1][2]

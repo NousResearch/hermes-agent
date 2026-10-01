@@ -4826,16 +4826,17 @@ class TestCustomEndpointApiKeyInheritance:
         assert model == "aux-model"
         assert (client.api_key == "sk-main-config-key") is inherits
 
-    @pytest.mark.parametrize("aux_base_url,explicit_key", [
-        ("https://gw.example.com/v1", None), (None, None),
-        ("https://gw.example.com/v1", "   "), (None, "   "), (None, "sk-explicit-aux"),
+    @pytest.mark.parametrize("aux_base_url,explicit_key,expected_third", [
+        ("https://gw.example.com/v1", None, "no-key-required"), (None, None, None),
+        ("https://gw.example.com/v1", "   ", "no-key-required"), (None, "   ", None), (None, "sk-explicit-aux", None),
     ], ids=["explicit-base-url", "runtime-endpoint", "explicit-base-url-blank-key",
             "runtime-endpoint-blank-key", "runtime-endpoint-explicit-key"])
-    def test_cached_client_carries_only_the_live_main_credential(self, monkeypatch, aux_base_url, explicit_key):
+    def test_cached_client_carries_only_the_live_main_credential(self, monkeypatch, aux_base_url, explicit_key, expected_third):
         """Auxiliary requests go through the client cache: a client built while one runtime was live
         must not be served, carrying that runtime's key, once the live runtime changed. The cache and
         the client build agree on when the main credential is borrowed: a blank explicit key is
-        keyless, and the runtime-endpoint shape never uses the explicit key."""
+        keyless, and the runtime-endpoint shape never uses the explicit key: with a keyless runtime
+        it has no credential at all, so no client is built."""
         import agent.auxiliary_client as aux
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -4855,7 +4856,7 @@ class TestCustomEndpointApiKeyInheritance:
             aux.clear_runtime_main()
 
         assert served[:2] == ["sk-first-session", "sk-second-session"]
-        assert served[2] not in ("sk-first-session", "sk-second-session")
+        assert served[2] == expected_third  # keyless explicit endpoint → placeholder; runtime endpoint → no client
 
 
 class TestNoProgressTimeoutTaskConfigGating:

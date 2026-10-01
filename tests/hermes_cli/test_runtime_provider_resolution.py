@@ -706,9 +706,13 @@ def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
     ("https://proxy.corp.example/v1", ""),
     ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
     ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+    ("http://openrouter.ai/api/v1", ""),  # same host, http: another origin
+    ("https://openrouter.ai:8443/api/v1", ""),  # same host, another port
+    ("https://openrouter.ai:443/api/v1", "sk-openai-fallback"),  # default port spelled out: same origin
 ])
 def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
-    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere:
+    a bound key follows its exact origin, so the same hostname over http:// or on another port is elsewhere."""
     from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
@@ -720,25 +724,6 @@ def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, 
 
     assert resolved["base_url"] == "https://openrouter.ai/api/v1"
     assert resolved["api_key"] == expected_key
-
-
-@pytest.mark.parametrize("openrouter_base_url, inherits", [
-    ("https://gw.example.com:443/v1", True),
-    ("http://gw.example.com/v1", False),
-    ("https://gw.example.com:8443/v1", False),
-])
-def test_openai_key_follows_only_its_bound_origin(monkeypatch, openrouter_base_url, inherits):
-    """An OPENAI_BASE_URL-bound OPENAI_API_KEY reaches an OpenRouter mirror only on the identical origin:
-    the same hostname over http://, or on another port, is a different endpoint."""
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://gw.example.com/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proxy-bound-key")
-    monkeypatch.setenv("OPENROUTER_BASE_URL", openrouter_base_url)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="openrouter")
-
-    assert resolved["base_url"] == openrouter_base_url
-    assert (resolved["api_key"] == "sk-proxy-bound-key") is inherits
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):

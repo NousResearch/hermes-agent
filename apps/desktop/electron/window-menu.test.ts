@@ -15,8 +15,12 @@ test('macOS registers the native Window menu so AppKit window commands remain av
 })
 
 test('non-macOS keeps the explicit cross-platform Window menu', () => {
-  assert.deepEqual(windowMenuTemplate(false), {
-    label: 'Window',
-    submenu: [{ role: 'minimize' }, { role: 'close' }]
-  })
+  const menu = windowMenuTemplate(false)
+
+  assert.equal(menu.label, 'Window')
+  assert.deepEqual(
+    menu.submenu.map(item => item.role),
+    ['minimize', undefined]
+  )
+  assert.equal(menu.submenu[1].label, 'Close')
 })

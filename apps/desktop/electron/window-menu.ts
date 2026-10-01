@@ -1,7 +1,7 @@
-interface WindowMenuItem {
-  label?: string
-  role?: string
-  submenu: Array<{ role: string }>
+import type { MenuItemConstructorOptions } from 'electron'
+
+interface WindowMenuItem extends MenuItemConstructorOptions {
+  submenu: MenuItemConstructorOptions[]
 }
 
 function windowMenuTemplate(isMac: boolean): WindowMenuItem {
@@ -13,7 +13,19 @@ function windowMenuTemplate(isMac: boolean): WindowMenuItem {
     ...(isMac ? { role: 'windowMenu' } : {}),
     submenu: isMac
       ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      : // Click-only Close: the `close` role would register its default
+        // CommandOrControl+W accelerator, claiming the chord before the
+        // before-input-event run that routes a terminal-focused Ctrl+W to the
+        // shell's word erase (#65457). The menu item still closes the focused
+        // window when clicked.
+        [
+          { role: 'minimize' },
+          {
+            click: (_menuItem, window) => window?.close(),
+            label: 'Close',
+            registerAccelerator: false
+          }
+        ]
   }
 }
 

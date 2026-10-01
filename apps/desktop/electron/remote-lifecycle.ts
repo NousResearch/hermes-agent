@@ -1157,6 +1157,13 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // phantom profiles/0/ directory (#88842).
   const pinned = backendProfileArg(profile)
   const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
+  // The lockfile the spawn script publishes must carry the SAME normalized
+  // profile as the argv: pidIsOurDashboard and the managed-update drain both
+  // prove ownership by comparing the live `--profile` value against
+  // lock.profile, and a raw-case record refuses to reap our own backend.
+  if (opts.lockMetadata && opts.lockMetadata.profile !== (pinned ?? '')) {
+    opts.lockMetadata = { ...opts.lockMetadata, profile: pinned ?? '' }
+  }
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
@@ -1511,7 +1518,7 @@ async function waitForRemoteSpawnCompletion(ssh, ownershipId, timeoutMs) {
 async function connect(deps) {
   const {
     ssh,
-    profile = '',
+    profile: requestedProfile = '',
     remoteHermesPath = '',
     ownershipId,
     forward,
@@ -1524,6 +1531,13 @@ async function connect(deps) {
     guestOnboarding = false,
     signal
   } = deps
+
+  // The profile must be normalized ONCE, before anything derives from it: the
+  // spawn argv (via buildSpawnCommand), the lockfile metadata the spawn script
+  // publishes, the ownedSpawn rewrite, and the reuse check all have to agree,
+  // or the argv-based ownership proof (pidIsOurDashboard) refuses to reap our
+  // own backend after a case-folding change (#88842).
+  const profile = backendProfileArg(requestedProfile) ?? ''
 
   const log = msg => rememberLog(`[ssh-lifecycle] ${msg}`)
 

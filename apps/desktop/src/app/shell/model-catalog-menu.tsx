@@ -1089,7 +1089,7 @@ function ModelFamilyRow({
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>
           {metaTags.map(chip => (
-            <Badge className="shrink-0 uppercase tracking-wide" key={chip} size="xs" variant="muted">
+            <Badge className="shrink-[999] truncate uppercase tracking-wide" key={chip} size="xs" variant="muted">
               {chip}
             </Badge>
           ))}

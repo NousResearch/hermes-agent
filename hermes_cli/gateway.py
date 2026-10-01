@@ -5499,34 +5499,29 @@ def _restart_all_as_host(owner, system: bool) -> None:
     run_gateway(verbose=0, replace=True)
 
 
-def _service_unit_owning_gateway(pid: int | None) -> str | None:
-    """systemd unit supervising gateway ``pid`` under ANY unit name, or None.
+def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+    """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
 
-    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the restart
-    fallback SIGKILLed a service-managed gateway and spawned an unsupervised orphan in the
-    caller's cgroup while the unit flapped against the stolen lock (#126474). Reuses the
-    dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone (the caller itself
-    started under some unit) never proves ownership.
+    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the fallback's
+    stop + in-process ``run_gateway`` SIGKILLed a live service-managed gateway and spawned an
+    unsupervised orphan in the caller's cgroup while the unit flapped against the stolen lock
+    (#126474). Reuses the dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone
+    (the caller itself started under some unit) never proves ownership.
     """
     if not pid or pid <= 1:
-        return None
-    from hermes_cli import main_dashboard as _dash
-    return _dash._get_systemd_service_for_pid(pid)
-
-
-def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
-    """Refuse the manual restart fallback when a supervisor owns the gateway (any unit name).
-
-    The fallback's stop + in-process ``run_gateway`` would kill a live service-managed gateway
-    and stamp the CLI's PID into gateway.pid, wedging every supervisor respawn with "already
-    running". Restart through the unit instead — never from here.
-    """
-    unit = _service_unit_owning_gateway(pid)
-    if unit is None:
         return
     from hermes_cli import main_dashboard as _dash
+
+    unit = _dash._get_systemd_service_for_pid(pid)
+    if unit is None:
+        return
     scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
-    cmd = f"systemctl --user restart {unit}" if scope == "user" else f"sudo systemctl restart {unit}"
+    if scope == "user":
+        cmds = [f"systemctl --user restart {unit}"]
+    elif scope == "system":
+        cmds = [f"sudo systemctl restart {unit}"]
+    else:
+        cmds = [f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}   (system unit)"]
     _print_lines(
         "",
         f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
@@ -5534,7 +5529,7 @@ def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
         "  kill a live gateway and spawn an unsupervised replacement in this shell's",
         "  cgroup while the unit keeps failing against the stolen lock.",
         "  Restart it through its unit instead:",
-        f"    {cmd}",
+        *(f"    {c}" for c in cmds),
         "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
         "  removes the legacy unit so the canonical one can own the gateway.)",
     )

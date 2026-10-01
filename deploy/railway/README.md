@@ -31,7 +31,11 @@ and [persistent volumes](https://docs.railway.com/volumes).
 
 ## Credentials and initial settings
 
-Railway variables own infrastructure credentials:
+Railway variables own infrastructure credentials. An optional `OPENROUTER_API_KEY`
+on the Hermes service seeds its profile store once; later dashboard edits win.
+Supply it on Hermes, not only on Hindsight.
+
+Railway variables:
 
 | Variable | Service | Purpose |
 | --- | --- | --- |
@@ -41,12 +45,11 @@ Railway variables own infrastructure credentials:
 | `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` | Hermes | Strong shared administrator password |
 | `HINDSIGHT_API_KEY` | Both | Same randomly generated private Hindsight API secret |
 | `HINDSIGHT_INFERENCE_KEY` | Both | A separate random secret for private Codex inference |
-| `OPENROUTER_API_KEY` | Hindsight | Qwen embeddings and Cohere reranking |
 | `DATABASE_URL` | Hindsight | Private PostgreSQL connection string |
 
-Use native dashboard-managed profile secrets for `TELEGRAM_BOT_TOKEN`,
-`BROWSER_USE_API_KEY`, `PARALLEL_API_KEY`, and Hermes' `OPENROUTER_API_KEY`
-(video analysis). Set the Telegram allowlist before using the bot. Do not also
+Use the hosted **Service keys** page for native profile secrets for `TELEGRAM_BOT_TOKEN`,
+`BROWSER_USE_API_KEY`, `PARALLEL_API_KEY`, and `OPENROUTER_API_KEY`
+(video analysis, Qwen embeddings and Cohere reranking). Set the Telegram allowlist before using the bot. Do not also
 set these variables in Railway: two competing credential sources make rotation
 confusing. Infrastructure secrets in the table are rotated in Railway, on both
 services together where applicable. At boot, Hermes copies its Railway-owned
@@ -55,11 +58,12 @@ can authenticate. Additional profiles must explicitly configure their own key;
 they never inherit the process credential.
 
 On first boot only, `config.yaml` is seeded from `deploy/railway/config.yaml`.
-Subsequent boots retain administrator edits. The Config editor controls employee
-name/instructions, the Codex main model, owner identity, group/topic policy,
-webhook public URL, and native display preferences. Fixed tool/memory/review
-rules live in code. File tools cannot rewrite config, auth or product guides.
-This is not a terminal sandbox.
+Subsequent boots retain administrator edits. Open the dashboard root or `/settings`
+for profile instructions, models, Telegram access, service keys and shared-admin
+password changes. Login variables bootstrap the account; a password saved in the
+UI takes precedence on later boots. Advanced native pages remain available for
+owner identity, webhook public URL and other settings. Fixed tool/memory/review
+rules live in code. Native configuration remains mutable; this is not a terminal sandbox.
 
 For local CLI personal memory, set `employee.owner` to the human's platform
 identity, for example `telegram:123456789`. `employee.identity_links` explicitly
@@ -68,20 +72,18 @@ merge people automatically.
 
 ## Sign in on the server
 
-Open a terminal **inside the deployed Hermes container**, then run:
-
-```sh
-hermes auth add openai-codex
-```
-
-Complete the native sign-in flow. Its auth store stays on `/opt/data`; never
-copy a rotating token from the development machine. Main inference and native
-Codex image generation use this store. The private Hindsight endpoint resolves
-and refreshes the same store through native Hermes locking. It accepts only the
-configured Luna model and has no paid API fallback.
+Open **Models → Connect Codex** in the deployed settings page. Complete the native
+device-code flow in your browser. The auth store stays on `/opt/data`; never copy
+a rotating token from the development machine. Chat, image generation and the
+private Hindsight endpoint use the same native credential owner and refresh lock.
+The private endpoint accepts only the selected memory model, without a paid API fallback.
 
 Hindsight takes its complete policy from the checked-in reference snapshot.
-Only endpoints, authentication, database location and worker identity change.
+Only endpoints, authentication, database location, worker identity and the three
+UI memory-model settings change. The supervisor reads these settings and the
+OpenRouter key from Hermes over the private authenticated inference port, then
+restarts its children when the revision changes. The UI reports the applied
+revision’s service health. It never receives the private credentials.
 Existing banks are reconciled using the copied managed-bank reconciler on every
 Hindsight start; new banks inherit the template. Reconciliation errors are logged.
 Browser Use follows native session and account behavior. First boot provisions
@@ -96,7 +98,7 @@ multilingual base model in the image; first boot seeds its native cache.
    Confirm Luna entitlement and structured Responses compatibility on the real account.
 4. Open a Browser Use session, establish a harmless login, close and reconnect;
    verify the account's native persistence behavior. Transcribe an audio message offline.
-5. Configure a Telegram group/topic in the Config editor. Create a responsibility
+5. Configure a Telegram group/topic on the Access page. Create a responsibility
    and guarded schedule; verify one execution, delivery and native conversation history.
 6. Set `webhook.public_url`; create a signed declaration, register its returned URL,
    send/retry an event, then archive the package and verify ingress stops.

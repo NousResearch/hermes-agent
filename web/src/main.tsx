@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import "./index.css";
 import App from "./App";
+import SettingsApp from "./settings/SettingsApp";
 import { SystemActionsProvider } from "./contexts/SystemActions";
 import { I18nProvider } from "./i18n";
 import { exposePluginSDK } from "./plugins";
@@ -17,7 +18,7 @@ createRoot(document.getElementById("root")!).render(
     <I18nProvider>
       <ThemeProvider>
         <SystemActionsProvider>
-          <App />
+          {window.location.pathname.replace(HERMES_BASE_PATH, "").match(/^\/(?:settings(?:\/|$)|$)/) ? <SettingsApp /> : <App />}
         </SystemActionsProvider>
       </ThemeProvider>
     </I18nProvider>

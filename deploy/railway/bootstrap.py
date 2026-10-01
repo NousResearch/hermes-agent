@@ -13,6 +13,12 @@ def seed_service_secrets():
     if key in os.environ:
         save_env_value(key, os.environ[key])
 
+    # Optional deployment seed; dashboard rotations own the value afterward.
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_constants import get_hermes_home
+    if os.environ.get('OPENROUTER_API_KEY') and not build_profile_secret_scope(get_hermes_home()).get('OPENROUTER_API_KEY'):
+        save_env_value('OPENROUTER_API_KEY', os.environ['OPENROUTER_API_KEY'])
+
 
 def seed_whisper_model():
     """Copy bundled weights into the native cache without replacing user state."""

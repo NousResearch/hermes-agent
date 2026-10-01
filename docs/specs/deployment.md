@@ -14,11 +14,9 @@ self-hosted alongside Hermes, not Hindsight Cloud and not embedded in the agent
 process. This supersedes the earlier assumption that the primary deployment is
 on the user's laptop; native Hermes remains the runtime.
 
-Use the native Hermes administration dashboard rather than porting the hosted
-employee dashboard. Fixed employee behavior is enforced in code; operational
-defaults and deployment credentials use native configuration. The earlier
-proposal for a custom dashboard and strictly two-folder filesystem sandbox was
-withdrawn. Folder conventions remain; they are not an OS security boundary.
+Use the [hosted settings UI](hosted-settings.md) over native Hermes administration
+and stores. Fixed employee behavior remains in code. The earlier two-folder
+sandbox proposal remains withdrawn; folder conventions are not a security boundary.
 
 ## Proposed topology
 
@@ -46,7 +44,7 @@ configuration. Hindsight and PostgreSQL need no public endpoints.
 | Capability | Selected direction / remaining verification |
 | --- | --- |
 | Main model | Native Codex login; selected main models use that authentication. No paid API fallback without a separate decision. |
-| Hindsight extraction/reflection | Preserve the reference Luna model and settings; authenticate through Codex login. Verify model availability and protocol compatibility before declaring this route ready. |
+| Hindsight extraction/reflection | Default to the reference Luna model and efforts; allow the hosted UI to select the memory model and learning/recall effort. Authenticate through the shared Codex login. Verify model availability and protocol compatibility before declaring this route ready. |
 | Hindsight embeddings/reranking | Preserve the reference OpenRouter Qwen embeddings and Cohere reranking configuration exactly. Codex login is not assumed to supply these endpoints. |
 | Web search/extraction | Parallel selected for both, through the existing native plugin with direct credentials. No Nous gateway. |
 | Transcription | Local faster-whisper selected. Use native local transcription; no external STT API. Deployment packaging must include its model/runtime. |

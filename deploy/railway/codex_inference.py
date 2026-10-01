@@ -17,7 +17,8 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 def codex_request(body):
-    if body.get('model') != 'gpt-5.6-luna':
+    from deploy.railway.hindsight_settings import current
+    if body.get('model') != current()['llm_model']:
         raise ValueError('This private endpoint is reserved for the configured Hindsight model.')
     instructions = body.get('instructions') or ''
     incoming = body.get('input', [])
@@ -82,6 +83,36 @@ async def responses(request: Request):
     except (ValueError,TypeError,AttributeError) as exc:
         raise HTTPException(400,str(exc))
     return JSONResponse(await infer(payload))
+
+
+@app.get('/v1/settings')
+async def runtime_settings(request: Request):
+    _require_service_key(request)
+    from deploy.railway.hindsight_settings import current
+    return await asyncio.to_thread(current)
+
+
+@app.post('/v1/settings/status')
+async def runtime_status(request: Request):
+    _require_service_key(request)
+    body = await request.json()
+    if body.get('state') not in {'starting', 'ready', 'error'} or not isinstance(body.get('revision'), str):
+        raise HTTPException(400, 'Invalid status')
+    def save():
+        import time
+        from hermes_constants import get_hermes_home
+        from utils import atomic_json_write
+        atomic_json_write(get_hermes_home() / 'hindsight_runtime.json',
+                          {'state': body['state'], 'revision': body['revision'], 'updated_at': time.time()})
+    await asyncio.to_thread(save)
+    return {'ok': True}
+
+
+def _require_service_key(request):
+    expected = get_secret('HINDSIGHT_INFERENCE_KEY', '')
+    provided = request.headers.get('authorization', '').removeprefix('Bearer ')
+    if not expected or not hmac.compare_digest(expected, provided):
+        raise HTTPException(401, 'Unauthorized')
 
 
 @app.get('/health')

@@ -6131,6 +6131,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
             return False
         chat_id_str = self._chat_id_str(message)
+        silent_topics = {str(topic) for topic in self.config.extra.get("silent_topics", [])}
+        if f"{chat_id_str}:{self._topic_id_or_general(self._effective_message_thread_id(message))}" in silent_topics:
+            return False
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
         # Observed context is shared at chat/topic scope, so require an explicit chat allowlist.
@@ -6373,6 +6376,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._topic_gates_pass(thread_id, warn_non_numeric=True) is False:
             return False
         chat_id_str = self._chat_id_str(message)
+        silent_topics = {str(topic) for topic in self.config.extra.get("silent_topics", [])}
+        if f"{chat_id_str}:{self._topic_id_or_general(self._effective_message_thread_id(message))}" in silent_topics:
+            return False
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
         # Resolve once; _message_mentions_bot is not re-called below in guest mode.
@@ -7271,7 +7277,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics", "silent_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map

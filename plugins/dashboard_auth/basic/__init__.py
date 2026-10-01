@@ -146,6 +146,26 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
             raise InvalidCredentialsError("invalid username or password")
         return self._mint_session(self._username)
 
+    def change_credentials(self, username: str, password: str) -> None:
+        """Persist an admin-authorized rotation and invalidate all signed sessions."""
+        from hermes_cli.config import require_readable_config_before_write, save_config
+        from hermes_cli.web_settings import CONFIG_LOCK, require_writable_config
+        password_hash = hash_password(password)
+        secret = secrets.token_bytes(32)
+        with CONFIG_LOCK:
+            require_writable_config(*("dashboard.basic_auth." + key
+                for key in ("username", "password", "password_hash", "secret", "managed")))
+            config = require_readable_config_before_write()
+            dashboard = config.get("dashboard") or {}
+            config["dashboard"] = dashboard
+            section = dashboard.get("basic_auth") or {}
+            dashboard["basic_auth"] = section
+            section.update(username=username, password_hash=password_hash,
+                           secret=base64.b64encode(secret).decode(), managed=True)
+            section.pop("password", None)
+            save_config(config)
+            self._username, self._password_hash, self._secret = username, password_hash, secret
+
     # ---- session lifecycle -------------------------------------------------
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
@@ -215,12 +235,12 @@ def _settings() -> dict:
     section = _load_config_basic_auth_section()
 
     def setting(env_name: str, cfg_key: str) -> str:
-        return resolve_env_or_cfg(env_name, section.get(cfg_key, ""))
+        return str(section.get(cfg_key, "")) if section.get("managed") else resolve_env_or_cfg(env_name, section.get(cfg_key, ""))
 
     username = setting("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "username")
     password_hash = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", "password_hash")
     plaintext = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "password")
-    ttl_raw = setting("HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", "session_ttl_seconds")
+    ttl_raw = resolve_env_or_cfg("HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", section.get("session_ttl_seconds", ""))
     if not username:
         raise SkipRegistration(
             "dashboard.basic_auth.username is not set (and HERMES_DASHBOARD_BASIC_AUTH_USERNAME "
@@ -237,7 +257,7 @@ def _settings() -> dict:
     # operators can rotate without editing config; a config password_hash wins over a
     # config-only plaintext password (preferred at-rest form).
     plaintext_from_env = os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "").strip()
-    if plaintext_from_env:
+    if plaintext_from_env and not section.get("managed"):
         password_hash = hash_password(plaintext_from_env)
         logger.info("dashboard-auth-basic: hashed env-supplied password in-memory (overrides any config password_hash).")
     elif not password_hash:
@@ -250,7 +270,7 @@ def _settings() -> dict:
         ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
     except ValueError:
         ttl = _DEFAULT_TTL_SECONDS
-    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section), "ttl_seconds": ttl}
+    return {"username": username, "password_hash": password_hash, "secret": base64.b64decode(section["secret"]) if section.get("managed") else _resolve_secret(section), "ttl_seconds": ttl}
 
 
 def register(ctx) -> None:

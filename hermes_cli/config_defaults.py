@@ -1603,6 +1603,7 @@ DEFAULT_CONFIG = {
     },
 
     "telegram": {
+        "silent_topics": [],  # chat_id:topic_id pairs excluded from dispatch and observation
         "reactions": False,  # add 👀/✅/❌ reactions to messages during processing
         # per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "channel_prompts": {},

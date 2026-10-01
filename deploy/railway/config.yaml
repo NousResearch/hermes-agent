@@ -1,4 +1,4 @@
-# Seeded once. Edit operational settings through the native dashboard Config editor.
+# Seeded once. Edit operational settings through the hosted settings page.
 employee:
   owner: "" # e.g. telegram:123456789; explicit local-user identity link
 model:
@@ -42,3 +42,6 @@ auxiliary:
   title_generation: {provider: openai-codex}
   memory_query_rewrite: {provider: openai-codex}
   video: {provider: openrouter, model: google/gemini-3.1-flash-lite, timeout: 180}
+
+telegram:
+  require_mention: true

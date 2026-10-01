@@ -57,7 +57,7 @@ def test_codex_endpoint_refreshes_once_and_keeps_structured_output(monkeypatch):
 
 
 def test_hindsight_preserves_snapshot_except_declared_substitutions():
-    snapshot = json.loads((Path(__file__).resolve().parents[2] / 'docs/specs/reference/hindsight-config.json').read_text())
+    snapshot = json.loads((Path(__file__).resolve().parents[2] / 'docs/specs/reference/hindsight-config.json').read_text(encoding='utf-8-sig'))
     result = environment(snapshot, {'DATABASE_URL':'postgresql://private/db','HINDSIGHT_API_KEY':'tenant',
                                    'HINDSIGHT_INFERENCE_KEY':'inference', 'OPENROUTER_API_KEY':'router'})
     substitutions = {'HINDSIGHT_API_LLM_BASE_URL', 'HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL', 'HINDSIGHT_API_RERANKER_OPENROUTER_BASE_URL'}
@@ -86,3 +86,87 @@ def test_bootstrap_hindsight_secret_is_available_only_to_its_profile(tmp_path, m
                 assert config()['api_key'] == expected
     finally:
         set_multiplex_active(False)
+
+
+def test_hindsight_supervisor_applies_changes_once_and_keeps_child_during_outage(monkeypatch, tmp_path):
+    """Drive service polls without launching Hindsight or touching a real account."""
+    import io
+    import signal
+    import urllib.request
+    from deploy.railway.hindsight import start
+    snapshot = Path(__file__).resolve().parents[2] / 'docs/specs/reference/hindsight-config.json'
+    (tmp_path / 'hindsight-config.json').write_bytes(snapshot.read_bytes())
+    monkeypatch.setattr(start, '__file__', str(tmp_path / 'start.py'))
+    children, acks, handlers = [], [], {}
+    polls = 0
+    stopped = False
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://test/db')
+    monkeypatch.setenv('HINDSIGHT_API_KEY', 'tenant')
+    monkeypatch.setenv('HINDSIGHT_INFERENCE_KEY', 'inference')
+
+    class Child:
+        def __init__(self, args, env):
+            self.args, self.env, self.terminated = args, env, False
+            children.append(self)
+        def poll(self):
+            return 0 if self.terminated or self.args[0] != 'hindsight-api' else None
+        def terminate(self):
+            self.terminated = True
+        def wait(self, **kwargs):
+            return 0
+
+    class Response(io.BytesIO):
+        status = 200
+
+    def request(req, **kwargs):
+        nonlocal polls
+        url = req if isinstance(req, str) else req.full_url
+        if url.endswith('/health'):
+            assert url == 'http://[::1]:8888/health'
+            return Response(b'{}')
+        assert req.headers['Authorization'] == 'Bearer inference'
+        if url.endswith('/settings/status'):
+            acks.append(json.loads(req.data))
+            return Response(b'{}')
+        polls += 1
+        if polls == 2:
+            assert len(children) == 2 and not children[0].terminated
+            raise OSError('temporary control outage')
+        if polls == 4:
+            assert len(children) == 2  # unchanged revision does not restart
+        revision = 'first' if polls < 4 else 'second'
+        return Response(json.dumps({'revision': revision, 'llm_model': 'gpt-5.6-luna',
+            'llm_reasoning_effort': 'low' if revision == 'first' else 'high',
+            'reflect_llm_reasoning_effort': 'medium', 'openrouter_api_key': revision}).encode())
+
+    def sleep(_):
+        nonlocal stopped
+        if polls >= 4 and not stopped:
+            stopped = True
+            handlers[signal.SIGTERM]()
+
+    monkeypatch.setattr(start.subprocess, 'Popen', Child)
+    monkeypatch.setattr(urllib.request, 'urlopen', request)
+    monkeypatch.setattr(signal, 'signal', lambda sig, handler: handlers.update({sig: handler}))
+    monkeypatch.setattr('time.sleep', sleep)
+    start.main()
+    assert len(children) == 4
+    assert all(child.poll() == 0 for child in children)
+    assert children[2].env['HINDSIGHT_API_LLM_REASONING_EFFORT'] == 'high'
+    assert children[2].env['HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY'] == 'second'
+    assert children[2].env['HINDSIGHT_API_RERANKER_OPENROUTER_API_KEY'] == 'second'
+    assert [ack['revision'] for ack in acks] == ['first', 'first', 'second']
+
+
+def test_bootstrap_openrouter_seed_preserves_dashboard_rotation(tmp_path, monkeypatch):
+    from deploy.railway.bootstrap import seed_service_secrets
+    from deploy.railway.hindsight_settings import current
+    from hermes_cli.config import save_env_value
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'deployment-key')
+    seed_service_secrets()
+    assert current()['openrouter_api_key'] == 'deployment-key'
+    save_env_value('OPENROUTER_API_KEY', 'dashboard-key')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'deployment-key')
+    seed_service_secrets()
+    assert current()['openrouter_api_key'] == 'dashboard-key'

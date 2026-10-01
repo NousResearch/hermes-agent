@@ -54,7 +54,7 @@ parameters without checking the selected Codex model and backend support.
 
 Response mode must remain configurable per conversation location, not hardcoded
 to mentions-only for every group. Native Telegram supports a mention requirement
-with free-response exceptions for chats/topics. Use the native dashboard Config editor; no custom toggle or adapter is needed.
+with free-response exceptions for chats/topics. Use the [hosted settings UI](hosted-settings.md); native configuration remains authoritative.
 The settings are `telegram.require_mention`, `telegram.free_response_chats` and
 `telegram.free_response_topics`. Preserve native accepted formats, parsing and
 reload/restart behavior. Allowlisting a group and choosing when to respond are
@@ -63,8 +63,9 @@ separate settings. Avoid competing environment overrides that hide saved edits.
 ## Administration
 
 Use native dashboard, configuration, CLI commands, authentication and secret
-management. There are no fork config/auth/guide write prohibitions or custom
-administration endpoints. Selected UI controls are hidden only.
+management. The hosted settings UI adds focused routes over these owners and
+shared-admin password rotation. There are no fork config/auth/guide write
+prohibitions. Selected native UI controls are hidden.
 
 The model tool filter and disabled skill loading remain product differences.
 Memory/provider settings are native; Railway config selects Hindsight and

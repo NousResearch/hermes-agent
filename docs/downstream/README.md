@@ -63,3 +63,5 @@ is removed or upstream satisfies it. Use this shape:
 - [File keeping](divergences/file-keeping.md) — profile-local documents/repos and a source-derived filing guide.
 
 - [Connection guides](divergences/connection-guides.md) — native setup guidance and per-service operating manuals without skills.
+
+- [Hosted settings](divergences/hosted-settings.md) — focused configuration UI over native stores and auth, with private Hindsight updates.

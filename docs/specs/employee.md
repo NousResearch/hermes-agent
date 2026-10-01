@@ -8,7 +8,8 @@ Keep the selected tools, disabled skills, responsibility packages (including
 schedules/webhooks), connection manuals, person-aware memory, Hindsight,
 knowledge review and send/list messaging. Use native prompting, configuration,
 CLI, browser implementation, conversation framing, persistence and replay.
-Hide selected client controls without changing native administration endpoints.
+Hide selected client controls. The [hosted settings UI](hosted-settings.md) uses native
+configuration, authentication and pairing; native administration remains available.
 
 The prompt scope is settled in [system prompt](system-prompt.md). The folder layout is settled in [local layout](local-layout.md): documents,
 repositories, responsibilities and connections live directly under the active

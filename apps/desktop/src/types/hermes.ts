@@ -731,6 +731,14 @@ export interface SessionMessagesResponse {
   /** Profile the page was read from (the serving process's own when the
    *  request named none). Absent on backends that predate the field. */
   profile?: string
+  /** Durable rewind generation (sessions.rewind_count) at read time.
+   *  Increments on every /undo, /retry or truncation. A page whose
+   *  generation EQUALS the generation the rendered transcript was read at
+   *  is stale when it omits newer durable rows; a page at a HIGHER
+   *  generation reflects an intentional rewind and is authoritative even
+   *  though it holds fewer rows. Absent on backends that predate the
+   *  field — treated as unknown, never as 0. */
+  rewind_generation?: number
   messages: SessionMessage[]
   pagination?: {
     limit: number

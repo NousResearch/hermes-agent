@@ -699,14 +699,29 @@ async def get_session_messages(
         # prefetch only shows the child continuation's messages after a
         # compression rotation, hiding the pre-compaction transcript
         # (#51058).
-        return sid, _limit, db.get_messages(
+        messages = db.get_messages(
             sid, limit=_limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
+        # Rewind generation: `rewind_count` increments on every durable
+        # rewind (/undo, /retry, truncation) BEFORE the soft-deleted rows
+        # vanish. A page read at the same generation as the client's
+        # rendered transcript is stale when it omits newer durable rows; a
+        # page read at a HIGHER generation legitimately contains fewer
+        # rows — the user removed them — and must not be "corrected" back
+        # (#119819).
+        # Guarded: this read path is also exercised against partial DB
+        # doubles that only implement the message reads; without the
+        # session row the page simply carries no generation and the client
+        # keeps its legacy retention behavior.
+        get_session = getattr(db, "get_session", None)
+        session_row = get_session(sid) if callable(get_session) else None
+        rewind_generation = int((session_row or {}).get("rewind_count") or 0) if isinstance(session_row, dict) else 0
+        return sid, _limit, messages, rewind_generation
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    sid, _limit, messages = result
+    sid, _limit, messages, rewind_generation = result
     projected_messages = await asyncio.to_thread(
         _project_for_display, messages, home=_history_profile_home(profile),
         inline_images=inline_images)
@@ -715,6 +730,7 @@ async def get_session_messages(
         # The same stamp list rows carry, so the Desktop keys a page under the
         # owner it already routes the session by.
         "profile": _serving_profile(profile),
+        "rewind_generation": rewind_generation,
         "messages": projected_messages,
         "pagination": {
             "limit": _limit, "offset": offset,

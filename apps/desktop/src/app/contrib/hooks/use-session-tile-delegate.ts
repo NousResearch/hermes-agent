@@ -32,6 +32,7 @@ import {
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
+import { pageOutranksRenderedTranscript } from '../../chat/rewind-generation'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
@@ -50,13 +51,16 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 function mergeTileTranscript(
   previous: ChatMessage[],
   prefetched: ChatMessage[],
-  streamId?: null | string
+  streamId?: null | string,
+  stalePage?: { retainNewerRows?: boolean }
 ): ChatMessage[] {
   if (!prefetched.length) {
     return previous
   }
 
-  const persisted = graftRefreshedTailOntoBackfill(prefetched, previous)
+  const persisted = graftRefreshedTailOntoBackfill(prefetched, previous, {
+    pageNewerThanRendered: stalePage?.retainNewerRows === false
+  })
 
   // The known stream belongs to this turn even when its text repeats an older
   // answer; the generic reconnect reconciler only has text/ordinal heuristics.
@@ -375,13 +379,25 @@ export function useSessionTileDelegate({
             return existing
           }
 
-          // Deltas and completion may land while REST is in flight.
+          // Deltas and completion may land while REST is in flight. The
+          // page's rewind generation decides whether its omissions are a
+          // stale read (retain the newer rendered rows) or an intentional
+          // rewind (the page is the authority; undone rows stay gone).
+          const pageNewerThanRendered = pageOutranksRenderedTranscript(prefetch, cached)
+
           updateSessionState(
             existing,
             state => {
-              const merged = mergeTileTranscript(state.messages, prefetched, state.streamId ?? cached.streamId)
+              const merged = mergeTileTranscript(state.messages, prefetched, state.streamId ?? cached.streamId, {
+                retainNewerRows: !pageNewerThanRendered
+              })
 
-              return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
+              const rewindGeneration =
+                typeof prefetch?.rewind_generation === 'number' ? prefetch.rewind_generation : state.rewindGeneration
+
+              return chatMessageArraysEquivalent(state.messages, merged) && rewindGeneration === state.rewindGeneration
+                ? state
+                : { ...state, messages: merged, ...(rewindGeneration !== state.rewindGeneration ? { rewindGeneration } : {}) }
             },
             storedSessionId
           )

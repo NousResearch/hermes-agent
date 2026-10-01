@@ -234,6 +234,52 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(messagesIfTranscriptBehind(page, grown)).toBe(grown)
   })
 
+  it('a fold that supersedes rendered rows is not a stale page', () => {
+    // The rendered transcript holds the turn's streamed pieces, keyed on the
+    // FINAL durable row; the refreshed page folds the same turn's backend
+    // rows (interim assistant + tools + final) into one message keyed on
+    // the turn's FIRST row. The page covers every rendered row — a fold,
+    // not an omission — so no rendered row may be re-appended.
+    const folded: ChatMessage = {
+      id: 'fold',
+      role: 'assistant',
+      rowId: 4,
+      serverRowSpan: 5,
+      parts: [{ type: 'text', text: 'folded turn' }]
+    }
+
+    const previous = [chat('user', 3), chat('streamed-final', 8)]
+
+    // anchor === 0: the page replaces the window from its first row.
+    expect(graftRefreshedTailOntoBackfill([chat('user', 3), folded], previous).map(m => m.rowId)).toEqual([3, 4])
+  })
+
+  it('still retains rendered rows a stale page genuinely never covered', () => {
+    // Same-generation stale read: the page stops before the rendered newest
+    // rows and does NOT cover them (no fold reaches that far) — those rows
+    // are real and must survive the graft.
+    const previous = [chat('a', 1), chat('b', 2), chat('live-tile-newest', 9)]
+    const refreshed = [chat('a', 1), chat('b', 2)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, 9])
+  })
+
+  it('a partial fold keeps only the rendered rows beyond its covered span', () => {
+    // The page folds rows 4-5 but the rendered transcript also holds rows
+    // the fold never reached: those stay; the folded ones do not duplicate.
+    const folded: ChatMessage = {
+      id: 'fold',
+      role: 'assistant',
+      rowId: 4,
+      serverRowSpan: 2,
+      parts: [{ type: 'text', text: 'partial fold' }]
+    }
+
+    const previous = [chat('user', 3), chat('mid', 5), chat('final', 8)]
+
+    expect(graftRefreshedTailOntoBackfill([chat('user', 3), folded], previous).map(m => m.rowId)).toEqual([3, 4, 8])
+  })
+
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {
     const previous = [chat('a', 1)]
     const refreshed = [chat('a', 1), chat('b', 2)]

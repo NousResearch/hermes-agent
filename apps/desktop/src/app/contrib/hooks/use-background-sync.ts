@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { pageOutranksRenderedTranscript } from '@/app/chat/rewind-generation'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
@@ -366,6 +367,9 @@ export async function reconcileTileTranscripts({
         signatureRef.current.set(rowFingerprintKey, sessionListFingerprint(listRow))
       }
 
+      // Rewind-generation gate (#119819): see refreshSessionTranscript.
+      const pageNewerThanRendered = pageOutranksRenderedTranscript(latest, current)
+
       updateSessionState(
         runtimeSessionId,
         state => ({
@@ -379,13 +383,16 @@ export async function reconcileTileTranscripts({
           messages: preserveLocalSystemNotices(
             preserveLocalAssistantErrors(
               preserveLocalPendingTurnMessages(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+                graftRefreshedTailOntoBackfill(messages, state.messages, { pageNewerThanRendered }),
                 state.messages
               ),
               state.messages
             ),
             state.messages
-          )
+          ),
+          ...(typeof latest.rewind_generation === 'number'
+            ? { rewindGeneration: latest.rewind_generation }
+            : {})
         }),
         storedSessionId
       )
@@ -460,6 +467,9 @@ export async function hydrateStoredSessionTranscript({
         return
       }
 
+      // Rewind-generation gate (#119819): see refreshSessionTranscript.
+      const pageNewerThanRendered = pageOutranksRenderedTranscript(latest, $sessionStates.get()[runtimeSessionId])
+
       updateSessionState(
         runtimeSessionId,
         state => ({
@@ -469,13 +479,16 @@ export async function hydrateStoredSessionTranscript({
           messages: preserveLocalSystemNotices(
             preserveLocalAssistantErrors(
               preserveLocalPendingTurnMessages(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+                graftRefreshedTailOntoBackfill(messages, state.messages, { pageNewerThanRendered }),
                 state.messages
               ),
               state.messages
             ),
             state.messages
-          )
+          ),
+          ...(typeof latest.rewind_generation === 'number'
+            ? { rewindGeneration: latest.rewind_generation }
+            : {})
         }),
         storedSessionId
       )
@@ -622,6 +635,11 @@ export async function reconcileActiveTranscript({
 
     signatureRef.current.set(signatureKey, signature)
 
+    // Rewind-generation gate (#119819): a page whose generation outranks the
+    // rendered transcript's is the post-undo authority — its omissions are the
+    // user's rewind, not a stale read, so the undone rows must stay gone.
+    const pageNewerThanRendered = pageOutranksRenderedTranscript(latest, current)
+
     updateSessionState(
       runtimeSessionId,
       state => ({
@@ -632,11 +650,17 @@ export async function reconcileActiveTranscript({
         // (fallback switch, #126422) are re-grafted last.
         messages: preserveLocalSystemNotices(
           preserveLocalAssistantErrors(
-            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+            preserveLocalPendingTurnMessages(
+              graftRefreshedTailOntoBackfill(messages, state.messages, { pageNewerThanRendered }),
+              state.messages
+            ),
             state.messages
           ),
           state.messages
-        )
+        ),
+        ...(typeof latest.rewind_generation === 'number'
+          ? { rewindGeneration: latest.rewind_generation }
+          : {})
       }),
       storedSessionId
     )

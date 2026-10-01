@@ -324,6 +324,92 @@ describe('useSessionTileDelegate resumeTile', () => {
     ).toEqual([])
   })
 
+  it('keeps the newest durable rows when an active tile refresh receives a stale partial page (#119819)', async () => {
+    const state = {
+      busy: false,
+      messages: [
+        { id: '1', rowId: 1, role: 'user', parts: [{ type: 'text', text: 'first prompt' }] },
+        { id: '2', rowId: 2, role: 'assistant', parts: [{ type: 'text', text: 'first answer' }] },
+        { id: '3', rowId: 3, role: 'user', parts: [{ type: 'text', text: 'latest prompt' }] },
+        { id: '4', rowId: 4, role: 'assistant', parts: [{ type: 'text', text: 'latest answer' }] }
+      ],
+      storedSessionId: 'stored-stale-page'
+    }
+
+    const states = { current: new Map([['runtime-stale-page', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-stale-page',
+      messages: [
+        { id: 1, role: 'user', content: 'first prompt', timestamp: 1 },
+        { id: 2, role: 'assistant', content: 'first answer', timestamp: 2 }
+      ]
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-stale-page', 'runtime-stale-page']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+    await sessionTileDelegate()!.resumeTile('stored-stale-page', { refreshTranscript: true })
+
+    expect(states.current.get('runtime-stale-page')!.messages.map(message => message.rowId)).toEqual([1, 2, 3, 4])
+  })
+
+  it('keeps undone rows gone when the post-undo refresh page outranks the rendered transcript (#119819)', async () => {
+    // The transcript was rendered at rewind generation 0 (rows 1-4, all active).
+    const state = {
+      busy: false,
+      messages: [
+        { id: '1', rowId: 1, role: 'user', parts: [{ type: 'text', text: 'first prompt' }] },
+        { id: '2', rowId: 2, role: 'assistant', parts: [{ type: 'text', text: 'first answer' }] },
+        { id: '3', rowId: 3, role: 'user', parts: [{ type: 'text', text: 'latest prompt' }] },
+        { id: '4', rowId: 4, role: 'assistant', parts: [{ type: 'text', text: 'latest answer' }] }
+      ],
+      rewindGeneration: 0,
+      storedSessionId: 'stored-post-undo'
+    }
+
+    const states = { current: new Map([['runtime-post-undo', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    // /undo soft-deleted rows 3-4 (rewind_count bumped to 1); the REST page
+    // now legitimately holds only rows 1-2. A row-count-only guard would see
+    // a "stale page" and re-append rows 3-4 — resurrecting the undone turn.
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-post-undo',
+      rewind_generation: 1,
+      messages: [
+        { id: 1, role: 'user', content: 'first prompt', timestamp: 1 },
+        { id: 2, role: 'assistant', content: 'first answer', timestamp: 2 }
+      ]
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-post-undo', 'runtime-post-undo']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+    await sessionTileDelegate()!.resumeTile('stored-post-undo', { refreshTranscript: true })
+
+    // The undone rows stay gone and the page's generation is the new floor.
+    expect(states.current.get('runtime-post-undo')!.messages.map(message => message.rowId)).toEqual([1, 2])
+    expect(states.current.get('runtime-post-undo')!.rewindGeneration).toBe(1)
+  })
+
   it('refreshes a retained live tile even when the reverse lookup is absent', async () => {
     const state = {
       busy: true,

@@ -208,4 +208,12 @@ export interface ClientSessionState {
    *  the primary-only $currentUsage — the statusbar reads it for a focused
    *  tile's context count. Null until the first turn reports. */
   usage: null | UsageStats
+  /** Durable rewind generation (sessions.rewind_count) the rendered
+   *  transcript was read at. A refreshed page that omits rendered rows is
+   *  only treated as a STALE page (retain the newer rendered rows) when it
+   *  was read at this same generation; a page at a higher generation is the
+   *  authoritative post-rewind transcript and the removed rows must stay
+   *  gone (#119819). Undefined until the first page read that carried a
+   *  generation, and against backends that predate the field. */
+  rewindGeneration?: number
 }

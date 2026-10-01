@@ -317,7 +317,11 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   return [...stored, ...refreshedTrailing, ...previousTrailing]
 }
 
-export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+export function graftRefreshedTailOntoBackfill(
+  refreshedTail: ChatMessage[],
+  previous: ChatMessage[],
+  options: { pageNewerThanRendered?: boolean } = {}
+): ChatMessage[] {
   if (refreshedTail.length === 0 || previous.length === 0) {
     return refreshedTail
   }
@@ -340,40 +344,48 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     anchorRowId !== undefined &&
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
-  if (anchor === 0) {
-    return retainCompletedTurnTools(refreshedTail, previous)
-  }
+  const grafted = (() => {
+    if (anchor === 0) {
+      return retainCompletedTurnTools(refreshedTail, previous)
+    }
 
-  if (prefixIsEarlier) {
-    // A page-local tool fold can sit in front of the anchor on BOTH sides: the
-    // window's copy was hydrated from the same page, and the refreshed page
-    // re-emits that row with the same id. Keeping both copies makes the graft
-    // non-idempotent — the refreshed window comes back one row longer than the
-    // local window on every read, so `messagesIfTranscriptBehind` reports
-    // "behind" forever: the send is refused before `prompt.submit` runs and a
-    // duplicate accumulates per retry. Drop only the prefix copies the page
-    // already carries. Every durable prefix row keeps travelling in front of
-    // the refreshed tail, and so does an unstored row the page has no copy of
-    // (it can only have come from an older page).
+    if (prefixIsEarlier) {
+      // A page-local tool fold can sit in front of the anchor on BOTH sides: the
+      // window's copy was hydrated from the same page, and the refreshed page
+      // re-emits that row with the same id. Keeping both copies makes the graft
+      // non-idempotent — the refreshed window comes back one row longer than the
+      // local window on every read, so `messagesIfTranscriptBehind` reports
+      // "behind" forever: the send is refused before `prompt.submit` runs and a
+      // duplicate accumulates per retry. Drop only the prefix copies the page
+      // already carries. Every durable prefix row keeps travelling in front of
+      // the refreshed tail, and so does an unstored row the page has no copy of
+      // (it can only have come from an older page).
+      const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+      const prefix = previous
+        .slice(0, anchor)
+        .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+
+      return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+    }
+
     const refreshedIds = new Set(refreshedTail.map(message => message.id))
 
-    const prefix = previous
-      .slice(0, anchor)
-      .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+    // The page already contains everything on screen, including a live row the
+    // tail really did cover. Take the page. This is what keeps a finished reply
+    // through a long tool turn.
+    if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
+      return retainCompletedTurnTools(refreshedTail, previous)
+    }
 
-    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
-  }
+    return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+  })()
 
-  const refreshedIds = new Set(refreshedTail.map(message => message.id))
-
-  // The page already contains everything on screen, including a live row the
-  // tail really did cover. Take the page. This is what keeps a finished reply
-  // through a long tool turn.
-  if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainCompletedTurnTools(refreshedTail, previous)
-  }
-
-  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+  // A page read before the rendered transcript's generation that omits its
+  // newer durable rows is stale (#119819): retain those rows instead of
+  // letting the graft drop them. After a rewind the page is the authority —
+  // see retainNewerRowsOverStalePage.
+  return retainNewerRowsOverStalePage(grafted, previous, options.pageNewerThanRendered)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4
@@ -463,6 +475,87 @@ export async function extendRefreshPageToOverlap(
   }
 
   return refreshedTail
+}
+
+/**
+ * A stale or partial REST response can start at an older page and omit the
+ * durable tail already rendered (an active tile, a slow-poll background
+ * refresh). Row ids are monotonic in stored history, so when the page's
+ * high-water mark sits strictly below the rendered transcript's, retain the
+ * rendered durable rows the page never covered instead of letting the graft
+ * clobber them.
+ *
+ * Not every omission is staleness. The comparison is against the page's
+ * COVERED row set — the backend rows the folded messages stand for — not
+ * against the merged messages' leading rowId. The hydration fold merges a
+ * tool-interleaved turn's rows (interim assistant, tool calls, tool
+ * results, final answer) into ONE message keyed on the turn's FIRST row id,
+ * so a page that legitimately folds rendered rows into fewer durable
+ * messages reports a lower leading id while still covering them all: it
+ * supersedes those rows (same-generation fold), it is not a stale page.
+ * A rendered row only survives retention when its row id is strictly
+ * GREATER than every backend row the page covered — the true high-water
+ * mark, derivable by expanding each message's `serverRowSpan` from its
+ * leading rowId.
+ *
+ * The generation gate: a rewind (`/undo`, `/retry`, truncation) soft-deletes
+ * rows and DROPS the high-water mark with no signal a row-count comparison
+ * can distinguish from a stale page — the rendered tail is legitimately
+ * "newer than" the refreshed page because the user removed it. The caller
+ * therefore only treats a below-water page as stale when the transcript it
+ * would clobber was read at the SAME rewind generation as the page (no undo
+ * happened in between); after a rewind the page is the authority and the
+ * removed rows must stay gone.
+ */
+export function retainNewerRowsOverStalePage(
+  merged: ChatMessage[],
+  previous: ChatMessage[],
+  pageNewerThanRendered?: boolean
+): ChatMessage[] {
+  if (pageNewerThanRendered) {
+    return merged
+  }
+
+  /** Highest backend row the page/graft covers — folded rows count fully. */
+  const coveredRowHighWater = (messages: ChatMessage[]): number =>
+    messages.reduce(
+      (newest, message) =>
+        message.rowId === undefined ? newest : Math.max(newest, message.rowId + (message.serverRowSpan ?? 1) - 1),
+      0
+    )
+
+  const newestMergedRowId = coveredRowHighWater(merged)
+  const newestPreviousRowId = coveredRowHighWater(previous)
+
+  if (!newestMergedRowId || newestMergedRowId >= newestPreviousRowId) {
+    return merged
+  }
+
+  const mergedRowIds = new Set(
+    merged.map(message => message.rowId).filter((rowId): rowId is number => rowId !== undefined)
+  )
+
+  // Rows the page superseded (its fold covers them) are not "newer rendered
+  // rows the page never covered" — a fold is not a stale page.
+  const mergedCoveredRows = new Set<number>()
+
+  for (const message of merged) {
+    if (message.rowId !== undefined) {
+      for (let row = message.rowId; row < message.rowId + (message.serverRowSpan ?? 1); row += 1) {
+        mergedCoveredRows.add(row)
+      }
+    }
+  }
+
+  const missingNewerRows = previous.filter(
+    message =>
+      message.rowId !== undefined &&
+      message.rowId > newestMergedRowId &&
+      !mergedRowIds.has(message.rowId) &&
+      !mergedCoveredRows.has(message.rowId)
+  )
+
+  return missingNewerRows.length ? [...merged, ...missingNewerRows] : merged
 }
 
 export interface BackfillRequest {

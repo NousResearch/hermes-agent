@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { pageOutranksRenderedTranscript } from '@/app/chat/rewind-generation'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import {
   extendRefreshPageToOverlap,
@@ -127,6 +128,7 @@ import {
 } from '@/store/session-request-router'
 import {
   $focusedStoredSessionId,
+  $sessionStates,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -1835,6 +1837,8 @@ export function useSessionActions({
               // instead of replacing durable history while the turn is running.
               let acceptedPersistedDisplayTranscript = false
               let reconciledCurrentLiveTurn = false
+              // Rewind generation of the accepted persisted page (#119819).
+              let persistedRewindGeneration: number | undefined
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
@@ -1892,7 +1896,14 @@ export function useSessionActions({
                     return
                   }
 
-                  const persistedMessages = graftRefreshedTailOntoBackfill(persistedTail, cachedViewState.messages)
+                  // Rewind-generation gate (#119819): a page read AFTER an
+                  // undo legitimately holds fewer rows — it is the authority.
+                  const pageNewerThanRendered = pageOutranksRenderedTranscript(persisted, cachedViewState)
+                  persistedRewindGeneration = persisted?.rewind_generation
+
+                  const persistedMessages = graftRefreshedTailOntoBackfill(persistedTail, cachedViewState.messages, {
+                    pageNewerThanRendered
+                  })
 
                   const runtimeMessages = toChatMessages(activated.messages)
                   const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
@@ -1996,6 +2007,11 @@ export function useSessionActions({
                     acceptedPersistedDisplayTranscript || hasValidProvenance
                       ? (expectedProvenance ?? undefined)
                       : undefined,
+                  // Stamp the rewind generation the painted transcript was read
+                  // at (#119819) — see the cold-resume publish below.
+                  ...(typeof persistedRewindGeneration === 'number' && acceptedPersistedDisplayTranscript
+                    ? { rewindGeneration: persistedRewindGeneration }
+                    : {}),
                   ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
                   ...(clearedClarifyProjection
                     ? {
@@ -2226,7 +2242,15 @@ export function useSessionActions({
             olderPageReader(storedSessionId, sessionRestScope, prefetchedResult)
           )
 
-          const graftedPrefetch = graftRefreshedTailOntoBackfill(prefetchedTail, previousMessages)
+          // Rewind-generation gate (#119819): see the activate path above.
+          const pageNewerThanRendered = pageOutranksRenderedTranscript(
+            prefetchedResult,
+            $sessionStates.get()[activeSessionIdRef.current ?? '']
+          )
+
+          const graftedPrefetch = graftRefreshedTailOntoBackfill(prefetchedTail, previousMessages, {
+            pageNewerThanRendered
+          })
 
           prefetchedTranscriptMessages = graftedPrefetch
           localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
@@ -2469,6 +2493,12 @@ export function useSessionActions({
             runtimeStartedAt,
             messages: visibleMessagesForView,
             transcriptProvenance,
+            // Stamp the rewind generation the painted transcript was read at
+            // so the next stale-page guard can tell a stale read from an
+            // intentional rewind (#119819).
+            ...(typeof prefetchedResult?.rewind_generation === 'number' && prefetchApplied
+              ? { rewindGeneration: prefetchedResult.rewind_generation }
+              : {}),
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
             // Backend reported this turn running at resume time — live proof.

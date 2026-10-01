@@ -268,32 +268,36 @@ def _purge_stale_exchange_caches(now: float) -> None:
     for the life of the process. Sweeping here keeps retention tied to the tokens actually in
     use.
     """
-    # A cached JWT stays actionable until it crosses the refresh margin — before that the read
-    # path would still serve it, so dropping it earlier would only force a needless exchange.
-    expired_jwts = [
-        fp for fp, (_, expires_at, _) in _jwt_cache.items()
-        if now >= expires_at - _JWT_REFRESH_MARGIN_SECONDS
-    ]
-    for fp in expired_jwts:
-        _jwt_cache.pop(fp, None)
-    # A negative-cache deadline in the past already reads as a miss; the entry is dead weight.
-    expired_failures = [fp for fp, fail_until in _exchange_failure_cache.items() if now >= fail_until]
-    for fp in expired_failures:
-        _exchange_failure_cache.pop(fp, None)
-    # The single-flight lock is a memory optimisation, not state: recreating one for a live
-    # fingerprint is free, so retiring locks for fingerprints with nothing cached tracks the
-    # credentials in use instead of every credential the process has ever been handed. A holder
-    # whose fingerprint has no cache entry is mid-exchange and about to write one, and
-    # recreating its lock merely lets a second caller exchange in parallel — a duplicated
-    # request, never a corrupted entry, since the write is keyed and idempotent.
-    retired_locks = [
-        fp for fp in _exchange_locks
-        if fp not in _jwt_cache and fp not in _exchange_failure_cache
-    ]
-    if retired_locks:
+    # A concurrent exchange for another fingerprint can resize these dicts mid-scan, so every
+    # pass tolerates losing the race: a sweep that does not land is retried on the next
+    # exchange, and no caller depends on one landing — it only bounds retention.
+    try:
+        # A cached JWT stays actionable until it crosses the refresh margin — before that the
+        # read path would still serve it, so dropping it earlier would force a needless exchange.
+        expired_jwts = [
+            fp for fp, (_, expires_at, _) in _jwt_cache.items()
+            if now >= expires_at - _JWT_REFRESH_MARGIN_SECONDS
+        ]
+        for fp in expired_jwts:
+            _jwt_cache.pop(fp, None)
+        # A negative-cache deadline in the past already reads as a miss; the entry is dead weight.
+        expired_failures = [
+            fp for fp, fail_until in _exchange_failure_cache.items() if now >= fail_until
+        ]
+        for fp in expired_failures:
+            _exchange_failure_cache.pop(fp, None)
+        # The single-flight lock is a memory optimisation, not state: recreating one for a live
+        # fingerprint is free, so retiring locks for fingerprints with nothing cached tracks the
+        # credentials in use instead of every credential the process has ever been handed. A
+        # holder whose fingerprint has no cache entry is mid-exchange and about to write one,
+        # and recreating its lock merely lets a second caller exchange in parallel — a duplicated
+        # request, never a corrupted entry, since the write is keyed and idempotent.
         with _exchange_locks_guard:
-            for fp in retired_locks:
+            for fp in [fp for fp in _exchange_locks
+                       if fp not in _jwt_cache and fp not in _exchange_failure_cache]:
                 _exchange_locks.pop(fp, None)
+    except RuntimeError:
+        logger.debug("Copilot exchange cache sweep skipped a concurrent mutation")
 
 
 def _read_jwt_store(path: Path) -> Optional[dict]:

@@ -11,14 +11,19 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_jwt_cache():
-    """Reset the module-level JWT + failure caches before each test."""
+    """Give each test pristine module-level caches.
+
+    Rebinds rather than ``.clear()``s: a test that swaps in a cache subclass must not leak it,
+    and a residue left by an earlier test must not reach this one.
+    """
     import hermes_cli.copilot_auth as mod
-    mod._jwt_cache.clear()
-    mod._exchange_failure_cache.clear()
+    mod._jwt_cache = {}
+    mod._exchange_failure_cache = {}
+    mod._exchange_locks = {}
     yield
-    mod._jwt_cache.clear()
-    mod._exchange_failure_cache.clear()
-    mod._exchange_locks.clear()
+    mod._jwt_cache = {}
+    mod._exchange_failure_cache = {}
+    mod._exchange_locks = {}
 
 
 class TestExchangeCopilotToken:
@@ -386,3 +391,32 @@ class TestPurgeStaleExchangeCaches:
         assert exchange_copilot_token("gho_long_lived")[0] == "tid=still_valid"
         assert live in mod._jwt_cache
         assert live in mod._exchange_locks
+
+    def test_sweep_survives_a_concurrent_dict_mutation(self):
+        """A cache resized mid-scan must not turn an exchange into a RuntimeError."""
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import _purge_stale_exchange_caches
+
+        class _MutatingCache(dict):
+            """Grows itself once while the sweep walks it, like a concurrent exchange would."""
+
+            grew = False
+
+            def items(self):
+                for item in super().items():
+                    if not _MutatingCache.grew:
+                        _MutatingCache.grew = True
+                        self["fp_arriving_mid_scan"] = ("tid=racing", float("inf"), None)
+                    yield item
+
+        mod._jwt_cache = _MutatingCache({"fp_expired": ("tid=old", 1000.0, None)})
+
+        # The sweep is best-effort: losing the race costs retention, never the caller.
+        _purge_stale_exchange_caches(1000.0 + mod._JWT_REFRESH_MARGIN_SECONDS)
+
+        # Guard against a vacuous pass — the resize must really have landed mid-scan.
+        assert _MutatingCache.grew
+        # The racing writer's entry survives untouched, and nothing is left half-written.
+        assert mod._jwt_cache["fp_arriving_mid_scan"] == ("tid=racing", float("inf"), None)
+        for entry in mod._jwt_cache.values():
+            assert isinstance(entry, tuple) and len(entry) == 3

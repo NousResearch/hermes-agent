@@ -148,6 +148,11 @@ _runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
+# The key leads with the profile home, so a multiplex gateway serving several profiles adds an entry
+# per (profile, provider, model) — and the TTL bounds REUSE, not lifetime: a combination that is
+# never resolved again keeps its resolved base_url and api_key for the life of the process
+# (#130243). The write path drops entries past their TTL, then the oldest, until this cap holds.
+_RUNTIME_CACHE_MAX_ENTRIES = 64
 
 # Cap on concurrent reference calls (guards pathologically large presets).
 _MAX_REFERENCE_WORKERS = 8
@@ -277,8 +282,26 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
                        _slot_label(slot), provider, exc)
         return out
     with _runtime_cache_lock:
+        _prune_runtime_cache(now)
+        # Re-insert so a re-resolved slot moves to the young end of the ring rather than keeping
+        # the eviction order of the resolve that first created its entry.
+        _runtime_cache.pop(cache_key, None)
         _runtime_cache[cache_key] = (now, out)
     return out
+
+
+def _prune_runtime_cache(now: float) -> None:
+    """Drop slot runtimes that can no longer be returned: first the ones past their TTL, then the
+    oldest until ``_RUNTIME_CACHE_MAX_ENTRIES`` holds. Caller holds ``_runtime_cache_lock``.
+
+    What this releases is credential material, not just bookkeeping — the cached dict holds the
+    slot's resolved ``api_key``, which is why a retired (profile, provider, model) combination must
+    not outlive its TTL (#130243)."""
+    for cache_key, entry in list(_runtime_cache.items()):
+        if now - entry[0] >= _RUNTIME_CACHE_TTL_SECONDS:
+            _runtime_cache.pop(cache_key, None)
+    while len(_runtime_cache) > _RUNTIME_CACHE_MAX_ENTRIES:
+        _runtime_cache.pop(next(iter(_runtime_cache)), None)
 
 
 def _merge_slot_extra_body(slot_extra_body: Any, caller_extra_body: Any) -> Any:

@@ -68,6 +68,12 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[Tuple[str, str], float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+# The key carries a credential fingerprint, so every rotated token mints a new one. The TTL bounds
+# REUSE of an entry, never its lifetime: a key that is never presented again is kept — with the
+# model map it references — for the life of the process. The write path therefore drops keys past
+# their TTL and then the oldest until this cap holds, so the memo tracks the endpoints and
+# credentials in use rather than every one the process has ever seen (#130241).
+_ENDPOINT_MODEL_CACHE_MAX_ENTRIES = 64
 # Server-type verdicts (server_type, monotonic_ts): positive ones live an hour so a
 # server swap on the same port is re-detected; None gets the short TTL so a
 # transient failure recovers in minutes without re-running the waterfall each turn.
@@ -1009,9 +1015,29 @@ def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
     return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
 
 
+def _prune_endpoint_model_cache(now: float) -> None:
+    """Drop endpoint-memo keys that can no longer be served: first the ones past their TTL, then the
+    oldest until ``_ENDPOINT_MODEL_CACHE_MAX_ENTRIES`` holds. Both dicts are kept in lockstep — the
+    value memo is useless without its stamp, and the stamp alone still retains the key."""
+    for memo_key, cached_at in list(_endpoint_model_metadata_cache_time.items()):
+        if now - cached_at >= _ENDPOINT_MODEL_CACHE_TTL:
+            _endpoint_model_metadata_cache_time.pop(memo_key, None)
+            _endpoint_model_metadata_cache.pop(memo_key, None)
+    while len(_endpoint_model_metadata_cache_time) > _ENDPOINT_MODEL_CACHE_MAX_ENTRIES:
+        oldest = next(iter(_endpoint_model_metadata_cache_time))
+        _endpoint_model_metadata_cache_time.pop(oldest, None)
+        _endpoint_model_metadata_cache.pop(oldest, None)
+
+
 def _remember_endpoint_models(memo_key: Tuple[str, str], cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    now = time.time()
+    _prune_endpoint_model_cache(now)
+    # Re-insert rather than overwrite in place: a refreshed key must not keep the ring position
+    # (and the eviction risk) of the write that first created it.
+    _endpoint_model_metadata_cache.pop(memo_key, None)
+    _endpoint_model_metadata_cache_time.pop(memo_key, None)
     _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
+    _endpoint_model_metadata_cache_time[memo_key] = now
     return cache
 
 
@@ -1783,6 +1809,13 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes; must stay < TTL
+# Codex OAuth access tokens are short-lived and rotate on refresh, and the fingerprint is taken
+# FROM the token, so every rotation mints a key the 1-hour TTL can never reclaim — a key is only
+# ever overwritten when that exact token comes back, and Codex tokens do not come back. Without a
+# lifetime bound both dicts grow one entry (plus a second copy of the catalogue map) per refresh,
+# for the life of the process (#130246). Cap covers the tokens one process actually holds: the
+# served profiles' accounts, times the base URLs they were probed against.
+_CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES = 64
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
 # returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
@@ -1862,6 +1895,22 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
     if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return
     _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
+    _prune_codex_oauth_context_cache(now)
+
+
+def _prune_codex_oauth_context_cache(now: float) -> None:
+    """Drop token fingerprints that can no longer be served: first the ones past the TTL, then the
+    oldest until ``_CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES`` holds. The two dicts share a key, so
+    both are pruned together — a surviving max-context entry for an evicted token would keep the
+    second copy of the catalogue map alive."""
+    for cache_key, entry in list(_codex_oauth_context_cache.items()):
+        if now - entry[1] >= _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+            _codex_oauth_context_cache.pop(cache_key, None)
+            _codex_oauth_max_context_cache.pop(cache_key, None)
+    while len(_codex_oauth_context_cache) > _CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES:
+        oldest = next(iter(_codex_oauth_context_cache))
+        _codex_oauth_context_cache.pop(oldest, None)
+        _codex_oauth_max_context_cache.pop(oldest, None)
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> Tuple[Dict[str, int], bool]:
@@ -1904,7 +1953,12 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
     if not result:
         _remember_no_codex_catalog(cache_key)
         return {}, False
-    # Max first: a reader that sees the fresh context entry must also see its cap.
+    _prune_codex_oauth_context_cache(now)
+    # Re-insert so a re-probed fingerprint moves to the young end of the ring instead of
+    # keeping the eviction order of the probe that first created it. Max first: a reader
+    # that sees the fresh context entry must also see its cap.
+    _codex_oauth_context_cache.pop(cache_key, None)
+    _codex_oauth_max_context_cache.pop(cache_key, None)
     _codex_oauth_max_context_cache[cache_key] = max_result
     _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True

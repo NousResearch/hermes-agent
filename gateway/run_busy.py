@@ -20,7 +20,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
+from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch, release_pending_dispatch
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -160,6 +160,15 @@ class GatewayBusySessionMixin:
         buffers = getattr(adapter, "_text_debounce", None)
         if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:
             depth += len(buffered.earlier_events) + 1
+        reservations = getattr(adapter, "_pending_dispatch_reservations", None)
+        reserved = reservations.get(session_key) if isinstance(reservations, dict) else None
+        if reserved is not None:
+            stored = [getattr(adapter, "_pending_messages", {}).get(session_key),
+                      *(self._overflow_queue(session_key) or ())]
+            if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:
+                stored.extend([*buffered.earlier_events, buffered.event])
+            if not any(event is reserved.event for event in stored):
+                depth += 1
         return depth
 
     def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional["MessageEvent"]:
@@ -399,10 +408,7 @@ class GatewayBusySessionMixin:
             return False
         existing = pending_slot.get(session_key)
         if is_pending_redispatch(adapter, session_key, event):
-            if existing is not None:
-                self._session_state(session_key).conversation.queued_events.insert(0, existing)
-            pending_slot[session_key] = event
-            event._gateway_accepted = True
+            self._restore_pending_dispatch(session_key, event, adapter)
             return True
         self._flush_buffered_pending(session_key, adapter)
         existing = pending_slot.get(session_key)
@@ -425,6 +431,14 @@ class GatewayBusySessionMixin:
             return True
 
         return self._enqueue_fifo(session_key, event, adapter)
+
+    def _restore_pending_dispatch(self, session_key: str, event: MessageEvent, adapter) -> None:
+        existing = adapter._pending_messages.get(session_key)
+        if existing is not None and existing is not event:
+            self._session_state(session_key).conversation.queued_events.insert(0, existing)
+        adapter._pending_messages[session_key] = event
+        release_pending_dispatch(adapter, session_key, event)
+        event._gateway_accepted = True
 
     @staticmethod
     def _pending_queue_refusal(event: MessageEvent) -> Optional[str]:

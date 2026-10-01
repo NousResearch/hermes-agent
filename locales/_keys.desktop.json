@@ -4245,6 +4245,8 @@
     "sidebar.projects.worktreeProjectNone",
     "sidebar.projects.worktreeProjectPlaceholder",
     "sidebar.projects.worktreeStaleBackend",
+    "sidebar.resize.pinnedBoundary",
+    "sidebar.resize.sessionsBottom",
     "sidebar.results",
     "sidebar.review",
     "sidebar.row.ageDay",

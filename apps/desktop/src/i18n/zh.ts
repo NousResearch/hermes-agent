@@ -3544,6 +3544,10 @@ export const zh = defineLocale({
       working: '进行中',
       done: '已完成'
     },
+    resize: {
+      pinnedBoundary: '调整已置顶和会话的大小',
+      sessionsBottom: '调整会话的大小'
+    },
     markAllRead: '全部标记为已读'
   },
 

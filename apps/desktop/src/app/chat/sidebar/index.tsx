@@ -76,6 +76,7 @@ import {
   unpinSession
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { $paneHeightOverride } from '@/store/panes'
 import {
   $newChatProfile,
   $profileColors,
@@ -179,6 +180,8 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
+import { SIDEBAR_BOTTOM_SECTION_ID, SIDEBAR_PINNED_SECTION_ID, SIDEBAR_SESSIONS_SECTION_ID } from './section-resize'
+import { BOTTOM_H_VAR, PINNED_H_VAR, SectionSash, SESSIONS_MIN_H_VAR } from './section-sash'
 import {
   SidebarBlankState,
   SidebarLoadErrorState,
@@ -476,6 +479,12 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  // Drag-resized section heights. SectionSash writes these CSS variables onto
+  // the list directly mid-drag; the store only changes on release.
+  const sectionListRef = useRef<HTMLDivElement>(null)
+  const pinnedHeight = useStore($paneHeightOverride(SIDEBAR_PINNED_SECTION_ID))
+  const sessionsMinHeight = useStore($paneHeightOverride(SIDEBAR_SESSIONS_SECTION_ID))
+  const bottomHeight = useStore($paneHeightOverride(SIDEBAR_BOTTOM_SECTION_ID))
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
@@ -1072,6 +1081,8 @@ export function ChatSidebar({
 
   const inProject = Boolean(overviewEnteredProject)
   const enteredProjectId = overviewEnteredProject?.id
+  // Mirrors the Sessions section's own open rule: inside a project it isn't collapsible.
+  const sessionsOpen = agentsOpen || inProject
 
   // Entering a project lazily hydrates its full lanes (repo -> lane -> sessions)
   // from the backend — same grouping/ids as the overview, just with rows.
@@ -1387,6 +1398,15 @@ export function ChatSidebar({
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
   }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
+  // Messaging platforms + cron render as ONE bottom block: a single unit that
+  // trades height with Sessions across the seam above it.
+  const hasBottomBlock =
+    !trimmedQuery &&
+    !worktreeGroupingActive &&
+    (messagingGroups.length > 0 || (showsAdvancedChrome && cronJobs.length > 0))
+
+  const sessionsBottomSash = hasBottomBlock && sessionsOpen
+
   // Recents and every messaging platform resolve owner groups the same way
   // ([connectionId, profile]), so a platform's groups line up with recents.
   const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
@@ -1528,6 +1548,21 @@ export function ChatSidebar({
   // off the filtered one, a filter that matches nothing showed skeletons on
   // every background refresh instead of the empty state.
   const showSessionSkeletons = sessionsLoading && scopedSessions.length === 0
+
+  // Hidden only when workspace-grouped — those groups page themselves. Profile
+  // groups don't: this one footer fetches the next page, which grows every
+  // profile at once.
+  const sessionsLoadMore =
+    !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
+      <SidebarLoadMoreRow
+        loading={sessionsLoading || recentsLoadMorePending}
+        onClick={() => void onLoadMoreRecents()}
+        // Recents are post-filtered to non-project sessions, so a backend page
+        // size (50) is not a truthful "rows you'll see" count. Use the generic
+        // label instead of a fake N.
+        step={0}
+      />
+    ) : null
 
   // Filtered down to nothing still renders the section: the empty state is what
   // tells you the filter — not an empty account — is why the list is bare.
@@ -1748,6 +1783,14 @@ export function ChatSidebar({
             className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y, SCROLL_GUTTER)}
             data-sessions-mode={sessionsMode}
             data-sessions-project={inProject ? (enteredProjectId ?? undefined) : undefined}
+            ref={sectionListRef}
+            style={
+              {
+                [PINNED_H_VAR]: pinnedHeight === undefined ? undefined : `${pinnedHeight}px`,
+                [SESSIONS_MIN_H_VAR]: sessionsMinHeight === undefined ? undefined : `${sessionsMinHeight}px`,
+                [BOTTOM_H_VAR]: bottomHeight === undefined ? undefined : `${bottomHeight}px`
+              } as React.CSSProperties
+            }
           >
             {trimmedQuery && (
               <SidebarSessionsSection
@@ -1786,7 +1829,13 @@ export function ChatSidebar({
                 // included, so one column never mixes card and inline
                 // geometry at the section boundary.
                 card={cardRows}
-                contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
+                contentClassName={cn(
+                  'flex flex-col gap-px rounded-lg pb-2 pt-1',
+                  GROUP_BODY,
+                  // The empty state renders in this same body; a saved height
+                  // belongs to the rows, not to the placeholder.
+                  pinnedSessions.length > 0 && 'h-(--sidebar-pinned-h)'
+                )}
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
@@ -1801,6 +1850,7 @@ export function ChatSidebar({
                 open={pinsOpen}
                 pinned
                 rootClassName="shrink-0 p-0 pb-1"
+                sectionId="pinned"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
                 sortable={pinnedSessions.length > 1}
@@ -1808,6 +1858,9 @@ export function ChatSidebar({
             )}
 
             {!trimmedQuery && inProject && projectLoadFailed && <SidebarLoadErrorState onRetry={retryProject} />}
+            {!trimmedQuery && sessionsOpen && pinsOpen && pinnedSessions.length > 0 && (
+              <SectionSash containerRef={sectionListRef} edge="pinned-seam" label={s.resize.pinnedBoundary} />
+            )}
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
@@ -1818,7 +1871,11 @@ export function ChatSidebar({
                 card={cardRows}
                 collapsible={!inProject}
                 contentClassName={cn(
-                  'flex min-h-0 flex-1 flex-col gap-px pb-1.75',
+                  'flex min-h-0 flex-1 flex-col gap-px',
+                  // The bottom sash is the seam to the next section, so the
+                  // trailing pad would only hold the line off the last row.
+                  // Compact hides the sash, so the pad comes back there.
+                  sessionsBottomSash ? 'pb-0 compact:pb-1.75' : 'pb-1.75',
                   // The section is the ONE authority on whether the virtual
                   // list owns scrolling: it neutralizes this wrapper scroller
                   // itself (overflow-visible) when it virtualizes. Gating
@@ -1849,21 +1906,9 @@ export function ChatSidebar({
                     </div>
                   )
                 }
-                footer={
-                  // Hidden only when workspace-grouped — those groups page
-                  // themselves. Profile groups don't: this one footer fetches the
-                  // next page, which grows every profile at once.
-                  !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
-                    <SidebarLoadMoreRow
-                      loading={sessionsLoading || recentsLoadMorePending}
-                      onClick={() => void onLoadMoreRecents()}
-                      // Recents are post-filtered to non-project sessions, so a
-                      // backend page size (50) is not a truthful "rows you'll
-                      // see" count. Use the generic label instead of a fake N.
-                      step={0}
-                    />
-                  ) : null
-                }
+                // With a seam below, load-more sits under the line (rendered
+                // after the sash), not at the end of the scrolling list.
+                footer={sessionsBottomSash ? null : sessionsLoadMore}
                 forceEmptyState={showSessionSkeletons}
                 // Archived is a plain list, and so is a magnitude-ranked one.
                 // Otherwise project lanes stay chronological whatever the flat
@@ -1997,82 +2042,98 @@ export function ChatSidebar({
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
                 rootClassName={cn(
-                  'min-h-32 flex-1 overflow-hidden p-0',
+                  'flex-1 overflow-hidden p-0',
+                  // A dragged height is a floor, not a fixed size: Sessions
+                  // still grows into any spare room. Collapsed, it keeps the
+                  // plain floor so a saved height can't leave a blank gap.
+                  sessionsOpen ? 'min-h-[max(8rem,var(--sidebar-sessions-min-h,0px))]' : 'min-h-32',
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
+                sectionId="sessions"
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
               />
             )}
+            {sessionsBottomSash && (
+              <>
+                <SectionSash containerRef={sectionListRef} edge="bottom-seam" label={s.resize.sessionsBottom} />
+                {sessionsLoadMore && <div className="flex shrink-0 flex-col">{sessionsLoadMore}</div>}
+              </>
+            )}
 
-            {!trimmedQuery &&
-              !worktreeGroupingActive &&
-              messagingGroups.map(group => {
-                const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
-                const shownSessions = group.sessions.slice(0, visible)
-                // More to show if rows are hidden behind the cap, or the backend
-                // still has older threads on disk.
-                const canRevealMore = visible < group.sessions.length || group.hasMore
+            {hasBottomBlock && (
+              <div
+                className={cn('flex h-(--sidebar-bottom-h) shrink-0 flex-col', GROUP_BODY)}
+                data-sidebar-section="bottom"
+              >
+                {messagingGroups.map(group => {
+                  const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
+                  const shownSessions = group.sessions.slice(0, visible)
+                  // More to show if rows are hidden behind the cap, or the backend
+                  // still has older threads on disk.
+                  const canRevealMore = visible < group.sessions.length || group.hasMore
 
-                // Group only what the cap lets through, so the footer's count
-                // and load-more stay about the platform, not one of its groups.
-                const ownerGroups = ownerGrouped
-                  ? scopeGatewaySessionGroups(
-                      buildGatewaySessionGroups(shownSessions, connectionsRegistry, profileColors),
-                      `messaging:${group.sourceId}`
-                    )
-                  : undefined
+                  // Group only what the cap lets through, so the footer's count
+                  // and load-more stay about the platform, not one of its groups.
+                  const ownerGroups = ownerGrouped
+                    ? scopeGatewaySessionGroups(
+                        buildGatewaySessionGroups(shownSessions, connectionsRegistry, profileColors),
+                        `messaging:${group.sourceId}`
+                      )
+                    : undefined
 
-                return (
-                  <SidebarSessionsSection
-                    activeSessionId={activeSidebarSessionId}
-                    contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
-                    embeddedGroups
-                    emptyState={null}
-                    footer={
-                      canRevealMore ? (
-                        <SidebarLoadMoreRow
-                          loading={Boolean(messagingLoadMorePending[group.sourceId])}
-                          onClick={() => revealMoreMessaging(group.sourceId, group.sessions.length, group.hasMore)}
-                          step={Math.min(NON_SESSION_LOAD_STEP, Math.max(0, group.total - shownSessions.length))}
+                  return (
+                    <SidebarSessionsSection
+                      activeSessionId={activeSidebarSessionId}
+                      contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                      embeddedGroups
+                      emptyState={null}
+                      footer={
+                        canRevealMore ? (
+                          <SidebarLoadMoreRow
+                            loading={Boolean(messagingLoadMorePending[group.sourceId])}
+                            onClick={() => revealMoreMessaging(group.sourceId, group.sessions.length, group.hasMore)}
+                            step={Math.min(NON_SESSION_LOAD_STEP, Math.max(0, group.total - shownSessions.length))}
+                          />
+                        ) : null
+                      }
+                      groups={ownerGroups}
+                      key={group.sourceId}
+                      label={group.label}
+                      labelIcon={
+                        <PlatformAvatar
+                          className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+                          platformId={group.sourceId}
+                          platformName={group.label}
                         />
-                      ) : null
-                    }
-                    groups={ownerGroups}
-                    key={group.sourceId}
-                    label={group.label}
-                    labelIcon={
-                      <PlatformAvatar
-                        className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
-                        platformId={group.sourceId}
-                        platformName={group.label}
-                      />
-                    }
-                    onArchiveSession={onArchiveSession}
-                    onDeleteSession={onDeleteSession}
-                    onResumeSession={onResumeSession}
-                    onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
-                    onTogglePin={pinSession}
-                    onToggleUnread={toggleUnread}
-                    open={messagingOpenIds.includes(group.sourceId)}
-                    pinned={false}
-                    rootClassName="shrink-0 p-0"
-                    sessions={shownSessions}
-                    showProfileTags={showAllProfiles && !ownerGrouped}
-                  />
-                )
-              })}
+                      }
+                      onArchiveSession={onArchiveSession}
+                      onDeleteSession={onDeleteSession}
+                      onResumeSession={onResumeSession}
+                      onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
+                      onTogglePin={pinSession}
+                      onToggleUnread={toggleUnread}
+                      open={messagingOpenIds.includes(group.sourceId)}
+                      pinned={false}
+                      rootClassName="shrink-0 p-0"
+                      sessions={shownSessions}
+                      showProfileTags={showAllProfiles && !ownerGrouped}
+                    />
+                  )
+                })}
 
-            {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && cronJobs.length > 0 && (
-              <SidebarCronJobsSection
-                jobs={cronJobs}
-                label={s.cronJobs}
-                onManageJob={onManageCronJob}
-                onOpenRun={onResumeSession}
-                onToggle={() => setSidebarCronOpen(!cronOpen)}
-                onTriggerJob={onTriggerCronJob}
-                open={cronOpen}
-              />
+                {showsAdvancedChrome && cronJobs.length > 0 && (
+                  <SidebarCronJobsSection
+                    jobs={cronJobs}
+                    label={s.cronJobs}
+                    onManageJob={onManageCronJob}
+                    onOpenRun={onResumeSession}
+                    onToggle={() => setSidebarCronOpen(!cronOpen)}
+                    onTriggerJob={onTriggerCronJob}
+                    open={cronOpen}
+                  />
+                )}
+              </div>
             )}
           </div>
         )}

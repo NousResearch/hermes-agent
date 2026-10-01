@@ -4170,6 +4170,10 @@ export const frOverrides = {
       working: 'En cours',
       done: 'Terminées'
     },
+    resize: {
+      pinnedBoundary: 'Redimensionner Épinglées et Sessions',
+      sessionsBottom: 'Redimensionner Sessions'
+    },
     markAllRead: 'Tout marquer comme lu'
   },
   composer: {

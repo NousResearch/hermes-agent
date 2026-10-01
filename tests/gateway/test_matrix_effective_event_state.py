@@ -1733,13 +1733,19 @@ async def test_active_consumers_retain_dependencies_from_intake(
 
                 content.update(msgtype="m.image", url="mxc://example.org/image")
 
-                async def download(_uri):
-                    await pause()
-                    return base64.b64decode(
-                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-                    )
+                from tests.gateway.matrix_helpers import FakeMediaDownload
 
-                adapter._client.download_media = download
+                adapter._client.api.session = SimpleNamespace()
+                FakeMediaDownload(base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                )).install(adapter._client)
+
+                async def versions():
+                    await pause()
+                    return SimpleNamespace(supports=lambda _version: True)
+
+                adapter._client.versions = versions
+
             pending = asyncio.create_task(adapter._on_room_message(SimpleNamespace(
                 room_id=ROOM, sender=SENDER, event_id="$current", timestamp=0, content=content,
             )))

@@ -12,6 +12,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import functools
 import logging
 import os
 import shutil
@@ -1807,6 +1808,21 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
             chat_id=str(t.chat_id), thread_id=t.thread_id, content=content,
             adapter_profile=getattr(getattr(t.transport, "adapter", None), "_owner_profile", None))
         mark_failed(obligation_id, str(t.live_error))
+        # Arm the in-process drain: this row lands in ``pending_retries`` (backoff tier 0, due in
+        # ~30s), but the only arming sites for the flood worker are boot adoption and the
+        # agent-reply finalizer — cron enters neither, so without this a retryable-marked row on
+        # an adapter that never reconnects waits for the next boot's sweep (#127188 review).
+        # Idempotent per (platform, profile): an already-parked worker is just woken to re-scan
+        # deadlines in case this row is due sooner. Marshal onto the gateway loop — the cron
+        # worker runs on its own thread without one.
+        adapter = getattr(t.transport, "adapter", None)
+        schedule = getattr(getattr(adapter, "gateway_runner", None), "_schedule_flood_redelivery", None)
+        loop = getattr(t, "loop", None)
+        if callable(schedule) and loop is not None:
+            loop.call_soon_threadsafe(
+                functools.partial(
+                    schedule, t.platform_name,
+                    profile=getattr(adapter, "_owner_profile", None)))
     except Exception:
         logger.warning("Job '%s': could not queue %s for post-reconnect redelivery",
                        t.job.get("id"), t.where, exc_info=True)

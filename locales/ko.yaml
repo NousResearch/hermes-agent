@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "음성 채널 참여에 실패했어요: {error}"
     channel_deps_missing: "음성 의존성이 없어요(PyNaCl / davey). 실행하세요: `{hint}`"
     channel_join_permissions: "음성 채널 참여에 실패했어요. 봇 권한(Connect + Speak)을 확인하세요."
+    channel_joined_voice_only: "음성 채널 **{name}**에 참여했어요. 음성 메시지에만 음성으로 답할게요. 나가려면 /voice leave를 사용하세요."
+    channel_joined_off: "음성 채널 **{name}**에 참여했어요. 답변은 텍스트로 유지돼요. 음성 답변은 /voice on, 나가기는 /voice leave를 사용하세요."
     channel_joined: "음성 채널 **{name}**에 참여했어요.\n답변을 음성으로 말하고 사용자의 말을 들을게요. 연결을 끊으려면 /voice leave를 사용하세요."
     channel_not_joined: "음성 채널에 참여하고 있지 않아요."
     channel_left: "음성 채널에서 나갔어요."

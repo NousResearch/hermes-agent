@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "加入語音頻道失敗：{error}"
     channel_deps_missing: "缺少語音相依套件（PyNaCl / davey）。請執行：`{hint}`"
     channel_join_permissions: "加入語音頻道失敗。請檢查 bot 權限（Connect + Speak）。"
+    channel_joined_voice_only: "已加入語音頻道 **{name}**。僅對語音訊息使用語音回覆。使用 /voice leave 中斷連線。"
+    channel_joined_off: "已加入語音頻道 **{name}**。回覆保持為文字。使用 /voice on 開啟語音回覆，或使用 /voice leave 中斷連線。"
     channel_joined: "已加入語音頻道 **{name}**。\n我會以語音說出回覆並聆聽你的聲音。使用 /voice leave 可中斷連線。"
     channel_not_joined: "目前不在語音頻道中。"
     channel_left: "已離開語音頻道。"

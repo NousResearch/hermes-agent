@@ -41,7 +41,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
-  const activationEpoch = gatewayActivationEpoch()
+  const bindings = useValue($canonicalGroupBindings)
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -60,23 +60,42 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
 
     if (gateway !== 'open') {return}
 
+    // Capture at the read boundary: the React Compiler can memoize a plain
+    // getter in render for the lifetime of this mounted list.
+    const activationEpoch = gatewayActivationEpoch()
     const sourceIsCurrent = groupCreationSource({ connectionId: connectionId ?? '', profile }, activationEpoch)
-    const isCurrent = () => socketGenerationRef.current === socketGeneration && sourceIsCurrent()
+
+    const publish = (update: () => void) => {
+      if (cancelled || socketGenerationRef.current !== socketGeneration) {return}
+
+      if (sourceIsCurrent()) {
+        update()
+
+        return
+      }
+
+      // Startup can re-activate the same open primary without changing any
+      // subscribed atom. Discard its old response and read under the new epoch.
+      if (gatewayActivationEpoch() !== activationEpoch &&
+          host.state.connectionId.get() === connectionId && host.state.profile.get() === profile &&
+          host.state.gateway.get() === 'open') {setRefresh(value => value + 1)}
+    }
+
     void (async () => {
       const route = captureCanonicalGroupRoute()
       // Socket readiness does not advance the route epoch. Refresh the
       // capability after startup/reconnect instead of reusing a closed read.
       const result = await discoverCanonicalGroups(route, activationEpoch, true)
 
-      if (!cancelled && isCurrent()) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
-    })().catch(e => { if (!cancelled && isCurrent()) {setError(e instanceof Error ? e.message : String(e))} })
+      publish(() => setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name }))))
+    })().catch(e => {publish(() => setError(e instanceof Error ? e.message : String(e)))})
 
     return () => { cancelled = true }
-  }, [connectionId, profile, gateway, activationEpoch, socketGeneration, refresh])
+  }, [connectionId, profile, gateway, socketGeneration, refresh])
 
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
     {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
+    {rooms.filter(room => bindings[room.key]).map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
   </div>
 }

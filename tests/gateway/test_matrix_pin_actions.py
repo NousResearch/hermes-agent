@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import unquote
@@ -247,3 +248,35 @@ async def test_parallel_pin_calls_keep_both_events():
     ))
 
     assert pinned == ["$first", "$second"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["pin", "unpin"])
+@pytest.mark.parametrize("read", ["m.room.pinned_events", "m.room.encryption", "m.room.create"])
+@pytest.mark.parametrize("change", ["requester-demoted", "required-power-raised"])
+async def test_pin_write_uses_requester_power_after_other_state_reads(action, read, change):
+    power = {"users": {"@alice:server": 50, "@bot:server": 100}}
+    pins = AsyncMock(return_value={"pinned": ["$new"] if action == "unpin" else []})
+    send = AsyncMock(return_value="$state")
+    adapter = _adapter(pins, send, power=power)
+    request = adapter._client.api.request
+
+    async def changing_state(method, path, **kwargs):
+        event_type = unquote(str(path)).rstrip("/").rsplit("/", 1)[-1]
+        if event_type == read:
+            if change == "requester-demoted":
+                power["users"]["@alice:server"] = 0
+            else:
+                power["events"] = {"m.room.pinned_events": 100}
+        result = await request(method, path, **kwargs)
+        return deepcopy(result)
+
+    adapter._client.api.request = changing_state
+    result = await _change_pin(adapter, action, "!room:server", "$new", requester="@alice:server")
+
+    assert (result, send.await_count) == (
+        {"error": "Matrix requester lacks permission to change pins",
+         "required": 50 if change == "requester-demoted" else 100,
+         "level": 0 if change == "requester-demoted" else 50},
+        0,
+    )

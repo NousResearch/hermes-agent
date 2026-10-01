@@ -25,31 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          fetch-depth: 0 # need the merge-base to diff the PR's changed files
           persist-credentials: false # this job is read-only
-
-      - name: Catalog PRs must only touch plugin-catalog/
-        run: |
-          set -euo pipefail
-          # The gate's own enforcement code (this workflow, the validator, the
-          # composite actions, the built hermes) resolves from the PR checkout,
-          # so an admission PR must be data-only: a diff that also touches
-          # tooling could neuter the gate vetting it. PRs that legitimately
-          # change the gate itself get reviewed under the normal workflows,
-          # which do not have this restriction.
-          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-          # git diff runs on its own so its failure still fails the step
-          # instead of looking like "nothing outside the catalog".
-          NON_CATALOG=$(git diff --name-only "$MERGE_BASE"...HEAD)
-          NON_CATALOG=$(printf '%s' "$NON_CATALOG" | grep -v '^plugin-catalog/' || true)
-          if [ -n "$NON_CATALOG" ]; then
-            echo "::error::catalog PRs must only touch plugin-catalog/**, found:"
-            # Filenames are PR-controlled; a newline in one could smuggle a
-            # workflow command into the log.
-            printf '%s' "$NON_CATALOG" | tr '\0\n' ' '
-            echo
-            exit 1
-          fi
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -73,47 +49,52 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          fetch-depth: 0 # need the merge-base to diff changed catalog files
+          # The pull_request checkout is GitHub's merge commit; depth 2 brings its
+          # first parent (the base tip), which is all the diff below needs.
+          fetch-depth: 2
           # `hermes plugins validate` below runs pinned-repo code; keep the
           # job's token out of .git/config where that code could read it.
           persist-credentials: false
-
-      - name: Catalog PRs must only touch plugin-catalog/
-        run: |
-          set -euo pipefail
-          # The gate's own enforcement code (this workflow, the validator, the
-          # composite actions, the built hermes) resolves from the PR checkout,
-          # so an admission PR must be data-only: a diff that also touches
-          # tooling could neuter the gate vetting it. PRs that legitimately
-          # change the gate itself get reviewed under the normal workflows,
-          # which do not have this restriction.
-          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-          # git diff runs on its own so its failure still fails the step
-          # instead of looking like "nothing outside the catalog".
-          NON_CATALOG=$(git diff --name-only "$MERGE_BASE"...HEAD)
-          NON_CATALOG=$(printf '%s' "$NON_CATALOG" | grep -v '^plugin-catalog/' || true)
-          if [ -n "$NON_CATALOG" ]; then
-            echo "::error::catalog PRs must only touch plugin-catalog/**, found:"
-            # Filenames are PR-controlled; a newline in one could smuggle a
-            # workflow command into the log.
-            printf '%s' "$NON_CATALOG" | tr '\0\n' ' '
-            echo
-            exit 1
-          fi
 
       - name: Find changed catalog entries
         id: changed
         run: |
           set -euo pipefail
-          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          # HEAD is the PR merge commit: diffing it against its first parent is
+          # exactly what the PR would land. Refuse anything else rather than
+          # silently diffing a single commit.
+          if ! git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+            echo "::error::expected the pull_request merge commit as HEAD"
+            exit 1
+          fi
           # Added + modified + renamed + typechanged entry files only; deletions
           # and removed.yaml have nothing to clone. A rename or file->symlink
           # change that slipped past this list would skip the supply-chain gate.
-          CHANGED=$(git diff --name-only --diff-filter=AMRT "$MERGE_BASE"...HEAD \
+          CHANGED=$(git diff --name-only --diff-filter=AMRT 'HEAD^1' HEAD \
             -- 'plugin-catalog/*.yaml' 'plugin-catalog/*.yml')
           # The grep can only shrink the list and runs on its own so a git diff
           # failure still fails the step instead of looking like "no changes".
           CHANGED=$(printf '%s' "$CHANGED" | grep -v '/removed\.yaml$' || true)
+
+          if [ -n "$CHANGED" ]; then
+            # Admission PRs must be data-only: the gate's own enforcement code
+            # (this workflow, the validator, the composite actions, the built
+            # hermes) resolves from the PR checkout, so an entry PR that also
+            # touches tooling could neuter the gate vetting it. Contributor
+            # email maps are data the gate never executes; README/policy/CI PRs
+            # with no entry change skip this check.
+            ALL=$(git diff --name-only 'HEAD^1' HEAD)
+            OUTSIDE=$(printf '%s' "$ALL" | grep -vE '^(plugin-catalog|contributors/emails)/' || true)
+            if [ -n "$OUTSIDE" ]; then
+              echo "::error::catalog entry PRs may only touch plugin-catalog/** and contributors/emails/**, found:"
+              # Filenames are PR-controlled; a newline in one could smuggle a
+              # workflow command into the log.
+              printf '%s' "$OUTSIDE" | tr '\0\n' ' '
+              echo
+              exit 1
+            fi
+          fi
+
           echo "Changed catalog entries:"
           echo "${CHANGED:-<none>}"
           {
@@ -174,6 +155,8 @@ jobs:
           repo = str(data.get('repo', '')) if isinstance(data, dict) else ''
           sha = data.get('sha', '') if isinstance(data, dict) else ''
           subdir_raw = data.get('subdir', '') if isinstance(data, dict) else ''
+          if subdir_raw is None:
+              subdir_raw = ''  # `subdir:` with no value means the repo root
           subdir = subdir_raw if isinstance(subdir_raw, str) else ''
           bad = ""
           if data is None:

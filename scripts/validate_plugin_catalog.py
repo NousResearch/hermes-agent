@@ -168,7 +168,8 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     # manifest: it must be a plain relative path or it can point the gate at
     # files outside the pinned commit.
     subdir = data.get("subdir")
-    if "subdir" in data:
+    # `subdir:` with no value is the repo root, as the runtime loader reads it.
+    if subdir is not None:
         if not isinstance(subdir, str):
             errors.append("subdir must be a string")
         elif subdir and (

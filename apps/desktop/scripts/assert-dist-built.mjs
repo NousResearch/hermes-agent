@@ -7,8 +7,11 @@
 // packages an app with an empty or missing `dist/`. The result launches but
 // blank-pages with `ERR_FILE_NOT_FOUND` for dist/index.html, with no clue why.
 //
-// This runs at the tail of `build`, after vite build, so any packaging path
-// inherits it. It fails loud and early instead of shipping a broken bundle.
+// The desktop compiler (scripts/build/desktop.mjs) runs it on the scratch
+// product before publishing dist/, so every `npm run build` path inherits it
+// once. It is deliberately not also a `postbuild` hook: that re-ran the same
+// check on the bytes just verified, doubling its cost in every update.
+// It fails loud and early instead of shipping a broken bundle.
 // See issues #39484 (renderer blank page) and #41327 / #39472 (dashboard 404).
 
 import { existsSync, readFileSync, statSync, readdirSync } from "fs"

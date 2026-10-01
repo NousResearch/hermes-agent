@@ -19,7 +19,8 @@ from tests.gateway.test_api_server_runs import _make_adapter, _make_slow_agent
 
 KEY = "owner-stop-test-key-not-a-real-secret"
 OWNER = {"Authorization": f"Bearer {KEY}"}
-STOP = "/v1/group-participants/stop"
+PARTICIPANTS = "/v1/group-participants"
+STOP = PARTICIPANTS + "/stop"
 
 
 @pytest_asyncio.fixture
@@ -46,7 +47,7 @@ def app_for(adapter):
     app = web.Application()
     for method, path, handler in runs._http_routes(adapter):
         app.router.add_route(method, path, handler)
-        if path.startswith(STOP):
+        if path.startswith(PARTICIPANTS):
             app.router.add_route(method, "/p/{profile}" + path, handler)
     app.router.add_post("/v1/room-members/invitations", adapter._handle_room_member_invitation)
     return app

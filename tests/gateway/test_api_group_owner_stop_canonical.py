@@ -16,7 +16,7 @@ from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch, get_session_admission
 from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_api_group_owner_stop import (
-    KEY, OWNER, STOP, app_for, command, dispatch, invite, participation, seed, submit,
+    KEY, OWNER, PARTICIPANTS, STOP, app_for, command, dispatch, invite, participation, seed, submit,
 )
 from tests.gateway.test_api_server_runs import _make_adapter
 
@@ -111,7 +111,10 @@ async def test_queued_canonical_admission_is_cancelled_before_execution(canonica
         run_id = (await accepted.json())['run_id']
         owned = run_admission(adapter, run_id)
         assert owned[1]['status'] == 'queued'
-        frozen = await client.post(STOP, headers=OWNER, json=command(participation(payload)))
+        # A canonical participant lists the same exact identity a Stop needs.
+        [listed] = (await (await client.get(PARTICIPANTS, headers=OWNER)).json())['data']
+        assert listed['participant'] == participation(payload) and listed['counts']['nonterminal'] == 1
+        frozen = await client.post(STOP, headers=OWNER, json=command(listed['participant']))
         assert frozen.status == 200, await frozen.text()
         assert get_session_admission(authority.db, admission_id=owned[1]['admission_id'])['outcome'] == 'cancelled'
         await asyncio.wait_for(asyncio.gather(*adapter._active_run_tasks.values()), 3)

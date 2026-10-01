@@ -208,6 +208,19 @@ export function threadScrollTargetTop(
   return state.kind === 'bottom' ? max : Math.max(0, max - state.fromBottom)
 }
 
+// A remembered offset within one viewport of the live tail is not a
+// deliberate reading position: it is follow-drift while a turn settles
+// (#101217) or a touch-scroll with the newest message still on screen.
+// Restoring it reads as "the session opened a hair above the bottom", so
+// snap it to the exact bottom on restore. Deeper offsets restore exactly.
+export function snapNearBottomScrollOffset(state: ThreadScrollState, viewportHeight: number): ThreadScrollState {
+  if (state.kind === 'offset' && state.fromBottom <= Math.max(0, viewportHeight)) {
+    return THREAD_SCROLL_BOTTOM
+  }
+
+  return state
+}
+
 // Composer metrics write --composer-measured-height onto the chat surface,
 // which grows [data-slot="aui_composer-clearance"] and can shrink the
 // clampToComposer viewport. The post-settle restore ResizeObserver sees that

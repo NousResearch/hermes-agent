@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   shouldReapplyFrozenThreadScrollOffset,
+  snapNearBottomScrollOffset,
   threadScrollTargetTop,
   threadScrollTranscriptHeight
 } from './thread-scroll'
@@ -54,5 +55,25 @@ describe('shouldReapplyFrozenThreadScrollOffset', () => {
     const next = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5600 }
 
     expect(shouldReapplyFrozenThreadScrollOffset(OFFSET, false, previous, next)).toBe(false)
+  })
+})
+
+describe('snapNearBottomScrollOffset', () => {
+  it('snaps offsets within one viewport of the tail to the exact bottom', () => {
+    expect(snapNearBottomScrollOffset({ fromBottom: 0, kind: 'offset' }, 600)).toEqual(BOTTOM)
+    expect(snapNearBottomScrollOffset({ fromBottom: 259.7958984375, kind: 'offset' }, 600)).toEqual(BOTTOM)
+    expect(snapNearBottomScrollOffset({ fromBottom: 600, kind: 'offset' }, 600)).toEqual(BOTTOM)
+  })
+
+  it('restores deeper reading positions exactly', () => {
+    expect(snapNearBottomScrollOffset({ fromBottom: 601, kind: 'offset' }, 600)).toEqual({
+      fromBottom: 601,
+      kind: 'offset'
+    })
+    expect(snapNearBottomScrollOffset(OFFSET, 600)).toEqual(OFFSET)
+  })
+
+  it('leaves a bottom target untouched', () => {
+    expect(snapNearBottomScrollOffset(BOTTOM, 600)).toEqual(BOTTOM)
   })
 })

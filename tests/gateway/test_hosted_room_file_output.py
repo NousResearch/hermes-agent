@@ -381,19 +381,20 @@ async def test_a_stopped_turn_discards_its_files_and_publishes_no_reply(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_a_turn_that_ignores_stop_never_publishes_after_cancellation(tmp_path, monkeypatch):
+async def test_a_turn_that_finishes_before_stop_takes_effect_publishes_its_reply_and_files(tmp_path, monkeypatch):
     async with owner(tmp_path, monkeypatch) as (authority, service, runner):
         shared = []
         runner._handle_message = _stopping_handler(service, write_file(tmp_path), shared, honor_stop=False)
         turn = await run_turn(authority, service, publish=False)
         assert shared[0]["ok"] is True and shared[1]["ok"] is False
-        # The interrupt request was taken as the Stop: the late completion is not published,
-        # and the files its receipt reported are retired exactly once.
-        assert (await _settle_stop(service, turn))["status"] == "cancelled"
-        assert not events(service, "message.member")
-        assert outbox_rows(service) == []
+        # Stop waited for the turn's real terminal; the completion won, as it does for text.
+        assert (await _settle_stop(service, turn))["status"] == "settled"
+        message, = events(service, "message.member")
+        assert message["payload"]["text"] == "@reviewer Finished anyway."
+        assert [a["name"] for a in message["payload"]["attachments"]] == ["report.txt"]
+        assert outbox_rows(service)[0]["acknowledged_at"] is not None
         obligation, = obligations(service)
-        assert (obligation["operation"], obligation["state"]) == ("discard", "completed")
+        assert (obligation["operation"], obligation["state"]) == ("ack", "completed")
 
 
 @pytest.mark.asyncio

@@ -119,8 +119,11 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
         rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
     assert not agent.interrupted
-    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+        'interrupted': False, 'status': 'running'}
     assert agent.interrupted
+    # The request alone does not end the turn: the admission is still running.
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'
     with pytest.raises(RuntimeStoreError):
         rpc.approve(session_id=sid, request_id='missing', choice='once')
     async def same_loop():
@@ -256,3 +259,32 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(owne
     settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed', result=None)
     with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
         rpc.history(**coords, session_id=sid)
+
+
+def test_stop_that_loses_the_queued_race_interrupts_the_exact_started_turn(owner, monkeypatch):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import claim_session_input
+    authority, loop, principal, agent = owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
+                                 principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+               execution_generation=1, on_terminal=lambda receipt: None)
+    original = authority.cancel_queued
+    claimed = []
+
+    async def claim_first(actor, ref, admission_id):
+        claimed.append(claim_session_input(authority.db, epoch=authority.epoch, session_id=sid))
+        return await original(actor, ref, admission_id)
+    monkeypatch.setattr(authority, 'cancel_queued', claim_first)
+    interrupted = []
+
+    async def interrupt(actor, ref, generation):
+        interrupted.append(generation)
+    monkeypatch.setattr(authority, 'interrupt', interrupt)
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task') == {
+        'interrupted': False, 'status': 'running'}
+    assert interrupted == [claimed[0]['generation']]
+    assert rpc.info(**coords, session_id=sid)['status'] == 'started'

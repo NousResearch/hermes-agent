@@ -14,8 +14,14 @@ export interface SessionRowFormatters {
 const modelLabel = (model: null | string) => model?.split('/').pop()?.trim() || null
 const oneLine = (value: null | string) => value?.replace(/\s+/g, ' ').trim() || null
 
+// Compact rows can show a two-line, 13px `leading-none` title plus the body's
+// 4px vertical padding: 30px. Comfortable and detailed rows add 13.5px text
+// lines plus margins, so their estimates round the 45.5px and 63px content
+// floors up to 46px and 64px. Keep the virtualizer at those floors until each
+// row has been observed; underestimating makes long lists jump when their
+// actual heights are measured.
 export const sessionRowEstimate = (density: SessionListDensity) =>
-  ({ compact: 28, comfortable: 45, detailed: 63 })[density]
+  ({ compact: 30, comfortable: 46, detailed: 64 })[density]
 
 /** Virtual-list placement estimate for the Inbox-style card. A full card
  *  stacks four text lines (header, title, preview, model/size) where the
@@ -25,7 +31,7 @@ export const sessionRowEstimate = (density: SessionListDensity) =>
  *  estimate paints a brief gap that self-measurement closes, while an
  *  undersized one paints rows over their neighbours (and the divider below)
  *  on a cold start, before any measurement can correct it. */
-export const SESSION_CARD_ROW_ESTIMATE_PX = 96
+export const SESSION_CARD_ROW_ESTIMATE_PX = 101
 
 export function sessionRowDetails(session: SessionInfo, fmt: SessionRowFormatters): SessionRowDetails {
   const preview = oneLine(session.preview)

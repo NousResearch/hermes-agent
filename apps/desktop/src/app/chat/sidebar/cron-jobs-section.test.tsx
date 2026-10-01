@@ -78,3 +78,11 @@ describe('SidebarCronJobsSection run rows', () => {
     expect(onOpenRun).toHaveBeenCalledWith(RUN.id, RUN)
   })
 })
+
+// Session-title wrapping must not change cron row height.
+describe('cron label overflow', () => {
+  it('keeps cron labels explicitly single-line truncated', () => {
+    renderSection(vi.fn())
+    expect(screen.getByText('nightly').className).toContain('truncate')
+  })
+})

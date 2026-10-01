@@ -208,6 +208,35 @@ describe('SidebarSessionRow', () => {
     vi.useRealTimers()
   })
 
+  it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Hermes doctor health check results' })}
+        unread={false}
+      />
+    )
+
+    const kebab = screen.getByRole('button', { name: 'Session actions' })
+    expect(kebab.closest('[data-slot="tooltip-trigger"]')).toBeNull()
+  })
+
+  it('allows a long session title to wrap to two lines instead of applying single-line truncation', () => {
+    const title = 'Fix background process exit error during Hermes auto-update'
+    renderRow(makeSession({ title }))
+
+    const label = screen.getByText(title)
+    expect(label.className).toContain('line-clamp-2')
+    expect(label.className).toContain('leading-none')
+    expect(label.className).not.toContain('truncate')
+  })
+
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
   // trigger, but the tip only opens when the title is actually truncated.
   describe('full-title overflow tooltip', () => {
@@ -220,9 +249,24 @@ describe('SidebarSessionRow', () => {
     /** The rendered title label (tooltip trigger is the label itself). */
     const label = () => screen.getByText(title).closest('[data-slot="tooltip-trigger"]') as HTMLElement
 
-    const setWidths = (el: HTMLElement, scrollWidth: number, clientWidth: number) => {
+    const setGeometry = (
+      el: HTMLElement,
+      {
+        clientHeight = 20,
+        clientWidth = 100,
+        scrollHeight = clientHeight,
+        scrollWidth = clientWidth
+      }: {
+        clientHeight?: number
+        clientWidth?: number
+        scrollHeight?: number
+        scrollWidth?: number
+      }
+    ) => {
       Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
       Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight })
     }
 
     it('opens with the full title after a settled hover when the title overflows', () => {
@@ -230,7 +274,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 300, 100)
+      setGeometry(el, { clientWidth: 100, scrollWidth: 300 })
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -245,7 +289,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 100, 100)
+      setGeometry(el, {})
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -260,7 +304,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 300, 100)
+      setGeometry(el, { clientWidth: 100, scrollWidth: 300 })
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -270,6 +314,21 @@ describe('SidebarSessionRow', () => {
       })
 
       expect(screen.queryByRole('tooltip')).toBeNull()
+    })
+
+    it('opens for a title clamped vertically after two lines', () => {
+      vi.useFakeTimers()
+      renderRow(makeSession({ title }))
+
+      const el = label()
+      setGeometry(el, { clientHeight: 26, scrollHeight: 39 })
+
+      act(() => {
+        fireEvent.pointerEnter(el)
+        vi.advanceTimersByTime(700)
+      })
+
+      expect(screen.getByRole('tooltip').textContent).toContain(title)
     })
   })
 
@@ -434,5 +493,29 @@ describe('SidebarSessionRow continuation badge', () => {
     const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
 
     expect(continuationGlyph(branch.container)).toBeNull()
+  })
+})
+
+// Bounded card title must not clip adjacent workspace/footer glyphs.
+describe('Inbox-style session card title wrapping', () => {
+  it('keeps card title at two lines and adjacent text normally led', () => {
+    renderRow(
+      makeSession({
+        cwd: '/Users/tomek/pursuit-support-agent',
+        message_count: 133,
+        model: 'gpt-4.1',
+        title: 'Ruff lint and pytest verification'
+      }),
+      { card: true }
+    )
+    const workspace = screen.getByText('pursuit-support-agent')
+    const title = screen.getByText('Ruff lint and pytest verification')
+    const footer = screen.getByText('GPT-4.1').parentElement
+    expect(workspace.className).toContain('truncate')
+    expect(title?.className).toContain('line-clamp-2')
+    expect(title?.className).toContain('break-words')
+    expect(title?.className).toContain('leading-none')
+    expect(title?.className).not.toContain('truncate')
+    expect(footer?.className).not.toContain('leading-none')
   })
 })

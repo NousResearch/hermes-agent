@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionRowDetails, type SessionRowFormatters } from './session-row-details'
+import { sessionRowDetails, sessionRowEstimate, type SessionRowFormatters } from './session-row-details'
 
 const en: SessionRowFormatters = {
   messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
@@ -27,6 +27,22 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 })
 
 describe('session row details', () => {
+  it('provides density-aware virtual row estimates', () => {
+    // The 13px title and 10px metadata/preview text produce fractional 13.5px
+    // line boxes. Estimates round the 45.5px/63px content floors upward so
+    // unmeasured virtual rows never begin undersized.
+    expect(sessionRowEstimate('compact')).toBe(30)
+    expect(sessionRowEstimate('comfortable')).toBe(46)
+    expect(sessionRowEstimate('detailed')).toBe(64)
+  })
+
+  it('keeps the detailed estimate even when preview is omitted as a title duplicate', () => {
+    const details = sessionRowDetails(session({ title: null }), en)
+
+    expect(details.preview).toBeNull()
+    expect(sessionRowEstimate('detailed')).toBe(64)
+  })
+
   it('formats deterministic metadata without ambiguous call wording', () => {
     expect(sessionRowDetails(session({ git_branch: 'feature/menu' }), en)).toEqual({
       metadata: 'feature/menu · gemini-3.1-pro · 26 messages · 8 tool calls',

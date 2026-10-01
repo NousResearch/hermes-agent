@@ -107,6 +107,11 @@ describe('VirtualSessionList row measurement', () => {
     expect(estimateSize(1)).toBe(SESSION_CARD_ROW_ESTIMATE_PX)
   })
 
+  it('covers the full two-line title and card stack before measurement', () => {
+    const tallestCardPx = 2 * 6 + 20 + 2 * 6.4 + 2 * 13 + 2.4 + 2 * (10 * 1.35)
+    expect(SESSION_CARD_ROW_ESTIMATE_PX).toBe(Math.ceil(tallestCardPx))
+  })
+
   it('estimates a card at or above the tallest four-line card stack (#88473)', () => {
     // A full Inbox card renders four text lines (header, title, preview,
     // model/size) where the tallest inline density renders three — plus the

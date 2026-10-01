@@ -64,6 +64,13 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
 describe('ProjectOverviewRow', () => {
+  it('keeps long project labels single-line truncated', () => {
+    render(<ProjectOverviewRow project={project} />)
+
+    const label = screen.getByText('Test D')
+    expect(label.className).toContain('truncate')
+  })
+
   afterEach(() => {
     workspaceOpen.value = false
     projectsStore.fetchProjectSessions.mockReset()
@@ -129,7 +136,11 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByText('Show all 120 sessions'))
 
     await waitFor(() => expect(shown()).toBe(50))
-    fireEvent.click(screen.getByText('Show 50 more in Test D'))
+    // Paging labels retain one-line truncation independently of session titles.
+    const showMoreLabel = screen.getByText('Show 50 more in Test D')
+    expect(showMoreLabel.className).toContain('truncate')
+    expect(showMoreLabel.className).toContain('leading-[1.35]')
+    fireEvent.click(showMoreLabel)
     expect(shown()).toBe(100)
     fireEvent.click(screen.getByText('Show 20 more in Test D'))
     expect(shown()).toBe(120)

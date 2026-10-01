@@ -11,7 +11,7 @@ import type { SessionMessage } from '@/types/hermes'
  *
  * `submit.ts` (use-prompt-actions) and `use-session-tile-delegate.ts` read the
  * cached transcript, drop the optimistic bubble, ask
- * `refreshIfTranscriptStale` whether this window is behind, and on a non-null
+ * `transcriptRefreshIfBehind` whether this window is behind, and on a non-null
  * answer install the refreshed page and REFUSE the send. A user who retries
  * re-runs that loop with the installed transcript as `localMessages`, so the
  * guard has to reach a fixed point: a window that was just refreshed must not

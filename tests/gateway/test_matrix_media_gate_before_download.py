@@ -50,3 +50,83 @@ async def test_unmentioned_group_media_is_not_downloaded(monkeypatch, body, down
     await adapter._on_room_message(_image_event(body))
     assert adapter._download_and_cache_media.await_count == downloads
     assert adapter.handle_message.await_count == dispatched
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario, msgtype, consumed, expected_type, expected_text, expected_bytes", [
+    ("failure", "m.file", True, "text", "caption\n[matrix file attachment could not be downloaded: report.txt]", None),
+    ("failure", "m.file", False, "text", "caption\n[matrix file attachment could not be downloaded: report.txt]", None),
+    ("failure", "m.sticker", True, "text", "[sticker: caption]\n[matrix sticker attachment could not be downloaded: report.txt]", None),
+    ("declared-cap", "m.file", True, "text", "caption\n[matrix file attachment too large: report.txt]", None),
+    ("stream-cap", "m.file", True, "text", "caption\n[matrix file attachment too large: report.txt]", None),
+    ("empty", "m.file", True, "document", "caption", b""),
+    ("empty", "m.audio", True, "audio", "caption", b""),
+    ("no-url", "m.file", True, "document", "caption", None),
+    ("no-url", "m.audio", True, "audio", "caption", None),
+])
+async def test_media_failure_preserves_admission_and_retained_reply_context(
+    monkeypatch, scenario, msgtype, consumed, expected_type, expected_text, expected_bytes,
+):
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageType
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixReplyContext
+    from plugins.platforms.matrix.turn_context import MatrixTurnContext
+    from tests.gateway.matrix_helpers import FakeMediaDownload
+
+    adapter = _make_adapter(monkeypatch)
+    del adapter._download_and_cache_media
+    adapter._client = MagicMock()
+    adapter._max_media_bytes = 4
+    adapter._message_handler = AsyncMock() if consumed else None
+    download = FakeMediaDownload(
+        b"" if scenario == "empty" else b"12345", fail=scenario == "failure",
+    ).install(adapter._client)
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id="!group:example.org", chat_type="group",
+        user_id="@alice:example.org", user_name="Alice",
+    )
+    parent = MatrixEventContext("@bob:example.org", "earlier", event_id="$parent")
+    adapter._resolve_message_context = AsyncMock(return_value=(
+        "caption", False, "group", None, "Alice", True, source,
+    ))
+    adapter._extract_reply_context = AsyncMock(return_value=MatrixReplyContext(
+        "caption", "$parent", "earlier", "@bob:example.org", "Bob", False, True,
+    ))
+    info: dict[str, str | int] = {"mimetype": "audio/ogg" if msgtype == "m.audio" else "text/plain"}
+    content = {
+        "msgtype": msgtype, "body": "caption", "filename": "report.txt",
+        "info": info,
+    }
+    if scenario != "no-url":
+        content["url"] = "mxc://example.org/file"
+    if scenario == "declared-cap":
+        info["size"] = 5
+    result = await MatrixAdapter._handle_media_message(
+        adapter, "!group:example.org", "@alice:example.org", "$attachment", 0.0,
+        content, {"m.in_reply_to": {"event_id": "$parent"}}, msgtype,
+        mention_claimed=True, reply_parent=parent,
+    )
+    event = adapter.handle_message.await_args.args[0]
+    snapshots = event._inbound_context_dependencies
+    files = [(Path(path).is_file(), Path(path).read_bytes()) for path in event.media_urls]
+    observed = (
+        result, event.text, event.message_type, event.source, event.reply_to_message_id,
+        event.reply_to_text, event.reply_to_author_id, event.reply_to_author_name,
+        event.reply_to_is_own_message, event.reply_to_author_authorized, event.metadata,
+        event.media_types, files, tuple(snapshot.parent for snapshot in snapshots if isinstance(snapshot, MatrixTurnContext)),
+        download.requested,
+    )
+    expected_media = ["audio/ogg" if msgtype == "m.audio" else "text/plain"] if expected_bytes is not None else []
+    expected_downloads = [] if scenario in {"no-url", "declared-cap"} else ["mxc://example.org/file"]
+    assert observed == (
+        consumed, expected_text, MessageType(expected_type), source, "$parent", "earlier",
+        "@bob:example.org", "Bob", False, True,
+        {"matrix_mention_claimed": True, "matrix_requires_mention": True},
+        expected_media, [(True, expected_bytes)] if expected_bytes is not None else [],
+        (parent, parent) if msgtype == "m.sticker" else (parent,), expected_downloads,
+    )

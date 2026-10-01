@@ -74,8 +74,19 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
     # Another tenant root's gateway is a name collision, not this tenant's host process (#121352).
     if launched_by_other_tenant(record.home, get_hermes_home()):
         return None
+    home = record_home(record)
+    # A standalone gateway may win the host-lock race, but it is not the shared host gateway.
+    # Ask the owner through its existing identity channel rather than trusting the record: the
+    # multiplexer can have started beside that standalone and must remain discoverable through the
+    # served-record rung below.
+    from gateway.host_attach import _identify, _identity_matches
+
+    identity = _identify(home)
+    if isinstance(identity, dict) and _identity_matches(identity, record, home):
+        if identity.get("multiplex") is False:
+            return None
     return HostGatewayTopology(pid=int(record.pid), profiles=tuple(record.profiles), source="host_record",
-                               home=record_home(record))
+                               home=home)
 
 
 def _from_served_record() -> Optional[HostGatewayTopology]:

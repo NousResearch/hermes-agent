@@ -106,3 +106,22 @@ def test_topology_ignores_another_tenants_record_and_reads_the_launch_homes_stat
     resolved = status.multiplexer_liveness_for_profile(root_b)
     assert resolved is not None and resolved[0] == os.getpid()
     assert set(resolved[1]["platforms"]) == {"telegram"}
+
+
+def test_standalone_host_record_falls_through_to_served_record(host_gateway, monkeypatch):
+    import os
+
+    from gateway import host_topology
+
+    monkeypatch.setattr("gateway.host_attach._identify", lambda home: {
+        "pid": os.getpid(),
+        "multiplex": False,
+        "hermes_home": str(host_gateway),
+    })
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: os.getpid())
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.recorded_served_profiles", lambda: ["coder"])
+
+    topology = host_topology.host_gateway_topology()
+    assert topology is not None
+    assert topology.source == "served_record"
+    assert topology.profiles == ("default", "coder")

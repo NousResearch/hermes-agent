@@ -148,7 +148,9 @@ def test_rejected_signature_is_removed_from_every_carrier_and_persists_across_re
     )
 
     db = _ConfigDB()
+    db.config["_usage_anchor"] = {"prompt_tokens": 999}
     first_agent = _agent(db)
+    first_agent._usage_anchor = {"prompt_tokens": 999}
     request = [_carrier_message()]
 
     removed = remember_rejected_thinking(first_agent, request)
@@ -156,6 +158,8 @@ def test_rejected_signature_is_removed_from_every_carrier_and_persists_across_re
     assert "reasoning_details" not in request[0]
     assert "reasoning" not in request[0]
     assert "reasoning_content" not in request[0]
+    assert first_agent._usage_anchor is None
+    assert db.config["_usage_anchor"] is None
     assert [b["type"] for b in request[0]["anthropic_content_blocks"]] == ["text", "tool_use"]
 
     resumed_agent = _agent(db)

@@ -4755,6 +4755,18 @@
             "default": null,
             "title": "Catalog Tier"
           },
+          "catalog_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Image"
+          },
           "installed_sha": {
             "anyOf": [
               {

@@ -137,13 +137,9 @@ def update_plugin(
                 revision = pc._clone_plugin_repo(staged, git_url, catalog_entry.sha)
                 staged = pc._resolve_subdir_within(staged, subdir) if subdir else staged
                 output = f"Updated to catalog pin {revision}"
-                catalog_record = {
-                    "name": catalog_entry.name,
-                    "repo": catalog_entry.repo,
-                    "tier": catalog_entry.tier,
-                    "pin": catalog_entry.sha,
-                    "sha": revision,
-                }
+                from hermes_cli.plugins_cmd_catalog import catalog_record_for
+                catalog_record = catalog_record_for(catalog_entry)
+                catalog_record["sha"] = revision
                 record.update(
                     catalog=catalog_record,
                     pinned=True,

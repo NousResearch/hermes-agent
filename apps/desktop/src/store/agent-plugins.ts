@@ -45,6 +45,9 @@ export interface AgentPluginRow {
   /** Curated-catalog provenance (from the install sidecar), when present. */
   catalog_name?: string
   catalog_tier?: string
+  /** Card art from the install sidecar, so the Installed tab can show a banner
+   *  for a plugin that has no catalog entry. */
+  catalog_image?: string
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */
   catalog_sha?: string

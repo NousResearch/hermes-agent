@@ -621,7 +621,11 @@ export const PluginsTab = memo(function PluginsTab({
           tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
           repo: pkg.desktop?.packageOrigin?.repo ?? '',
           sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
-          version: pkg.agent?.version ?? ''
+          version: pkg.agent?.version ?? '',
+          // Card art from the package's catalog sidecar, so a plugin with no
+          // catalog entry still gets a banner on this tab. catalogImageUrl applies
+          // the same GitHub-host gate the browse feed uses.
+          image: pkg.agent?.catalog_image ?? pkg.desktop?.packageOrigin?.image
         }))
       ).map(entry => ({ ...entry, id: `installed:${entry.identifier}` })),
     [packages]

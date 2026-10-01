@@ -71,7 +71,9 @@ const CATALOG_MASONRY = true
 
 /** Merge the public feed with installed rows: a catalog entry that matches an
  *  installed one takes the installed id (so selection and install state line
- *  up); installed rows with no catalog match are appended. */
+ *  up); installed rows with no catalog match are appended. A matched row keeps
+ *  its own `imageUrl` when it has one, so an installed plugin that carries card
+ *  art from its install sidecar shows it even when the feed entry has none. */
 function mergeInstalled(
   data: CatalogEntry[],
   installedEntries: CatalogEntry[],
@@ -100,6 +102,7 @@ function mergeInstalled(
         ...entry,
         id: installed.id,
         version: installed.version || entry.version,
+        imageUrl: installed.imageUrl || entry.imageUrl,
         search: `${entry.search} ${installed.search}`
       }
     ]

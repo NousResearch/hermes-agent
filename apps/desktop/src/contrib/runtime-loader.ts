@@ -587,7 +587,7 @@ async function diskRoots(): Promise<DiskRoot[]> {
 const PACKAGE_MARKER = '.hermes-package.json'
 
 interface PackageMarker {
-  origin?: { catalogName?: string; repo?: string; sha?: string }
+  origin?: { catalogName?: string; repo?: string; sha?: string; image?: string }
   package: string
 }
 
@@ -611,6 +611,7 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
       package?: string
       repo?: string
       sha?: string
+      image?: string
     }
 
     if (!parsed.package) {
@@ -618,7 +619,14 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
     }
 
     return {
-      origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
+      origin: parsed.repo
+        ? {
+            catalogName: parsed.catalogName,
+            repo: parsed.repo,
+            sha: parsed.sha,
+            ...(parsed.image ? { image: parsed.image } : {})
+          }
+        : undefined,
       package: parsed.package
     }
   } catch {

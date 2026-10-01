@@ -34,20 +34,31 @@ export interface DesktopHalfMarker {
   repo?: string
   sha?: string
   catalogName?: string
+  /** Card art for the Installed tab, copied from the sidecar's `image`. Lets a
+   *  plugin with no catalog entry still show a banner there. */
+  image?: string
 }
 
 /** Provenance of an installed agent package: catalog sidecar first, then the
  *  git remote. Undefined for a folder that was copied in by hand. */
-async function packageOrigin(packageDir: string): Promise<Pick<DesktopHalfMarker, 'catalogName' | 'repo' | 'sha'>> {
+async function packageOrigin(packageDir: string): Promise<
+  Pick<DesktopHalfMarker, 'catalogName' | 'repo' | 'sha' | 'image'>
+> {
   try {
     const sidecar = JSON.parse(await fs.promises.readFile(path.join(packageDir, '.hermes-catalog.json'), 'utf8')) as {
       catalog_name?: string
       repo?: string
       sha?: string
+      image?: string
     }
 
     if (sidecar.repo) {
-      return { catalogName: sidecar.catalog_name, repo: sidecar.repo, sha: sidecar.sha }
+      return {
+        catalogName: sidecar.catalog_name,
+        repo: sidecar.repo,
+        sha: sidecar.sha,
+        ...(sidecar.image ? { image: sidecar.image } : {})
+      }
     }
   } catch {
     // No sidecar — not a catalog install.

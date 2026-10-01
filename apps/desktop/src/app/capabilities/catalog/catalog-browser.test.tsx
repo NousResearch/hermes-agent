@@ -140,3 +140,84 @@ it('shares the saved layout choice when moving between Skills and Plugins', () =
   fireEvent.click(screen.getByRole('button', { name: 'Card view' }))
   expect($catalogCardView.get()).toBe(true)
 })
+
+
+describe('installed rows carrying their own card art', () => {
+  const HERO = 'https://raw.githubusercontent.com/owner/repo/sha/public/p/docs/hero.png'
+
+  function renderWithInstalled(installed: Record<string, unknown>[]) {
+    queryClient.setQueryData(
+      ['public-catalog', 'plugins'],
+      parseCatalog('plugins', [
+        {
+          name: 'alpha',
+          identifier: 'community/alpha',
+          tier: 'community',
+          category: 'desktop',
+          description: 'feed entry without art',
+          repo: 'https://github.com/example/alpha'
+        }
+      ])
+    )
+
+    const installedEntries = parseCatalog('plugins', installed).map(entry => ({
+      ...entry,
+      id: `installed:${entry.identifier}`
+    }))
+    const byName = new Map(
+      installedEntries.filter(entry => entry.name).map(entry => [entry.name, entry])
+    )
+
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <PageSearchShell onSearchChange={() => {}} searchPlaceholder="Search catalog" searchValue="">
+          <CatalogBrowser
+            installedEntries={installedEntries}
+            isInstalled={() => true}
+            kind="plugins"
+            matchInstalled={entry => byName.get(entry.name)}
+            onInstall={vi.fn()}
+            onQueryChange={() => {}}
+            query=""
+          />
+        </PageSearchShell>
+      </QueryClientProvider>
+    )
+  }
+
+  it('shows art from the installed row when the feed entry has none', () => {
+    renderWithInstalled([
+      {
+        name: 'alpha',
+        identifier: 'alpha',
+        description: 'installed locally',
+        image: HERO,
+        catalog_name: 'alpha'
+      }
+    ])
+
+    expect(screen.getAllByRole('article')).toHaveLength(1)
+    expect(card('alpha').querySelector('img')?.getAttribute('src')).toBe(HERO)
+  })
+
+  it('keeps an installed row with no catalog match visible with its own art', () => {
+    renderWithInstalled([
+      {
+        name: 'solo',
+        identifier: 'solo',
+        description: 'never listed in the catalog',
+        image: HERO
+      }
+    ])
+
+    expect(card('solo').querySelector('img')?.getAttribute('src')).toBe(HERO)
+  })
+
+  it('renders no banner when neither side carries art', () => {
+    renderWithInstalled([{ name: 'solo', identifier: 'solo', description: 'no art anywhere' }])
+
+    // The unmatched installed row and the art-less feed entry both render bare.
+    expect(card('solo').querySelector('img')).toBeNull()
+    expect(card('alpha').querySelector('img')).toBeNull()
+  })
+})

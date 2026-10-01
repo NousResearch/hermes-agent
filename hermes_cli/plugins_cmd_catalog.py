@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional
+from urllib.parse import urlsplit
 
 from hermes_cli.plugin_catalog import (
     PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
@@ -28,6 +29,22 @@ from pm.filesystem import is_junction
 logger = logging.getLogger(__name__)
 
 CATALOG_SIDECAR = ".hermes-catalog.json"
+
+# Card art is only ever fetched from GitHub, mirroring the catalog validator and the
+# Desktop ``catalogImageUrl`` gate, so an installed plugin can never point the app at
+# a third-party host.
+_CATALOG_IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
+_CATALOG_IMAGE_HOST_SUFFIX = ".githubusercontent.com"
+
+
+def _is_catalog_image_url(url: str) -> bool:
+    """https on a GitHub host, else not usable as card art."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+
+    return parts.scheme == "https" and bool(host) and (
+        host in _CATALOG_IMAGE_HOSTS or host.endswith(_CATALOG_IMAGE_HOST_SUFFIX)
+    )
 
 # ── Resolution / provenance ──────────────────────────────────────────────────
 
@@ -67,13 +84,20 @@ def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
 def write_catalog_sidecar_record(target: Path, catalog: dict, sha: str) -> None:
     """Human/Desktop-readable ``.hermes-catalog.json`` inside the install dir. It is a CONVENIENCE COPY:
     the authoritative provenance is the ``catalog`` block on the ``.install-metadata.json`` record (see
-    :func:`read_catalog_sidecar`), because anything inside the tree is under the repo's control."""
+    :func:`read_catalog_sidecar`), because anything inside the tree is under the repo's control.
+
+    ``image`` is carried so a plugin with no catalog entry can still show card art on the
+    Installed tab, which has no other source for it. It is copied verbatim and only when it is
+    already an https URL on a GitHub host, matching the Desktop catalog's own host allowlist."""
     sidecar = {
         "catalog_name": catalog["name"], "repo": catalog["repo"], "sha": sha,
         "tier": catalog.get("tier") or "community",
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
+    image = catalog.get("image")
+    if isinstance(image, str) and _is_catalog_image_url(image):
+        sidecar["image"] = image
     try:
         (target / CATALOG_SIDECAR).write_text(json.dumps(sidecar, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -171,8 +195,13 @@ def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
             block = _adopt_legacy_sidecar(plugin_dir, record)
     if not block or not block.get("name"):
         return None
-    return {"catalog_name": block["name"], "repo": block.get("repo", ""), "sha": block.get("sha", ""),
-            "tier": block.get("tier") or "community", "pin": block.get("pin", "")}
+    sidecar = {"catalog_name": block["name"], "repo": block.get("repo", ""), "sha": block.get("sha", ""),
+              "tier": block.get("tier") or "community", "pin": block.get("pin", "")}
+    # Card art, when the recorded catalog entry carried one, so the Installed row can show it.
+    image = block.get("image")
+    if isinstance(image, str) and _is_catalog_image_url(image):
+        sidecar["image"] = image
+    return sidecar
 
 
 def at_catalog_pin(sidecar: dict, entry_sha: str) -> bool:
@@ -235,6 +264,17 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
         )
 
 
+def catalog_record_for(entry: "PluginCatalogEntry") -> Dict[str, Any]:
+    """The installer-owned catalog block for *entry*. ``image`` rides along so the Desktop
+    Installed tab has a banner source for a plugin missing from the local feed; the caller
+    keeps the reviewed ``pin`` while the record carries the sha actually checked out."""
+    record: Dict[str, Any] = {
+        "name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha}
+    if entry.image and _is_catalog_image_url(entry.image):
+        record["image"] = entry.image
+    return record
+
+
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
                           assume_deps_consent: bool = False, before_swap=None) -> tuple:
@@ -249,7 +289,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
         allow_removed=allow_removed, before_swap=before_swap,
-        catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
+        catalog=catalog_record_for(entry))
     return target, manifest, installed_name
 
 
@@ -827,7 +867,8 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
 def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
     name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
-    *versions*) and ``update_available``."""
+    *versions*) and ``update_available``. ``catalog_image`` carries the sidecar's card art so a plugin
+    with no catalog entry can still show a banner on the Installed tab."""
     versions = versions or {}
     sidecar = catalog_install_record(dir_path)
     if not sidecar:
@@ -836,6 +877,9 @@ def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[s
     row: Dict[str, Any] = {
         "catalog_name": sidecar["catalog_name"], "catalog_tier": str(sidecar.get("tier") or "community"),
         "installed_sha": installed_sha}
+    image = sidecar.get("image")
+    if isinstance(image, str) and _is_catalog_image_url(image):
+        row["catalog_image"] = image
     pin = pins.get(str(sidecar["catalog_name"]))
     if pin:
         row["catalog_sha"] = pin

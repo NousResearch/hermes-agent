@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess as sp
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,50 @@ def _install_url(repo: Path, name: str, files: dict) -> Path:
     _commit(repo, "v1")
     return pc._install_plugin_core(repo.as_uri(), force=False)[0]
 
+
+
+def test_catalog_install_records_card_image_so_the_row_can_show_it(world, monkeypatch):
+    """A real catalog install carries its entry's banner on the installer-owned record, and the row
+    surfaces it. Without this the Installed tab has no art source for a plugin that is missing from
+    the local feed copy of the catalog."""
+    good = "https://raw.githubusercontent.com/owner/repo/deadbeef/public/p/docs/hero.png"
+
+    # The `world` fixture already patches load_catalog; wrap what it patched so the entry it returns
+    # carries art. Re-patching with a fresh lambda would drop the fixture's repo URI and break install.
+    real_load = pc_cat.load_catalog
+
+    def with_art(catalog_dir=None):
+        return [replace(e, image=good) if e.name == "cat-plugin" else e
+                for e in real_load(catalog_dir)]
+
+    monkeypatch.setattr(pc_cat, "load_catalog", with_art)
+
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    assert entry.image == good, "the catalog entry must expose its image"
+    target, _m, _n = cat.install_catalog_entry(entry, force=False)
+
+    assert cat.read_catalog_sidecar(target)["image"] == good
+    assert cat.catalog_row_fields(target, cat.catalog_pins())["catalog_image"] == good
+
+
+@pytest.mark.parametrize(
+    "rejected",
+    [
+        "http://raw.githubusercontent.com/owner/repo/sha/docs/hero.png",  # not https
+        "https://evil.example.com/hero.png",                              # not a GitHub host
+        "file:///C:/Users/x/hero.png",                                    # local path
+        "javascript:alert(1)",                                            # not a URL scheme we render
+    ],
+)
+def test_sidecar_refuses_card_art_that_is_not_https_on_github(world, rejected):
+    """The Installed tab must never be pointed at a third-party or local resource by install metadata."""
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    target, _m, _n = cat.install_catalog_entry(entry, force=False)
+    cat.write_catalog_sidecar_record(
+        target, {"name": "cat-plugin", "repo": entry.repo, "image": rejected}, world["sha1"]
+    )
+    assert "image" not in cat.read_catalog_sidecar(target)
+    assert "catalog_image" not in cat.catalog_row_fields(target, cat.catalog_pins())
 
 def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     """Provenance is the installer's metadata record, never a file the repo ships: a URL install carrying

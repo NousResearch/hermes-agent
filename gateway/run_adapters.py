@@ -774,6 +774,21 @@ class GatewayAdapterLifecycleMixin:
         info["next_retry"] = time.monotonic() + backoff
         return backoff
 
+    def _adapter_may_heal(self, platform, platform_config) -> bool:
+        """Whether a platform whose ``_create_adapter`` returned None can heal without a config change.
+
+        Only an unregistered plugin can (a plugin load can fail transiently). A builtin whose probe fails
+        (missing deps/creds), a registered plugin returning None, or an empty bot credential needs a config
+        change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
+        the reconnect watcher so both classify the same platform the same way."""
+        from gateway.platform_registry import platform_registry
+        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        return (
+            platform not in _BUILTIN_ADAPTERS
+            and not platform_registry.is_registered(platform.value)
+            and _platform_has_bot_credential(platform, platform_config)
+        )
+
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
         from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
@@ -797,7 +812,16 @@ class GatewayAdapterLifecycleMixin:
         try:
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                # No adapter yet (plugin unregistered or deps missing): keep it queued so it heals once one appears.
+                if not self._adapter_may_heal(platform, platform_config):
+                    # Became builtin/registered-but-None: a config change is needed, so stop retrying.
+                    self._update_platform_runtime_status(
+                        platform.value, platform_state="fatal", error_code="adapter_unavailable",
+                        error_message=_adapter_unavailable_message(platform, retrying=False),
+                        needs_attention=True,
+                    )
+                    self._drop_from_reconnect_queue(platform, "adapter creation returned None")
+                    return
+                # Unregistered plugin: keep it queued so it heals once the plugin registers.
                 backoff = self._bump_reconnect_backoff(
                     platform, info, attempt, "adapter_unavailable", _adapter_unavailable_message(platform),
                 )

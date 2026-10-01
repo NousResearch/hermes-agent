@@ -1161,8 +1161,7 @@ class GatewayStartupMixin:
     async def _start_prefilter_platforms(self) -> Tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
-        from gateway.platform_registry import platform_registry
-        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        from gateway.run import _platform_has_bot_credential
         from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
@@ -1198,16 +1197,9 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
-                # Only an unregistered plugin can heal on its own (a plugin load can fail transiently), so
-                # only that case is queued for the reconnect watcher. A builtin whose probe fails (missing
-                # deps/creds), a registered plugin returning None, or an empty bot credential needs a config
-                # change: queueing it would re-warn forever at the backoff cap (#5196 fleet nodes). Either
-                # way flag it so the unserved enabled platform is visible.
-                heals = (
-                    platform not in _BUILTIN_ADAPTERS
-                    and not platform_registry.is_registered(platform.value)
-                    and _platform_has_bot_credential(platform, platform_config)
-                )
+                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
+                # flag it so the unserved enabled platform is visible.
+                heals = self._adapter_may_heal(platform, platform_config)
                 self._update_platform_runtime_status(
                     platform.value, platform_state="retrying" if heals else "fatal",
                     error_code="adapter_unavailable",

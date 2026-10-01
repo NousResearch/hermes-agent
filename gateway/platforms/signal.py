@@ -695,17 +695,16 @@ class SignalAdapter(BasePlatformAdapter):
     async def _rpc_send_attachments(self, params: Dict[str, Any], **rpc_kwargs: Any) -> Any:
         from gateway.platforms.signal_attachments import staged_signal_attachments
 
-        try:
-            with staged_signal_attachments(params["attachments"], self.attachment_staging_dir) as paths:
-                return await self._rpc("send", dict(params, attachments=paths), **rpc_kwargs)
-        except OSError as exc:
-            logger.warning("Signal: failed to stage outbound attachment: %s", exc)
-            return None
+        with staged_signal_attachments(params["attachments"], self.attachment_staging_dir) as paths:
+            return await self._rpc("send", dict(params, attachments=paths), **rpc_kwargs)
 
     async def _rpc_send(self, params: Dict[str, Any], fail_error: str) -> Tuple[Any, Optional[SendResult]]:
         """Run a ``send`` RPC, validate and track it; ``(result, None)`` or ``(None, failed SendResult)``."""
-        result = (await self._rpc_send_attachments(params) if params.get("attachments")
-                  else await self._rpc("send", params))
+        try:
+            result = (await self._rpc_send_attachments(params) if params.get("attachments")
+                      else await self._rpc("send", params))
+        except OSError as exc:
+            return None, SendResult(success=False, error=f"Signal attachment staging failed: {exc}")
         if result is None:
             return None, SendResult(success=False, error=fail_error)
         success, err_msg = self._validate_send_result(result)
@@ -824,9 +823,14 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal batch %d/%d: %d attachments, estimated wait=%.1fs", idx, n_batches, n, estimated)
             if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
                 await self._notify_batch_pacing(chat_id, idx, n_batches, estimated)
-            if await self._send_attachment_batch(scheduler, dict(base_params, attachments=att_batch), n,
-                                                 f"{idx}/{n_batches}"):
-                delivered = True
+            try:
+                if await self._send_attachment_batch(scheduler, dict(base_params, attachments=att_batch), n,
+                                                     f"{idx}/{n_batches}"):
+                    delivered = True
+            except OSError as exc:
+                error = f"Signal attachment staging failed: {exc}"
+                logger.error("%s", error)
+                return SendResult(success=delivered, error=error)
         return SendResult(
             success=delivered,
             error=None if delivered else "all Signal attachment batches failed")

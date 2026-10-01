@@ -675,8 +675,68 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+def _worktree_base_ref(repo_root: Path, *, board: Optional[str] = None) -> str:
+    """Ref a fresh card worktree should branch from — not blindly ``HEAD``.
+
+    The primary checkout's ``HEAD`` is whatever branch an operator happened to
+    leave checked out there. When that is a stale side branch, every card
+    worktree cut from it inherits that branch silently: t_46fcdf7c measured
+    ``experimental/visual-stage-20260930 == wt/t_8f2c540b == wt/t_a90eff35``
+    with the trunk ~110 commits away, so ``git branch --no-merged main``
+    double-counted and a worker's first ``git log -1`` reported a stale
+    revision unless it named the trunk explicitly.
+
+    Precedence (the first ref that resolves wins):
+
+    1. the board's ``worktree_base`` metadata — an explicit pin for boards that
+       deliberately build on a non-trunk line;
+    2. the repo's trunk (``main``/``master``, else the branch of the main
+       worktree) when the primary checkout stands somewhere else;
+    3. ``HEAD`` — the pre-existing behaviour, kept when the checkout already
+       stands on the trunk and for a repo with no trunk at all (nothing to
+       prefer over what the checkout has out).
+    """
+    pinned = ""
+    try:
+        pinned = (_kb.read_board_metadata(board or _kb.get_current_board()).get("worktree_base") or "").strip()
+    except Exception:
+        pinned = ""
+    if pinned:
+        resolved = _kb._git_out(
+            repo_root, "rev-parse", "--verify", "--quiet", f"{pinned}^{{commit}}"
+        )
+        if resolved:
+            return pinned
+        _kb._log.warning(
+            "kanban: board %s pins worktree_base=%r, which does not resolve in %s; "
+            "falling back to the repo trunk",
+            board, pinned, repo_root,
+        )
+    try:
+        from hermes_cli.worktree_ops import _worktree_local_trunk
+
+        trunk = _worktree_local_trunk(str(repo_root))
+    except Exception:
+        trunk = None
+    if not trunk or _git_current_branch(repo_root) == trunk:
+        return "HEAD"
+    _kb._log.info(
+        "kanban: basing the new worktree on the repo trunk %r instead of the "
+        "primary checkout's %r (task worktrees must not inherit an incidental HEAD)",
+        trunk, _git_current_branch(repo_root) or "(detached)",
+    )
+    return trunk
+
+
+def _ensure_git_worktree(
+    repo_root: Path, target: Path, branch_name: str, *, board: Optional[str] = None
+) -> None:
+    """Materialize ``target`` as a linked git worktree under ``repo_root``.
+
+    A new branch is based on :func:`_worktree_base_ref` (the repo trunk), never
+    on the primary checkout's incidental ``HEAD``; if that ref cannot be used
+    we retry once from ``HEAD`` rather than fail the dispatch.
+    """
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
@@ -685,8 +745,29 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         args = ["worktree", "add", str(target), branch_name]
     else:
-        args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
+        base_ref = _worktree_base_ref(repo_root, board=board)
+        args = ["worktree", "add", "-b", branch_name, str(target), base_ref]
     result = _git(repo_root, *args, timeout=60)
+    if result.returncode != 0 and args[:3] == ["worktree", "add", "-b"]:
+        stderr = (result.stderr or result.stdout or "").strip()
+        if _git_branch_exists(repo_root, branch_name):
+            # ``-b`` can create the ref before the checkout fails; finish on the ref.
+            _kb._log.warning(
+                "git worktree add created %s then failed for %s (%s); "
+                "retrying the existing ref",
+                branch_name, target, stderr,
+            )
+            result = _git(repo_root, "worktree", "add", str(target), branch_name, timeout=60)
+        elif args[-1] != "HEAD":
+            # Never fail a dispatch over the base-ref preference: the trunk ref
+            # can be renamed/pruned between resolution and use.
+            _kb._log.warning(
+                "git worktree add from %s failed for %s (%s); retrying from local HEAD",
+                args[-1], target, stderr,
+            )
+            result = _git(
+                repo_root, "worktree", "add", "-b", branch_name, str(target), "HEAD", timeout=60
+            )
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(
@@ -694,10 +775,12 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
-def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
+def _anchored_worktree(
+    repo_root: Path, task_id: str, branch_name: str, *, board: Optional[str] = None
+) -> tuple[Path, str]:
     """Materialize the canonical ``<repo>/.worktrees/<task-id>`` worktree."""
     target = repo_root / ".worktrees" / task_id
-    _ensure_git_worktree(repo_root, target, branch_name)
+    _ensure_git_worktree(repo_root, target, branch_name, board=board)
     return target, branch_name
 
 
@@ -730,7 +813,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
                 f"task {task.id} has workspace_kind=worktree but board "
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_worktree(repo_root, task.id, branch_name, board=board)
 
     requested = Path(task.workspace_path).expanduser()
     if not requested.is_absolute():
@@ -753,7 +836,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if _path_key(fallback.resolve(strict=False)) != _path_key(requested_resolved):
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
+                _ensure_git_worktree(fallback_root, fallback, branch_name, board=board)
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this task's
         # own canonical worktree): keep the legacy reuse rather than fail dispatch.
@@ -761,7 +844,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and _path_key(requested_resolved) == _path_key(repo_root):
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_worktree(repo_root, task.id, branch_name, board=board)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
     if repo_root is None:
@@ -769,7 +852,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    _ensure_git_worktree(repo_root, requested, branch_name, board=board)
     return requested, branch_name
 
 

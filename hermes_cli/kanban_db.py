@@ -4117,6 +4117,78 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
     )
 
 
+_CTX_GIT_TIMEOUT = 10
+
+
+def _ctx_workspace_base(lines: list[str], task: Task) -> None:
+    """State the commit a ``worktree`` workspace was cut from, and its distance
+    from the repo trunk.
+
+    Card worktrees branch from the repo trunk (:func:`_worktree_base_ref`), but
+    a workspace created before that (or cut by hand) can sit on a stale branch —
+    t_46fcdf7c's workspaces inherited ``experimental/visual-stage-20260930``
+    while the trunk sat ~110 commits away, so every worker's first ``git log -1``
+    reported a revision that was not the one the board builds on. Reporting the
+    HEAD, the base commit (fork point) and the left/right divergence here makes
+    a stale workspace visible in the opening context, before any work happens.
+
+    Best-effort: no workspace on disk / not a repo / no trunk renders what it
+    can and never raises (the context is a diagnostic, not a gate).
+    """
+    if (task.workspace_kind or "") != "worktree" or not task.workspace_path:
+        return
+    try:
+        workspace = Path(task.workspace_path).expanduser()
+        if not workspace.is_dir():
+            return
+        head = _git_out(workspace, "rev-parse", "HEAD", timeout=_CTX_GIT_TIMEOUT)
+    except Exception:
+        return
+    if not head:
+        return
+    branch = _git_out(workspace, "rev-parse", "--abbrev-ref", "HEAD", timeout=_CTX_GIT_TIMEOUT) or "(detached)"
+    try:
+        from hermes_cli.worktree_ops import _worktree_local_trunk
+
+        trunk = _worktree_local_trunk(str(workspace))
+    except Exception:
+        trunk = None
+    lines.append("## Workspace base")
+    lines.append(f"HEAD: `{head[:12]}` on `{branch}`")
+    if not trunk:
+        lines.append("Base commit: unknown — this repo has no `main`/`master` trunk to compare against")
+        lines.append("")
+        return
+    fork = _git_out(workspace, "merge-base", trunk, head, timeout=_CTX_GIT_TIMEOUT)
+    lines.append(
+        f"Base commit (fork point with `{trunk}`): `{fork[:12]}`" if fork else
+        f"Base commit (fork point with `{trunk}`): unknown"
+    )
+    counts = _git_out(
+        workspace, "rev-list", "--left-right", "--count", f"{trunk}...HEAD",
+        timeout=_CTX_GIT_TIMEOUT,
+    )
+    behind = ahead = None
+    if counts:
+        parts = counts.split()
+        if len(parts) == 2 and all(part.isdigit() for part in parts):
+            behind, ahead = int(parts[0]), int(parts[1])
+    if behind is None or ahead is None:
+        lines.append("")
+        return
+    lines.append(
+        f"Divergence: `git rev-list --left-right --count {trunk}...HEAD` = "
+        f"{behind} behind / {ahead} ahead"
+    )
+    if behind or ahead:
+        lines.append(
+            f"_⚠ this workspace is {behind} behind / {ahead} ahead of `{trunk}`: it was "
+            f"cut before card worktrees were based on the repo trunk, or `{trunk}` moved "
+            f"since. Re-derive from `{trunk}` before trusting its contents._"
+        )
+    lines.append("")
+
+
 def _ctx_header(lines: list[str], task: Task) -> None:
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
@@ -4136,6 +4208,7 @@ def _ctx_header(lines: list[str], task: Task) -> None:
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
+    _ctx_workspace_base(lines, task)
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))

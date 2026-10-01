@@ -619,7 +619,8 @@ class _BlockingSendAdapter(LifecycleLogAdapter):
     [("delivered", ProcessingOutcome.SUCCESS), ("refused", ProcessingOutcome.FAILURE),
      ("cancelled", ProcessingOutcome.CANCELLED)],
 )
-async def test_each_queued_turn_completes_after_its_own_reply(monkeypatch, tmp_path, final_delivery, queued_outcome):
+@pytest.mark.parametrize("followup", ["platform-message", "hookless-with-photo"])
+async def test_each_queued_turn_completes_after_its_own_reply(monkeypatch, tmp_path, final_delivery, queued_outcome, followup):
     """A turn completes once its reply is delivered, before the queued follow-up starts, so cancelling
     the follow-up cannot change the earlier outcome. The terminal follow-up's reply goes out through
     the adapter's final delivery, which decides that follow-up's outcome."""
@@ -629,9 +630,19 @@ async def test_each_queued_turn_completes_after_its_own_reply(monkeypatch, tmp_p
     if final_delivery == "refused":
         adapter.refused.add("done-2")
     runner = _make_runner(adapter)
-    adapter._pending_messages[SESSION_KEY] = MessageEvent(text="follow-up", source=_source(), message_id="queued-1")
+    hookless = followup == "hookless-with-photo"
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="follow-up", source=_source(), message_id=None if hookless else "queued-1")
+    photo = MessageEvent(
+        text="photo", source=_source(), message_id="queued-1", message_type=MessageType.PHOTO,
+        media_urls=["/nonexistent/photo.jpg"], media_types=["image/jpeg"])
+    if hookless:
+        runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up and photo")
 
     async def respond(event):
+        if hookless:
+            await adapter._run_processing_hook("on_processing_start", photo)
+            runner._merge_into_pending_slot(adapter, SESSION_KEY, photo)
         result = await runner._run_agent(
             message=event.text, context_prompt="", history=[], source=event.source,
             session_id="sess-lifecycle", session_key=SESSION_KEY, processing_event=event)
@@ -640,25 +651,62 @@ async def test_each_queued_turn_completes_after_its_own_reply(monkeypatch, tmp_p
     adapter.set_message_handler(respond)
     await adapter.handle_message(MessageEvent(text="first", source=_source(), message_id="first-1"))
     await asyncio.wait_for(adapter.send_started.wait(), 5)
+    before_delivery = [entry for entry in adapter.log if entry[:2] == ("complete", "queued-1")]
     if final_delivery == "cancelled":
         await adapter.cancel_session_processing(SESSION_KEY)
     else:
         adapter.send_release.set()
         await asyncio.gather(*adapter._background_tasks)
 
-    sends = [entry[1] for entry in adapter.log if entry[0] == "send"]
-    assert (
-        [entry for entry in adapter.log if entry[0] != "send"],
-        adapter.log[:3],
-        sends[1:2],
-        adapter.log[-2][0],
-    ) == (
-        [("start", "first-1"), ("complete", "first-1", ProcessingOutcome.SUCCESS),
-         ("start", "queued-1"), ("complete", "queued-1", queued_outcome)],
-        [("start", "first-1"), ("send", "done-1"), ("complete", "first-1", ProcessingOutcome.SUCCESS)],
-        [] if final_delivery == "cancelled" else ["done-2"],
-        "start" if final_delivery == "cancelled" else "send",
-    )
+    opening = [("start", "first-1"), ("send", "done-1"),
+               ("complete", "first-1", ProcessingOutcome.SUCCESS)]
+    if hookless:
+        opening.insert(1, ("start", "queued-1"))
+    else:
+        opening.append(("start", "queued-1"))
+    terminal = [] if final_delivery == "cancelled" else [("send", "done-2")]
+    if final_delivery == "refused":
+        from agent.i18n import t
+
+        terminal.append(("send", t("gateway.notify.plain_fallback_prefix", content="done-2")))
+    expected = [*opening, *terminal, ("complete", "queued-1", queued_outcome)]
+    assert (before_delivery, adapter.log) == ([], expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refused", [False, True])
+async def test_hookless_followup_completes_at_its_own_delivery_before_its_successor(monkeypatch, tmp_path, refused):
+    _ScriptedAgent.calls, _ScriptedAgent.results = [], [_done("done-1"), _done("done-2"), _done("done-3")]
+    _install_fake_agent(monkeypatch, tmp_path, _ScriptedAgent)
+    adapter = _BlockingSendAdapter("done-2")
+    if refused:
+        adapter.refused.add("done-2")
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(text="synthetic", source=_source())
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="synthetic and photo")
+    runner._enqueue_fifo(SESSION_KEY, MessageEvent(text="successor", source=_source(), message_id="successor"), adapter)
+    photo = MessageEvent(text="photo", source=_source(), message_id="photo", message_type=MessageType.PHOTO,
+                         media_urls=["/nonexistent/photo.jpg"], media_types=["image/jpeg"])
+
+    async def respond(event):
+        await adapter._run_processing_hook("on_processing_start", photo)
+        runner._merge_into_pending_slot(adapter, SESSION_KEY, photo)
+        result = await runner._run_agent(message=event.text, context_prompt="", history=[], source=event.source,
+                                        session_id="hookless-chain", session_key=SESSION_KEY, processing_event=event)
+        return result["final_response"]
+
+    adapter.set_message_handler(respond)
+    await adapter.handle_message(MessageEvent(text="opening", source=_source(), message_id="opening"))
+    await asyncio.wait_for(adapter.send_started.wait(), timeout=5)
+    before_delivery = [entry for entry in adapter.log if entry[:2] == ("complete", "photo")]
+    adapter.send_release.set()
+    await asyncio.gather(*adapter._background_tasks)
+    lifecycle = [entry for entry in adapter.log if entry[0] != "send"]
+    assert (before_delivery, lifecycle) == ([], [
+        ("start", "opening"), ("start", "photo"), ("complete", "opening", ProcessingOutcome.SUCCESS),
+        ("complete", "photo", ProcessingOutcome.FAILURE if refused else ProcessingOutcome.SUCCESS),
+        ("start", "successor"), ("complete", "successor", ProcessingOutcome.SUCCESS),
+    ])
 
 
 

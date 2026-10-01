@@ -44,7 +44,7 @@ class MatrixMediaUploadMixin:
             logger.error("Matrix: upload failed: %s", exc)
             return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
         msg_content: Dict[str, Any] = {
-            "msgtype": msgtype, "body": caption or filename, "info": {"mimetype": content_type, "size": len(data)}}
+            "msgtype": msgtype, "body": caption or filename, "filename": filename, "info": {"mimetype": content_type, "size": len(data)}}
         if encrypted_file is not None:
             from mautrix.types import ContentURI
 

@@ -292,9 +292,12 @@ def test_gateway_lifecycle_set_covers_desktop_card_tools():
     source = ts_path.read_text(encoding="utf-8")
 
     def set_literal(var: str) -> set[str]:
-        match = re.search(rf"const {var} = new Set\(\[(.*?)\]\)", source, re.DOTALL)
+        # Either a `new Set([...])` or a `[...] as const` tuple.
+        match = re.search(rf"const {var} = (?:new Set\()?\[(.*?)\]", source, re.DOTALL)
         assert match, f"{var} not found in {ts_path.name}"
-        return set(re.findall(r"'([^']+)'", match.group(1)))
+        names = set(re.findall(r"'([^']+)'", match.group(1)))
+        assert names, f"{var} is empty in {ts_path.name}"
+        return names
 
     # CONNECTION_CARD_KEY is the run-splitter's alias for a manage_connections
     # part, not a tool name the gateway ever sees.

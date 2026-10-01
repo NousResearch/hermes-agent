@@ -1098,6 +1098,98 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         )
         assert resp.status_code == 401
 
+    # ── GET /api/media/proxy (client-blocked CDN fallback, #74564) ──────
+
+
+    def test_media_proxy_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get(
+            "/api/media/proxy",
+            params={"url": "https://v3.fal.media/x.png"},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    def test_media_proxy_rejects_disallowed_hosts_and_schemes(self):
+        for bad in (
+            "https://evil.example.com/img.png",
+            "https://sub.fal.media.evil.com/img.png",
+            "file:///etc/passwd",
+            "not a url",
+            "",
+        ):
+            resp = self.client.get("/api/media/proxy", params={"url": bad})
+            assert resp.status_code in (400, 403), (bad, resp.status_code)
+
+    def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+            content = png_bytes
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                assert url == "https://v3.fal.media/media/abc123"
+                return _Resp()
+
+        import hermes_cli.web_routers.files as files_router
+
+        monkeypatch.setattr(files_router, "_require_token", lambda request: None, raising=False)
+        # The route imports httpx locally; patch the module it resolves from.
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://v3.fal.media/media/abc123"}
+        )
+        assert resp.status_code == 200
+        import base64
+
+        assert resp.json()["data_url"] == (
+            "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+        )
+
+    def test_media_proxy_rejects_non_image_content_type(self, monkeypatch):
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "text/html"}
+            content = b"<html>nope</html>"
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                return _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://fal.media/media/abc123"}
+        )
+        assert resp.status_code == 415
+
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 
 
@@ -4413,6 +4505,25 @@ class TestDeleteEmptySessionsEndpoint:
             assert db.count_empty_sessions() == 0
         finally:
             db.close()
+
+    def test_delete_removes_on_disk_files_of_deleted_sessions_only(self):
+        """Deleting an empty session also removes its files in ``sessions/``.
+        A kept session's files stay."""
+        from hermes_constants import get_hermes_home
+
+        self._seed()
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        deleted_files = [sessions_dir / "session_empty1.json", sessions_dir / "request_dump_empty2_1.json"]
+        kept_file = sessions_dir / "session_hasmsg.json"
+        for path in (*deleted_files, kept_file):
+            path.write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/empty")
+
+        assert resp.json() == {"ok": True, "deleted": 2}
+        assert [p for p in deleted_files if p.exists()] == []
+        assert kept_file.exists()
 
 
 class TestPluginAPIAuth:

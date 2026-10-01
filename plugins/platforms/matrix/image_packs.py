@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from itertools import islice
-from typing import Any, Awaitable
+from typing import Any, Awaitable, Callable
 
 from gateway.config import Platform
 from gateway.session_context import get_session_env, get_session_transport
@@ -212,10 +212,16 @@ class PackRequest:
     state_store: Any
     session_store: Any
     stored_session_id: str | None
+    interrupt_check: Callable[[], bool] | None = field(default=None, repr=False)
+    before_write: Callable[[], None] | None = field(default=None, repr=False)
     admissions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    async def capture(cls, adapter: Any, room_id: str, requester: str) -> PackRequest:
+    async def capture(
+        cls, adapter: Any, room_id: str, requester: str,
+        interrupt_check: Callable[[], bool] | None = None,
+        before_write: Callable[[], None] | None = None,
+    ) -> PackRequest:
         session_key = get_session_env("HERMES_SESSION_KEY")
         session_id = get_session_env("HERMES_SESSION_ID")
         session_store = getattr(adapter, "_session_store", None)
@@ -251,6 +257,8 @@ class PackRequest:
             getattr(adapter._client, "state_store", None),
             session_store,
             stored_session_id,
+            interrupt_check,
+            before_write,
         )
 
     def owner(self) -> tuple[Any, ...]:
@@ -266,6 +274,8 @@ class PackRequest:
         )
 
     def check(self) -> None:
+        if self.interrupt_check is not None and self.interrupt_check():
+            raise PackError("Matrix image-pack request interrupted")
         adapter = self.adapter
         if (
             get_session_transport()[0] is not adapter
@@ -753,11 +763,19 @@ async def _send(
     if _selections(request.adapter).get(selection_id) is not selection:
         raise PackError("Matrix image selection expired; list packs again")
     try:
+        if request.before_write is not None:
+            request.before_write()
         event_id = await ClientAPI.send_message_event(
             request.client, RoomID(request.room_id), wire_type, wire_content
         )
     except Exception as exc:
-        return {"error": str(exc)}
+        if getattr(exc, "errcode", None):
+            return {"error": str(exc)}
+        return {
+            "error": f"Matrix sticker send failed: {type(exc).__name__}",
+            "outcome": "unknown",
+            "next_step": "Check the room before retrying the sticker send",
+        }
     try:
         request.check()
     except PackError as exc:
@@ -781,9 +799,11 @@ async def matrix_image_packs(
     selection_id: str | None = None,
     reply_to: str | None = None,
     thread_id: str | None = None,
+    interrupt_check: Callable[[], bool] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> dict:
     try:
-        request = await PackRequest.capture(adapter, room_id, requester)
+        request = await PackRequest.capture(adapter, room_id, requester, interrupt_check, before_write)
         if action == "list":
             return await Catalog(request, [], []).discover()
         if action == "send" and isinstance(selection_id, str):

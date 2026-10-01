@@ -23,7 +23,11 @@ async def test_registry_dispatch_preserves_owner_loop_and_current_route(action, 
     calls = []
 
     async def packs(*positional, **kwargs):
-        calls.append((positional, kwargs, asyncio.get_running_loop() is loop))
+        interrupted = kwargs.pop("interrupt_check")
+        before_write = kwargs.pop("before_write")
+        if action == "send":
+            before_write()
+        calls.append((positional, kwargs, asyncio.get_running_loop() is loop, interrupted()))
         return {"success": True}
 
     adapter = SimpleNamespace(matrix_image_packs=packs)
@@ -54,6 +58,7 @@ async def test_registry_dispatch_preserves_owner_loop_and_current_route(action, 
                 "reply_to": "$reply",
             },
             True,
+            False,
         )
     ]
     assert (

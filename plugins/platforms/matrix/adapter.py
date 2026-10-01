@@ -3237,9 +3237,11 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
     async def matrix_image_packs(
         self, action: str, room_id: str, *, requester: str, selection_id: str | None = None,
         reply_to: str | None = None, thread_id: str | None = None,
+        interrupt_check: Callable[[], bool] | None = None, before_write: Callable[[], None] | None = None,
     ) -> dict:
         return await matrix_image_packs(self, action, room_id, requester=requester,
-            selection_id=selection_id, reply_to=reply_to, thread_id=thread_id)
+            selection_id=selection_id, reply_to=reply_to, thread_id=thread_id,
+            interrupt_check=interrupt_check, before_write=before_write)
 
     async def inspect_matrix_room(
         self, kind: str, room_id: str, limit: int, *, requester: str,

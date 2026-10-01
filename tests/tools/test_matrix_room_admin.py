@@ -70,7 +70,7 @@ def test_matrix_admin_discovery_requires_explicit_matrix_selection(platform, ena
             reset_hermes_home_override(token)
         names = {schema["function"]["name"] for schema in schemas
                  if schema["function"]["name"].startswith("matrix_")}
-        expected = {"matrix_read"} if platform == "matrix" else set()
+        expected = {"matrix_read", "matrix_image_packs"} if platform == "matrix" else set()
         if opt_in and platform == "matrix":
             expected |= {"matrix_room_admin", "matrix_pin"}
         assert names == expected

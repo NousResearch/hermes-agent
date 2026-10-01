@@ -74,6 +74,156 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 
 
+_OTHER_LIVE_PATHS_SQL = (
+    "SELECT workspace_path FROM tasks "
+    "WHERE id != ? AND workspace_path IS NOT NULL "
+    "AND status NOT IN ('done', 'archived', 'failed', 'cancelled')"
+)
+# Sibling boards mint their own ids, so the id being cleaned up here can
+# name a different live task there. Do not exclude it.
+_ANY_LIVE_PATHS_SQL = (
+    "SELECT workspace_path FROM tasks "
+    "WHERE workspace_path IS NOT NULL "
+    "AND status NOT IN ('done', 'archived', 'failed', 'cancelled')"
+)
+
+
+def _row_path(row) -> str:
+    try:
+        return row["workspace_path"] or ""
+    except (KeyError, IndexError, TypeError):
+        return row[0] or ""
+
+
+def _conn_uses_path(
+    conn: sqlite3.Connection, task_id: str, key: str, *, exclude_task_id: bool = True
+) -> bool:
+    if exclude_task_id:
+        rows = conn.execute(_OTHER_LIVE_PATHS_SQL, (task_id,)).fetchall()
+    else:
+        rows = conn.execute(_ANY_LIVE_PATHS_SQL).fetchall()
+    for row in rows:
+        other = _row_path(row)
+        if not other:
+            continue
+        try:
+            other_key = _path_key(Path(other).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+        if other_key == key:
+            return True
+    return False
+
+
+def _connection_db_file(conn: sqlite3.Connection) -> Optional[Path]:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if row is None:
+        return None
+    file = row[2]
+    if not file:
+        return None
+    return Path(file).resolve()
+
+
+def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
+    """Every other board's ``kanban.db``. Raises ``OSError`` when the set is unknown.
+
+    ``kanban_db_path`` follows ``HERMES_KANBAN_DB`` and would collapse every
+    slug onto the pinned file, so the scan uses the on-disk layout: the
+    default board at ``<home>/kanban.db`` and named boards at
+    ``<home>/kanban/boards/<slug>/kanban.db``.
+    """
+    current = _connection_db_file(conn)
+    home = _kb.kanban_home()
+    candidates = [home / "kanban.db"]
+    root = home / "kanban" / "boards"
+    if root.is_dir():
+        for child in root.iterdir():
+            if child.is_dir():
+                candidates.append(child / "kanban.db")
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if current is not None and resolved == current:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(resolved)
+    return found
+
+
+def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
+    uri = db_file.resolve().as_uri() + "?mode=ro"
+    other = sqlite3.connect(uri, uri=True, timeout=1.0)
+    try:
+        other.row_factory = sqlite3.Row
+        return _conn_uses_path(other, task_id, key, exclude_task_id=False)
+    finally:
+        other.close()
+
+
+def _workspace_in_use_by_other(
+    conn: sqlite3.Connection, task_id: str, path: Path | str
+) -> bool:
+    """True when another non-terminal task still points at the same scratch dir.
+
+    ``gc``, completion and deferred parent cleanup used to ``rmtree`` a shared
+    ``workspace_path`` as soon as one of its tasks went terminal. Compare the
+    resolved path: a row may store ``~`` or a symlinked spelling.
+
+    The connection covers one board. A ready task on a named board can point
+    at the same directory. If that set of databases cannot be read, refuse
+    the delete.
+    """
+    try:
+        key = _path_key(Path(path).expanduser().resolve(strict=False))
+    except OSError:
+        return True
+    if not key:
+        return False
+    try:
+        if _conn_uses_path(conn, task_id, key):
+            return True
+    except sqlite3.Error:
+        return True
+    try:
+        siblings = _sibling_board_db_files(conn)
+    except OSError:
+        return True
+    for db_file in siblings:
+        try:
+            if _other_board_uses_path(db_file, task_id, key):
+                return True
+        except (OSError, sqlite3.Error):
+            return True
+    return False
+
+
+def _defer_shared_workspace_cleanup(
+    conn: sqlite3.Connection, task_id: str, path: Path | str
+) -> bool:
+    """Skip removal and record why, when another live task still uses *path*."""
+    if not _workspace_in_use_by_other(conn, task_id, path):
+        return False
+    _kb._log.warning(
+        "Deferring workspace cleanup for task %s: %s is still used by "
+        "another non-terminal task",
+        task_id, path,
+    )
+    try:
+        _kb._append_event(
+            conn, task_id, "workspace_cleanup_deferred_shared",
+            {"path": str(path)},
+        )
+    except Exception:
+        pass
+    return True
+
+
 def _lexical_path(path: Path | str) -> Path:
     """Absolute, ``..``-collapsed, NFC form of *path* WITHOUT following symlinks."""
     return Path(_path_key(os.path.abspath(path)))
@@ -212,10 +362,15 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # lingering worker never has its cwd deleted from under it.
         if kind == "worktree":
             _cleanup_worker_tmux(conn, task_id)
-            _cleanup_worktree_workspace(task_id, path, row["branch_name"])
+            if not _defer_shared_workspace_cleanup(conn, task_id, path):
+                _cleanup_worktree_workspace(task_id, path, row["branch_name"])
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         wp = Path(path)
+        if _defer_shared_workspace_cleanup(conn, task_id, path):
+            _cleanup_worker_tmux(conn, task_id)
+            _try_cleanup_parent_workspaces(conn, task_id)
+            return
         if wp.is_dir():
             # Containment guard: a board's ``default_workdir`` can pair
             # ``workspace_kind='scratch'`` with a user path pointing at a real
@@ -335,6 +490,8 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 or not row["workspace_path"]
                 or _has_active_children(conn, parent_id)
             ):
+                continue
+            if _defer_shared_workspace_cleanup(conn, parent_id, row["workspace_path"]):
                 continue
             if row["workspace_kind"] == "worktree":
                 _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])

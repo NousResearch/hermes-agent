@@ -1923,6 +1923,7 @@ export interface ProfileSessionPreview {
   started_at?: number
   last_active?: number
   message_count?: number
+  live_message_count?: number | null
 }
 /** Newest kanban/tool worker row, so rosters can show a profile as working. */
 export interface ProfileWorkerSession {
@@ -1941,6 +1942,7 @@ export interface ProfileCanonicalSession {
   started_at?: number
   last_active?: number
   message_count?: number
+  live_message_count?: number | null
 }
 /** ``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on so a headless bot has a provider. */
 export interface ProfilesCreateParams {
@@ -2946,6 +2948,7 @@ export interface SessionCreateParams {
   hidden?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
+  idempotency_key?: string | null
 }
 /** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does not use, so the row stays open. */
 export interface SeedMessage {
@@ -2997,6 +3000,7 @@ export interface SessionBranchStoredParams {
   cols?: number | null
   source?: string | null
   cwd?: string | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchStoredResult {
   session_id: string
@@ -3127,6 +3131,7 @@ export interface SessionListRow {
   preview?: string
   started_at?: number
   message_count?: number
+  live_message_count?: number | null
   source?: string
 }
 export interface SessionMostRecentParams {
@@ -3259,6 +3264,7 @@ export interface SessionBranchParams {
   profile?: string | null
   name?: string | null
   count?: number | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchResult {
   session_id: string
@@ -3273,6 +3279,7 @@ export interface SessionBranchWholeParams {
   session_id: string
   profile?: string | null
   name?: string | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchWholeResult {
   session_id: string
@@ -3640,6 +3647,7 @@ export interface CommandsCatalogResult {
 export interface CommandCatalogMeta {
   argument_mode?: ArgumentMode | null
   desktop?: string | null
+  desktop_subcommands?: string[] | null
 }
 export type ArgumentMode = 'options' | 'text' | 'mixed'
 export interface CommandCategory {
@@ -4684,6 +4692,14 @@ export interface SessionReclaimedPayload {
   stored_session_id: string
   reason: string
 }
+/** ``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast). One frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the deny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled. ``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the two can disagree when an entry has no request_id. */
+export interface ApprovalCancelledPayload {
+  session_id: string
+  stored_session_id: string
+  reason: string
+  cancelled_count: number
+  request_ids: string[]
+}
 export interface SessionControlUpdatePayload {
   control: SessionControlSnapshot
 }
@@ -5667,6 +5683,8 @@ export const SERVER_REQUEST_METHODS = [
 export interface BackendGatewayEventMap {
   /** Output chunk from an agent-owned background process. */
   'agent.terminal.output': TerminalOutputPayload
+  /** Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal). */
+  'approval.cancelled': ApprovalCancelledPayload
   /** A /background side agent finished. */
   'background.complete': SideAgentCompletePayload
   /** Device-flow URL + code for the billing scope step-up; the client opens the browser. */
@@ -5817,6 +5835,7 @@ export interface BackendGatewayEventMap {
 export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
   'agent.terminal.output',
+  'approval.cancelled',
   'background.complete',
   'billing.step_up.verification',
   'bot_relay.outbox.pending',

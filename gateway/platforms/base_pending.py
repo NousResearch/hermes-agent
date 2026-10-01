@@ -77,9 +77,11 @@ def _same_pending_security_context(first: MessageEvent, second: MessageEvent) ->
 
 
 def _can_join_pending_event(first: MessageEvent, second: MessageEvent) -> bool:
-    """Whether coalescing preserves sender, control permissions and reply context."""
+    """Whether coalescing preserves attribution, reply context and turn validation."""
     return (
         same_message_sender(first, second)
+        and not first._queue_at_turn_boundary
+        and not second._queue_at_turn_boundary
         and _same_pending_security_context(first, second)
         and not first.reply_context_conflicts(second)
     )

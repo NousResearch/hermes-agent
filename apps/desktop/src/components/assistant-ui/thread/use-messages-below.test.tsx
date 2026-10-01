@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $threadMessagesBelowBySession, resetThreadScroll } from '@/store/thread-scroll'
 
-import { countMessagesBelow, useMessagesBelow } from './use-messages-below'
+import { countMessagesBelow, createMessagesBelowReader, useMessagesBelow } from './use-messages-below'
 
 function rect(top: number, bottom: number): DOMRect {
-  return { top, bottom, height: bottom - top } as DOMRect
+  return { top, bottom, height: bottom - top, width: 800 } as DOMRect
 }
 
 function transcript() {
@@ -69,10 +69,79 @@ describe('messages below the viewport', () => {
     expect(countMessagesBelow(viewport, content).count).toBe(0)
   })
 
+  it('finds the fold with logarithmic group reads and reuses membership across scroll frames', () => {
+    const count = 512
+    const viewport = window.document.createElement('div')
+    const content = window.document.createElement('div')
+    viewport.append(content)
+    let scrollTop = 0
+    vi.spyOn(viewport, 'getBoundingClientRect').mockImplementation(() => rect(0, 600))
+    const reads = { groups: 0, messages: 0 }
+    const queries = vi.spyOn(content, 'querySelectorAll')
+
+    for (let index = 0; index < count; index++) {
+      const group = window.document.createElement('div')
+      group.dataset.slot = 'aui_message-group'
+      content.append(group)
+      vi.spyOn(group, 'getBoundingClientRect').mockImplementation(() => {
+        reads.groups++
+
+        return rect(index * 100 - scrollTop, index * 100 + 100 - scrollTop)
+      })
+
+      for (const [slot, start, end] of [
+        ['aui_user-message-root', 0, 40],
+        ['aui_assistant-message-root', 40, 100]
+      ] as const) {
+        const message = window.document.createElement('div')
+        message.dataset.slot = slot
+        group.append(message)
+        vi.spyOn(message, 'getBoundingClientRect').mockImplementation(() => {
+          reads.messages++
+
+          return rect(index * 100 + start - scrollTop, index * 100 + end - scrollTop)
+        })
+      }
+    }
+
+    const reader = createMessagesBelowReader(viewport, content)
+
+    for (const index of [300, 20, 500, 200]) {
+      scrollTop = index * 100 + 50
+      reads.groups = reads.messages = 0
+      const result = reader.read()
+      const straddling = index + 6
+      const expected = 1 + (count - straddling - 1) * 2
+      expect(result).toEqual({ count: expected, settled: true })
+      expect(reads.groups).toBeLessThanOrEqual(Math.ceil(Math.log2(count)) + 2)
+      expect(reads.messages).toBe(2)
+    }
+
+    expect(queries.mock.calls.filter(([selector]) => selector === '[data-slot="aui_message-group"]').length).toBe(1)
+  })
+
+  it('invalidates cached membership only when counted message structure changes', () => {
+    const { viewport, content } = transcript()
+    const reader = createMessagesBelowReader(viewport, content)
+    expect(reader.read().count).toBe(1)
+
+    const paragraph = window.document.createElement('p')
+    expect(
+      reader.invalidate([{ type: 'childList', addedNodes: [paragraph], removedNodes: [] } as unknown as MutationRecord])
+    ).toBe(false)
+
+    const extra = window.document.createElement('div')
+    extra.dataset.slot = 'aui_system-message-root'
+    expect(
+      reader.invalidate([{ type: 'childList', addedNodes: [extra], removedNodes: [] } as unknown as MutationRecord])
+    ).toBe(true)
+  })
+
   it('remeasures scroll and resize, ignores hidden panes, and clears at the bottom', () => {
     const { viewport, content, assistantRect } = transcript()
     let frame: FrameRequestCallback | undefined
     let resize: ResizeObserverCallback | undefined
+    let mutate: MutationCallback | undefined
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       frame = callback
 
@@ -86,6 +155,17 @@ describe('messages below the viewport', () => {
       class {
         constructor(callback: ResizeObserverCallback) {
           resize = callback
+        }
+
+        observe() {}
+        disconnect() {}
+      }
+    )
+    vi.stubGlobal(
+      'MutationObserver',
+      class {
+        constructor(callback: MutationCallback) {
+          mutate = callback
         }
 
         observe() {}
@@ -113,6 +193,10 @@ describe('messages below the viewport', () => {
     const { rerender } = renderHook(props => useMessagesBelow(props), { initialProps: options })
     flush()
     expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
+
+    // Non-message subtree mutations do not schedule another geometry read.
+    mutate?.([{ type: 'childList', addedNodes: [window.document.createElement('span')], removedNodes: [] } as unknown as MutationRecord], {} as MutationObserver)
+    expect(frame).toBeUndefined()
 
     // Another visible pane reaching bottom must not erase this reader's count.
     const sibling = renderHook(() => useMessagesBelow({ ...options, sessionId: 'runtime-b', isAtBottom: true }))
@@ -169,6 +253,13 @@ describe('messages below the viewport', () => {
     })
     vi.stubGlobal(
       'ResizeObserver',
+      class {
+        observe() {}
+        disconnect() {}
+      }
+    )
+    vi.stubGlobal(
+      'MutationObserver',
       class {
         observe() {}
         disconnect() {}

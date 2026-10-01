@@ -1,6 +1,6 @@
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 
@@ -18,6 +18,58 @@ export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileSc
     connectionId: owner.connectionId,
     profile: owner.targetProfile ?? owner.profile
   }
+}
+
+export interface TranscriptRefresh {
+  messages: ChatMessage[]
+  /**
+   * The refreshed surplus carries a user row this window never streamed: another
+   * view of the same chat is ahead, and the pre-send guard must refuse (fork
+   * risk). False when the surplus is this window's own server-side residue — a
+   * turn that died on an approval timeout leaves its tool/assistant rows
+   * server-side while the window only holds its optimistic user message, whose
+   * id/rowId never reconciled. Graft silently and let the send proceed (#124005).
+   */
+  competingView: boolean
+}
+
+/**
+ * Whether the refreshed transcript carries a user row this window does not know.
+ * Durable ids and row ids are authoritative. The only text match allowed is the
+ * current optimistic prompt identified by `optimisticMessageId`; matching all
+ * user text would mistake a repeated prompt from another window for this
+ * window's own turn. Assistant/tool-only surplus rows are this window's own
+ * turn residue (#124005).
+ */
+export function surplusIsCompetingView(
+  localMessages: ChatMessage[],
+  refreshed: ChatMessage[],
+  options?: { optimisticMessageId?: string }
+): boolean {
+  const localUsers = localMessages.filter(message => message.role === 'user')
+  const matchedLocalUsers = new Set<number>()
+
+  return refreshed.some(message => {
+    if (message.role !== 'user') {
+      return false
+    }
+
+    const matchIndex = localUsers.findIndex(
+      (local, index) =>
+        !matchedLocalUsers.has(index) &&
+        (local.id === message.id ||
+          (message.rowId !== undefined && local.rowId === message.rowId) ||
+          (local.id === options?.optimisticMessageId && local.rowId === undefined &&
+            chatMessageText(local) === chatMessageText(message)))
+    )
+
+    if (matchIndex < 0) {
+      return true
+    }
+
+    matchedLocalUsers.add(matchIndex)
+    return false
+  })
 }
 
 /**
@@ -112,12 +164,7 @@ export function messagesIfTranscriptBehind(
   return authoredMessageCount(grafted) > localAuthored ? grafted : null
 }
 
-/**
- * Read the authoritative latest page and return a refreshed transcript when
- * this view is behind. Null when current or the read fails — a missing
- * profile or a down backend must not soft-lock send.
- */
-export async function refreshIfTranscriptStale(
+async function fetchRefreshedTranscript(
   storedSessionId: string,
   localMessages: ChatMessage[],
   options?: { excludeMessageId?: string; profile?: ProfileScope }
@@ -142,5 +189,43 @@ export async function refreshIfTranscriptStale(
     return preserveLocalAssistantErrors(refreshed, baseline)
   } catch {
     return null
+  }
+}
+
+/**
+ * Read the authoritative latest page and return a refreshed transcript when
+ * this view is behind. Null when current or the read fails — a missing
+ * profile or a down backend must not soft-lock send.
+ */
+export async function refreshIfTranscriptStale(
+  storedSessionId: string,
+  localMessages: ChatMessage[],
+  options?: { excludeMessageId?: string; profile?: ProfileScope }
+): Promise<ChatMessage[] | null> {
+  return fetchRefreshedTranscript(storedSessionId, localMessages, options)
+}
+
+/**
+ * Same read, plus whether the surplus is a competing view's message. The
+ * pre-send guard refuses only a competing view; this window's own server-side
+ * turn residue (a turn that died on an approval timeout) is grafted silently
+ * and the send proceeds (#124005).
+ */
+export async function transcriptRefreshIfBehind(
+  storedSessionId: string,
+  localMessages: ChatMessage[],
+  options?: { excludeMessageId?: string; profile?: ProfileScope }
+): Promise<TranscriptRefresh | null> {
+  const messages = await fetchRefreshedTranscript(storedSessionId, localMessages, options)
+
+  if (!messages) {
+    return null
+  }
+
+  return {
+    messages,
+    competingView: surplusIsCompetingView(localMessages, messages, {
+      optimisticMessageId: options?.excludeMessageId
+    })
   }
 }

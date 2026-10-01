@@ -38,6 +38,15 @@ it('lets the agents shortcut leave the composer without stealing redo', () => {
   expect(shouldPassThroughToGlobalHandler('y', key)).toBe(false)
 })
 
+it('keeps the reasoning effort the live roster reports for a child', () => {
+  const data = {
+    subagents: [{ subagent_id: 'child', goal: 'inspect', model: 'claude-opus-5-5', reasoning_effort: 'xhigh' }],
+    delegations: []
+  }
+
+  expect(mergeAgentRoster([], data)[0]?.reasoningEffort).toBe('xhigh')
+})
+
 it('merges one row per actual child and does not notify unchanged snapshots', () => {
   const data = {
     subagents: [{ subagent_id: 'child', delegation_id: 'batch', goal: 'inspect', started_at: 1 }],

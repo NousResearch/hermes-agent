@@ -57,7 +57,8 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
         goals=["owned task"], context="private handoff", toolsets=None, role="leaf", model="test",
         session_key="parent", origin_ui_session_id="ui-owner", runner=run)
     did = dispatch["delegation_id"]
-    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, _delegation_id=did, model="test")
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, _delegation_id=did, model="test",
+                            reasoning_config={"enabled": True, "effort": "xhigh"})
     _register_child(child, None, "owned task", owner_session_id="ui-owner",
                          owner_transport=transport, owner_session_record=owner)
     foreign = SimpleNamespace(_subagent_id="foreign", _delegate_depth=1, model="test")
@@ -71,6 +72,7 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
         snapshot = call("subagent.list")["result"]
         assert [s["subagent_id"] for s in snapshot["subagents"]] == ["child"]
         assert snapshot["subagents"][0]["last_tool"] == "read_file"
+        assert snapshot["subagents"][0]["reasoning_effort"] == "xhigh"
         assert snapshot["delegations"] == []
         assert snapshot["subagents"][0]["tool_count"] == 1
         wire = json.dumps(snapshot)

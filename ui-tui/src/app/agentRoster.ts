@@ -39,6 +39,7 @@ export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListR
       goal: s.goal || previous?.goal || 'Starting agent',
       delegationId: s.delegation_id ?? previous?.delegationId,
       model: s.model ?? previous?.model,
+      reasoningEffort: s.reasoning_effort ?? previous?.reasoningEffort,
       startedAt: s.started_at != null ? s.started_at * 1000 : previous?.startedAt,
       // Snapshot replies may predate progress/completion events already rendered.
       status: previous && previous.status !== 'queued' ? previous.status : s.status === 'queued' ? 'queued' : 'running',

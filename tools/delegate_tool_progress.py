@@ -35,6 +35,15 @@ def _safe_progress(cb: Any, event_type: Any, *args: Any, **kwargs: Any) -> None:
         with _quiet("Progress callback %s failed: %s", event_type):
             cb(event_type, *args, **kwargs)
 
+def _reasoning_label(reasoning_config: Any) -> Optional[str]:
+    """The effort a child runs at, as shown in the agents panel: its level, ``none`` when disabled, else None."""
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = reasoning_config.get("effort")
+    return str(effort) if effort else None
+
 def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     """Reduce an error payload (traceback / JSON wall) to one clean line: the exception message (last line of a
     traceback) or the first non-empty line, hard-capped in length."""

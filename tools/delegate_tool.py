@@ -37,7 +37,7 @@ from tools.delegate_tool_config import (  # noqa: F401
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
-    _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
+    _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _reasoning_label, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
 from tools.delegate_tool_registry import (  # noqa: F401
@@ -68,15 +68,6 @@ def _normalize_role(r: Optional[str]) -> str:
         logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
         return "leaf"
     return r_norm
-
-def _reasoning_label(reasoning_config: Any) -> Optional[str]:
-    """The effort a child runs at, as shown in the agents panel: its level, ``none`` when disabled, else None."""
-    if not isinstance(reasoning_config, dict):
-        return None
-    if reasoning_config.get("enabled") is False:
-        return "none"
-    effort = reasoning_config.get("effort")
-    return str(effort) if effort else None
 
 DEFAULT_MAX_ITERATIONS = 250
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation

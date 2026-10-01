@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shlex
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
@@ -79,6 +81,8 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+# Disabled by default: unlike web/subagent caps, a useful discovery budget is task-specific.
+_DEFAULT_MAX_DISCOVERY_CALLS_PER_TURN = 0
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -104,6 +108,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_discovery_calls: int = _DEFAULT_MAX_DISCOVERY_CALLS_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
@@ -281,6 +286,11 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "loop_discovery_cap": (
+        "Blocked {tool_name}: this turn has already made {count} file-discovery calls (limit {cap}). "
+        "Stop gathering more file context; use the evidence already collected, take the next non-discovery action, "
+        "or explain the specific blocker."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -337,6 +347,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_discovery_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -549,6 +560,14 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision | None:
         """Block once a per-turn cap is reached (BEFORE the call, so the (cap+1)-th is refused), else advance
         the counter and return None. delegate_task control actions spawn nothing and keep working after the cap."""
+        if _is_file_discovery_call(tool_name, args):
+            cap = self.config.loop_caps.max_discovery_calls
+            count = self._turn_discovery_count
+            if cap and count >= cap:
+                return self._decide("block", "loop_discovery_cap", tool_name, count, signature, cap=cap)
+            if cap:
+                self._turn_discovery_count = count + 1
+
         spec = _LOOP_CAPS.get(tool_name)
         if spec is None:
             return None
@@ -644,6 +663,60 @@ def _int_at_least(value: Any, default: int, minimum: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= minimum else default
+
+
+
+_FILE_DISCOVERY_TOOLS = frozenset({"read_file", "search_files"})
+_TERMINAL_DISCOVERY_COMMANDS = frozenset({"cat", "head", "tail", "get-content", "rg", "grep"})
+_PYTHON_COMMAND_RE = re.compile(r"^(?:python(?:3(?:\\.\\d+)?)?|py)(?:\\.exe)?$", re.IGNORECASE)
+_PYTHON_FILE_READ_RE = re.compile(
+    r"(?:open\\s*\\([^)]*\\)\\s*\\.\\s*(?:read|readlines)\\s*\\("
+    r"|path\\s*\\([^)]*\\)\\s*\\.\\s*read_(?:text|bytes)\\s*\\()",
+    re.IGNORECASE,
+)
+
+
+def _command_basename(token: str) -> str:
+    return token.replace("\\\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _terminal_is_clear_file_discovery(command: Any) -> bool:
+    """Recognize only unmistakable read/search shell forms; ambiguous/effectful commands fail open."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    # Any shell composition/redirection makes the command ambiguous: do not infer intent.
+    if any(token and all(ch in "|&;<>" for ch in token) for token in tokens):
+        return False
+
+    executable = _command_basename(tokens[0])
+    if executable in _TERMINAL_DISCOVERY_COMMANDS:
+        return True
+    if not _PYTHON_COMMAND_RE.fullmatch(executable):
+        return False
+    try:
+        code_index = tokens.index("-c") + 1
+        code = tokens[code_index]
+    except (ValueError, IndexError):
+        return False
+    # Keep Python classification deliberately tiny; multi-statement/effectful one-liners stay unmetered.
+    if any(ch in code for ch in ";\n\r"):
+        return False
+    return bool(_PYTHON_FILE_READ_RE.search(code))
+
+
+def _is_file_discovery_call(tool_name: str, args: Mapping[str, Any]) -> bool:
+    if tool_name in _FILE_DISCOVERY_TOOLS:
+        return True
+    return tool_name == "terminal" and _terminal_is_clear_file_discovery(args.get("command"))
 
 
 def _subagent_spawn_count(args: Mapping[str, Any]) -> int:

@@ -140,6 +140,105 @@ def test_rebuild_finishing_after_close_closes_the_replacement_and_its_handle(tmp
     assert closed == ["agent", "db"]
 
 
+@pytest.mark.parametrize("action,names", [
+    ("enable", ["terminal"]),
+    ("disable", ["web"]),
+    ("enable", ["not-a-toolset"]),
+    ("enable", ["missing:tool"]),
+    ("enable", ["local:enabled"]),
+    ("disable", ["local:disabled"]),
+])
+def test_unchanged_tools_preserve_agent_and_conversation(tmp_path, monkeypatch, action, names):
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    from tui_gateway import server
+
+    home = tmp_path / ".hermes"
+    secondary = home / "profiles" / "worker"
+    secondary.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    config = {"platform_toolsets": {"cli": ["terminal"]},
+              "mcp_servers": {"local": {"command": "unused", "tools": {"exclude": ["disabled"]}}}}
+    for path in (home, secondary):
+        (path / "config.yaml").write_text(yaml.safe_dump(config))
+    monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: SimpleNamespace(
+        _session_db=kwargs.get("session_db"), _owns_session_db=False, cached_prefix=b"replacement"))
+    monkeypatch.setattr(server, "_config_model_target", lambda: "configured")
+    monkeypatch.setattr(server, "_session_info", lambda *_: {})
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_: None)
+    monkeypatch.setattr(server, "_emit", lambda *_: None)
+    previously_multiplexed = is_multiplex_active()
+    set_multiplex_active(True)
+    stores = []
+    try:
+        for index, path in enumerate((home, secondary, home)):
+            db = SessionDB(db_path=path / "state.db")
+            stores.append(db)
+            agent = SimpleNamespace(_session_db=db, _owns_session_db=False, cached_prefix=b"original")
+            history = [{"role": "user", "content": "cached conversation"}]
+            picks = {"model_override": {"model": "selected"}, "create_service_tier_override": "priority"}
+            sid = f"unchanged-tools-{index}"
+            session = {"agent": agent, "profile_home": str(path), "session_key": sid,
+                       "history": history, "history_lock": threading.Lock(), "history_version": 7,
+                       "source": "desktop", **picks}
+            monkeypatch.setitem(server._sessions, sid, session)
+            response = server._methods["tools.configure"](index, {
+                "session_id": sid, "action": action, "names": names})
+            assert "error" not in response, response
+            assert {
+                "same_agent": session["agent"] is agent,
+                "cached_prefix": session["agent"].cached_prefix,
+                "history": session["history"], "history_version": session["history_version"],
+                "picks": {key: session.get(key) for key in picks},
+                "reset": response["result"]["reset"], "info": response["result"]["info"],
+                "ambient_home": get_hermes_home(),
+            } == {
+                "same_agent": True, "cached_prefix": b"original", "history": history,
+                "history_version": 7, "picks": picks, "reset": False, "info": None,
+                "ambient_home": home,
+            }
+    finally:
+        set_multiplex_active(previously_multiplexed)
+        for db in stores:
+            db.close()
+
+
+@pytest.mark.parametrize("action,exclude,expected", [
+    ("disable", [], ["tool"]),
+    ("enable", ["tool"], []),
+])
+def test_mcp_selection_change_resets_only_the_owning_profile(tmp_path, monkeypatch, action, exclude, expected):
+    from hermes_constants import get_hermes_home
+    from tui_gateway import server
+
+    home = tmp_path / ".hermes"
+    secondary = home / "profiles" / "worker"
+    secondary.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    config = {"platform_toolsets": {"cli": ["terminal"]},
+              "mcp_servers": {"local": {"command": "unused", "tools": {"exclude": exclude}}}}
+    for path in (home, secondary):
+        (path / "config.yaml").write_text(yaml.safe_dump(config))
+    launch_before = (home / "config.yaml").read_bytes()
+    resets = []
+    monkeypatch.setattr(server, "_reset_session_agent", lambda *_: resets.append(get_hermes_home()) or {})
+    monkeypatch.setitem(server._sessions, "mcp-selection", {"profile_home": str(secondary)})
+    response = server._methods["tools.configure"](1, {
+        "session_id": "mcp-selection", "action": action, "names": ["local:tool"]})
+    assert {
+        "error": response.get("error"), "reset": response.get("result", {}).get("reset"),
+        "reset_homes": resets, "launch_bytes": (home / "config.yaml").read_bytes(),
+        "exclude": yaml.safe_load((secondary / "config.yaml").read_text())["mcp_servers"]["local"]["tools"]["exclude"],
+        "ambient_home": get_hermes_home(),
+    } == {
+        "error": None, "reset": True, "reset_homes": [secondary],
+        "launch_bytes": launch_before, "exclude": expected, "ambient_home": home,
+    }
+
+
 @pytest.mark.parametrize("compressing", [False, True])
 def test_tools_configure_preserves_busy_session_and_profile(tmp_path, monkeypatch, compressing):
     from tui_gateway import server

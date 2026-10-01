@@ -1483,6 +1483,71 @@ async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["reply-fetch", "cached-edit", "thread-fetch"])
+@pytest.mark.parametrize("fallback", ["user-quote", "legacy-pill", "formatted-reply"])
+async def test_context_preserves_user_quotes_and_removes_reply_fallbacks(
+    path, fallback
+):
+    from plugins.platforms.matrix.reply_context import (
+        MatrixEventContext,
+        MatrixEventContextCache,
+    )
+    from plugins.platforms.matrix.thread_context import fetch_thread_entries
+
+    quote = "> a user-authored quote"
+    content = {"msgtype": "m.text", "body": f"{quote}\n\nrest of the message"}
+    expected = content["body"]
+    if fallback == "legacy-pill":
+        content["body"] = "> <@alice:example.org> earlier\n\nrest of the message"
+        expected = "rest of the message"
+    if fallback == "formatted-reply":
+        content.update(
+            format="org.matrix.custom.html",
+            formatted_body=(
+                "<mx-reply><blockquote>earlier</blockquote></mx-reply>rest of the message"
+            ),
+        )
+        expected = "rest of the message"
+    cache = MatrixEventContextCache()
+    client = MagicMock()
+    client.get_event = AsyncMock(
+        return_value={"sender": "@alice:example.org", "content": content}
+    )
+    if path == "reply-fetch":
+        entry = await cache.resolve(client, "!room", "$parent")
+    elif path == "cached-edit":
+        cache.store(
+            "!room", "$parent", MatrixEventContext("@alice:example.org", "previous")
+        )
+        cache.apply_edit(
+            "!room",
+            "@alice:example.org",
+            {
+                "m.relates_to": {"rel_type": "m.replace", "event_id": "$parent"},
+                "m.new_content": content,
+            },
+        )
+        entry = await cache.resolve(client, "!room", "$parent")
+    else:
+        client.get_event = AsyncMock(side_effect=RuntimeError("root unavailable"))
+        client.api.request = AsyncMock(
+            return_value={
+                "chunk": [
+                    {
+                        "event_id": "$parent",
+                        "sender": "@alice:example.org",
+                        "content": content,
+                    }
+                ]
+            }
+        )
+        [entry] = await fetch_thread_entries(
+            client, cache, "!room", "$root", limit=10, exclude_event_ids=["$root"]
+        )
+    assert entry == MatrixEventContext("@alice:example.org", expected)
+
+
+@pytest.mark.asyncio
 async def test_sent_matrix_message_is_available_as_reply_context():
     from plugins.platforms.matrix.reply_context import MatrixEventContext
 

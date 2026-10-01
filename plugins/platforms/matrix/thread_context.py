@@ -95,7 +95,7 @@ async def fetch_thread_entries(
         if edited and body.startswith("* "):
             body = body[2:].strip()
         msgtype = str(content.get("msgtype") or "")
-        text = _label_body(msgtype, _own_text(body))
+        text = _label_body(msgtype, _own_text(body, content))
         if not text:
             continue
         sender = str(raw.get("sender") or "")

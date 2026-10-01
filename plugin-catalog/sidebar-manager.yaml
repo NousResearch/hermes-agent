@@ -1,6 +1,6 @@
 name: sidebar-manager
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: be06ce792d8c65cfc158e36c8d4e16f8d5a97c0e
+sha: 6e65021e0fa4e5de678f2dba67dda6fe097703d9
 subdir: public/sidebar-manager
 description: "Hide and reorder core sidebar navigation rows from an in-app editor."
 maintainer: apoapostolov
@@ -8,7 +8,7 @@ tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/sidebar-manager
 version: "1.0.1"
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/be06ce792d8c65cfc158e36c8d4e16f8d5a97c0e/public/sidebar-manager/docs/hero.png
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/6e65021e0fa4e5de678f2dba67dda6fe097703d9/public/sidebar-manager/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: []

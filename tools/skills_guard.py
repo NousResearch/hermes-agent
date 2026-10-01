@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v8"
+SCANNER_VERSION = "skills-guard-v9"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -83,13 +83,14 @@ def _shell_write_re(file_alt: str) -> str:
     redirect = (
         r'(?:>>|["\'`)\]]\s*>|(?<![<\w./\\:-])[\w./\\:-]*\w(?:<[\w./\\:-]+)?\s*>'
         r'|\w\s*>(?![/\\]))')
-    # The placeholder boundary is specific to ``<name>/path``. Keep input/output redirect
-    # pairs like ``cat <input>AGENTS.md`` and ``cat <input>~/AGENTS.md`` detectable.
+    # At command position, ``<input>/path`` is an input/output redirect pair, even though
+    # the same token inside a prose sentence can be a documented path placeholder.
+    input_output = r'(?:^|[;&|])\s*[\w./\\:-]+(?:\s+-[\w-]+)*\s+<[\w./\\:-]+\s*>'
     # A real redirect can target a documented placeholder path; excluding its closing ``>``
     # must not hide an earlier write operator on the same line.
     path_prefix = r'["\']?(?:[~\w./-]|<[\w./\\:-]+>)*'
     return (
-        rf'{redirect}\s*{path_prefix}{file_alt}(?!\.?\w)'
+        rf'(?:{redirect}|{input_output})\s*{path_prefix}{file_alt}(?!\.?\w)'
         rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
         rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
         rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)')

@@ -18,6 +18,7 @@ interface RegistryGatewayWsUrlDependencies {
 }
 
 interface RemoteRequestDetails {
+  id?: number
   url: string
   requestHeaders?: Record<string, string>
 }
@@ -33,6 +34,8 @@ export interface RemoteHeaderSource {
 interface SessionLike {
   webRequest?: {
     onBeforeSendHeaders?: (listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void) => void
+    onCompleted?: (listener: (details: { id?: number }) => void) => void
+    onErrorOccurred?: (listener: (details: { id?: number }) => void) => void
   }
 }
 
@@ -112,15 +115,25 @@ export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
   headersForRequest: (requestUrl: string) => Record<string, string>
 ) {
-  // Chromium carries arbitrary app-set headers across redirects. Remember
-  // every configured header value this session has injected so a later hop can
-  // remove that secret outside its gateway scope without stripping an
-  // unrelated request that happens to use the same common header name.
-  const managedHeaderValues = new Map<string, Set<string>>()
+  // Chromium carries app-set headers across redirects, so a configured secret
+  // injected into one hop rides along to the next. Track the header names we
+  // injected per request id: an out-of-scope hop of THAT request gets them
+  // stripped, while an unrelated request carrying the same name (even the
+  // same value) is left alone.
+  const injectedByRequest: InjectedHeadersByRequest = new Map()
 
   sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest, managedHeaderValues)
+    applyRemoteRequestHeaders(details, callback, headersForRequest, injectedByRequest)
   })
+
+  const forget = (details: { id?: number }) => {
+    if (details?.id !== undefined) {
+      injectedByRequest.delete(details.id)
+    }
+  }
+
+  sessionLike?.webRequest?.onCompleted?.(forget)
+  sessionLike?.webRequest?.onErrorOccurred?.(forget)
 }
 
 export function createRemoteWsHeaderStore(limit = 100) {
@@ -161,49 +174,53 @@ export function createRemoteWsHeaderStore(limit = 100) {
   return { headersFor, remember }
 }
 
+/** Lower-cased header names this session injected, keyed by webRequest id. */
+export type InjectedHeadersByRequest = Map<number, Set<string>>
+
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
   headersForRequest: (requestUrl: string) => Record<string, string>,
-  managedHeaderValues: Map<string, Set<string>> = new Map<string, Set<string>>()
+  injectedByRequest: InjectedHeadersByRequest
 ) {
   const headers = headersForRequest(details.url)
-  const allowedHeaderNames = new Set<string>()
+  const headerEntries = Object.entries(headers)
+  const tracked = details.id === undefined ? undefined : injectedByRequest.get(details.id)
 
-  for (const [name, value] of Object.entries(headers)) {
-    const normalizedName = name.toLowerCase()
-    const values = managedHeaderValues.get(normalizedName) || new Set<string>()
-
-    values.add(String(value))
-    managedHeaderValues.set(normalizedName, values)
-    allowedHeaderNames.add(normalizedName)
-  }
-
-  const requestHeaders: Record<string, string> = {}
-  let changed = false
-
-  for (const [name, value] of Object.entries(details.requestHeaders || {})) {
-    const normalizedName = name.toLowerCase()
-
-    if (allowedHeaderNames.has(normalizedName) || managedHeaderValues.get(normalizedName)?.has(String(value))) {
-      changed = true
-    } else {
-      requestHeaders[name] = value
-    }
-  }
-
-  for (const [name, value] of Object.entries(headers)) {
-    requestHeaders[name] = value
-    changed = true
-  }
-
-  if (!changed) {
+  if (headerEntries.length === 0 && !tracked) {
     callback({})
 
     return
   }
 
-  callback({ requestHeaders })
+  // Names to drop from the outgoing request: whatever an earlier hop of this
+  // request had injected (it may be out of scope now) plus the names we are
+  // about to set (so a differently-cased copy does not survive alongside).
+  const strip = new Set(tracked)
+  const requestHeaders: Record<string, string> = {}
+
+  for (const [name, value] of headerEntries) {
+    strip.add(name.toLowerCase())
+    requestHeaders[name] = value
+  }
+
+  const outgoing: Record<string, string> = {}
+
+  for (const [name, value] of Object.entries(details.requestHeaders || {})) {
+    if (!strip.has(name.toLowerCase())) {
+      outgoing[name] = value
+    }
+  }
+
+  if (details.id !== undefined) {
+    if (headerEntries.length > 0) {
+      injectedByRequest.set(details.id, new Set(headerEntries.map(([name]) => name.toLowerCase())))
+    } else {
+      injectedByRequest.delete(details.id)
+    }
+  }
+
+  callback({ requestHeaders: { ...outgoing, ...requestHeaders } })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {

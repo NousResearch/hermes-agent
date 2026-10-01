@@ -120,6 +120,7 @@ export function sessionContextDrift({
   pinOwner
 }: SessionContextDriftArgs): string | null {
   const activePins = pinOwner ? pinnedStoredSessionIdsForOwner(pinOwner) : NO_PINS
+
   // Composer prong: the composer's loaded scope disagrees with the resolved
   // submit target. Not a start/now comparison like the two prongs below — the
   // composer only hands us one snapshot per submit — but it belongs in the

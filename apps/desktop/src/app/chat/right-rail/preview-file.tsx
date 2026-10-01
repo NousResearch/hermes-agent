@@ -1120,13 +1120,14 @@ export function LocalFilePreview({
   }
 
   if (state.missing) {
-    return <PreviewEmptyState body={t.preview.missingBody(target.label)} title={t.preview.missingTitle} tone="warning" />
+    return (
+      <PreviewEmptyState body={t.preview.missingBody(target.label)} title={t.preview.missingTitle} tone="warning" />
+    )
   }
 
   // A preview that can't load (the file was moved or deleted) is a dead end,
   // so it carries its own way out rather than leaving it to the tab strip.
   const closeAction = onClose ? { label: t.common.close, onClick: onClose } : undefined
-
 
   if (state.error) {
     return <PreviewEmptyState body={state.error} primaryAction={closeAction} title={t.preview.unavailable} />

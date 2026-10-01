@@ -271,11 +271,14 @@ export function watchDeadSessionPrune(): () => void {
     // Exactly one timer at a time: a churn that doesn't move the deadline
     // keeps the existing timer instead of stacking a second one.
     if (!sweepTimer) {
-      sweepTimer = setTimeout(() => {
-        sweepDueAt = 0
-        sweepTimer = undefined
-        void sweepOnce()
-      }, Math.max(0, nextDueAt - Date.now()))
+      sweepTimer = setTimeout(
+        () => {
+          sweepDueAt = 0
+          sweepTimer = undefined
+          void sweepOnce()
+        },
+        Math.max(0, nextDueAt - Date.now())
+      )
     }
   })
 }

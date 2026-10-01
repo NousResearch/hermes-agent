@@ -73,9 +73,7 @@ describe('renameSessionPreferringRpc', () => {
 
   it('resolves the owning profile from $sessions when profile argument is omitted', async () => {
     $selectedStoredSessionId.set('some-other-active-session')
-    $sessions.set([
-      { id: STORED_ID, profile: 'personal', title: 'Own Google Docs document' } as never
-    ])
+    $sessions.set([{ id: STORED_ID, profile: 'personal', title: 'Own Google Docs document' } as never])
 
     await renameSessionPreferringRpc(STORED_ID, 'Prep Butler')
 

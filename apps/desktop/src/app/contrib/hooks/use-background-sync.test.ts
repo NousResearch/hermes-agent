@@ -792,7 +792,9 @@ describe('active transcript refresh', () => {
     })
 
     expect(refresh).toHaveBeenCalledTimes(1) // main pane still covered
-    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true }))
+    await waitFor(() =>
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true })
+    )
   })
 
   it('reconciles tiles on return in a workspace with no selected session (#125532 review)', async () => {
@@ -813,7 +815,9 @@ describe('active transcript refresh', () => {
     })
 
     expect(refresh).not.toHaveBeenCalled() // nothing selected in the main pane
-    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true }))
+    await waitFor(() =>
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true })
+    )
   })
 
   it('does not refresh on a visibilitychange to hidden (#125532 review)', () => {

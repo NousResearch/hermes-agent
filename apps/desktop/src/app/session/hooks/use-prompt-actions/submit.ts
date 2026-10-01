@@ -898,6 +898,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               state => ({ ...state, messages: refresh.messages }),
               targetStoredSessionId
             )
+
             if (targetIsCurrentView()) {
               scope.setMessages(() => refresh.messages)
             }

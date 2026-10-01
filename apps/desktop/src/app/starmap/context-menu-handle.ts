@@ -13,10 +13,7 @@ export interface StarMapContextMenuHandle {
 const handles = new WeakMap<HTMLCanvasElement, StarMapContextMenuHandle>()
 
 /** Register the handle for a Star Map canvas. Returns an idempotent remove. */
-export function registerStarMapContextMenu(
-  canvas: HTMLCanvasElement,
-  handle: StarMapContextMenuHandle
-): () => void {
+export function registerStarMapContextMenu(canvas: HTMLCanvasElement, handle: StarMapContextMenuHandle): () => void {
   handles.set(canvas, handle)
 
   return () => {

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from plugins.platforms.discord.adapter import DiscordMessage
 
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base_pending import _can_join_pending_event
 
 if TYPE_CHECKING:
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -197,35 +198,6 @@ class DiscordInboundContextMixin:
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
         forwarded_text = "\n\n".join(part for part in ("\n".join(snapshot_text_parts), snapshot_injection) if part)
-        # ── History backfill ─────────────────────────────────────────
-        # With require_mention, messages between bot turns never reach the transcript; fetch
-        # history after the bot's last message (cold start: last N, stop at first self-message)
-        # and prepend it. DMs skipped (every DM triggers the bot); in-flight arrivals not captured.
-        _channel_context = None
-        _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm and self._discord_history_backfill():
-            # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
-            # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
-            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
-                _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
-                    reply_target=self._reply_target(message.reference) if _is_reply else None,
-                )
-                if _backfill_text:
-                    _channel_context = _backfill_text
-        # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
-        if (not event_text or not event_text.strip()) and not _channel_context and not forwarded_text:
-            # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.
-            if (mention_prefix and not media_urls and not pending_text_injection):
-                logger.info(
-                    "[%s] Ignoring mention-only message from %s in %s", self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
-                    getattr(message.channel, "id", "unknown"),
-                )
-                return False
-            event_text = "(The user sent a message with no text content)"
         _chan = message.channel
         _parent_id = str(getattr(_chan, "parent_id", "") or "")
         _chan_id = str(getattr(_chan, "id", ""))
@@ -245,8 +217,35 @@ class DiscordInboundContextMixin:
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
-            channel_context=_channel_context,
         )
+        # ── History backfill ─────────────────────────────────────────
+        # With require_mention, messages between bot turns never reach the transcript; fetch
+        # history after the bot's last message (cold start: last N, stop at first self-message)
+        # and prepend it. DMs skipped (every DM triggers the bot); in-flight arrivals not captured.
+        _is_dm = isinstance(message.channel, discord.DMChannel)
+        if not _is_dm and self._discord_history_backfill() and not self._batch_has_history_context(event, recovered=recovered):
+            # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
+            # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
+            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
+            _is_reply = message.reference is not None
+            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
+                _backfill_text = await self._fetch_channel_context(
+                    message.channel, before=message,
+                    reply_target=self._reply_target(message.reference) if _is_reply else None,
+                )
+                if _backfill_text:
+                    if not self._batch_has_history_context(event, recovered=recovered):
+                        event.channel_context = _backfill_text
+                        setattr(event, "_discord_history_backfill_prepared", True)
+        if (not event.text or not event.text.strip()) and not event.channel_context and not forwarded_text:
+            if mention_prefix and not media_urls and not pending_text_injection:
+                logger.info(
+                    "[%s] Ignoring mention-only message from %s in %s", self.name,
+                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
+                    getattr(message.channel, "id", "unknown"),
+                )
+                return False
+            event.text = "(The user sent a message with no text content)"
         if forwarded_text:
             event.add_channel_context(attributed_context("Forwarded message", forwarded_text))
         if (
@@ -264,3 +263,14 @@ class DiscordInboundContextMixin:
         else:
             await self.handle_message(event)
         return True
+
+
+    def _batch_has_history_context(self: DiscordAdapter, event: MessageEvent, *, recovered: bool) -> bool:
+        if recovered or event.message_type != MessageType.TEXT or self._text_batch_delay_seconds <= 0:
+            return False
+        pending = self._pending_text_batches.get(self._text_batch_key(event))
+        return (
+            pending is not None
+            and bool(getattr(pending, "_discord_history_backfill_prepared", False))
+            and _can_join_pending_event(pending, event)
+        )

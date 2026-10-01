@@ -642,12 +642,12 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
-    deleted, routing_deleted = db.prune_never_active_keyed_sessions(
+    deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
         older_than_days=days, sessions_dir=_sessions_dir()
     )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
-    if deleted < len(candidates):
-        print(f"Skipped {len(candidates) - deleted} session(s): mid-turn, or already gone.")
+    if skipped:
+        print(f"Skipped {skipped} session(s) with a live turn or compression lock.")
 
 
 def _note_pinned_skipped(db, filters, action):

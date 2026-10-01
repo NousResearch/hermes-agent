@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.matrix.voice_mention import VoiceGate
+
+if TYPE_CHECKING:
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
 logger = logging.getLogger("plugins.platforms.matrix.adapter")
 
@@ -93,7 +96,7 @@ def _has_reply_fallback(body: str, content: dict) -> bool:
 
 class MatrixReplyContextMixin:
     async def _resolve_message_context(
-        self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
+        self: MatrixAdapter, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
         relates_to: dict, mention_claimed: bool = False,
         voice_gate: Optional[VoiceGate] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
@@ -160,7 +163,7 @@ class MatrixReplyContextMixin:
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
-        self, room_id: str, body: str, source_content: dict, relates_to: dict
+        self: MatrixAdapter, room_id: str, body: str, source_content: dict, relates_to: dict
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name). Captures
         the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so the
@@ -176,7 +179,7 @@ class MatrixReplyContextMixin:
         return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name
 
     async def _build_inbound_event(
-        self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
+        self: MatrixAdapter, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
         ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.

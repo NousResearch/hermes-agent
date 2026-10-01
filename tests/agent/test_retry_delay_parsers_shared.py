@@ -7,6 +7,7 @@ so an HTTP-date header or a "resets in 2 hours 5 minutes" body yields the same w
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -76,3 +77,85 @@ class TestResetDelayOneTable:
 
         assert reset_delay_from_message("resets in the future, maybe") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})
+
+
+class TestClaudeWallClockReset:
+    """The Claude-subscription session-limit grammar names a wall-clock reopen in an explicit zone.
+
+    DirectSDK's relay raises the 429 as a ``RuntimeError`` whose text ends
+    ``You've hit your session limit · resets 12:30pm (America/Chicago)``. None of the delta
+    grammars match, so the cooldown armed a generic 60s, ``restore_primary_runtime`` re-primed the
+    spent primary every turn, and each attempt re-uploaded the whole conversation for another 429.
+    """
+
+    @staticmethod
+    def _seconds_until_clock(hour12: int, minute: int, meridiem: str, tz_name: str) -> float:
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        hour = hour12 % 12 + (12 if meridiem == "pm" else 0)
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+
+    def test_named_zone_resolves_to_that_zones_next_occurrence(self):
+        """The delay is measured in the NAMED zone, not the host's — a host on UTC must still read
+        ``resets 5:30pm (UTC)`` as ~its own evening and ``12:30pm (America/Chicago)`` in Chicago."""
+        for hour12, minute, meridiem, tz_name in (
+            (12, 30, "pm", "America/Chicago"),
+            (5, 30, "pm", "UTC"),
+            (5, 0, "pm", "America/Chicago"),
+        ):
+            message = f"You've hit your session limit · resets {hour12}:{minute:02d}{meridiem} ({tz_name})"
+            expected = self._seconds_until_clock(hour12, minute, meridiem, tz_name)
+            actual = reset_delay_from_message(message)
+            assert actual == pytest.approx(expected, abs=5), message
+
+    def test_zone_is_required_and_invalid_zones_fail_open(self):
+        """A bare ``resets 5pm`` is somebody's local clock and guessing it can be hours wrong;
+        an unknown zone name must fall through to the pre-existing behavior, not crash."""
+        assert reset_delay_from_message("You've hit your session limit · resets 5pm") is None
+        assert reset_delay_from_message("resets 5pm (Mars/Olympus_Mons)") is None
+        assert reset_delay_from_message("resets (America/Chicago)") is None
+
+    def test_just_past_instant_is_not_rolled_a_whole_day(self):
+        """An error surfacing seconds after the stated minute means the window just reopened.
+        Rolling to "next occurrence" would wait ~24h for a limit that is already over."""
+        now_ct = datetime.now(ZoneInfo("America/Chicago"))
+        message = f"resets {now_ct.strftime('%I:%M%p').lower()} (America/Chicago)"
+        assert reset_delay_from_message(message) == 0.0
+
+    def test_clearly_past_instant_rolls_to_next_day_within_the_cap(self):
+        """A stale error re-read the next day still describes a forward-looking window; the
+        roll-forward must stay bounded (<= 24h) rather than inflate beyond a day."""
+        an_hour_ago = datetime.now(ZoneInfo("America/Chicago")) - timedelta(hours=1)
+        message = f"resets {an_hour_ago.strftime('%I:%M%p').lower()} (America/Chicago)"
+        seconds = reset_delay_from_message(message)
+        assert seconds is not None
+        assert 22 * 3600 <= seconds <= 24 * 3600
+
+    def test_resets_at_variant_and_existing_grammars_are_unchanged(self):
+        assert reset_delay_from_message("resets at 12:30pm (America/Chicago)") is not None
+        assert reset_delay_from_message("Weekly usage limit reached. Resets in 6hr 29min.") == 6 * 3600 + 29 * 60
+
+    def test_directsdk_runtimeerror_text_survives_into_the_reset_context(self):
+        """End-to-end through the exact text DirectSDK's relay raises: the extractor the retry
+        loop consults (``extract_api_error_context``) must carry ``reset_at`` so
+        ``_arm_rate_limit_cooldown`` gates primary restoration until the named reopen."""
+        from agent.agent_runtime_helpers import extract_api_error_context
+        from agent.fallback_cooldown import _provider_reset_delay
+
+        message = (
+            "Incomplete upstream response (first upstream attempt: status 429, capture incomplete, "
+            "native retries denied: 0, upstream said: This request would exceed your account's rate limit. "
+            "Please try again later.): You've hit your session limit \u00b7 resets 12:30pm (America/Chicago)"
+        )
+        ctx = extract_api_error_context(RuntimeError(message))
+        assert "reset_at" in ctx
+        expected = self._seconds_until_clock(12, 30, "pm", "America/Chicago")
+        delay = _provider_reset_delay(ctx["reset_at"])
+        assert delay is not None
+        assert delay == pytest.approx(expected, abs=5)
+        # The cooldown it arms is the real window (tens of minutes to hours), nowhere near the 60s
+        # default that made the primary look re-usable a minute after the limit fired.
+        assert delay > 60

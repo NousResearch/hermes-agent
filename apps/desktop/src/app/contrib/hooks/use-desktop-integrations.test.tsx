@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -26,6 +27,10 @@ const { hudWindowMock, peerWindowMock } = vi.hoisted(() => ({
   hudWindowMock: vi.fn(() => false),
   peerWindowMock: vi.fn(() => false)
 }))
+
+const closeActiveTab = vi.hoisted(() => vi.fn(() => true))
+
+vi.mock('@/app/chat/close-tab', () => ({ closeActiveTab }))
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
@@ -102,6 +107,7 @@ describe('useDesktopIntegrations', () => {
     }
 
     vi.restoreAllMocks()
+    document.body.replaceChildren()
   })
 
   function render({
@@ -504,6 +510,90 @@ describe('useDesktopIntegrations', () => {
 
       // And no navigation should happen (the per-profile keys were empty).
       expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('⌘W close-preview routing over a focused terminal (#65457)', () => {
+    let closeRequested: (() => void) | undefined
+
+    function mountWithCloseIpc() {
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onClosePreviewRequested: (cb: () => void) => {
+          closeRequested = cb
+
+          return () => undefined
+        }
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+    }
+
+    /** Mirror the production DOM shape: the handle is registered on the
+     * xterm host nested inside the [data-terminal] scope, which carries
+     * [data-interactive-terminal] only on the user PTY. */
+    function focusedTerminal(interactive: boolean): void {
+      const scope = document.createElement('div')
+      scope.dataset.terminal = ''
+
+      if (interactive) {
+        scope.dataset.interactiveTerminal = ''
+      }
+
+      const host = document.createElement('div')
+      scope.append(host)
+      document.body.append(scope)
+      scope.tabIndex = -1
+      ;(scope as HTMLElement).focus()
+      scopeCleanup.push(registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: () => true
+      }))
+    }
+
+    const scopeCleanup: Array<() => void> = []
+
+    afterEach(() => {
+      for (const cleanup of scopeCleanup.splice(0)) {
+        cleanup()
+      }
+
+      document.body.replaceChildren()
+      closeRequested = undefined
+      closeActiveTab.mockClear()
+    })
+
+    it('re-delivers the chord to a focused interactive terminal instead of closing', () => {
+      mountWithCloseIpc()
+      focusedTerminal(true)
+
+      closeRequested?.()
+
+      // The terminal's wordErase verb consumed the chord; the close path
+      // never ran.
+      expect(closeActiveTab).not.toHaveBeenCalled()
+    })
+
+    it('still closes tabs when focus is on a read-only agent terminal', () => {
+      mountWithCloseIpc()
+      focusedTerminal(false)
+
+      closeRequested?.()
+
+      // The mirror's wordErase is null, so the rung falls through to
+      // closeActiveTab — its tab stays closeable.
+      expect(closeActiveTab).toHaveBeenCalledOnce()
+    })
+
+    it('still closes tabs when focus is outside any terminal', () => {
+      mountWithCloseIpc()
+
+      closeRequested?.()
+
+      expect(closeActiveTab).toHaveBeenCalledOnce()
     })
   })
 

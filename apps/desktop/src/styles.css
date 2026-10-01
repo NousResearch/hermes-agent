@@ -1114,16 +1114,15 @@
 }
 
 @keyframes arc-border {
-  /* Compositor-only travel. The ::before layer is 300% × 300% of the host
-     (mirroring the old `background-size: 300%`), so translating it from
-     -10% → -50% of its own size reproduces the old
-     `background-position: 15% → 75%` exactly (offset = -2·W·p), while
-     `transform` animates on the compositor with zero per-frame style
-     recalc/paint. The old background-position version cost ~3,600
-     main-thread style recalcs per minute per arc, pinning idle renderers
-     (#53902, #73082). */
+  /* Transform travel (compositor-only), never background-position: the old
+     background-position version cost ~3,600 main-thread style recalcs per
+     minute per arc (#53902, #73082).
+
+     One cycle moves the ::before layer by 1.2 of the host (50% of the 240%
+     layer), which advances the gradient by exactly one period, so the loop
+     is seamless. */
   0% {
-    transform: translate(-10%, -10%);
+    transform: translate(0, 0);
   }
   100% {
     transform: translate(-50%, -50%);
@@ -1209,27 +1208,21 @@
   position: absolute;
   top: 0;
   left: 0;
-  /* The gradient layer IS 300% of the ring (the old version kept a host-sized
-     ::before and slid a 300%-sized background through it). Sizing the layer
-     itself lets the travel be a `transform` — composited, no main-thread
-     style/paint work — while the host's mask + overflow clip it to the ring. */
-  width: 300%;
-  height: 300%;
-  background: linear-gradient(
+  /* One period of the gradient, repeated, on a layer the host's mask and
+     overflow clip to the ring. Invariants: the period (50% of the layer's
+     gradient line) equals one cycle of travel; the layer still covers the
+     host at the end of the cycle (0.2 of the host to spare); the stops are
+     fractions of that period. Holds for --arc-angle in 90deg..180deg. */
+  width: 240%;
+  height: 240%;
+  background: repeating-linear-gradient(
     var(--arc-angle),
     transparent 0%,
-    var(--arc-c0) 15%,
-    var(--arc-c1) 20%,
-    var(--arc-c2) 25%,
-    transparent 35%,
-    transparent 40%,
-    var(--arc-c0) 55%,
-    var(--arc-c1) 60%,
-    var(--arc-c2) 65%,
-    transparent 75%,
-    transparent 80%,
-    var(--arc-c0) 95%,
-    var(--arc-c1) 100%
+    var(--arc-c0) 18.75%,
+    var(--arc-c1) 25%,
+    var(--arc-c2) 31.25%,
+    transparent 43.75%,
+    transparent 50%
   );
   will-change: transform;
   animation: arc-border var(--arc-duration) linear infinite;
@@ -1256,8 +1249,8 @@
 
    2. A visible tail. `--arc-c2` defaults to `--dt-background` — invisible
       against the sidebar. With c0 a transparent sentinel and c2 invisible, only
-      the bright c1 stop survives each pass, and the gradient has three of them:
-      three moving dots instead of an arc. Tying c2 to c1 gives each spike a
+      the bright c1 stop survives each pass, and it repeats along the ring:
+      moving dots instead of an arc. Tying c2 to c1 gives each spike a
       falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
 .arc-border.arc-row,
 :root.dark .arc-border.arc-row {

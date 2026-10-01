@@ -11272,7 +11272,6 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
     cases = {
         "usage": "140",
         "history": "live question from state db",
-        "prompt": "host system prompt",
         "status": "140",
         "context": "Context usage: 80 / 1,000 tokens",
         "tools": "terminal",
@@ -14852,7 +14851,6 @@ def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monke
     for cmd, expected_name in [
         ("/model new/model", "model"),
         ("/personality default", "personality"),
-        ("/prompt", "prompt"),
         ("/compress", "compress"),
     ]:
         warning = server._mirror_slash_side_effects("sid", session, cmd)

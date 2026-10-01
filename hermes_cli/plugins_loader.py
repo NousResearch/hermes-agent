@@ -105,6 +105,12 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     and :class:`PluginLoadTimeout` is raised on the calling thread so the usual failure path records the
     reason and disposes whatever was registered before the hang.
     """
+    # A plugin's register() can re-enter discovery.  It is already running on the
+    # deadline worker, so creating and joining another worker here can deadlock the
+    # parent worker.  Run the nested load inline instead; the outer worker still
+    # provides the deadline for the whole re-entrant chain.
+    if in_plugin_load_worker():
+        return fn()
     timeout = _resolve_plugin_load_timeout()
     if timeout <= 0:
         return fn()

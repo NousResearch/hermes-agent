@@ -41,8 +41,8 @@ def _token_status(source: str, source_label: str, creds: Dict[str, Any]) -> Dict
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """Status for the "Anthropic Account" card: Hermes-managed PKCE file first, then the
-    registry-ordered env vars (process env — where Bitwarden-sourced secrets land — then .env).
+    """Status for the "Anthropic Account" card: Hermes-managed PKCE credentials first,
+    then the credential pool and registry-ordered env vars.
 
     Claude Code's ``~/.claude/.credentials.json`` is deliberately NOT read here; it has its own
     ``claude-code`` entry, and counting it here would shadow a real ANTHROPIC_API_KEY.
@@ -54,6 +54,31 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         hermes_creds = None
     if hermes_creds and hermes_creds.get("accessToken"):
         return _token_status("hermes_pkce", f"Hermes PKCE ({_get_hermes_oauth_file()})", hermes_creds)
+
+    try:
+        from hermes_cli.auth import _load_auth_store
+        pool_entries = (_load_auth_store().get("credential_pool") or {}).get("anthropic") or []
+        now_ms = time.time() * 1000
+        for entry in sorted(pool_entries, key=lambda item: item.get("priority", 0)):
+            if not isinstance(entry, dict) or not entry.get("access_token"):
+                continue
+            if entry.get("auth_type") != "oauth" and entry.get("source") != "manual:hermes_pkce":
+                continue
+            expires_at_ms = entry.get("expires_at_ms")
+            if expires_at_ms and expires_at_ms <= now_ms:
+                continue
+            return _token_status(
+                "credential_pool",
+                f"{entry.get('label') or entry.get('id') or 'Anthropic OAuth'} "
+                f"(pooled, {len(pool_entries)} credentials)",
+                {
+                    "accessToken": entry.get("access_token"),
+                    "refreshToken": entry.get("refresh_token"),
+                    "expiresAt": entry.get("expires_at"),
+                },
+            )
+    except Exception:
+        pass
 
     env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     try:

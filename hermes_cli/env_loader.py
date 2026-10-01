@@ -638,24 +638,48 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
 
 
-def _refuse_protected_env_from_sources(report) -> None:
+def _refuse_protected_env_from_sources(report, backend=None, environ_before=None) -> None:
     """D32: the config backend's own credential (which plane, which agent, which token) must never
     come from a secret source — a source that could change it could point config at another plane.
-    Exits (the backend is unusable), even when the pre-existing value won."""
-    from hermes_cli.config_backend import ConfigBackendUnavailable, get_config_backend
+    Exits (the backend is unusable), even when the pre-existing value won.
 
-    protected = get_config_backend().protected_env_names()
-    if not protected:
-        return
+    *backend* is the backend selected BEFORE the sources ran: judging by the backend selected after
+    them would let a source that writes ``HERMES_CONFIG_BACKEND=file`` switch remote mode off and
+    disarm this very check. The selector itself is never a source's to change, under any backend:
+    a source's write to it is reverted (to its *environ_before* value) before anything else."""
+    from hermes_cli.config_backend import BACKEND_ENV, ConfigBackendUnavailable, get_config_backend
+
+    if backend is None:
+        backend = get_config_backend()
     supplied = set(report.provenance)
     for src in report.sources:
         supplied.update(getattr(src, "skipped_existing", ()) or ())
+    protected = backend.protected_env_names() | {BACKEND_ENV}
     clash = sorted(supplied & protected)
-    if clash:
-        raise ConfigBackendUnavailable(
-            f"A secrets: source supplies {', '.join(clash)}, which the {get_config_backend().name!r} config "
-            "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
-            "from a secret source; remove the mapping. Hermes does not start with it.")
+    if not clash:
+        return
+    if environ_before is not None:  # undo the source's writes to protected names before deciding
+        for name in clash:
+            if name in environ_before:
+                os.environ[name] = environ_before[name]
+            else:
+                os.environ.pop(name, None)
+    if not backend.protected_env_names():
+        # The file backend has no plane credential: only the selector clashed. Reverted, and dropped
+        # from the report so no provenance/snapshot re-applies it later; keep going.
+        for name in clash:
+            report.provenance.pop(name, None)
+            for src in report.sources:
+                for bucket in (getattr(src, "applied", None), getattr(src, "skipped_existing", None)):
+                    if isinstance(bucket, list) and name in bucket:
+                        bucket.remove(name)
+        print(f"  Secret sources: ignored {BACKEND_ENV} from a secrets: source (the config backend is "
+              "chosen by .env or the process environment only).", file=sys.stderr)
+        return
+    raise ConfigBackendUnavailable(
+        f"A secrets: source supplies {', '.join(clash)}, which the {backend.name!r} config "
+        "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
+        "from a secret source; remove the mapping. Hermes does not start with it.")
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
@@ -703,6 +727,10 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if active is not None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
     environ_before = dict(os.environ)
+    # Latched before the sources run: a source must not be able to re-select the backend (D32).
+    from hermes_cli.config_backend import get_config_backend
+
+    backend_before = get_config_backend()
 
     try:
         report = apply_all(cfg, home_path)
@@ -711,7 +739,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
         return
-    _refuse_protected_env_from_sources(report)
+    _refuse_protected_env_from_sources(report, backend_before, environ_before)
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
     # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).

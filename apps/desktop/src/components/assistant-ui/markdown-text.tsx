@@ -398,6 +398,15 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
     return <MediaAttachment path={rawSrc} />
   }
 
+  // Assistant-authored remote images are untrusted content. Rendering them as
+  // an <img> causes the renderer to fetch the URL merely by displaying a
+  // reply, which lets prompt-injected text exfiltrate data without a click.
+  // Keep the explicit-open affordance while retaining automatic previews for
+  // local and tool-produced media.
+  if (/^https?:\/\//i.test(rawSrc)) {
+    return <PrettyLink fallbackLabel={String(props.alt || 'Open image')} href={normalizeExternalUrl(rawSrc)} />
+  }
+
   return <MarkdownImageContent {...props} />
 }
 

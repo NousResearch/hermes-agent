@@ -83,7 +83,7 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
     from gateway.run import _handoff_watch_scopes, _profile_runtime_scope, get_hermes_home
     from cron import scheduler as cron_scheduler
-    from cron import scheduler_preflight as sched_preflight
+    from cron.scheduler_preflight import cron_delivery_adapters
 
     if runner is None:
         if adapters is not None:
@@ -97,8 +97,6 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
         if profile_adapters is None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
-            if profile_name is not None and not profile_adapters and adapters:
-                routes = sched_preflight._primary_profile_routes_for_current_home()
-                if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+            profile_adapters = cron_delivery_adapters(
+                profile_name, adapters, profile_adapters={profile_name: profile_adapters})
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)

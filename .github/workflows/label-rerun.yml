@@ -4,6 +4,11 @@ name: Label rerun
 # the latest CI run. This re-evaluates ``review-labels`` (which now sees the
 # label) and GitHub reruns the dependent ``all-checks-pass`` gate.
 #
+# When the ``run-e2e`` label is added, rerun the head commit's CI, Docker and
+# Nix runs in full. Their ``detect`` job reads the PR's labels through the API
+# (a rerun replays the original event payload), so the rerun turns every slow
+# lane on (scripts/ci/classify_changes.py).
+#
 # ``gh run rerun`` only works on a completed run. Thus this waits when the
 # run is still in progress. The wait is now short. The two slowest jobs are
 # the 40-minute comment poller and the 45-minute image build. Each one moved
@@ -21,8 +26,9 @@ permissions:
   actions: write
   pull-requests: read
 
+# Keyed by label so one label's job does not cancel the other's.
 concurrency:
-  group: label-rerun-${{ github.event.pull_request.number }}
+  group: label-rerun-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
@@ -85,3 +91,41 @@ jobs:
           echo "Run completed. Rerunning all failed jobs..."
           gh run rerun "$RUN_ID" --repo "$REPO" --failed || true
           echo "Done. GitHub will rerun review-labels and all dependent jobs."
+
+  rerun-with-e2e:
+    name: Rerun CI with every E2E lane
+    if: github.event.label.name == 'run-e2e'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Cancel and rerun the head commit's CI, Docker and Nix runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          for workflow in ci.yaml docker.yml nix.yml; do
+            RUN_ID=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --workflow "$workflow" \
+              --event pull_request --limit 1 --json databaseId --jq '.[0].databaseId // empty' || true)
+            if [ -z "$RUN_ID" ]; then
+              echo "$workflow: no run for $HEAD_SHA"
+              continue
+            fi
+            # A run in progress was classified without the label: stop it,
+            # then rerun it once GitHub marks it completed.
+            STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq .status || echo unknown)
+            if [ "$STATUS" != completed ]; then
+              gh run cancel "$RUN_ID" --repo "$REPO" || true
+              for _ in $(seq 60); do
+                STATUS=$(gh run view "$RUN_ID" --repo "$REPO" --json status --jq .status || echo unknown)
+                [ "$STATUS" = completed ] && break
+                sleep 5
+              done
+            fi
+            if gh run rerun "$RUN_ID" --repo "$REPO"; then
+              echo "$workflow: rerunning $RUN_ID"
+            else
+              echo "::warning::$workflow: could not rerun $RUN_ID (status $STATUS)"
+            fi
+          done

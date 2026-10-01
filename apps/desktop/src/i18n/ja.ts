@@ -10,6 +10,43 @@ export const ja = defineLocale({
     copyUrl: 'リンクをコピー',
     close: '閉じる'
   },
+  sharedMetrics: {
+    consentTitle: 'Hermes の改善に協力しますか？',
+    consentBody:
+      '共有メトリクスは上限付きのカウンターだけです。プロンプト、ファイル、パス、エラーテキストは含みません。収集はローカルで行われ、Nous への送信は別途オプトインです。',
+    whatIsCollected: '収集される内容',
+    collectedIntro: '上限付きのカウンターのみ：',
+    collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類',
+    collectedModels: 'モデルのルートとトークン合計',
+    collectedNames: '組み込みツール、コマンド、カタログの名前',
+    collectedMilestones: '区分けされたセットアップの件数',
+    collectedReliability:
+      'アップデートの結果と所要時間、クラッシュ、起動と応答の速さ、メッセージングプラットフォームの状態',
+    collectedUsage:
+      'Hermes の使われ方：エージェントの精度と効率（編集の適用結果、ループ、エラーからの回復、タスクごとのトークン数とツール呼び出し数、キャッシュの破棄）、画面・Desktop モードごとのアクティブ時間、アプリのどの領域・操作・設定が使われ、すぐ閉じられ、オフにされたか、プロバイダー設定の結果',
+    collectedMachine:
+      '大まかなマシン情報：RAM の範囲、GPU の種類、Hermes バージョンの古さとリリースチャネル、未適用の更新数、ローカルモデルサーバーの使用有無',
+    installId:
+      '送信すると、日次パッケージが Nous のテレメトリサービスにアップロードされます。パッケージにはこのプロファイルのインストール ID（個人情報を含まない固定のランダム UUID。共有メトリクスのディレクトリを削除するとリセット）が付きます。',
+    consentWindow:
+      '収集期間全体が記録済みの同意期間内に収まるパッケージだけが送信されます。オプトイン前のデータや、送信オフ中のデータはこのマシンに残ります。送信はいつでもオフに戻せます。',
+    readDocs: '詳細を読む',
+    share: '収集して Nous に送信する',
+    local: 'ローカルでのみ収集する',
+    off: '共有しない',
+    changeLater: '設定 → 安全性 からいつでも変更できます。',
+    saveFailed: '選択を保存できませんでした',
+    collectLabel: '利用統計を収集する',
+    collectDesc:
+      '上限付きのカウンターをこのデバイスに保存します。プロンプト、ファイル、パス、エラーテキストは含みません。',
+    sendLabel: '利用統計を Nous に送信する',
+    sendDesc:
+      '日次パッケージを Nous のテレメトリサービスにアップロードします。同意期間内のデータだけが送信されます。収集がオンである必要があります。',
+    unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。',
+    stripBody: '上限付きのカウンターのみ。プロンプトやファイルは含みません。',
+    stripChoices: { share: 'Nous に送信', local: 'ローカルのみ', off: '今はしない' },
+    stripDetails: '詳細'
+  },
   intro: introJa,
   catalog: {
     add: '追加',
@@ -651,6 +688,9 @@ export const ja = defineLocale({
       system: { label: 'システム', description: 'OS の外観に合わせる' }
     },
     appearance: {
+      chatTextScaleTitle: 'チャットの文字サイズ',
+      chatTextScaleDesc:
+        'UI スケールを基準に、会話とメッセージ入力欄の文字を拡大縮小します。サイドバーや操作ボタンのサイズは変わりません。',
       title: '外観',
       intro:
         'デスクトップ専用の表示設定です。モードは明るさ、テーマはアクセントカラーとチャット面のスタイルを制御します。',
@@ -725,6 +765,8 @@ export const ja = defineLocale({
       textDirection: { auto: '自動', rtl: '右から左', ltr: '左から右' },
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
+      modelPricingTitle: 'モデル料金',
+      modelPricingDesc: 'モデル選択で、100万トークンあたりの入力・出力・キャッシュ読み取り料金を表示します。',
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
@@ -1352,6 +1394,7 @@ export const ja = defineLocale({
       restartFailed: 'バックエンドを再起動できませんでした',
       auxiliaryTitle: '補助モデル',
       resetAllToMain: 'すべてメインにリセット',
+      staleAuxDismiss: '今後表示しない',
       auxiliaryDesc:
         'ヘルパータスクはデフォルトでメインモデルで実行されます。タスクに専用モデルを割り当てることでオーバーライドできます。',
       setToMain: 'メインに設定',
@@ -1845,11 +1888,6 @@ export const ja = defineLocale({
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
     sections: { sessions: 'セッション', system: 'システム', usage: '使用状況' },
-    sectionDescriptions: {
-      sessions: 'セッションの検索と管理',
-      system: 'ステータス、ログ、システムアクション',
-      usage: 'トークン、コスト、スキルの活動履歴'
-    },
     nav: {
       newChat: { title: '新しいセッション', detail: '新しいセッションを開始' },
       settings: { title: '設定', detail: 'Hermes デスクトップを設定' },
@@ -1890,6 +1928,7 @@ export const ja = defineLocale({
     actionStartedWaiting: 'アクションが開始されました。ステータスを待機中...',
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
+    logSearchPlaceholder: 'ログ行を検索…',
     noLogs: 'ログはまだ読み込まれていません。',
     days: count => `${count}日`,
     statSessions: 'セッション',
@@ -1913,6 +1952,13 @@ export const ja = defineLocale({
 
   messaging: {
     search: 'メッセージングを検索...',
+    statusFilter: {
+      all: 'すべて',
+      bad: 'エラー',
+      good: '接続済み',
+      muted: '非アクティブ',
+      warn: '要対応'
+    },
     loading: 'メッセージングプラットフォームを読み込み中...',
     loadFailed: 'メッセージングプラットフォームの読み込みに失敗しました',
     states: {
@@ -2182,6 +2228,8 @@ export const ja = defineLocale({
     skillsLabel: 'スキル',
     notSet: '未設定',
     soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
+    soulMissing:
+      'このプロファイルにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
     soulOptional: '省略可能',
     soulPlaceholder: mode =>
       `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
@@ -2792,6 +2840,8 @@ export const ja = defineLocale({
     restoredDraftNotice: '未送信のメッセージを復元しました',
     restoredDraftUndo: '元に戻す',
     queueEdit: '編集',
+    queueExpand: '展開',
+    queueCollapse: '折りたたむ',
     queueSendNext: '次に送信',
     queueSteer: 'ステア — 現在のターンを今すぐ修正',
     queueSend: '送信',
@@ -2860,6 +2910,7 @@ export const ja = defineLocale({
     goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
@@ -2982,6 +3033,7 @@ export const ja = defineLocale({
       scopeUncommitted: '未コミット',
       scopeBranch: 'ブランチ',
       scopeLastTurn: '前のターン',
+      readOnlyScope: '読み取り専用ビュー — ステージ・復元・コミットは「未コミット」のみ対象です',
       commit: 'コミット',
       commitAndPush: 'コミットしてプッシュ',
       commitPlaceholder: shortcut => `メッセージ（${shortcut} でコミット）`,
@@ -3045,6 +3097,7 @@ export const ja = defineLocale({
     updateNow: '今すぐ更新',
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
+    copyFullLog: '完全な変更ログをコピー',
     manualTitle: 'ターミナルから更新',
     manualUnavailableTitle: 'ここからは更新できません',
     manualBody:
@@ -3319,7 +3372,12 @@ export const ja = defineLocale({
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
     addProvider: 'プロバイダーを追加…',
     addCustomModel: 'カスタムモデルを追加',
-    removeCustomModel: 'カスタムモデルを削除'
+    removeCustomModel: 'カスタムモデルを削除',
+    resetToDefaults: 'デフォルトに戻す',
+    resetConfirm: 'モデルの表示設定をデフォルトに戻しますか？',
+    resetDescription:
+      '表示・非表示の選択が消去され、各プロバイダーのデフォルトの一覧に戻ります。追加したカスタムモデルは残り、表示されます。',
+    resetAction: 'リセット'
   },
 
   shell: {
@@ -3332,7 +3390,15 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       followDefault: '設定のデフォルトを使用',
       refreshModels: 'モデルを更新',
-      fast: '高速'
+      favorites: 'お気に入り',
+      addFavorite: 'お気に入りに追加',
+      removeFavorite: 'お気に入りから削除',
+      favoriteShortcut: '⇧ クリック',
+      fast: '高速',
+      free: '無料',
+      cacheRead: 'キャッシュ読み取り',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',
@@ -3420,6 +3486,7 @@ export const ja = defineLocale({
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
       contextUsage: 'コンテキスト使用状況',
+      compressions: count => `圧縮回数: ${count}`,
       systemResources: {
         title: 'システムリソース',
         loading: 'リソース…',
@@ -3461,6 +3528,10 @@ export const ja = defineLocale({
   },
 
   rightSidebar: {
+    terminalReadOnly: '読み取り専用の出力',
+    terminalReadOnlyHelp:
+      'プロンプトに応答するには、バックグラウンドのコマンドを停止し、新しいターミナルで実行してください。新しいターミナルは別のシェルを開き、このプロセスには接続しません。',
+    terminalOpenInteractive: '新しいターミナルを開く',
     aria: '右サイドバー',
     panelsAria: '右サイドバーパネル',
     files: 'ファイルシステム',
@@ -3509,6 +3580,9 @@ export const ja = defineLocale({
     closePane: 'プレビューペインを閉じる',
     loading: 'プレビューを読み込み中',
     unavailable: 'プレビューは利用できません',
+    missingTitle: 'ファイルは存在しません',
+    missingBody: label =>
+      `${label} は削除・移動されたか、一時的な場所が消去されました。このタブは次回の起動時には復元されません。`,
     opening: '開いています...',
     hide: '非表示',
     openPreview: 'プレビューを開く',
@@ -3789,8 +3863,9 @@ export const ja = defineLocale({
             `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
         },
         timeout: {
-          title: '応答がタイムアウトしました',
-          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+          title: 'AI サービスに接続できません',
+          body: provider =>
+            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
           title: '安全な接続に失敗しました',
@@ -3869,14 +3944,9 @@ export const ja = defineLocale({
       placeholder: '回答を入力…',
       skip: 'スキップ',
       skipped: 'スキップ済み',
-      continueLabel: '続行',
+      noAnswer: '回答なし',
       confirmAndContinueLabel: '確定して続行',
-      answeredBadge: '回答済み',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
-      lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
-      lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint:
-        'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
     },
@@ -4056,6 +4126,9 @@ export const ja = defineLocale({
       'このウィンドウは同じチャットの別ビューより遅れています。最新のメッセージを読み込みました。送信する場合はもう一度送ってください。',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
+    slashCommandIgnoredTitle: 'コマンドが送信されませんでした',
+    slashCommandIgnoredBody:
+      'スラッシュコマンドと添付ファイルを同時に使用することはできません。添付ファイルを削除するか、コマンドを別途送信してください。',
     desktopCommands: 'デスクトップコマンド',
     skillCommandsAvailable: count => `${count} 件のスキルコマンドが利用可能です。`,
     warningLine: message => `警告: ${message}`,
@@ -4121,6 +4194,9 @@ export const ja = defineLocale({
     openImage: '画像を開く',
     downloadImage: '画像をダウンロード',
     savingImage: '画像を保存中',
+    zoomIn: '拡大',
+    zoomOut: '縮小',
+    resetZoom: 'ズームをリセット',
     imagePreviewFailed: '画像のプレビューに失敗しました',
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',
@@ -4204,6 +4280,11 @@ export const ja = defineLocale({
   ui: {
     search: {
       clear: '検索をクリア'
+    },
+    logs: {
+      bottom: 'ログの末尾',
+      search: 'ログを検索…',
+      top: 'ログの先頭'
     },
     pagination: {
       label: 'ページング',

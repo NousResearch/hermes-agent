@@ -271,7 +271,7 @@ def test_server_request_round_trip_uses_response_frame(capture):
      lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
      {"value": "yes"}),
     # Batch clarify's lock-based resolution follows the same first-settlement rule.
-    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}, "outcome": "submitted"}),
 ])
 def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
     """A response and cancellation may race; the first settlement owns the result."""
@@ -403,6 +403,88 @@ def test_server_request_error_response_fails_fast(server):
     assert box["result"] is None
 
 
+def _two_window_session(server, sid):
+    """A session two advertised Desktop windows are attached to (a FanoutTransport of WS peers)."""
+    import asyncio
+
+    from tui_gateway import server_requests
+    from tui_gateway.transport import FanoutTransport
+
+    # The fanout awaits a WS peer's write_async on its loop; a peer without one is pruned on first write.
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    windows = (_silent_ws(), _silent_ws())
+    for window in windows:
+        async def _write_async(obj, window=window):
+            return window.write(obj)
+        window._loop, window.write_async = loop, _write_async
+        server_requests.advertise(window, True)
+    _ws_session(server, sid, FanoutTransport(*windows))
+    return windows
+
+
+def _not_shown(req):
+    from tui_gateway import server_requests
+    return {"jsonrpc": "2.0", "id": req.id, "error": {"code": server_requests.NOT_SHOWN_CODE, "message": "not here"}}
+
+
+def test_window_owned_request_refuses_at_once_when_no_window_shows_the_session(server):
+    """#119333: every attached window says it does not show the session → preview.read resolves with the
+    distinct not-shown refusal now, instead of the agent waiting out the 45s bridge deadline."""
+    from tui_gateway import server_requests
+
+    windows = _two_window_session(server, "s-none")
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-none", {}, timeout=30)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    t0 = time.monotonic()
+    assert server.dispatch(_not_shown(req), windows[0]) is None
+    # A replayed decline from the same window is still one window's vote.
+    server.dispatch(_not_shown(req), windows[0])
+    time.sleep(0.05)
+    assert thread.is_alive()
+    server.dispatch(_not_shown(req), windows[1])
+    thread.join(timeout=2)
+    assert not thread.is_alive() and time.monotonic() - t0 < 2
+    assert json.loads(box["r"]) == {"success": False, "error": server_requests.NOT_SHOWN_MESSAGE}
+    assert server_requests.open_requests("s-none") == []
+
+
+def test_window_owned_request_decline_does_not_beat_the_owner_window(server):
+    """#113348 stays fixed: one bystander window declining leaves the request open for the window that
+    shows the session, and its answer is the result."""
+    from tui_gateway import server_requests
+
+    bystander, owner = _two_window_session(server, "s-own")
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-own", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    server.dispatch(_not_shown(req), bystander)
+    # An unattributed decline (proxied / relayed frame) is not a window's vote either.
+    assert server_requests.resolve_response(_not_shown(req)) is True
+    time.sleep(0.05)
+    assert thread.is_alive() and [r["id"] for r in server_requests.open_requests("s-own")] == [req.id]
+    server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": '{"text": "page"}'}}, owner)
+    thread.join(timeout=2)
+    assert box["r"] == '{"text": "page"}'
+
+
+def test_client_capabilities_advertises_counting_not_shown_declines(server):
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert response["result"]["declines_not_shown"] is True
+
+
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
@@ -432,7 +514,7 @@ def _start_batch_clarify(server, buf, qids, timeout=None):
     if timeout is not None:
         server._clarify_timeout_seconds = lambda: timeout
     thread = threading.Thread(
-        target=lambda: box.__setitem__("answer", server._clarify_block("s1", "", None, questions=normalized)), daemon=True)
+        target=lambda: box.__setitem__("answer", server._clarify_block("s1", normalized)), daemon=True)
     thread.start()
     return thread, box, _wait_open(server_requests, buf)
 
@@ -459,9 +541,9 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
                                   "params": {"request_id": req.id, "question_id": "q1", "answer": ""}})
     assert last["result"] == {"status": "ok", "remaining": []}
     thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}}
+    assert box["answer"] == {"answers": {"q0": "y", "q1": ""}, "outcome": "submitted"}
 
-    # Deadline: locked answers survive, timed_out flagged, one request.cancel.
+    # Deadline: locked answers survive, outcome timed_out, one request.cancel.
     original_timeout = server._clarify_timeout_seconds
     try:
         thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
@@ -471,7 +553,7 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
         thread.join(timeout=5)
     finally:
         server._clarify_timeout_seconds = original_timeout
-    assert json.loads(box["answer"]) == {"answers": {"q0": "kept"}, "timed_out": True}
+    assert box["answer"] == {"answers": {"q0": "kept"}, "outcome": "timed_out"}
     cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
     assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]
 
@@ -481,7 +563,7 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
     thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"])
     server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {}})
     thread.join(timeout=5)
-    assert box["answer"] == ""
+    assert box["answer"] == {"answers": {}, "outcome": "cancelled"}
 
 
 def test_clear_pending_cancels_only_that_session(capture):
@@ -1246,9 +1328,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1261,6 +1341,143 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     # resolves is by scoping the lookup to the session's profile_home.
     assert "error" in resp
     assert resp["error"]["code"] == 4018
+
+
+def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path, monkeypatch):
+    """#74705: Desktop/TUI command.dispatch must expand every real leading
+    /skill token (CLI cli.py and the messaging gateway already do), so
+    '/nature-figure /academic-plotting Plot the results' loads BOTH skills
+    over the remaining instruction instead of leaving the second token in
+    the prompt as plain text."""
+    import agent.skill_commands as skill_commands
+    import tools.skills_tool as skills_tool
+
+    home = tmp_path / ".hermes"
+    skills_dir = home / "skills"
+    for name, instructions in (
+        ("nature-figure", "Render figures with natural colors."),
+        ("academic-plotting", "Label every axis and include units."),
+    ):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Test {name}.\n---\n\n{instructions}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    resp = server.handle_request({
+        "id": "stacked-skills",
+        "method": "command.dispatch",
+        "params": {
+            "name": "nature-figure",
+            "arg": "/academic-plotting Plot the results",
+            "session_id": sid,
+        },
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["notice"] == (
+        "⚡ Loading 2 stacked skills: nature-figure, academic-plotting"
+    )
+    assert "Render figures with natural colors." in result["message"]
+    assert "Label every axis and include units." in result["message"]
+    assert "Plot the results" in result["message"]
+    # UIs render `display`: the projection shows the invocation the user typed.
+    assert result["display"] == (
+        "/nature-figure /academic-plotting Plot the results"
+    )
+
+
+def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
+    """A non-skill or repeated token stops the stack and stays instruction text —
+    the split must never eat content the user meant as the prompt."""
+    import agent.skill_commands as skill_commands
+    import tools.skills_tool as skills_tool
+
+    home = tmp_path / ".hermes"
+    skills_dir = home / "skills"
+    skill_dir = skills_dir / "nature-figure"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: nature-figure\ndescription: Test.\n---\n\nRender figures.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
+
+    sid = "test-session-unknown"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    resp = server.handle_request({
+        "id": "stacked-unknown",
+        "method": "command.dispatch",
+        "params": {
+            "name": "nature-figure",
+            "arg": "/not-a-skill-command but /model is a registry command",
+            "session_id": sid,
+        },
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    # No stacked notice — the single-skill path ran with the post-split text intact.
+    assert "notice" not in result
+    assert "/not-a-skill-command but /model is a registry command" in result["message"]
+
+
+def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
+    """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the
+    named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The
+    palette's quick_commands are that profile's too, and an unknown profile is 4064, not a
+    launch-profile palette."""
+    import agent.skill_commands as sc_mod
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+    root = tmp_path / "hermes_home"
+    for name in ("s6probe-a", "s6probe-b"):
+        skill_dir = tmp_path / f"external_{name}" / f"{name}-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}-only\ndescription: Only in {name}.\n---\n\n# x\n")
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {skill_dir.parent}\n"
+            f"quick_commands:\n  {name}-qc:\n    type: exec\n    command: echo {name}\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(server, "_hermes_home", str(root))
+
+    def palette(profile):
+        catalog = server.handle_request({"id": "r1", "method": "commands.catalog", "params": {"profile": profile}})
+        typed = server.handle_request({
+            "id": "r2", "method": "complete.slash", "params": {"text": "/s6probe", "profile": profile}})
+        assert "result" in catalog and "result" in typed, (catalog, typed)
+        quick = {key for key, _ in catalog["result"]["pairs"] if key.endswith("-qc")}
+        return set(catalog["result"]["skills"]), {item["text"].strip("/") for item in typed["result"]["items"]}, quick
+
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
+        ):
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            assert palette("s6probe-b") == ({"/s6probe-b-only"}, {"s6probe-b-only"}, {"/s6probe-b-qc"})
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            for method in ("commands.catalog", "skills.reload"):
+                bad = server.handle_request({"id": "r3", "method": method, "params": {"profile": "../x"}})
+                assert bad.get("error", {}).get("code") == 4064, (method, bad)
+    finally:
+        set_multiplex_active(previous)
 
 
 class _BannerWorker:
@@ -1337,10 +1554,7 @@ def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server,
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", flaky),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
-        patch.object(sc_mod, "_skill_commands_project", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1367,8 +1581,7 @@ def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_miss
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", always_raise),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1442,10 +1655,7 @@ def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_pat
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", stale_then_real),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
-        patch.object(sc_mod, "_skill_commands_project", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1487,9 +1697,7 @@ def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_pat
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1525,8 +1733,7 @@ def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path,
         patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
         patch.object(sb_mod, "_bundles_cache", {}),
         patch.object(sb_mod, "_bundles_cache_mtime", None),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1", "method": "slash.exec", "params": {"command": "/b-pack go", "session_id": sid}})

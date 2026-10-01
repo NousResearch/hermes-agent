@@ -90,6 +90,7 @@ def validate_tool_calls(
     agent._uniquify_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).
+    repaired_ids = set()
     for tc in tool_calls:
         if tc.function.name not in valid_names:
             repaired = agent._repair_tool_call(tc.function.name)
@@ -97,6 +98,10 @@ def validate_tool_calls(
                 agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",
                               force=True, diagnostic=True)
                 tc.function.name = repaired
+                repaired_ids.add(id(tc))
+    # Counted here, before any exit or normalization, so every emitted call is seen once as the model sent it.
+    from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
+    record_tool_call_quality(agent, tool_calls, repaired_ids)
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid
     # ones; voiding the turn discards real work. Strikes advance only when a

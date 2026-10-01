@@ -181,6 +181,9 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
+    # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
+    inline_images: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):
@@ -223,6 +226,7 @@ class SessionListRow(Result):
     preview: str = ""
     started_at: float = 0
     message_count: int = 0
+    live_message_count: int | None = None
     source: str = ""
 
 
@@ -309,7 +313,7 @@ class SessionSetHiddenParams(Params):
     """``session_id`` is a live runtime id first, else a stored id / key / title."""
 
     session_id: str
-    hidden: bool = True
+    hidden: bool
     profile: str | None = None
 
 
@@ -320,6 +324,24 @@ class SessionSetHiddenResult(Result):
 
 method("session.set_hidden", params=SessionSetHiddenParams, result=SessionSetHiddenResult,
        doc="Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.")
+
+
+class SessionArchiveParams(Params):
+    """``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title."""
+
+    session_id: str | None = None
+    session_key: str | None = None
+    archived: bool = True
+    profile: str | None = None
+
+
+class SessionArchiveResult(Result):
+    archived: bool
+    session_key: str
+
+
+method("session.archive", params=SessionArchiveParams, result=SessionArchiveResult,
+       doc="Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.")
 
 
 class SessionWorkspaceMoveParams(ProfileParams):
@@ -401,8 +423,14 @@ method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBr
        doc="session.branch of the whole history without echoing the copied transcript back.")
 
 
+class UndoIntent(WireEnum):
+    RETRY = "retry"
+    UNDO = "undo"
+
+
 class SessionUndoParams(SessionParams):
-    pass
+    # ``retry``: the client resends the dropped turn (Ink /retry), so metrics count a retry, not an undo.
+    intent: UndoIntent | None = None
 
 
 class SessionUndoResult(Result):

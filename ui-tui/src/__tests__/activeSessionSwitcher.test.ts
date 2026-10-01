@@ -11,13 +11,16 @@ import {
   draftTitleFromPrompt,
   isNewSessionRow,
   newSessionRowIndex,
+  orchestratorGlobalHotkeyHint,
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
   relativeSessionAge,
   resumableHistory,
-  sessionRowKindAt
+  sessionRowKindAt,
+  sessionStatusLabel
 } from '../components/activeSessionSwitcher.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
+import { applyLocale, messages, resetLocale } from '../i18n/runtime.js'
 
 describe('session orchestrator helpers', () => {
   it('turns model picker values into session-scoped draft model args', () => {
@@ -78,7 +81,7 @@ describe('session orchestrator helpers', () => {
   it('shows clean draft model labels without picker flags or provider params', () => {
     expect(draftModelDisplayLabel('kimi-k2.6 --provider ollama-cloud --tui-session')).toBe('kimi-k2.6')
     expect(draftModelDisplayLabel('openai/gpt-5.5 --provider openai-codex --global')).toBe('gpt-5.5')
-    expect(draftModelDisplayLabel('')).toBe('current/default')
+    expect(draftModelDisplayLabel('')).toBe(messages().pickers.session.currentOrDefault)
   })
 
   it('maps row clicks to existing-session activation or New-row focus', () => {
@@ -128,10 +131,30 @@ describe('unified Sessions overlay helpers', () => {
   it('renders relative session age, blank when unknown', () => {
     const nowSec = Math.floor(Date.now() / 1000)
 
-    expect(relativeSessionAge(nowSec)).toBe('today')
-    expect(relativeSessionAge(nowSec - 36 * 3600)).toBe('yesterday')
-    expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
+    expect(relativeSessionAge(nowSec)).toBe(messages().pickers.session.age.today)
+    expect(relativeSessionAge(nowSec - 36 * 3600)).toBe(messages().pickers.session.age.yesterday)
+    expect(relativeSessionAge(nowSec - 3 * 86400)).toBe(messages().pickers.session.age.daysAgo(3))
     expect(relativeSessionAge(undefined)).toBe('')
     expect(relativeSessionAge(0)).toBe('')
+  })
+  it('resolves status labels and hint fragments against the active language at call time', () => {
+    expect(sessionStatusLabel('working')).toBe(messages().pickers.session.status.working)
+    expect(sessionStatusLabel('mystery')).toBe('mystery')
+    expect(orchestratorGlobalHotkeyHint()).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
+
+    applyLocale('pl', {
+      lang: 'pl',
+      surface: 'tui',
+      messages: { 'pickers.session.status.working': 'pracuje', 'pickers.session.hint.close': ' zamknij' }
+    })
+
+    try {
+      expect(sessionStatusLabel('working')).toBe('pracuje')
+      expect(orchestratorGlobalHotkeyHint()).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc zamknij')
+    } finally {
+      resetLocale()
+    }
+
+    expect(sessionStatusLabel('working')).toBe('working')
   })
 })

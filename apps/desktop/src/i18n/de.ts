@@ -4,6 +4,42 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Hermes verbessern helfen?',
+    consentBody:
+      'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
+    whatIsCollected: 'Was erfasst wird',
+    collectedIntro: 'Nur begrenzte Zähler:',
+    collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen',
+    collectedModels: 'Modellrouten und Token-Summen',
+    collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
+    collectedMilestones: 'Gruppierte Einrichtungszahlen',
+    collectedReliability:
+      'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
+    collectedUsage:
+      'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
+    collectedMachine:
+      'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter und Kanal der Hermes-Version, Anzahl ausstehender Updates, ob ein lokaler Modellserver genutzt wird',
+    installId:
+      'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
+    consentWindow:
+      'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
+    readDocs: 'Alle Details lesen',
+    share: 'Erfassen und an Nous senden',
+    local: 'Nur lokal erfassen',
+    off: 'Nein, danke',
+    changeLater: 'Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
+    saveFailed: 'Ihre Auswahl konnte nicht gespeichert werden',
+    collectLabel: 'Nutzungsstatistiken erfassen',
+    collectDesc: 'Begrenzte Zähler auf diesem Gerät. Niemals Prompts, Dateien, Pfade oder Fehlertexte.',
+    sendLabel: 'Nutzungsstatistiken an Nous senden',
+    sendDesc:
+      'Jedes Tagespaket an den Nous-Telemetriedienst hochladen. Nur Daten aus einem Zustimmungsfenster werden gesendet. Erfordert aktive Erfassung.',
+    unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.',
+    stripBody: 'Nur begrenzte Zähler, niemals Prompts oder Dateien.',
+    stripChoices: { share: 'An Nous senden', local: 'Nur lokal', off: 'Nein danke' },
+    stripDetails: 'Details'
+  },
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',
@@ -685,6 +721,8 @@ export const deOverrides = {
       'composer.focus': 'Composer fokussieren',
       'composer.modelPicker': 'Modellauswahl öffnen',
       'composer.voice': 'Sprachkonversation starten / stoppen',
+      'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
+      'composer.reasoningDown': 'Reasoning-Stufe senken',
       'view.toggleSidebar': 'Session-Sidebar umschalten',
       'view.cycleSidebarGrouping': 'Session-Gruppierung wechseln',
       'view.toggleRightSidebar': 'Dateibrowser umschalten',
@@ -694,7 +732,7 @@ export const deOverrides = {
       'view.toggleProfileRail': 'Profil-Leiste ein-/ausblenden',
       'view.toggleSimpleMode': 'Einfachen Modus umschalten',
       'view.showFiles': 'Dateibrowser anzeigen',
-      'view.showBrowser': 'Browser öffnen',
+      'view.showBrowser': 'Browser umschalten',
       'view.toggleHud': 'HUD-Modus umschalten',
       'hud.snapToPointer': 'HUD zum Zeiger bewegen (global, während HUD offen ist)',
       'view.showTerminal': 'Terminal umschalten',
@@ -1095,6 +1133,9 @@ export const deOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Chat-Textgröße',
+      chatTextScaleDesc:
+        'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',
       title: 'Darstellung',
       intro: 'Nur für Desktop. Modus ist die Helligkeit; Theme ist Farbpalette und Chat-Design.',
       colorMode: 'Farbmodus',
@@ -1172,6 +1213,8 @@ export const deOverrides = {
       textDirection: { auto: 'Auto', rtl: 'Rechts nach links', ltr: 'Links nach rechts' },
       introSplashTitle: 'Intro-Splash',
       introSplashDesc: 'Das Wortzeichen und der Prompt, die bei einem leeren Chat angezeigt werden.',
+      modelPricingTitle: 'Modellpreise',
+      modelPricingDesc: 'Eingabe-, Ausgabe- und Cache-Lesepreise pro Million Tokens in der Modellauswahl anzeigen.',
       reactionsTitle: 'Nachrichten-Reaktionen',
       reactionsDesc:
         'Emoji-Tapbacks im iMessage-Stil – reagieren Sie auf Nachrichten, und Hermes kann auf Ihre reagieren.',
@@ -2053,6 +2096,8 @@ export const deOverrides = {
       provider: 'Anbieter',
       model: 'Modell',
       applying: 'Wird angewendet…',
+      mainAppliedTitle: 'Hauptmodell aktualisiert',
+      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',
@@ -2065,6 +2110,7 @@ export const deOverrides = {
       restartFailed: 'Das Backend konnte nicht neu gestartet werden',
       auxiliaryTitle: 'Hilfsmodelle',
       resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
+      staleAuxDismiss: 'Nicht erneut anzeigen',
       auxiliaryDesc:
         'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
       setToMain: 'Auf Hauptmodell setzen',
@@ -2810,6 +2856,7 @@ export const deOverrides = {
       serverStates: {
         connected: 'verbunden',
         app_not_running: 'App läuft nicht',
+        hermes_not_connected: 'MCP-Verbindung fehlt',
         endpoint_unavailable: 'Endpunkt nicht verfügbar',
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
@@ -3080,12 +3127,6 @@ export const deOverrides = {
       system: 'System',
       usage: 'Nutzung'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnose, Backups, Curator und Memory-Daten',
-      sessions: 'Sessions durchsuchen und verwalten',
-      system: 'Status, Logs und Systemaktionen',
-      usage: 'Token-, Kosten- und Skill-Aktivität im Zeitverlauf'
-    },
     nav: {
       newChat: {
         title: 'Neue Session',
@@ -3136,7 +3177,8 @@ export const deOverrides = {
     gatewayStopped: 'Messaging-Gateway gestoppt',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Aktive Sessions ${count}`,
     restartGateway: 'Gateway neu starten',
-    openBrowser: 'Browser öffnen',
+    openBrowser: 'Browser umschalten',
+    toggleBrowser: 'Browser umschalten',
     gatewayRestartFailed: 'Gateway-Neustart fehlgeschlagen.',
     sharedGatewayRestartTitle: 'Gemeinsames Gateway neu starten?',
     sharedGatewayRestartDescription: bots => `Alle Bots auf diesem Gerät verbinden sich neu: ${bots}`,
@@ -3171,7 +3213,7 @@ export const deOverrides = {
     actions: count => `${count} Aktionen`,
     logFile: 'Logdatei',
     logLevel: 'Stufe',
-    logSearchPlaceholder: 'Logzeilen filtern...',
+    logSearchPlaceholder: 'Logs durchsuchen…',
     maintenance: {
       runOps: 'Diagnose',
       doctor: 'Doctor ausführen',
@@ -3220,6 +3262,13 @@ export const deOverrides = {
   },
   messaging: {
     search: 'Messaging durchsuchen...',
+    statusFilter: {
+      all: 'Alle',
+      bad: 'Fehler',
+      good: 'Verbunden',
+      muted: 'Inaktiv',
+      warn: 'Handlungsbedarf'
+    },
     loading: 'Messaging-Plattformen werden geladen...',
     loadFailed: 'Messaging-Plattformen konnten nicht geladen werden',
     states: {
@@ -4279,6 +4328,8 @@ export const deOverrides = {
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
     queueEdit: 'Bearbeiten',
+    queueExpand: 'Ausklappen',
+    queueCollapse: 'Einklappen',
     queueSendNext: 'Weiter',
     queueSteer: 'Steuern — laufenden Turn jetzt umleiten',
     queueSend: 'Senden',
@@ -4383,6 +4434,7 @@ export const deOverrides = {
     goalWaiting: 'Ziel wartet',
     subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,
     todos: (done, total) => `Aufgaben ${done}/${total}`,
+    previousTodos: (done, total) => `Frühere Aufgaben ${done}/${total}`,
     running: 'Läuft',
     stop: 'Stopp',
     dismiss: 'Verwerfen',
@@ -4625,6 +4677,7 @@ export const deOverrides = {
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
+    copyFullLog: 'Vollständiges Änderungsprotokoll kopieren',
     manualTitle: 'Über Ihr Terminal aktualisieren',
     manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:
@@ -4974,7 +5027,12 @@ export const deOverrides = {
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…',
     addCustomModel: 'Eigenes Modell hinzufügen',
-    removeCustomModel: 'Eigenes Modell entfernen'
+    removeCustomModel: 'Eigenes Modell entfernen',
+    resetToDefaults: 'Auf Standard zurücksetzen',
+    resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
+    resetDescription:
+      'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetAction: 'Zurücksetzen'
   },
   shell: {
     windowControls: 'Fenster-Bedienelemente',
@@ -4986,7 +5044,15 @@ export const deOverrides = {
       editModels: 'Modelle bearbeiten…',
       followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
-      fast: 'Schnell'
+      favorites: 'Favoriten',
+      addFavorite: 'Zu Favoriten hinzufügen',
+      removeFavorite: 'Aus Favoriten entfernen',
+      favoriteShortcut: '⇧ Klick',
+      fast: 'Schnell',
+      free: 'kostenlos',
+      cacheRead: 'Cache-Lesung',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
@@ -5306,6 +5372,7 @@ export const deOverrides = {
     hideTabStrip: 'Tabs ausblenden',
     showStripTab: title => `${title} anzeigen`,
     hideStripTab: title => `${title} ausblenden`,
+    zoneMenuLabel: title => `Zonenoptionen für ${title}`,
     lastTabKeptTitle: 'Letzter Tab bleibt',
     lastTabKeptBody:
       'Diese Zone braucht mindestens einen sichtbaren Tab. Zeigen Sie zuerst einen anderen Tab an oder klappen Sie die ganze Seitenleiste ein.',
@@ -5463,9 +5530,13 @@ export const deOverrides = {
             `${provider} hat einen Serverfehler zurückgegeben. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.`
         },
         timeout: {
-          title: 'Die Antwort hat zu lange gebraucht',
+          title: 'Der KI-Dienst ist nicht erreichbar',
           body: provider =>
-            `${provider} hat nicht rechtzeitig geantwortet. Versuchen Sie es erneut, um die Nachricht noch einmal zu senden.`
+            `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
+        },
+        no_reply: {
+          title: 'Die Antwort wurde nicht fertig',
+          body: 'Hermes hat diesen Durchlauf ohne Antwort beendet. Versuchen Sie es erneut, um sie noch einmal zu senden.'
         },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
@@ -5649,14 +5720,9 @@ export const deOverrides = {
       placeholder: 'Geben Sie Ihre Antwort ein…',
       skip: 'Überspringen',
       skipped: 'Übersprungen',
-      continueLabel: 'Weiter',
+      noAnswer: 'Keine Antwort',
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      answeredBadge: 'Beantwortet',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
-      lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint:
-        'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },
@@ -6096,6 +6162,11 @@ export const deOverrides = {
   ui: {
     search: {
       clear: 'Suche löschen'
+    },
+    logs: {
+      bottom: 'Zum Ende',
+      search: 'Logs durchsuchen…',
+      top: 'Zum Anfang'
     },
     pagination: {
       label: 'Seitennummerierung',

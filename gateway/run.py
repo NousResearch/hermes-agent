@@ -5466,7 +5466,6 @@ def _claim_host_gateway_role(force: bool = False) -> None:
             from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
             print(decision.message)
             raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
-        _refuse_second_host_gateway(owner)
     if _owner_is_standalone():
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
         # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now

@@ -24,7 +24,7 @@ function renderPage(subpage?: string) {
 }
 
 describe('AppearanceSettings extra slot', () => {
-  it('mounts plugin extras on the top-level page only, not on deep-link subpages', () => {
+  it('mounts plugin extras on the last subpage only, not on other subpages', () => {
     act(() => {
       disposers.push(
         registry.register({
@@ -36,12 +36,20 @@ describe('AppearanceSettings extra slot', () => {
       )
     })
 
-    const { unmount } = renderPage('pet')
+    // The router resolves every Appearance visit to a subpage (falling back to
+    // the first one), so the slot must ride along with a real subpage — the
+    // last one, after the built-in sections — or it never renders.
+    let view = renderPage('theme')
 
     expect(screen.queryByText('Extra controls')).toBeNull()
-    unmount()
+    view.unmount()
 
-    renderPage()
+    view = renderPage('pet')
+
+    expect(screen.getByText('Extra controls')).toBeTruthy()
+    view.unmount()
+
+    view = renderPage()
 
     expect(screen.getByText('Extra controls')).toBeTruthy()
   })

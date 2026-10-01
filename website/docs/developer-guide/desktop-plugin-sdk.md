@@ -672,8 +672,9 @@ ctx.register({
 *Arbitration:* every registration mounts, in registry order, each inside its
 own error boundary — a contribution that throws collapses to an inline error
 card naming its `id` (with Retry) and the rest of the page (and other plugins'
-cards) keep rendering. The slot mounts on the top-level Appearance page only,
-not on deep-link subpages (`settings/appearance/<section>`), and there is no
+cards) keep rendering. The slot mounts on the last Appearance subpage (Pet),
+after the built-in sections; a deep-link to another subpage
+(`settings/appearance/<section>`) does not grow plugin cards, and there is no
 "first wins" — plugins cannot suppress each other here.
 
 *Teardown:* the registration is owned by the plugin loader; disabling or

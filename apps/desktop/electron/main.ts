@@ -289,6 +289,8 @@ import {
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   homeRelativeAttachmentCandidates,
+  isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -6064,7 +6066,21 @@ async function filePathFromPreviewUrl(rawUrl) {
 }
 
 async function watchPreviewFile(owner, rawUrl) {
-  const filePath = await filePathFromPreviewUrl(rawUrl)
+  let filePath
+
+  try {
+    filePath = await filePathFromPreviewUrl(rawUrl)
+  } catch (error) {
+    // A restored tab probing a file that is gone is an expected outcome —
+    // answer it like the read handlers do instead of rejecting (Electron logs
+    // every rejected handler as a stack trace at startup).
+    if (isMissingFileError(error)) {
+      return missingFileResult(rawUrl, error)
+    }
+
+    throw error
+  }
+
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
@@ -17589,11 +17605,19 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   // Windows host bridge them to a UNC/drive form, same as directory reads.
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
-  return readFileDataUrlForIpc(bridgedPath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
-    purpose: 'File preview'
-  })
+  try {
+    return await readFileDataUrlForIpc(bridgedPath, {
+      maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
+      purpose: 'File preview'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
+  }
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.
@@ -17603,38 +17627,59 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
-  return readFileDataUrlForIpc(bridgedPath, {
-    maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
-    purpose: 'Attachment upload'
-  })
+  try {
+    return await readFileDataUrlForIpc(bridgedPath, {
+      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
+      purpose: 'Attachment upload'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
+  }
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
-    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
-    purpose: 'Text preview'
-  })
-
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
-
   try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+    const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
+      maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
+      purpose: 'Text preview'
+    })
 
-    return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
-      language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-      mimeType: mimeTypeForPath(resolvedPath),
-      path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+    const ext = path.extname(resolvedPath).toLowerCase()
+    const handle = await fs.promises.open(resolvedPath, 'r')
+    const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
+
+    try {
+      const buffer = Buffer.alloc(bytesToRead)
+      const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+
+      return {
+        binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
+        byteSize: stat.size,
+        language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
+        mimeType: mimeTypeForPath(resolvedPath),
+        path: resolvedPath,
+        text: buffer.subarray(0, bytesRead).toString('utf8'),
+        truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+      }
+    } finally {
+      await handle.close()
     }
-  } finally {
-    await handle.close()
+  } catch (error) {
+    // A preview probing a file that is gone (deleted, moved, or cleared from
+    // /tmp since the tab/transcript reference was written) is an expected
+    // outcome. Return a structured error instead of rejecting — Electron logs
+    // every rejected handler with a stack trace even though the renderer shows
+    // "preview unavailable" either way.
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
   }
 })
 

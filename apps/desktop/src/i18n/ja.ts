@@ -3580,6 +3580,8 @@ export const ja = defineLocale({
     closePane: 'プレビューペインを閉じる',
     loading: 'プレビューを読み込み中',
     unavailable: 'プレビューは利用できません',
+    missingTitle: 'ファイルは存在しません',
+    missingBody: label => `${label} は削除・移動されたか、一時的な場所が消去されました。このタブは次回の起動時には復元されません。`,
     opening: '開いています...',
     hide: '非表示',
     openPreview: 'プレビューを開く',

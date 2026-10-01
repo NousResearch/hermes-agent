@@ -82,6 +82,30 @@ test('falls back to an ephemeral port when the requested port is taken', async t
   assert.equal(await (await fetch(`http://127.0.0.1:${takenPort}/`)).text(), 'squatter')
 })
 
+test('injects legacy localStorage values into the first HTTP-origin document', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-'))
+  fs.writeFileSync(path.join(root, 'index.html'), '<!doctype html><html><body>renderer</body></html>')
+
+  const server = await startRendererServer(root, {
+    legacyStorage: {
+      'hermes.desktop.translucency.v2': '{"mode":"glass"}',
+      'renderer.value': '<preserve-me>'
+    },
+    port: 0
+  })
+
+  t.onTestFinished(async () => {
+    await server.close()
+    fs.rmSync(root, { force: true, recursive: true })
+  })
+
+  const html = await (await fetch(`${server.origin}/`)).text()
+  assert.match(html, /hermes\.desktop\.renderer-storage-origin-migrated\.v1/)
+  assert.match(html, /hermes\.desktop\.translucency\.v2/)
+  assert.match(html, /\\u003cpreserve-me>/)
+  assert.match(html, /<!doctype html>/)
+})
+
 test('rejects paths outside the renderer root', () => {
   const root = path.resolve('/tmp/hermes-renderer')
 

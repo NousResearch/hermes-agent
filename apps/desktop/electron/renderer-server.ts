@@ -27,6 +27,16 @@ interface RendererServer {
   origin: string
 }
 
+type RendererStorageMigration = Record<string, string>
+
+const STORAGE_MIGRATION_MARKER = 'hermes.desktop.renderer-storage-origin-migrated.v1'
+
+function storageMigrationScript(storage: RendererStorageMigration): string {
+  const payload = JSON.stringify(storage).replace(/</g, '\\u003c')
+
+  return `<script>if (!localStorage.getItem(${JSON.stringify(STORAGE_MIGRATION_MARKER)})) { const legacy = ${payload}; for (const [key, value] of Object.entries(legacy)) { if (localStorage.getItem(key) === null) localStorage.setItem(key, value) } localStorage.setItem(${JSON.stringify(STORAGE_MIGRATION_MARKER)}, '1') }</script>`
+}
+
 function rendererRequestPath(root: string, requestUrl: string): string | null {
   let pathname
 
@@ -72,7 +82,7 @@ function isPortCollision(error: unknown): boolean {
 
 async function startRendererServer(
   rootDir: string,
-  { port = DEFAULT_PORT }: { port?: number } = {}
+  { port = DEFAULT_PORT, legacyStorage = {} }: { port?: number; legacyStorage?: RendererStorageMigration } = {}
 ): Promise<RendererServer> {
   const root = path.resolve(rootDir)
   const indexPath = path.join(root, 'index.html')
@@ -112,12 +122,17 @@ async function startRendererServer(
       const body = await fs.promises.readFile(filePath)
       const extension = path.extname(filePath).toLowerCase()
       const isIndex = filePath === indexPath
+
+      const responseBody = isIndex && Object.keys(legacyStorage).length > 0
+        ? `${storageMigrationScript(legacyStorage)}${body.toString('utf8')}`
+        : body
+
       response.writeHead(200, {
         'Cache-Control': isIndex ? 'no-store' : 'public, max-age=31536000, immutable',
         'Content-Type': MIME_TYPES[extension] || 'application/octet-stream',
         'X-Content-Type-Options': 'nosniff'
       })
-      response.end(request.method === 'HEAD' ? undefined : body)
+      response.end(request.method === 'HEAD' ? undefined : responseBody)
     } catch {
       response.writeHead(404)
       response.end()

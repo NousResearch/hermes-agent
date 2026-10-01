@@ -19365,12 +19365,35 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
+async function readLegacyRendererStorage(indexPath: string): Promise<Record<string, string>> {
+  const legacyWindow = new BrowserWindow({ show: false })
+
+  try {
+    await legacyWindow.loadFile(indexPath)
+
+    return await legacyWindow.webContents.executeJavaScript(
+      'Object.fromEntries(Object.entries(localStorage))',
+      true
+    )
+  } catch (error) {
+    rememberLog(`[renderer-storage] legacy localStorage migration unavailable: ${describeCrashReason(error)}`)
+
+    return {}
+  } finally {
+    if (!legacyWindow.isDestroyed()) {
+      legacyWindow.destroy()
+    }
+  }
+}
+
 app.whenReady().then(async () => {
   // Serve the packaged renderer over loopback HTTP (real origin for embeds —
   // see renderer-server.ts) before any window loads it. In dev the Vite dev
   // server already provides the origin.
   if (!DEV_SERVER) {
-    packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
+    const rendererIndex = resolveRendererIndex()
+    const legacyStorage = await readLegacyRendererStorage(rendererIndex)
+    packagedRendererServer = await startRendererServer(path.dirname(rendererIndex), { legacyStorage })
   }
 
   // Post-update relaunch detection (App Installer arm): when the previous

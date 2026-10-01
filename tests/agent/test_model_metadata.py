@@ -854,6 +854,20 @@ class TestFetchEndpointModelMetadata:
         not_found_ctx.__exit__.assert_called_once()
         success_ctx.__exit__.assert_called_once()
 
+    def test_in_memory_endpoint_cache_prunes_expired_and_oldest_entries(self, monkeypatch):
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(mm, "_ENDPOINT_MODEL_CACHE_MAX_ENTRIES", 2)
+        with patch("agent.model_metadata.time.time", side_effect=[100.0, 100.0, 100.0, 401.0]):
+            mm._remember_endpoint_models(("url", "old-1"), {})
+            mm._remember_endpoint_models(("url", "old-2"), {})
+            mm._remember_endpoint_models(("url", "old-3"), {})
+            assert set(mm._endpoint_model_metadata_cache) == {("url", "old-2"), ("url", "old-3")}
+            mm._remember_endpoint_models(("url", "fresh"), {})
+
+        assert set(mm._endpoint_model_metadata_cache) == {("url", "fresh")}
+        assert set(mm._endpoint_model_metadata_cache_time) == {("url", "fresh")}
+
     def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
         """A fresh process (cleared in-memory cache) must answer from the disk
         memo within the TTL instead of re-probing the endpoint — the cost every

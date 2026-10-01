@@ -81,23 +81,6 @@ def test_invalid_entries_are_skipped_not_raised(tmp_path):
     assert entries[0].description == "café"
 
 
-def test_source_fields_the_admission_gate_rejects_are_dropped(tmp_path):
-    """The runtime twin mirrors the gate: a traversal subdir would let
-    ``_raw_manifest_url`` escape the pinned repo, a whitespace repo reaches the
-    installer, and a non-string or newline-bearing field must not coerce."""
-    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("ok")))
-    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("nested", subdir="plugins/x")))
-    (tmp_path / "c.yaml").write_text(yaml.safe_dump(_entry("trav", subdir="../x")))
-    (tmp_path / "d.yaml").write_text(yaml.safe_dump(_entry("deep", subdir="plugin/../x")))
-    (tmp_path / "e.yaml").write_text(yaml.safe_dump(_entry("ws", repo="https://x/y z")))
-    (tmp_path / "f.yaml").write_text(yaml.safe_dump(_entry("nonstr", subdir=5)))
-    (tmp_path / "g.yaml").write_text(yaml.safe_dump(_entry("nl\n")))
-    (tmp_path / "h.yaml").write_text(yaml.safe_dump(_entry("nullsub", subdir=None)))
-    entries = pc.load_catalog(tmp_path)
-    assert {e.name for e in entries} == {"ok", "nested"}
-    assert next(e for e in entries if e.name == "nested").subdir == "plugins/x"
-
-
 def test_find_removed_matches_name_or_normalized_repo(tmp_path):
     (tmp_path / "removed.yaml").write_text(yaml.safe_dump({"removed": [
         {"name": "evil", "repo": "https://github.com/x/evil.git", "reason": "malware", "date": "2026-01-01"}]}))

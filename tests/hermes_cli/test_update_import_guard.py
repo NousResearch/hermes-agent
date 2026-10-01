@@ -155,16 +155,31 @@ def test_import_guard_reports_probe_termination_by_default(monkeypatch, probe_ro
     assert module == "critical-module probe"
     assert error and "9" in error
 
-def test_import_guard_ignores_successful_system_exit_during_stash_comparison(
+def test_import_guard_reports_unrelated_successful_system_exit_during_stash_comparison(
     monkeypatch, probe_root
 ):
     (probe_root / "consumer.py").write_text("raise SystemExit(0)\n")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
     monkeypatch.setattr(update_cmd_validation, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
-    assert update_cmd._validate_critical_modules_import(
+    ok, module, error = update_cmd._validate_critical_modules_import(
         probe_root, report_runtime_errors=True
-    ) == (True, None, None)
+    )
+    assert ok is False
+    assert module == "consumer"
+    assert error == "0"
+
+
+def test_import_guard_ignores_explicitly_attributed_successful_relaunch(
+    monkeypatch, probe_root
+):
+    (probe_root / "consumer.py").write_text("raise SystemExit(0)\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    monkeypatch.setattr(update_cmd_validation, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    assert update_cmd_validation._critical_module_import_failures(
+        probe_root, report_runtime_errors=True, allow_successful_relaunch=True
+    ) == {}
 
 
 def test_import_guard_reports_system_exit_by_default(monkeypatch, probe_root):

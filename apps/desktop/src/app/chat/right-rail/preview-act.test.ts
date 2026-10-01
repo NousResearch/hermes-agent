@@ -3,7 +3,6 @@ import { types } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { isMacPlatform } from '@/lib/platform'
-
 import { $rightRailActiveTabId } from '@/store/layout'
 import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 
@@ -333,15 +332,18 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     const tabId = openBrowserTab()
     const send = vi.fn()
     let fieldLen = opts.initial
+
     const isSelectAll = (e: { type: string; keyCode: string; modifiers?: string[] }) =>
       e.type === 'keyDown' && e.keyCode === 'a' && !!e.modifiers?.length
 
     send.mockImplementation((e: { type: string; keyCode: string; modifiers?: string[] }) => {
       if (isSelectAll(e)) {
-        if (opts.selectWorks && opts.clearable) fieldLen = 0
+        if (opts.selectWorks && opts.clearable) {fieldLen = 0}
+
         return
       }
-      if (e.type === 'keyDown' && e.keyCode === 'Backspace' && fieldLen > 0 && opts.clearable) fieldLen--
+
+      if (e.type === 'keyDown' && e.keyCode === 'Backspace' && fieldLen > 0 && opts.clearable) {fieldLen--}
     })
 
     cleanups.push(

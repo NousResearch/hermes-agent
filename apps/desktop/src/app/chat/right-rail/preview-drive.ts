@@ -14,9 +14,9 @@
  * steps over ~280ms is what Playwright's action cursor settles on too.
  */
 
-import type { PreviewInputHandle } from './preview-input'
-
 import { isMacPlatform } from '@/lib/platform'
+
+import type { PreviewInputHandle } from './preview-input'
 
 export interface DrivePoint {
   x: number

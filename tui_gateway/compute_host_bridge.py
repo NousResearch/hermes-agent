@@ -225,50 +225,65 @@ def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answ
     return _ok(rid, result)
 
 
-def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:
+def _apply_compute_host_metadata_mirror(
+    session: dict, frame: dict | None, *, turn_claim: int | None = None
+) -> None:
     """Mirror host-owned session metadata: under turn isolation the host is the only
     writer of live agent/history state, and UI reads must not build a second agent."""
     if not isinstance(frame, dict):
         return
     with _history_lock(session):
+        if turn_claim is not None and not _owns_turn_claim(session, turn_claim):
+            return
         _compute_host_adopt_frame_meta(session, frame)
         if frame.get("message_count") is not None:
             with contextlib.suppress(Exception):
                 session["_metadata_message_count"] = int(frame.get("message_count") or 0)
-    info = frame.get("session_info")
-    if isinstance(info, dict):
-        session["_metadata_mirror"] = {**_metadata_mirror(session), **info}
-        session["_metadata_mirror_updated_at"] = time.time()
+        info = frame.get("session_info")
+        if isinstance(info, dict):
+            session["_metadata_mirror"] = {**_metadata_mirror(session), **info}
+            session["_metadata_mirror_updated_at"] = time.time()
 
 
-def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+def _on_compute_host_turn_done(
+    rid: str, sid: str, session: dict, frame: dict, *, turn_claim: int | None = None
+) -> None:
     with session["history_lock"]:
+        if not _owns_turn_claim(session, turn_claim):
+            return
         _compute_host_adopt_frame_meta(session, frame)
         session["running"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
         session.pop("_compute_host_open_request", None)
-    # The isolated turn carried the queued model switch to the compute host, whose
-    # turn thread applied it. Clear the server-side stash so it isn't re-forwarded
-    # (kept on error so the fail-open in-process path can still apply it).
-    if frame.get("type") != "turn.error":
-        session.pop("pending_model_switch", None)
-    if frame.get("type") == "turn.error":
-        message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
-    _apply_compute_host_metadata_mirror(session, frame)
-    # Settlement of a turn whose session was closed mid-flight: the real lease was held for it.
-    _release_deferred_active_session_lease(session)
+        if frame.get("type") != "turn.error":
+            session.pop("pending_model_switch", None)
+        if frame.get("type") == "turn.error":
+            message = str(frame.get("message") or "compute host turn failed")
+            _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
+    _apply_compute_host_metadata_mirror(session, frame, turn_claim=turn_claim)
+    with session["history_lock"]:
+        if not _owns_turn_claim(session, turn_claim):
+            return
+        _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
-    if not frame.get("session_info_emitted"):
-        _emit("session.info", sid, info)
+    with session["history_lock"]:
+        if not _owns_turn_claim(session, turn_claim):
+            return
+        if not frame.get("session_info_emitted"):
+            _emit("session.info", sid, info)
     _drain_queued_prompt(rid, sid, session)
 
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
-    display_metadata: dict | None = None) -> dict:
+    display_metadata: dict | None = None, *, turn_claim: int | None = None) -> dict:
+    with session["history_lock"]:
+        if turn_claim is None:
+            turn_claim = session.get("_turn_claim")
+        if turn_claim is not None and not _holds_turn_claim(session, turn_claim):
+            return _superseded_submit_error(rid)
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
@@ -277,6 +292,8 @@ def _submit_prompt_to_compute_host(
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
     with session["history_lock"]:
+        if not _owns_turn_claim(session, turn_claim):
+            return _superseded_submit_error(rid)
         session["_compute_host_turn_id"] = turn_id
         session.pop("_compute_host_activity_ns", None)
 
@@ -289,7 +306,7 @@ def _submit_prompt_to_compute_host(
                     return
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
-            _on_compute_host_turn_done(rid, sid, session, done)
+            _on_compute_host_turn_done(rid, sid, session, done, turn_claim=turn_claim)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:
@@ -299,6 +316,8 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_activity_ns", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
+        if not _owns_turn_claim(session, turn_claim):
+            return _superseded_submit_error(rid)
         session["_compute_host_active"] = True
         if image_paths is None:
             session["attached_images"] = []

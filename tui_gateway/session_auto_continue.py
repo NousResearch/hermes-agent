@@ -511,7 +511,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     try:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs, turn_claim=turn_claim)
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs, turn_claim=turn_claim)).get("error"):
             with session["history_lock"]:
                 if _owns_turn_claim(session, turn_claim):
                     session["running"] = False

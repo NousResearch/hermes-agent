@@ -6,10 +6,13 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+
+if TYPE_CHECKING:
+    from gateway.platforms.yuanbao import YuanbaoAdapter
 
 logger = logging.getLogger("gateway.platforms.yuanbao")
 

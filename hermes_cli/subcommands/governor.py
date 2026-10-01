@@ -12,7 +12,7 @@ def build_governor_parser(subparsers, *, cmd_governor: Callable) -> None:
         help="Context-governor engine (ri-context-governor) key lifecycle",
         description=(
             "Initialize, inspect, and rotate the governed HMAC key used by the "
-            "receipt-carrying context engine (exact-fallback recovery + lineage).\n\n"
+            "receipt-carrying context engine (exact-fallback via receipt references;\n            lineage continuation).\n\n"
             "Binary: cargo install context-governor (>=0.2.0).\n"
             "Activate: context.engine: ri-context-governor in config.yaml."
         ),

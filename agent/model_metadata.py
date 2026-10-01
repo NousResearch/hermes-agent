@@ -1782,7 +1782,7 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
-_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes
+_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes; must stay < TTL
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
 # returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
@@ -1910,6 +1910,17 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
     return result, True
 
 
+def _codex_catalog_key(keys, slug: str) -> Optional[str]:
+    """The catalog key for ``slug``: exact, then case-insensitive in case casing drifts."""
+    return slug if slug in keys else next((k for k in keys if k.lower() == slug.lower()), None)
+
+
+def _cached_codex_catalog_max(access_token: str, base_url: str, slug: str) -> Optional[int]:
+    """``max_context_window`` the catalog behind ``(access_token, base_url)`` last published for ``slug``."""
+    published = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
+    return published.get(_codex_catalog_key(published, slug))
+
+
 def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "", base_url: str = "") -> Tuple[Optional[int], str]:
     """``(context_length, source)`` for a Codex OAuth slug. source: "live" (fresh authenticated probe —
     the only one eligible for persistent writes), "memory" (same-token in-process hit), "fallback"
@@ -1932,20 +1943,16 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
     # (#92797 review).
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
-    live_max: Dict[str, int] = {}
-
-    def _catalog_key(keys) -> Optional[str]:  # exact slug, then case-insensitive in case casing drifts
-        return lookup_bare if lookup_bare in keys else next((s for s in keys if s.lower() == lookup_bare.lower()), None)
-
+    catalog_max = None
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, base_url=base_url)
-        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
-        slug = _catalog_key(live)
+        # Read after the fetch; a failed refresh past the TTL keeps the cap already observed.
+        catalog_max = _cached_codex_catalog_max(access_token, base_url, lookup_bare)
+        slug = _codex_catalog_key(live, lookup_bare)
         if slug is not None:
-            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
+            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
-    # A failed refresh past the TTL must not lift an already observed catalog cap.
-    return _apply_verified_bump(hit[1], "fallback", live_max.get(_catalog_key(live_max))) if hit else (None, "")
+    return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 
 
 def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> Tuple[Optional[int], str]:
@@ -2105,9 +2112,18 @@ def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_ke
     """Step 2 for a custom ``api_mode: codex_responses`` route — a Codex proxy on a generic URL.
     The Codex OAuth table (with the opted-in ``-900k`` bump) answers first: the proxy's own /models
     and the direct-API catalog both advertise the 1.05M direct window that Codex does not honour.
-    No live catalog probe — the route's key is the proxy's, not a ChatGPT token. Slugs the table
-    does not know take the ordinary endpoint probes."""
+    The proxy's context_window is never trusted; only an opted-in ``-900k`` variant asks the route's own
+    catalog (with the route's own key), and only for its max_context_window cap. Slugs the table does
+    not know take the ordinary endpoint probes."""
     ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
+    if ctx and api_key and is_codex_context_variant(model):
+        # The -900k bump is an account-level assumption; a gateway whose own catalog publishes a
+        # Codex-shaped max_context_window caps it, as the native provider's live catalog does.
+        _fetch_codex_oauth_context_lengths_with_source(api_key, base_url)
+        cap = _cached_codex_catalog_max(api_key, base_url, _bare_codex_slug(strip_codex_context_variant_suffix(model)))
+        if cap and cap < ctx:
+            logger.info("Route catalog at %s caps %r at max_context_window %s", base_url, model, f"{cap:,}")
+            ctx = cap
     if ctx:
         logger.info("Using Codex OAuth context length %s for model %r (codex_responses route at %s)", f"{ctx:,}", model, base_url)
         return ctx

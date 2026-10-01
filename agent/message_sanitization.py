@@ -455,7 +455,7 @@ __all__ = [
     "strip_images_for_rejecting_model",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
-    "tool_result_id_variants", "uniquify_tool_call_ids",
+    "tool_result_id_variants", "uniquify_tool_call_ids", "normalize_provider_tool_call_ids",
     # reasoning_content policy owners
     "reasoning_echo_family", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "stale_thinking_reaches_wire", "apply_reasoning_content_policy", "reapply_reasoning_echo",
@@ -567,6 +567,31 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
             "Model reused tool call id %s within one turn; renamed the duplicate to %s (tool=%s) to keep "
             "call/result pairing lossless.", cid, new_id, _fn_name,
         )
+    return tool_calls
+
+
+_PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
+
+def normalize_provider_tool_call_ids(tool_calls: list) -> list:
+    """Rewrite known provider ids when a parallel batch would be rejected on replay.
+
+    The digest is deterministic so persisted messages and prompt-cache prefixes remain
+    stable. Composite Responses ids retain their response-item half.
+    """
+    if len(tool_calls or []) < 2:
+        return tool_calls
+    ids = [(_tc_field(tc, "call_id") or _tc_field(tc, "id") or "") for tc in tool_calls]
+    if not all(isinstance(raw, str) and raw.split("|", 1)[0].startswith(_PROVIDER_TOOL_ID_PREFIXES) for raw in ids):
+        return tool_calls
+    logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    for tc, raw in zip(tool_calls, ids):
+        primary, *rest = raw.split("|", 1)
+        replacement = "call_" + hashlib.sha256(primary.encode("utf-8")).hexdigest()[:12]
+        value = replacement + ("|" + rest[0] if rest else "")
+        if _tc_field(tc, "id") is not None:
+            _tc_set(tc, "id", value)
+        if _tc_field(tc, "call_id") is not None:
+            _tc_set(tc, "call_id", value)
     return tool_calls
 
 

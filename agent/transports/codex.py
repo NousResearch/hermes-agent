@@ -799,8 +799,18 @@ class ResponsesApiTransport(ProviderTransport):
             headers = {k: v for k, v in headers.items() if v}
             if headers:
                 _merge_extra_headers(kwargs, **headers)
-        elif params.get("max_tokens") is not None:
-            kwargs["max_output_tokens"] = params["max_tokens"]
+        else:
+            # Output cap: the caller's budget wins, else the provider profile's per-model cap.
+            # Without it the relay reserves its own maximum for the model (OpenCode answers
+            # "Set max_output_tokens to avoid being charged the model maximum" and then 429s).
+            # Neither set -> send nothing, exactly as before.
+            output_cap = params.get("max_tokens")
+            if output_cap is None:
+                provider_profile = params.get("provider_profile")
+                if provider_profile is not None:
+                    output_cap = provider_profile.get_max_tokens(model)
+            if output_cap is not None:
+                kwargs["max_output_tokens"] = output_cap
 
         if is_xai_responses and session_id:
             # Scoped like the body key so cron fires don't each pin a different xAI backend server.

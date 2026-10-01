@@ -1453,6 +1453,12 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
     ephemeral_out = _consume_ephemeral_max_output(agent)
+    # Profile per-model output cap backs up max_tokens in the transport (same resolution as the
+    # chat-completions path above).
+    _profile = None
+    with contextlib.suppress(Exception):
+        from providers import get_provider_profile
+        _profile = get_provider_profile(agent.provider)
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
@@ -1460,6 +1466,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
+        provider_profile=_profile,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),

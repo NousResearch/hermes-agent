@@ -1501,7 +1501,26 @@ class _CodexCompletionsAdapter:
         # headers via the SDK kwarg — forward them.
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             resp_kwargs["extra_headers"] = dict(kwargs["extra_headers"])
-        # The Codex endpoint rejects max_output_tokens/temperature (400) — omit.
+        # The Codex endpoint rejects max_output_tokens (400) — omit there. Other Responses routes
+        # take it, and a profile that declares a per-model cap needs it sent: without it the relay
+        # reserves its own maximum and 429s the request ("Set max_output_tokens to avoid being
+        # charged the model maximum"). Explicit budget wins, else the profile cap; neither -> omit,
+        # as before. Profiles that declare no cap are unaffected.
+        if not route.is_codex_backend:
+            output_cap = kwargs.get("max_tokens")
+            if output_cap is None:
+                from providers import get_provider_profile
+                # Effective provider of this aux route. The Codex wrapper copies only
+                # api_key/base_url from the real client, so the effective-provider tag can be
+                # absent; fall back to the main runtime's provider — the route these calls are
+                # dispatched on.
+                aux_provider = (getattr(self._client, "_hermes_aux_effective_provider", "") or "").strip() \
+                    or str(_runtime_main_value("provider") or "").strip()
+                aux_profile = get_provider_profile(aux_provider) if aux_provider else None
+                if aux_profile is not None:
+                    output_cap = aux_profile.get_max_tokens(model)
+            if output_cap is not None:
+                resp_kwargs["max_output_tokens"] = output_cap
         extra_body = kwargs.get("extra_body") or {}
         if isinstance(extra_body, dict):
             # service_tier (fast mode) is a top-level Responses field; xAI's endpoint rejects it.

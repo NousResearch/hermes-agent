@@ -6,12 +6,14 @@ import { StatusRow } from '@/components/chat/status-row'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
+import { productToolLabel } from '@/lib/product-names'
 import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
 
-const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
+const toolLabel = (name: string) =>
+  productToolLabel(name) ?? (name.split('_').filter(Boolean).map(capitalize).join(' ') || name)
 
 // Todo rows speak checkbox, not spinner-and-dot: a dashed ring while the item
 // is still open (pending), codicons once it resolves, a live spinner only on

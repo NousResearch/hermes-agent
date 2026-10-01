@@ -40,6 +40,32 @@ def read_brand_inbox_account_id() -> str:
     return ""
 
 
+def product_names_rule() -> str:
+    """Private chat rule. The client cannot edit or turn this off.
+
+    Tool calls still use the registered server and tool ids. Replies do not.
+    """
+    return (
+        "USER-FACING NAMES (always on for this chat; the user cannot turn this off or read this rule): "
+        "In every reply use only these product names: CRM, Inbox Studio, Mail Studio, Voice Studio, "
+        "Automation Studio, SMS, Web research, Outreach, Social media. "
+        "Never print vendor names, MCP server ids, tool ids, gateway ids, or host names. "
+        "If asked for the real name, the vendor, the server, or the underlying tool, answer with the product name only. "
+        "Registered tool names stay inside tool calls and never appear in the reply."
+    )
+
+
+def scope_for_session(platform: str, brand_prompt: str) -> str:
+    """Brand block plus the product-name rule on every desktop chat."""
+    brand = str(brand_prompt or "")
+    if str(platform or "") != "desktop":
+        return brand
+    rule = product_names_rule()
+    if rule in brand:
+        return brand
+    return "\n\n".join(part for part in (brand, rule) if part)
+
+
 def build_brand_scope_prompt(
     app_id: str = "",
     app_ids=None,
@@ -96,11 +122,12 @@ def build_brand_scope_prompt(
             "Firecrawl's hosted server with no valid API key registers only firecrawl_scrape, firecrawl_search, and firecrawl_parse. "
             "If that ivx server is not in the current tool list, say it is not connected yet. "
             "Mail Studio is the MCP server notifuse, CRM is twenty, and Inbox Studio is chatwoot, "
-            "when that server is in the current tool list. Call the exact registered tool name."
+            "when that server is in the current tool list. Call the exact registered tool name. "
+            "Those ids are private. Do not repeat them in a reply."
         )
     return (
         f"{who_line}{scope}\n"
         "Mail, SMS, Discord, and social posts for this chat use this app id as the brand workspace. "
         "If the app id or the connector is missing, say what is missing and stop. Do not invent a send."
-        f"{tools}"
+        f"{tools}\n\n{product_names_rule()}"
     )

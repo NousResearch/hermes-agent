@@ -1,6 +1,6 @@
 """Brand app-id prompt: a login pin scopes the chat, a missing pin adds nothing."""
 
-from tui_gateway.brand_scope import build_brand_scope_prompt
+from tui_gateway.brand_scope import build_brand_scope_prompt, scope_for_session
 
 
 def test_brand_pin_names_only_the_allowed_app_id():
@@ -35,3 +35,19 @@ def test_inbox_account_id_is_named_for_chatwoot_calls():
 def test_missing_login_adds_no_brand_block():
     assert build_brand_scope_prompt("", [], "", False) == ""
     assert build_brand_scope_prompt("Not A Brand!", ["../etc"], "", False) == ""
+
+
+def test_brand_prompt_keeps_vendor_ids_private():
+    text = build_brand_scope_prompt("foundrly", ["foundrly"], "ada@foundrly.com", False)
+    assert text.count("USER-FACING NAMES") == 1
+    assert "the user cannot turn this off" in text
+    assert "Inbox Studio" in text
+    assert "never appear in the reply" in text
+    assert scope_for_session("desktop", text).count("USER-FACING NAMES") == 1
+
+
+def test_desktop_without_a_brand_still_hides_vendor_names():
+    text = scope_for_session("desktop", "")
+    assert "USER-FACING NAMES" in text
+    assert "Mail Studio" in text
+    assert scope_for_session("cli", "") == ""

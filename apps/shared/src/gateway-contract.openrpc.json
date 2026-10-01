@@ -4908,6 +4908,44 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalCancelledPayload": {
+        "additionalProperties": false,
+        "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "cancelled_count": {
+            "title": "Cancelled Count",
+            "type": "integer"
+          },
+          "request_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Request Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "reason",
+          "cancelled_count",
+          "request_ids"
+        ],
+        "title": "ApprovalCancelledPayload",
+        "type": "object"
+      },
       "ApprovalChoice": {
         "enum": [
           "once",
@@ -7634,71 +7672,31 @@
       },
       "ClarifyRequestParams": {
         "additionalProperties": false,
-        "description": "Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``.\n``answers`` rides only on a reconnect replay (locks the server already accepted).",
+        "description": "``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped).",
         "properties": {
           "session_id": {
             "title": "Session Id",
             "type": "string"
           },
-          "question": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Question"
-          },
-          "choices": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Choices"
-          },
-          "multi_select": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Multi Select"
-          },
           "questions": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/ClarifyQuestion"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Questions"
+            "items": {
+              "$ref": "#/components/schemas/ClarifyQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
           },
           "answers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -7711,32 +7709,28 @@
           }
         },
         "required": [
-          "session_id"
+          "session_id",
+          "questions"
         ],
         "title": "ClarifyRequestParams",
         "type": "object"
       },
       "ClarifyResult": {
         "additionalProperties": false,
-        "description": "Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through\nthe ``clarify.lock`` RPC); a response with neither is cancel-all.",
+        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all.",
         "properties": {
-          "answer": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Answer"
-          },
           "answers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -7913,6 +7907,21 @@
             ],
             "default": null,
             "title": "Desktop"
+          },
+          "desktop_subcommands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Subcommands"
           }
         },
         "title": "CommandCatalogMeta",
@@ -23297,6 +23306,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -23598,6 +23619,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -28616,6 +28649,18 @@
             ],
             "default": null,
             "title": "Count"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28725,6 +28770,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           },
           "brand_app_id": {
             "anyOf": [
@@ -28840,6 +28897,18 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -29730,6 +29799,18 @@
             "default": false,
             "title": "Follow Profile Config",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           },
           "brand_app_id": {
             "anyOf": [
@@ -30688,6 +30769,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           },
           "source": {
             "default": "",
@@ -39135,7 +39228,7 @@
     },
     {
       "name": "clarify",
-      "summary": "The clarify tool: ask the user one question or a batch.",
+      "summary": "The clarify tool: ask the user 1-5 questions.",
       "params": [
         {
           "name": "params",
@@ -39359,6 +39452,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/TerminalOutputPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "approval.cancelled",
+      "summary": "Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalCancelledPayload"
           }
         }
       ]

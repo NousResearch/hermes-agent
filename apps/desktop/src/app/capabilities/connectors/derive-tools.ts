@@ -1,3 +1,5 @@
+import { productToolLabel } from '@/lib/product-names'
+
 import { FACET_ORDER, HINT_ORDER } from './hint-vocabulary'
 import type {
   ConflictDifference,
@@ -28,6 +30,12 @@ export function isTinyConnector(tools: readonly ToolRowModel[]): boolean {
 }
 
 export function toolDisplayName(slug: string): string {
+  const product = productToolLabel(slug)
+
+  if (product) {
+    return product
+  }
+
   const words = slug
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_.\-/]+/g, ' ')

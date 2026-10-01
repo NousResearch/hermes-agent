@@ -179,11 +179,13 @@ gateway:
     label_normal: "ОБЫЧНЫЙ"
     status_fast: "быстрый"
     status_normal: "обычный"
-    picker_title: "⚡ **Priority Processing**\\n\\nТекущий режим: `{mode}`\\n\\nВыберите вариант:"
+    picker_title: "⚡ **Priority Processing**\n\nТекущий режим: `{mode}`\n\nВыберите вариант:"
     choice_fast: "fast — Priority Processing включён"
     choice_normal: "normal — стандартная обработка"
     choice_auto: "auto — быстро в первые секунды каждого хода"
     choice_cold: "cold — быстро только на первом ходе сессии"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, цена ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступен только для GPT-6 Astra (текущая модель: `{model}`)."
   footer:
     status: "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Использование: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` не поддерживается. Используйте `/reasoning <level> --global`, чтобы изменить глобальное значение по умолчанию."
     reset_done: "🧠 ✓ Переопределение рассуждений для сеанса сброшено; возврат к глобальной конфигурации."
     unknown_arg: "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые уровни:** none, minimal, low, medium, high, xhigh, max, ultra\n**Отображение:** show, hide\n**Сохранение:** добавьте `--global`, чтобы сохранить за пределами этого сеанса"
-    picker_title: "🧠 **Настройки рассуждений**\\n\\n**Усилия:** `{level}`\\n**Область:** {scope}\\n**Отображение:** {display}\\n\\nВыберите вариант:"
+    picker_title: "🧠 **Настройки рассуждений**\n\n**Усилия:** `{level}`\n**Область:** {scope}\n**Отображение:** {display}\n\nВыберите вариант:"
     choice_none: "none — отключить рассуждения"
     choice_reset: "reset — сбросить переопределение сессии"
     choice_show: "показывать рассуждения в ответах"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Уточняющий вопрос отменён — ваше сообщение будет обработано как обычное продолжение."
     expired: "⏳ Срок этого запроса истёк — отправьте новый запрос."
     native_stream_placeholder: "💬 Жду вашего выбора..."
+    skip_hint: 'Ответьте «skip», чтобы пропустить этот вопрос.'
   errors:
     rate_limited: "⏱️ Сервис ИИ-модели ограничивает частоту запросов. Подождите немного, затем используйте /retry."
     auth_failed: "⚠️ Не удалось войти в сервис ИИ-модели. Используйте /login, чтобы войти заново, или попросите того, кто запускает этого бота, выполнить `hermes doctor` на хосте."
@@ -1597,7 +1600,7 @@ slash:
   reasoning:
     description: "Управлять уровнем и отображением рассуждений"
   fast:
-    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показать или сменить скин/тему оформления"
   indicator:
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "Другое (введите ниже)"
     clarify_other_type_answer: "Другое (введите свой ответ)"
     clarify_guidance: "Введите ответ в поле ниже и нажмите Enter."
-    clarify_question_truncated: "… (вопрос обрезан)"
     picker_title_provider: "⚙ Выбор модели — выберите провайдера"
     picker_provider_row_one: "{name} ({count} модель)"
     picker_provider_row_other: "{name} (моделей: {count})"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "отображается при вводе · Enter — продолжить"
     hint_clarify_freetext: "введите ответ и нажмите Enter"
     hint_clarify_batch: "↑/↓ — выбрать, Enter — зафиксировать, Tab — следующий вопрос"
-    hint_clarify_choice: "↑/↓ — выбрать, Enter — подтвердить"
     hint_input_disabled: "ввод временно отключён"
     hint_input_queues: "ввод доступен; Enter ставит в очередь"
     hint_command_running: "{frame} команда выполняется · {detail}"
@@ -2251,8 +2252,6 @@ cli:
   approval:
     bell_context: "одобрение"
     label: "Одобрение"
-    timeout_denying: "⏱ Тайм-аут — команда отклонена"
-    timed_out_no_response: "тайм-аут (нет ответа)"
     outcome_once: "разрешено один раз"
     outcome_session: "разрешено на сеанс"
     outcome_always: "добавлено в список разрешённых"
@@ -2260,8 +2259,6 @@ cli:
   clarify:
     bell_context: "уточняющий вопрос"
     label: "Уточнение"
-    timed_out_agent_decides: "(уточняющий вопрос: тайм-аут через {timeout} с — агент решит сам)"
-    timed_out_locked_answers: "(уточняющий вопрос: тайм-аут через {timeout} с — возвращены зафиксированные ответы)"
   connect:
     bell_context: "настройка подключения"
     cannot_restart: "Это подключение нельзя запустить повторно. Отмените и попросите агента ещё раз."
@@ -2653,7 +2650,9 @@ cli:
       feature_generic: "Быстрый режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Использование: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступен только для GPT-6 Astra (текущая модель: {model})."
+      usage: "Использование: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: установлено {value} {scope}"
     hatch:

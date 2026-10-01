@@ -2,6 +2,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { productToolLabel } from '@/lib/product-names'
 import { isFileMediaPath, mediaKind } from '@/lib/media'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
@@ -232,6 +233,12 @@ export const selectMessageRunning = (state: MessageRunningStateSlice) =>
   state.thread.isRunning && state.message.status?.type === 'running'
 
 function titleForTool(name: string): string {
+  const product = productToolLabel(name)
+
+  if (product) {
+    return product
+  }
+
   const normalized = name.replace(/^browser_/, '').replace(/^web_/, '')
 
   return normalized.split('_').filter(Boolean).map(capitalize).join(' ') || name
@@ -751,9 +758,27 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
   return formatDurationSeconds(seconds)
 }
 
+const NON_DELIVERABLE_TOOLS = new Set([
+  'annotate_preview',
+  'drive_preview',
+  'gui_tour',
+  'list_files',
+  'read_file',
+  'search_files'
+])
+
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (toolName === 'tool_call') {
+    const calls = Array.isArray(args.calls) ? args.calls : [args]
+    const call = parseMaybeObject(calls[0])
+
+    if (calls.length === 1 && typeof call.name === 'string') {
+      return toolPreviewTarget(call.name, parseMaybeObject(call.arguments), result)
+    }
+  }
+
   // Reading an existing file is not producing a deliverable.
-  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'list_files') {
+  if (NON_DELIVERABLE_TOOLS.has(toolName) || (toolName === 'desktop_preview' && args.action !== 'open')) {
     return ''
   }
 
@@ -1549,7 +1574,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     icon: meta.icon,
     imageUrl: toolImageUrl(argsRecord, resultRecord),
     inlineDiff,
-    previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
+    previewTarget: toolPreviewTarget(part.innerToolName || part.toolName, argsRecord, resultRecord),
     rendersAnsi: rendersAnsi || undefined,
     searchQuery: searchQuery || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,

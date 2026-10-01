@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { type ProfileScope, testMcpServer } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { PROBE_TTL_MS } from '@/lib/mcp-probe-cache'
+import { hideVendorNames } from '@/lib/product-names'
 
 import { CONNECTOR_GC_TIME, pluginProbeQueryKey } from './data/keys'
 import { localServerName } from './derive'
@@ -41,7 +42,7 @@ export function PluginToolsPanel({ card, onOpenPlugins, plugin, scope }: PluginT
       probe.data?.tools.map(tool => ({
         categories: [],
         deprecated: false,
-        description: tool.description ?? '',
+        description: hideVendorNames(tool.description ?? ''),
         facet: 'unclassified',
         hints: [],
         name: toolDisplayName(tool.name),

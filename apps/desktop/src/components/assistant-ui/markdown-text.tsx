@@ -24,6 +24,7 @@ import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/extern
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { hideVendorNames } from '@/lib/product-names'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
@@ -107,10 +108,12 @@ const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkSoftBreaks
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
 // identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
+  const shown = hideVendorNames(text)
+
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    return tailBoundedRemend(preprocessMarkdown(shown))
   } catch {
-    return text
+    return shown
   }
 }
 
@@ -513,14 +516,14 @@ interface MarkdownTextSurfaceProps {
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
 // table-driven so adding/tweaking levels is one row.
 const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
-  h1: 'text-[1rem] tracking-tight',
-  h2: 'text-[0.9375rem] tracking-tight',
-  h3: 'text-[0.875rem]',
-  h4: 'text-[0.8125rem]'
+  h1: 'text-[length:calc(1rem*var(--conversation-text-scale,1))] tracking-tight',
+  h2: 'text-[length:calc(0.9375rem*var(--conversation-text-scale,1))] tracking-tight',
+  h3: 'text-[length:calc(0.875rem*var(--conversation-text-scale,1))]',
+  h4: 'text-[length:var(--conversation-text-font-size)]'
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
-  'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
+  'aui-md prose w-full min-w-0 max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
   // Typography styles `pre` as a dark slab: light text (`--tw-prose-pre-code`,
@@ -550,7 +553,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
       <ExpandableBlock className="p-2">
         {chunks.map((chunk, index) => (
           <div
-            className="[content-visibility:auto]"
+            className="whitespace-pre-wrap wrap-anywhere [content-visibility:auto]"
             key={index}
             style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
           >
@@ -630,7 +633,8 @@ function MarkdownTextSurface({
   scratchpad,
   textDirection
 }: MarkdownTextSurfaceProps) {
-  const { status, text } = useMessagePartText()
+  const { status, text: rawText } = useMessagePartText()
+  const text = hideVendorNames(rawText)
   // List/quote boxes resolve from content under Auto (see the ul/ol/blockquote
   // notes below); an explicit choice replaces that vote rather than nesting it.
   const boxDir = textDirection ?? 'auto'
@@ -731,7 +735,13 @@ function MarkdownTextSurface({
         ),
         th: ResizableMarkdownTh,
         td: ({ children, className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+          <td
+            className={cn(
+              'px-2.5 py-1.5 align-top text-[length:var(--conversation-text-font-size)] leading-snug',
+              className
+            )}
+            {...props}
+          >
             {decorateText ? decorateText(children) : children}
           </td>
         ),

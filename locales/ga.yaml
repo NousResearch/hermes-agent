@@ -179,11 +179,13 @@ gateway:
     label_normal: "GNÁTH"
     status_fast: "tapa"
     status_normal: "gnáth"
-    picker_title: "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
+    picker_title: "⚡ **Priority Processing**\n\nMód reatha: `{mode}`\n\nRoghnaigh rogha:"
     choice_fast: "fast — Priority Processing ar siúl"
     choice_normal: "normal — gnáthphróiseáil"
     choice_auto: "auto — tapa do na chéad soicindí de gach seal"
     choice_cold: "cold — tapa don chéad seal de sheisiún amháin"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, praghas x6)"
+    ultrafast_not_supported: "⚡ Níl Ultrafast ar fáil ach do GPT-6 Astra (samhail reatha: `{model}`)."
   footer:
     status: "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
     usage: "Úsáid: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done: "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
     unknown_arg: "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, max, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
-    picker_title: "🧠 **Socruithe Réasúnaíochta**\\n\\n**Iarracht:** `{level}`\\n**Scóip:** {scope}\\n**Taispeáint:** {display}\\n\\nRoghnaigh rogha:"
+    picker_title: "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\nRoghnaigh rogha:"
     choice_none: "none — díchumasaigh réasúnaíocht"
     choice_reset: "reset — glan sárú an tseisiúin"
     choice_show: "taispeáin réasúnaíocht sna freagraí"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Soiléiriú cealaithe — láimhseálfar do theachtaireacht mar theachtaireacht leantach."
     expired: "⏳ Tá an leid seo imithe in éag — seol iarratas nua le do thoil."
     native_stream_placeholder: "💬 Ag fanacht le do rogha..."
+    skip_hint: 'Freagair "skip" chun an cheist seo a scipeáil.'
   errors:
     rate_limited: "⏱️ Tá seirbhís na samhla AI ag teorannú ráta na n-iarratas. Fan nóiméad, ansin úsáid /retry."
     auth_failed: "⚠️ Theip ar shíniú isteach i seirbhís na samhla AI. Úsáid /login chun síniú isteach arís, nó iarr ar an duine a ritheann an bot seo `hermes doctor` a rith ar an óstach."
@@ -1597,7 +1600,7 @@ slash:
   reasoning:
     description: "Bainistigh iarracht agus taispeáint na réasúnaíochta"
   fast:
-    description: "Mód tapa — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Mód tapa — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Taispeáin nó athraigh craiceann/téama na taispeána"
   indicator:
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "Eile (clóscríobh thíos)"
     clarify_other_type_answer: "Eile (clóscríobh do fhreagra)"
     clarify_guidance: "Clóscríobh do fhreagra sa leid thíos, ansin brúigh Enter."
-    clarify_question_truncated: "… (ceist giorraithe)"
     picker_title_provider: "⚙ Roghnóir Samhlacha — Roghnaigh Soláthraí"
     picker_provider_row_one: "{name} ({count} samhail)"
     picker_provider_row_other: "{name} ({count} samhail)"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "le feiceáil agus tú ag clóscríobh · Enter le leanúint"
     hint_clarify_freetext: "clóscríobh do fhreagra agus brúigh Enter"
     hint_clarify_batch: "↑/↓ le roghnú, Enter le glasáil, Tab don chéad cheist eile"
-    hint_clarify_choice: "↑/↓ le roghnú, Enter le dearbhú"
     hint_input_disabled: "ionchur díchumasaithe go sealadach"
     hint_input_queues: "fanann an t-ionchur gníomhach; cuireann Enter i scuaine"
     hint_command_running: "{frame} ordú ar siúl · {detail}"
@@ -2251,8 +2252,6 @@ cli:
   approval:
     bell_context: "cead"
     label: "Cead"
-    timeout_denying: "⏱ Teorainn ama — ag diúltú don ordú"
-    timed_out_no_response: "imithe thar am (gan freagra)"
     outcome_once: "ceadaithe uair amháin"
     outcome_session: "ceadaithe don seisiún"
     outcome_always: "curtha leis an liosta ceadaithe"
@@ -2260,8 +2259,6 @@ cli:
   clarify:
     bell_context: "soiléiriú"
     label: "Soiléirigh"
-    timed_out_agent_decides: "(chuaigh an soiléiriú thar am tar éis {timeout}s — déanfaidh an gníomhaire cinneadh)"
-    timed_out_locked_answers: "(chuaigh an soiléiriú thar am tar éis {timeout}s — seoladh na freagraí glasáilte ar ais)"
   connect:
     bell_context: "socrú ceangail"
     cannot_restart: "Ní féidir an ceangal seo a thosú arís. Cealaigh agus iarr ar an ngníomhaire arís."
@@ -2653,7 +2650,9 @@ cli:
       feature_generic: "Mód tapa"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Úsáid: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Níl Ultrafast ar fáil ach do GPT-6 Astra (samhail reatha: {model})."
+      usage: "Úsáid: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} socraithe go {value} {scope}"
     hatch:

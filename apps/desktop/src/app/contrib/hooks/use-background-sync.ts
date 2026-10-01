@@ -6,6 +6,7 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
+import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import {
@@ -16,7 +17,7 @@ import {
   toChatMessages
 } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
 import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
@@ -28,7 +29,9 @@ import {
   $activeSessionId,
   $busy,
   $currentCwd,
+  $messagingSessions,
   $selectedStoredSessionId,
+  $sessions,
   getSessionOwnerHint,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
@@ -42,6 +45,7 @@ import {
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
+  setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
@@ -167,6 +171,20 @@ function tileTranscriptSignatureKey(tile: TileTranscriptTarget): string {
   return `tile:${route ? `${route.connectionId}:${route.targetProfile ?? route.profile}:` : ''}${tile.storedSessionId}`
 }
 
+/** Sidebar-row fingerprint key for the pre-fetch gate (#95767). */
+function tileRowFingerprintKey(storedSessionId: string): string {
+  return `tile-meta:${storedSessionId}`
+}
+
+/** The session row backing a tile, if it is listed in the sidebar slices.
+ *  Hidden bot chats have no row — they keep fetching every tick. */
+function tileListRow(storedSessionId: string) {
+  return (
+    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  )
+}
+
 /**
  * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
  * slice 1). Bot canonical chats live here — never in $sessions /
@@ -200,9 +218,13 @@ export async function reconcileTileTranscripts({
 }): Promise<void> {
   const tiles = tilesOverride ?? $sessionTiles.get()
   const openSignatureKeys = new Set(tiles.map(tileTranscriptSignatureKey))
+  // The pre-fetch row fingerprints (#95767) live in the same map under
+  // `tile-meta:` keys — they track open tiles the same way, so a closed tile
+  // prunes both and the map never grows one entry per ever-opened tile.
+  const openFingerprintKeys = new Set(tiles.map(tile => tileRowFingerprintKey(tile.storedSessionId)))
 
   for (const signatureKey of signatureRef.current.keys()) {
-    if (!openSignatureKeys.has(signatureKey)) {
+    if (!openSignatureKeys.has(signatureKey) && !openFingerprintKeys.has(signatureKey)) {
       signatureRef.current.delete(signatureKey)
     }
   }
@@ -241,6 +263,19 @@ export async function reconcileTileTranscripts({
 
     const signatureKey = tileTranscriptSignatureKey(tile)
 
+    // Pre-fetch gate (#95767): when the session's sidebar row is listed and its
+    // message_count / last_active / preview fingerprint is unchanged, the
+    // 120-row transcript fetch is skipped entirely — a no-change tick costs
+    // nothing. Tiles with no row (hidden bot chats) keep fetching every tick.
+    const listRow = tileListRow(storedSessionId)
+    const rowFingerprintKey = tileRowFingerprintKey(storedSessionId)
+
+    if (listRow) {
+      if (signatureRef.current.get(rowFingerprintKey) === sessionListFingerprint(listRow)) {
+        continue
+      }
+    }
+
     try {
       const replay = pendingSessionReplay(runtimeSessionId)
 
@@ -257,6 +292,14 @@ export async function reconcileTileTranscripts({
       }
 
       const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
+
+      // A freshly minted draft tile has no state.db row until the first prompt
+      // persists it (#123622) — reading its transcript before anything was ever
+      // sent only ever 404s.
+      if (!messagesAtRequest?.length && sessionCreatedThisRun(storedSessionId)) {
+        continue
+      }
+
       // Passive: a hidden tile's refresh must never cold-start its owner
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
@@ -293,6 +336,12 @@ export async function reconcileTileTranscripts({
       const signature = sessionMessagesSignature(latest.messages)
 
       if (signatureRef.current.get(signatureKey) === signature) {
+        // Transcript already in sync — arm the pre-fetch gate so the next
+        // no-change tick skips the fetch entirely (#95767).
+        if (listRow) {
+          signatureRef.current.set(rowFingerprintKey, sessionListFingerprint(listRow))
+        }
+
         continue
       }
 
@@ -309,6 +358,13 @@ export async function reconcileTileTranscripts({
       }
 
       signatureRef.current.set(signatureKey, signature)
+
+      // Remember the row fingerprint that produced this transcript, so the
+      // next tick's pre-fetch gate can skip the fetch while the row is
+      // unchanged (#95767).
+      if (listRow) {
+        signatureRef.current.set(rowFingerprintKey, sessionListFingerprint(listRow))
+      }
 
       updateSessionState(
         runtimeSessionId,
@@ -498,6 +554,13 @@ export async function reconcileActiveTranscript({
   // while HTTP was in flight. Never let that older read replace newer text.
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
+  // A freshly minted draft has no state.db row until the first prompt persists it
+  // (#123622) — reading its transcript before anything was ever sent only ever
+  // 404s, since an empty local view already IS the correct (empty) render.
+  if (!messagesAtRequest?.length && sessionCreatedThisRun(storedSessionId)) {
+    return
+  }
+
   try {
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
@@ -619,6 +682,12 @@ const SESSIONS_LIST_TICK_GAP_MS = 10_000
 // backstops) keep their cadence because they carry liveness, not the heavy
 // list reconciliation.
 const TYPING_BURST_QUIET_MS = 1_500
+// Returning to the window fires both `visibilitychange` and `focus`, and a
+// rapid cmd-tab switch fires another pair seconds later. The return refresh
+// (#125532) is signature-gated downstream, but collapses to one read per
+// return instead — the transcript it protects is only readable behind a
+// socket the window just regained.
+export const TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS = 5_000
 
 interface LiveSessionStatusItem {
   id?: string
@@ -736,10 +805,12 @@ export function rehydrateLiveSessionStatuses(
       })
     }
 
-    if (working) {
-      // A poll that still lists the turn is an event. Reset the silence clock
-      // so a quiet tool call is not settled; a dead backend stops answering
-      // this poll and the clock runs out.
+    if (working || session.status === 'starting') {
+      // A poll that still lists the turn is an event: reset the silence
+      // clock so a quiet tool call is not checked early. 'starting' is the
+      // agent build for a turn the backend accepted (a cold local model); it
+      // feeds the clock without claiming a spinner, since a lazy resume
+      // builds with no turn at all.
       noteSessionEvent(runtimeSessionId)
     }
 
@@ -1061,6 +1132,97 @@ export function useBackgroundSync({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect-scoped: session deps would fire on every switch
   }, [activeConnectionId, activeGatewayProfile, gatewayState])
+
+  // A live turn that goes quiet is checked against the backend that runs it
+  // (store/session-states onEventSilence), not against this window's poll
+  // cadence, which pauses while unfocused and slows on battery. When that
+  // backend reports the turn over, the stored transcript catches up the
+  // reply its lost end events would have carried.
+  useEffect(
+    () =>
+      setLiveTurnBackend({
+        request: requestGateway,
+        refreshTranscript: (runtimeSessionId, storedSessionId) =>
+          hydrateStoredSessionTranscript({
+            attempts: 3,
+            runtimeSessionId,
+            storedProfile: profileScopeForTranscriptSession(
+              resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)
+            ),
+            storedSessionId,
+            updateSessionState
+          })
+      }),
+    [requestGateway, updateSessionState]
+  )
+
+  // Wake/return backstop (#125532): a socket that zombie-survives laptop sleep
+  // never transitions gatewayState, so the reconnect backstop above cannot
+  // fire, and replies that completed while the machine slept leave the open
+  // transcript behind — the first send after wake then bounces off the
+  // stale-send guard (#65047) once. Catch up when the window is viewed again;
+  // the reconcile is signature-gated, so an unchanged transcript costs one
+  // cheap tail read. Messaging transcripts keep their own visible poll below.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeIsMessaging) {
+      return
+    }
+
+    let lastRefreshAt = 0
+
+    const refreshOnReturn = (event?: Event) => {
+      // Each leg gates on its own signal: a window that is visible but never
+      // focused (another app in front, a secondary space, read without
+      // clicking) drops the visibility leg under a combined focused gate, and
+      // the focus leg it would wait for never arrives — the return refresh is
+      // lost for a window the user is reading.
+      const viewed = event?.type === 'visibilitychange' ? document.visibilityState === 'visible' : document.hasFocus()
+
+      if (!viewed) {
+        return
+      }
+
+      const now = Date.now()
+
+      if (now - lastRefreshAt < TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS) {
+        return
+      }
+
+      lastRefreshAt = now
+
+      // The main pane resolves only with a selected session; a workspace whose
+      // pane shows just bot tiles has none, and the tile reconcile below still
+      // owes those tiles their catch-up.
+      if (activeSessionId && activeStoredSessionId) {
+        requestActiveTranscriptRefresh(true)
+      }
+
+      // Workspace tiles share the zombie-socket blind spot: the sessions.changed
+      // tick that would have reconciled them does not replay on wake, and bot
+      // canonical chats never resolve through the main-pane path. The shared
+      // signature gate keeps a no-change pass free (#125532).
+      void reconcileTileTranscripts({
+        requestSequenceRef: tileRequestSequenceRef,
+        signatureRef: tileSignatureRef,
+        updateSessionState
+      })
+    }
+
+    document.addEventListener('visibilitychange', refreshOnReturn)
+    window.addEventListener('focus', refreshOnReturn)
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshOnReturn)
+      window.removeEventListener('focus', refreshOnReturn)
+    }
+  }, [
+    activeIsMessaging,
+    activeSessionId,
+    activeStoredSessionId,
+    gatewayState,
+    requestActiveTranscriptRefresh,
+    updateSessionState
+  ])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

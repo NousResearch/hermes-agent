@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "승인"
     label: "승인"
+    timeout_denying: "⏱ 시간 초과 — 명령을 거부해요"
+    timed_out_no_response: "시간 초과 (응답 없음)"
     outcome_once: "한 번 허용됨"
     outcome_session: "세션 동안 허용됨"
     outcome_always: "허용 목록에 추가됨"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "명확화"
     label: "명확화"
+    timed_out_locked_answers: "(명확화 요청이 {timeout}초 후 시간 초과 — 확정된 답변을 반환했어요)"
   connect:
     bell_context: "연결 설정"
     cannot_restart: "이 연결은 다시 시작할 수 없어요. 취소한 뒤 에이전트에게 다시 요청해 주세요."

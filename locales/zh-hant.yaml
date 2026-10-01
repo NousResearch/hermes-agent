@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "批准"
     label: "批准"
+    timeout_denying: "⏱ 逾時 — 拒絕指令"
+    timed_out_no_response: "已逾時（無回應）"
     outcome_once: "允許一次"
     outcome_session: "本工作階段允許"
     outcome_always: "已加入允許清單"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
+    timed_out_locked_answers: "（澄清已在 {timeout} 秒後逾時 — 已回傳鎖定的答案）"
   connect:
     bell_context: "連線設定"
     cannot_restart: "此連線無法再次啟動。請取消後再向代理提出一次。"

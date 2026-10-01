@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "承認"
     label: "承認"
+    timeout_denying: "⏱ タイムアウト — コマンドを拒否します"
+    timed_out_no_response: "タイムアウト（応答なし）"
     outcome_once: "今回のみ許可"
     outcome_session: "セッション中は許可"
     outcome_always: "許可リストに追加"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "確認"
     label: "確認"
+    timed_out_locked_answers: "（確認は {timeout} 秒でタイムアウトしました — 確定済みの回答を返しました）"
   connect:
     bell_context: "接続のセットアップ"
     cannot_restart: "この接続は再開できません。キャンセルして、エージェントにもう一度依頼してください。"

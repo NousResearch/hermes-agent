@@ -2525,6 +2525,8 @@ cli:
   approval:
     bell_context: "approbation"
     label: "Approbation"
+    timeout_denying: "⏱ Délai dépassé — commande refusée"
+    timed_out_no_response: "délai dépassé (aucune réponse)"
     outcome_once: "autorisé une fois"
     outcome_session: "autorisé pour la session"
     outcome_always: "ajouté à la liste d'autorisation"
@@ -2532,6 +2534,7 @@ cli:
   clarify:
     bell_context: "clarification"
     label: "Clarification"
+    timed_out_locked_answers: "(clarification expirée après {timeout} s — réponses verrouillées renvoyées)"
   connect:
     bell_context: "configuration de connexion"
     cannot_restart: "Cette connexion ne peut pas être relancée. Annulez et redemandez à l'agent."

@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "Genehmigung"
     label: "Genehmigung"
+    timeout_denying: "⏱ Zeitüberschreitung — Befehl wird abgelehnt"
+    timed_out_no_response: "Zeitüberschreitung (keine Antwort)"
     outcome_once: "einmalig erlaubt"
     outcome_session: "für diese Sitzung erlaubt"
     outcome_always: "zur Erlaubnisliste hinzugefügt"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "Rückfrage"
     label: "Rückfrage"
+    timed_out_locked_answers: "(Rückfrage nach {timeout}s abgelaufen — festgelegte Antworten zurückgegeben)"
   connect:
     bell_context: "Verbindungseinrichtung"
     cannot_restart: "Diese Verbindung kann nicht erneut gestartet werden. Brechen Sie ab und fragen Sie den Agenten erneut."

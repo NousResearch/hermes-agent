@@ -39,6 +39,8 @@ def wrap(adapter, handler):
                 fingerprint = hashlib.sha256(request.method.encode() + b'\0' + request.raw_path.encode()
                                              + b'\0' + body).hexdigest()
                 with hosted_rooms._transaction(db_path, immediate=True) as conn:
+                    from gateway.platforms.api_server_room_grants import _room_grant_claims
+                    _room_grant_claims(adapter, request, permission='dispatch', conn=conn)
                     conn.execute('DELETE FROM hosted_room_grant_refresh_receipts WHERE expires_at<=?', (time.time(),))
                     row = conn.execute('SELECT * FROM hosted_room_grant_refresh_receipts WHERE request_key=?',
                                        (cache_key,)).fetchone()
@@ -96,9 +98,12 @@ async def cleanup_issuance(adapter, request):
             or len(body['request_id']) != 64 or any(c not in '0123456789abcdef' for c in body['request_id'])):
         return web.json_response({'error': {'code': 'invalid_issuance_cleanup'}}, status=400)
     token = adapter._room_grant_token(request)
-    claims = decode_room_grant(adapter._room_grant_secret(), token, permission='status',
-                               allow_expired_for_revocation=True)
-    _local_target(claims, _api_request_profile)
+    try:
+        claims = decode_room_grant(adapter._room_grant_secret(), token, permission='status',
+                                   allow_expired_for_revocation=True)
+        _local_target(claims, _api_request_profile)
+    except ValueError:
+        return web.json_response({'error': {'code': 'invalid_room_grant'}}, status=401)
     if _hard_expiry(claims) <= time.time():
         return web.json_response({'revoked': True, 'expired': True})
     # Exact old-grant revocation after successful custody prevents killing its installed successor.
@@ -106,6 +111,8 @@ async def cleanup_issuance(adapter, request):
     key = hashlib.sha256((token + '\0' + body['request_id']).encode()).hexdigest()
     db_path = _grant_db(adapter)
     with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        from gateway.platforms.api_server_room_grants import _room_grant_claims
+        _room_grant_claims(adapter, request, permission='status', conn=conn)
         row = conn.execute('SELECT * FROM hosted_room_grant_refresh_receipts WHERE request_key=?', (key,)).fetchone()
         if row is None:
             # Fence an issuance whose delayed original request has not arrived yet.
@@ -118,26 +125,26 @@ async def cleanup_issuance(adapter, request):
         else:
             conn.execute('UPDATE hosted_room_grant_refresh_receipts SET retired_at=? WHERE request_key=?',
                          (time.time(), key))
-    # Minting has no external effect before the receipt commits. A pending receipt uses the
-    # same deterministic ID/time as its retry, so its exact successor is reconstructible.
-    if row is not None and (row['body'] is not None or row['request_body'] is not None):
-        from gateway.hosted_room_peer import issue_room_grant, room_grant_token_digest
-        if row['body'] is not None:
-            successor = json.loads(row['body'])['grant']
-        else:
-            from gateway.platforms.api_server_room_grants import _room_identity
-            from gateway.hosted_room_peer import MAX_DISPATCH_GRANT_TTL_SECONDS
-            request_body = json.loads(row['request_body'])
-            issued_at = row['issued_at']
-            successor = issue_room_grant(adapter._room_grant_secret(),
-                grant_id='grant-refresh-' + body['request_id'], **_room_identity(claims),
-                target_install_id=claims['target_install_id'], target_profile=claims['target_profile'],
-                execution_policy_digest=claims['execution_policy_digest'], permissions=claims['permissions'],
-                issued_at=issued_at, ttl_seconds=min(float(request_body.get('ttl_seconds', MAX_DISPATCH_GRANT_TTL_SECONDS)),
-                    MAX_DISPATCH_GRANT_TTL_SECONDS, _hard_expiry(claims) - issued_at),
-                status_expires_at=_hard_expiry(claims))
-        successor_claims = decode_room_grant(adapter._room_grant_secret(), successor, permission='status',
-                                             allow_expired_for_revocation=True)
-        hosted_rooms.revoke_room_grant_token(db_path, claims=successor_claims,
-            token_sha256=room_grant_token_digest(successor), expires_at=_hard_expiry(successor_claims))
+        # Minting has no external effect before the receipt commits. A pending receipt uses the
+        # same deterministic ID/time as its retry, so its exact successor is reconstructible.
+        if row is not None and (row['body'] is not None or row['request_body'] is not None):
+            from gateway.hosted_room_peer import issue_room_grant, room_grant_token_digest
+            if row['body'] is not None:
+                successor = json.loads(row['body'])['grant']
+            else:
+                from gateway.platforms.api_server_room_grants import _room_identity
+                from gateway.hosted_room_peer import MAX_DISPATCH_GRANT_TTL_SECONDS
+                request_body = json.loads(row['request_body'])
+                issued_at = row['issued_at']
+                successor = issue_room_grant(adapter._room_grant_secret(),
+                    grant_id='grant-refresh-' + body['request_id'], **_room_identity(claims),
+                    target_install_id=claims['target_install_id'], target_profile=claims['target_profile'],
+                    execution_policy_digest=claims['execution_policy_digest'], permissions=claims['permissions'],
+                    issued_at=issued_at, ttl_seconds=min(float(request_body.get('ttl_seconds', MAX_DISPATCH_GRANT_TTL_SECONDS)),
+                        MAX_DISPATCH_GRANT_TTL_SECONDS, _hard_expiry(claims) - issued_at),
+                    status_expires_at=_hard_expiry(claims))
+            successor_claims = decode_room_grant(adapter._room_grant_secret(), successor, permission='status',
+                                                 allow_expired_for_revocation=True)
+            hosted_rooms.revoke_room_grant_token(db_path, claims=successor_claims,
+                token_sha256=room_grant_token_digest(successor), expires_at=_hard_expiry(successor_claims), conn=conn)
     return web.json_response({'revoked': True})

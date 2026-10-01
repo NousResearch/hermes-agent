@@ -55,7 +55,7 @@ def _retire(client, grant):
 
 
 def publish_route(service, *, room_id, member_id, route, client, target_url, catalog,
-                  expected_grant=None, authorize=None):
+                  expected_grant=None, authorize=None, issuance_id=None):
     """Persist, then publish, one route, retiring the grant it replaces (module docstring).
 
     ``expected_grant`` makes it a renewal, conditional on the stored grant; ``authorize`` runs
@@ -88,8 +88,8 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
             if replaced is not None:
                 cleanup.retain(service.db_path, previous, conn=conn)
             cleanup.release(conn, route.grant)
-            if expected_grant is not None:
-                cleanup.release_issuances(conn, expected_grant)
+            if expected_grant is not None and issuance_id is not None:
+                cleanup.release_issuance(conn, expected_grant, issuance_id)
         service._save_link(
             room_id=room_id, member_id=member_id, target_url=target_url, target_profile=route.target_profile,
             grant=route.grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
@@ -159,6 +159,7 @@ class CanonicalPeerClient:
         self._members = service._room(binding.room_id)['members']
         self._grant = route.grant  # this attempt's grant: its own renewal, or an adopted one
         self._stored_link = links.load_room_link(service.db_path, room_id=key[0], member_id=key[1])
+        self._issuance_id = None
 
     def __getattr__(self, name):
         value = getattr(self._client, name)
@@ -238,22 +239,20 @@ class CanonicalPeerClient:
         refresh = getattr(self._client, 'refresh_grant', None)
         if not callable(refresh) or not room_grant_needs_dispatch_refresh(grant):
             return grant
-        if name == 'probe':  # maintenance: an hour at a time, capped by the grant's horizon
-            digests, extra = (self._route.capability_digest, self._route.execution_policy_digest), {
-                'ttl_seconds': _RENEWED_TTL_SECONDS}
+        # Every canonical path uses one frozen issuance body per old grant, so a
+        # lost maintenance reply and a foreground dispatch cannot mint siblings.
+        extra = {'ttl_seconds': _RENEWED_TTL_SECONDS}
+        if name == 'probe':
+            digests = (self._route.capability_digest, self._route.execution_policy_digest)
         else:
             checked = HostedMemberDispatch.from_mapping(kwargs['dispatch'])
-            digests, extra = (checked.capability_digest, checked.execution_policy_digest), {}
+            digests = (checked.capability_digest, checked.execution_policy_digest)
         pending = []
-        from gateway.hosted_room_proof import issuance_request_id
-        import json
-        request_body = json.dumps({'ttl_seconds': extra.get('ttl_seconds', 24 * 60 * 60)}, separators=(',', ':')).encode()
-        issuance_id = issuance_request_id(grant, request_body)
         with self._service.peer_route_lock:
             if self._stored_link is None:
                 raise RuntimeStoreError('peer_target_mismatch')
-            issuance = cleanup.retain(self._service.db_path, replace(self._stored_link, grant=grant),
-                                       mode='issuance', issuance_id=issuance_id)
+            issuance, self._issuance_id, extra = cleanup.prepare_issuance(
+                self._service.db_path, replace(self._stored_link, grant=grant), extra)
             if not hasattr(self._service, '_peer_cleanup_inflight'):
                 self._service._peer_cleanup_inflight = set()
             self._service._peer_cleanup_inflight.add(issuance)
@@ -317,7 +316,7 @@ class CanonicalPeerClient:
             publish_route(self._service, room_id=self._key[0], member_id=self._key[1],
                           route=replace(self._route, grant=replacement), client=self._client,
                           target_url=stored.target_url, catalog=stored.catalog,
-                          expected_grant=grant, authorize=self._lease_fence())
+                          expected_grant=grant, authorize=self._lease_fence(), issuance_id=self._issuance_id)
         except Exception:
             try:
                 _retire(self._client, replacement)

@@ -128,11 +128,11 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        self.pending_action, self.clock = pending_action, clock
         # Upkeep for the leased room (peer grant renewal): after Stop and new work, and between
         # polls of an active turn.
         self.maintain_leased_room = maintain_leased_room
         self.maintain_service = maintain_service
-        self.pending_action, self.clock = pending_action, clock
         # Off: a turn the member never received goes back to the queue (FIFO, bounded backoff).
         # On: a member turn is deferred with its proof instead, so the room's next turn can run.
         self.defer_not_admitted_members = defer_not_admitted_members

@@ -110,15 +110,15 @@ def _grant_db(adapter):
     return authority.db.db_path if authority is not None else hosted_rooms.default_db_path()
 
 
-def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _room_grant_claims(self, request: "web.Request", *, permission: str, conn=None) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
     from gateway.hosted_room_peer import room_grant_token_digest
     db_path = _grant_db(self)
     if hosted_rooms.room_grant_is_revoked(
-            db_path, claims=claims, token_sha256=room_grant_token_digest(self._room_grant_token(request))):
+            db_path, claims=claims, token_sha256=room_grant_token_digest(self._room_grant_token(request)), conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
-    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
+    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
 

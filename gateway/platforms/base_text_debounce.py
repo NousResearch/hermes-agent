@@ -6,14 +6,14 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending_merge import (
     _append_text,
     merge_pending_message_event,
-    same_message_sender,
 )
+from gateway.platforms.base_pending import _can_join_pending_event
 
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter
@@ -27,6 +27,7 @@ class TextDebounceState:
     task: asyncio.Task | None
     first_ts: float
     last_ts: float
+    earlier_events: list[MessageEvent] = field(default_factory=list)
 
     def cancel_timer(self, *, unless: asyncio.Task | None = None) -> None:
         """Cancel the pending flush timer (if live and not ``unless``)."""
@@ -63,11 +64,8 @@ class BaseTextDebounceMixin:
     def _can_merge_text_debounce_events(
         self: BasePlatformAdapter, existing: MessageEvent, event: MessageEvent
     ) -> bool:
-        """Return True when two text debounce events came from the same sender and do not reply
-        to different messages."""
-        return self._same_text_debounce_sender(
-            existing, event
-        ) and not existing.reply_context_conflicts(event)
+        """Whether one debounce burst can preserve both events' attribution and reply context."""
+        return _can_join_pending_event(existing, event)
 
     def _text_debounce_delay(self: BasePlatformAdapter, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
@@ -82,31 +80,40 @@ class BaseTextDebounceMixin:
 
     async def _queue_text_debounce(
         self: BasePlatformAdapter, session_key: str, event: MessageEvent
-    ) -> None:
+    ) -> bool:
         """Buffer normal queue-mode busy text and schedule a bounded flush."""
         store = self._text_debounce_store()
         state = store.get(session_key)
         if state is not None and not self._can_merge_text_debounce_events(
             state.event, event
         ):
-            # Preserve sender attribution: flush the buffer as the next turn, new sender starts
-            # fresh.
             await self._flush_text_debounce_now(session_key)
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(
                 state.event, event
             ):
-                if not self._same_text_debounce_sender(state.event, event):
-                    merge_pending_message_event(
-                        self._pending_messages, session_key, event, merge_text=True
-                    )
-                    return
-                logger.debug(
-                    "[%s] Busy text for %s replies to a third message; merging it into the "
-                    "debounce buffer, which keeps its own reply context",
-                    self.name,
-                    session_key,
+                depth = (
+                    len(state.earlier_events)
+                    + 1
+                    + int(session_key in self._pending_messages)
                 )
+                if depth >= 32:
+                    logger.warning(
+                        "[%s] Dropping busy follow-up for %s: pending queue at cap (32)",
+                        self.name,
+                        session_key,
+                    )
+                    return False
+                state.earlier_events.append(state.event)
+                state.event = event
+                state.first_ts = state.last_ts = time.monotonic()
+                state.cancel_timer()
+                state.task = asyncio.create_task(
+                    self._flush_text_debounce(
+                        session_key, self._text_debounce_delay(session_key)
+                    )
+                )
+                return True
         now = time.monotonic()
         if state is None:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
@@ -132,6 +139,7 @@ class BaseTextDebounceMixin:
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        return True
 
     async def _flush_text_debounce(
         self: BasePlatformAdapter, session_key: str, delay: float
@@ -151,29 +159,31 @@ class BaseTextDebounceMixin:
     async def _flush_text_debounce_now(
         self: BasePlatformAdapter, session_key: str
     ) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot, or into the runner's
-        queue behind the slot when the slot's event cannot absorb it."""
+        """Submit one debounced burst through FIFO admission when a runner is available."""
         store = self._text_debounce_store()
         state = store.get(session_key)
         if state is None:
             return False
         state.cancel_timer(unless=asyncio.current_task())
         state.task = None
+        enqueue = getattr(self.gateway_runner, "_queue_or_replace_pending_event", None)
+        if callable(enqueue):
+            store.pop(session_key, None)
+            for event in (*state.earlier_events, state.event):
+                enqueue(session_key, event)
+            return True
+        event = state.earlier_events[0] if state.earlier_events else state.event
         pending = self._pending_messages.get(session_key)
         if pending is not None and not self._can_merge_text_debounce_events(
-            pending, state.event
+            pending, event
         ):
-            enqueue = getattr(
-                self.gateway_runner, "_queue_or_replace_pending_event", None
-            )
-            if not callable(enqueue):
-                return False
+            return False
+        if state.earlier_events:
+            state.earlier_events.pop(0)
+        else:
             store.pop(session_key, None)
-            enqueue(session_key, state.event)
-            return True
-        store.pop(session_key, None)
         merge_pending_message_event(
-            self._pending_messages, session_key, state.event, merge_text=True
+            self._pending_messages, session_key, event, merge_text=True
         )
         return True
 
@@ -182,8 +192,3 @@ class BaseTextDebounceMixin:
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:
             state.cancel_timer()
-
-    @staticmethod
-    def _same_text_debounce_sender(existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
-        return same_message_sender(existing, event)

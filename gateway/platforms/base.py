@@ -432,6 +432,7 @@ from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
+from gateway.platforms.base_pending import pending_dispatch_scope
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -3973,7 +3974,7 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
             logger.debug("[%s] New text message while session %s is active — "
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
                          session_key, self._busy_text_debounce_seconds)
-            await self._queue_text_debounce(session_key, event)
+            event._gateway_accepted = await self._queue_text_debounce(session_key, event)
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
@@ -4371,7 +4372,8 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
-            response = await self._message_handler(event)
+            with pending_dispatch_scope(self, session_key, event):
+                response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4544,9 +4546,7 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
         await self._process_message_background(pending_event, session_key)
 
     def _stage_next_queued_event(self, session_key: str, started: MessageEvent) -> None:
-        """Move the runner's next queued event into the slot after ``started`` has left the slot to
-        start a turn. When the slot is empty and the runner's queue is not, the runner treats the
-        queue as orphaned and runs its head before ``started``, which arrived earlier."""
+        """Stage the next FIFO event before dispatching the removed pending head."""
         promote = getattr(self.gateway_runner, "_promote_queued_event", None)
         if callable(promote):
             promote(session_key, self, started)
@@ -4599,8 +4599,12 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
                                self.name, sum(not t.done() for t in tasks))
                 break
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
-            from gateway.shutdown_flush import flush_pending_to_file
+            from gateway.shutdown_flush import flush_overflow_to_file, flush_pending_to_file
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+            flush_overflow_to_file({
+                key: [*state.earlier_events, state.event]
+                for key, state in self._text_debounce_store().items()
+            }, reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,

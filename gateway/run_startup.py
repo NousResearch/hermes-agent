@@ -13,6 +13,7 @@ import faulthandler
 import logging
 import os
 import signal
+import threading
 import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -1831,3 +1832,82 @@ class GatewayStartupMixin:
             raise RuntimeError(f"adapter.send failed: {exc}") from exc
         if not getattr(result, "success", True):
             raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+
+
+def _start_gateway_start_cron_and_housekeeping(runner):
+    """Start the cron scheduler thread + gateway housekeeping thread; returns
+    ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
+    from gateway.run import _cron_tick_profile_homes, _cron_profile_gate, _start_gateway_housekeeping
+
+    # The event loop is passed so cron delivery can use live adapters (E2EE support).
+    from cron.scheduler_provider import (
+        InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
+    cron_stop = threading.Event()
+    # ONE gateway process per host multiplexes every profile, so its cron ticker owns EVERY
+    # profile's store — `gateway.multiplex_profiles` gates adapters, not cron. Gating the tick set
+    # on that flag left every non-launch profile's jobs in a store no ticker visited: they
+    # silently never fired.
+    try:
+        cron_profile_homes = _cron_tick_profile_homes(runner.config)
+    except Exception as exc:
+        logger.warning("Could not resolve profile homes for cron: %s", exc)
+        cron_profile_homes = []
+    # External providers own one unscoped remote registry, so they can only serve a single home.
+    cron_provider = scheduler_for_profile_mode(
+        resolve_cron_scheduler(), multiplex_profiles=len(cron_profile_homes) > 1)
+    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+
+    if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:
+        # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
+        # the gateway runs gets its jobs fired without a restart (hot-serve).
+        cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
+        # Stand down, per tick, for a profile whose OWN gateway process ticks it.
+        cron_start_kwargs["profile_gate"] = _cron_profile_gate
+        # Per-profile adapters so each profile's cron output goes via its own bot, not the
+        # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
+        # back to the primary's routed adapters or fails closed — the job still FIRES.
+        cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+        # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
+        # name); naming it keeps the ticker from routing a secondary's cron through that bot
+        # and lets a named multiplexer's own jobs reuse its live adapters.
+        cron_start_kwargs["default_profile"] = runner._primary_profile_name
+        logger.info(
+            "Cron scheduler will tick %d profile(s): %s", len(cron_profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in cron_profile_homes])
+
+    # Only the in-process ticker polls local due jobs, so only it gets the external-drain dispatch gate.
+    if isinstance(cron_provider, InProcessCronScheduler):
+        cron_start_kwargs["can_dispatch"] = lambda: not (
+            runner._draining or runner._external_drain_active)
+    # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
+    from cron.scheduler_thread import SupervisedTickerThread
+    cron_thread = SupervisedTickerThread(
+        cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
+    cron_thread.start()
+
+    # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
+    # API_SERVER_KEY missing) every fire fails while manual runs work — misread as a job bug. Say it ONCE.
+    if not isinstance(cron_provider, InProcessCronScheduler):
+        try:
+            _has_api_server = Platform.API_SERVER in (runner.adapters or {})
+        except Exception:
+            _has_api_server = True  # never let the tell break startup
+        if not _has_api_server:
+            logger.warning(
+                "Cron provider '%s' is active but the api_server adapter is "
+                "NOT running in this gateway — scheduled fires arrive over "
+                "loopback HTTP and will all fail (jobs only run when "
+                "triggered manually). Most common cause: API_SERVER_KEY is "
+                "missing from this gateway process's environment. Restart "
+                "the gateway through its supervisor (`hermes gateway "
+                "restart`) so the profile env loads.",
+                getattr(cron_provider, "name", "external"))
+
+    # Gateway-only housekeeping runs independently of the cron provider; shares cron_stop for shutdown.
+    housekeeping_thread = threading.Thread(
+        target=_start_gateway_housekeeping, args=(cron_stop,),
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
+                "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
+        daemon=True, name="gateway-housekeeping")
+    housekeeping_thread.start()
+    return cron_stop, cron_provider, cron_thread, housekeeping_thread

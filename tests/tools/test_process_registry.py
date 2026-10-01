@@ -2574,6 +2574,64 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    def test_worker_memory_limit_default_caps_at_4gib(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: {"SC_PHYS_PAGES": 8 * 1024 * 1024, "SC_PAGE_SIZE": 4096}[name],
+        )
+
+        # 32 GiB host, no explicit override: the absolute cap stays in force.
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
+    def test_worker_memory_limit_local_guard_override_widens_past_4gib(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "6144")
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: {"SC_PHYS_PAGES": 8 * 1024 * 1024, "SC_PAGE_SIZE": 4096}[name],
+        )
+
+        # An explicit override may widen past the 4 GiB default cap ...
+        assert pr._worker_memory_max_bytes() == 6144 * 1024 * 1024
+
+    def test_worker_memory_limit_local_guard_override_widens_only_to_half_ram(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda name: {"SC_PHYS_PAGES": 8 * 1024 * 1024, "SC_PAGE_SIZE": 4096}[name],
+        )
+
+        # ... but never past the half-RAM safe bound (16 GiB of a 32 GiB host).
+        assert pr._worker_memory_max_bytes() == 16 * 1024 * 1024 * 1024
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

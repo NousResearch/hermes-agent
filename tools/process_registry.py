@@ -112,11 +112,13 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+    The safe bound is the min of the gateway's cgroup-v2 ``memory.max`` and half
+    of physical RAM. ``TERMINAL_LOCAL_MEMORY_MAX_MB`` may tighten it like before,
+    and may now also widen it up to that safe bound; the 4 GiB absolute cap
+    guards only the default path (no explicit override), so an oversized
+    override still cannot exceed the enclosing slice (#130566).
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
+    The local-memory-guard environment override is honored against the safe bound, so this
     isolation composes with PR #57121 instead of inventing a second knob.
     """
     override_bound: Optional[int] = None
@@ -153,10 +155,11 @@ def _worker_memory_max_bytes() -> int:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
-        physical_bound = min(
-            _WORKER_MEMORY_MAX_CAP_BYTES,
-            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
-        )
+        physical_bound = max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)
+        if override_bound is None:
+            # The absolute cap keeps the no-override default conservative; an explicit
+            # override may widen up to the enclosing slice / half-RAM bound (#130566).
+            physical_bound = min(_WORKER_MEMORY_MAX_CAP_BYTES, physical_bound)
         candidates.append(physical_bound)
     except (OSError, ValueError, TypeError):
         pass

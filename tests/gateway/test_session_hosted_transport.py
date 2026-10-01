@@ -42,7 +42,8 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
             assert params['execution_generation'] == 1
             if operation == 'submit' and params['prompt'] != 'input':
                 raise RuntimeStoreError('permission_denied')
-        return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
+        return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input',
+                'attachments': [], 'attachment_digests': []}
     servers = [_server(source), _server(target)]
     install_hosted_transport(servers[0], source_authority, loop, attest=attest)
     install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
@@ -104,7 +105,9 @@ class _SourceTask:
         self.homes = {'other': str(tmp_path / 'profiles' / 'other')}
         monkeypatch.setattr(gateway.run, '_load_gateway_config', lambda: {'hosted_rooms': {'profiles': self.homes}})
         self.db = db = SessionDB(tmp_path / 'state.db')
-        self.authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
+        self.authority = SimpleNamespace(db=db, profile_id=str(tmp_path), instance_id='test',
+                                         runner=SimpleNamespace(),
+                                         epoch=begin_runtime_epoch(db, instance_id='test'))
         self.service = CanonicalHostedRoomService(self.authority, None)
         self.service.authorize_room('alice', 'room', create=True)
         self.gateway = local_authority_gateway_id()
@@ -129,6 +132,34 @@ class _SourceTask:
         self.params = dict(task=asdict(self.identity), execution_generation=self.task['execution_generation'],
                            prompt='frozen', attachments=self.bound, _target_home=self.homes['other'])
         self.binding = {'source_home': str(tmp_path), 'target_home': self.homes['other'], 'selector': self.selector}
+
+
+@pytest.fixture
+def document_target_owner(owner, tmp_path, monkeypatch):
+    """A real named target store with its own input-custody and process ownership."""
+    from gateway.runtime_ownership import process_ownership
+    from gateway.session_authority import SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_input_custody import initialize_input_custody
+    from hermes_state_runtime import begin_runtime_epoch
+
+    target_home = tmp_path / 'profiles' / 'other'
+    target_home.mkdir(parents=True, mode=0o700)
+    monkeypatch.setenv('HERMES_HOME', str(target_home))
+    process_ownership.reserve([target_home])
+    db = None
+    try:
+        db = SessionDB(target_home / 'state.db')
+        initialize_input_custody(db)
+        authority = SessionAuthority(owner[0].runner, profile_id=str(target_home),
+                                     instance_id='test', db=db,
+                                     epoch=begin_runtime_epoch(db, instance_id='test'))
+        monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+        yield authority, owner[1], target_home
+    finally:
+        if db is not None:
+            db.close()
+        process_ownership.release(target_home)
 
 
 def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path, monkeypatch):
@@ -257,7 +288,7 @@ def test_attachment_chunks_fill_the_response_line_without_overflowing_it(tmp_pat
         assert max(lines) > _MAX_RESPONSE_BYTES * 3 // 4, 'chunks leave most of the response line unused'
 
 
-def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(owner, tmp_path, monkeypatch):
+def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(document_target_owner, tmp_path, monkeypatch):
     """check_remote_hosted_admission proves the durable row still matches the source's
     bound input from source-attested digests, transferring no bytes; a source attachment
     re-pointed at different bytes (same id, name and size) is still refused."""
@@ -265,11 +296,9 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import list_session_admissions, RuntimeStoreError
-    authority, loop, _, _ = owner
-    target_home = tmp_path / 'profiles' / 'other'
-    target_home.mkdir(parents=True, mode=0o700)
-    authority.profile_id = str(target_home)
+    authority, loop, target_home = document_target_owner
     source = _SourceTask(tmp_path, monkeypatch, b'document bytes ' * 20000)
+    monkeypatch.setenv('HERMES_HOME', str(target_home))
     operations = []
     real_request = transport.owner_request
     def counting_request(home, verb, params, **kwargs):
@@ -298,6 +327,15 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
             ref = SessionRef(authority.profile_id, sid)
             assert check_remote_hosted_admission(authority, ref, row) is True
             assert operations == ['execute'], 'preflight must verify by digest, not re-transfer bytes'
+            # Neither a caller-supplied admission identity nor a changed generation
+            # can borrow the accepted working copy, even with the same prompt/bytes.
+            for altered in (
+                {**row, 'admission_id': 'not-the-accepted-admission'},
+                {**row, 'request_id': 'hosted:' + json.dumps([asdict(source.identity), 2])},
+                {**row, 'payload': {'text': 'substituted'}},
+            ):
+                with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                    check_remote_hosted_admission(authority, ref, altered)
             # Same name and size, different bytes: re-point the committed row at another blob.
             changed = source.store.put(room_id='room', upload_id='upload-2', kind='file', name='note.txt',
                                        mime='text/plain', data=b'DOCUMENT BYTES ' * 20000)
@@ -317,7 +355,49 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
                 asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
 
 
-def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_destination(owner, tmp_path, monkeypatch):
+def test_preflight_preserves_image_only_admission(document_target_owner, tmp_path, monkeypatch):
+    """An image-only admission still reconstructs its native media reference."""
+    from pathlib import Path
+    from gateway import session_hosted_transport as transport
+    from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    authority, loop, target_home = document_target_owner
+    source = _SourceTask(tmp_path, monkeypatch, b'\x89PNG\r\n\x1a\n' * 16,
+                         name='photo.png', mime='image/png', kind='image')
+    monkeypatch.setenv('HERMES_HOME', str(target_home))
+    servers = [_server(tmp_path), _server(target_home)]
+    with source.db:
+        transport.install_hosted_transport(servers[0], source.authority, loop, attest=source.service.attest)
+        transport.install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
+        for server in servers:
+            assert asyncio.run_coroutine_threadsafe(server.start(), loop).result()
+        try:
+            rpc = HostedRoomOwnerRPC(home=target_home, source_home=tmp_path, **source.selector)
+            coords = dict(profile='other', source='bot_room')
+            sid = rpc.create(**coords, title='Group: room')['session_id']
+            rpc.submit(**coords, session_id=sid, prompt='frozen', task=source.identity,
+                       execution_generation=1, attachments=source.bound, on_terminal=lambda r: None)
+            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            with rpc._lock:
+                rpc.callbacks.clear()
+            rpc._monitor.join(5)
+            ref = SessionRef(authority.profile_id, sid)
+            assert check_remote_hosted_admission(authority, ref, row) is True
+            media, = row['payload']['attachments_v1']['media']
+            assert Path(media['path']).read_bytes() == source.data
+            assert row['payload']['attachments_v1']['media_types'] == ['image/png']
+            Path(media['path']).write_bytes(bytes([source.data[0] ^ 1]) + source.data[1:])
+            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+                check_remote_hosted_admission(authority, ref, row)
+        finally:
+            with rpc._lock:
+                rpc.callbacks.clear()
+            for server in servers:
+                asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
+
+
+def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_destination(document_target_owner, tmp_path, monkeypatch):
     """Documents ride in the prompt as content-addressed paths, so execution never re-hashes
     them: the digest-only preflight must itself refuse ``storage_unavailable`` when the
     destination bytes no longer match the source-attested digest (same-size mutation) or
@@ -326,11 +406,9 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import list_session_admissions, RuntimeStoreError
-    authority, loop, _, _ = owner
-    target_home = tmp_path / 'profiles' / 'other'
-    target_home.mkdir(parents=True, mode=0o700)
-    authority.profile_id = str(target_home)
+    authority, loop, target_home = document_target_owner
     source = _SourceTask(tmp_path, monkeypatch, b'document bytes ' * 2000)
+    monkeypatch.setenv('HERMES_HOME', str(target_home))
     operations = []
     real_request = transport.owner_request
     def counting_request(home, verb, params, **kwargs):

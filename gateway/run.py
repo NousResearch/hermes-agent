@@ -4609,6 +4609,10 @@ def _start_gateway_housekeeping(
         # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
         # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
         (1, "Runtime heartbeat", _write_runtime_status_quiet)]
+    if runner is not None:
+        from gateway.run_input_reclamation import collect_gateway_input_copies
+        # Collector enumerates owned authorities itself; do not run it once per profile.
+        chores.append((5, "Working-copy collection", lambda: collect_gateway_input_copies(runner)))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

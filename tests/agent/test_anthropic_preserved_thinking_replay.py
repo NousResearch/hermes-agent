@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +35,10 @@ def _assistant(messages, index: int):
         ("claude-opus-4-6", True),
         ("claude-sonnet-4-5", False),
         ("claude-sonnet-4-6", True),
+        ("claude-opus-4-20250514", False),
+        ("claude-sonnet-4-20250514", False),
+        ("claude-opus-4-5-20251101", True),
+        ("claude-sonnet-4-6-20251101", True),
         ("claude-opus-5", True),
         ("claude-sonnet-5-5", True),
         ("claude-fable-5-1", True),
@@ -237,3 +242,173 @@ def test_turn_recovery_repairs_recognized_anthropic_signature_rejection():
         "text",
         "tool_use",
     ]
+
+
+def test_dated_claude_4_snapshots_keep_latest_only_policy():
+    for model in ("claude-opus-4-20250514", "claude-sonnet-4-20250514"):
+        messages = _signed_turn("Q1", "A1", "sig_1") + _signed_turn("Q2", "A2", "sig_2")
+        _, converted = convert_messages_to_anthropic(messages, model=model)
+        first, second = (_assistant(converted, 0), _assistant(converted, 1))
+        assert not any(
+            isinstance(block, dict) and block.get("type") in {"thinking", "redacted_thinking"}
+            for block in first["content"]
+        )
+        assert any(
+            isinstance(block, dict) and block.get("type") == "thinking"
+            for block in second["content"]
+        )
+
+
+def _assembly_agent(db=None):
+    agent = _agent(db or _ConfigDB())
+    agent._current_turn_timestamp = 1.0
+    agent.ephemeral_system_prompt = ""
+    agent.prefill_messages = []
+    agent._copy_reasoning_content_for_api = lambda source, target: target.pop(
+        "reasoning_content", None
+    )
+    agent._should_sanitize_tool_calls = lambda: False
+    agent._sanitize_api_messages = lambda value: value
+    agent._emit_warning = lambda *args, **kwargs: None
+    agent._drop_thinking_only_and_merge_users = lambda value, **kwargs: value
+    agent.tools = []
+    agent._use_prompt_caching = False
+    agent._usage_anchor = None
+    agent.context_compressor = SimpleNamespace()
+    return agent
+
+
+def _patch_assembly_loop(monkeypatch, selector=None):
+    import agent.conversation_loop as loop
+
+    monkeypatch.setattr(
+        loop,
+        "_apply_context_engine_selection",
+        selector or (lambda agent, api, history, incoming, logger=None: api),
+    )
+    monkeypatch.setattr(loop, "_canonicalize_api_tool_calls", lambda messages: None)
+    monkeypatch.setattr(
+        loop,
+        "_midturn_request_pressure_tokens",
+        lambda agent, messages, system, approx: approx,
+    )
+    monkeypatch.setattr(loop, "_pressure_with_real_floor", lambda compressor, value: value)
+
+
+def _assemble(agent, history):
+    from agent.turn_request_assembly import assemble_api_request
+
+    return assemble_api_request(
+        agent,
+        messages=history,
+        current_turn_user_idx=len(history) - 1,
+        _ext_prefetch_cache="",
+        _plugin_user_context="",
+        moa_config=None,
+        active_system_prompt="",
+        original_user_message=history[-1]["content"],
+        pending_moa_prepared_request=None,
+        request_logger=logging.getLogger("anthropic-preserved-thinking-test"),
+    )
+
+
+def test_full_assembly_prices_surviving_non_tool_thinking(monkeypatch):
+    _patch_assembly_loop(monkeypatch)
+    agent = _assembly_agent()
+
+    small = (
+        _signed_turn("Q1", "A1", "sig_1", thinking="x")
+        + _signed_turn("Q2", "A2", "sig_2", thinking="x")
+        + [{"role": "user", "content": "continue"}]
+    )
+    large = (
+        _signed_turn("Q1", "A1", "sig_1", thinking="x" * 8000)
+        + _signed_turn("Q2", "A2", "sig_2", thinking="x" * 8000)
+        + [{"role": "user", "content": "continue"}]
+    )
+
+    small_request = _assemble(agent, copy.deepcopy(small))
+    large_request = _assemble(agent, copy.deepcopy(large))
+    assert large_request.approx_tokens - small_request.approx_tokens >= 3500
+    assert large_request.request_pressure_tokens == large_request.approx_tokens
+
+    _, native = convert_messages_to_anthropic(large_request.api_messages, model=agent.model)
+    emitted = sum(
+        len(block.get("thinking", ""))
+        for message in native
+        for block in (message.get("content") if isinstance(message.get("content"), list) else [])
+        if isinstance(block, dict) and block.get("type") == "thinking"
+    )
+    assert emitted == 16000
+
+
+def test_native_accounting_projection_dedupes_ordered_carrier_and_opaque_bytes():
+    from agent.turn_request_assembly import _native_anthropic_accounting_projection
+
+    base = _carrier_message()
+    base["reasoning_details"][0]["thinking"] = "x" * 8000
+    base["anthropic_content_blocks"][0]["thinking"] = "x" * 8000
+
+    huge_opaque = copy.deepcopy(base)
+    huge_opaque["reasoning_details"][0]["signature"] = "s" * 20000
+    huge_opaque["reasoning_details"][1]["data"] = "r" * 20000
+    huge_opaque["anthropic_content_blocks"][0]["signature"] = "s" * 20000
+    huge_opaque["anthropic_content_blocks"][-1]["data"] = "r" * 20000
+
+    ordered_only = copy.deepcopy(huge_opaque)
+    ordered_only.pop("reasoning_details")
+
+    projected_huge = _native_anthropic_accounting_projection([huge_opaque])
+    projected_ordered = _native_anthropic_accounting_projection([ordered_only])
+    projected_small = _native_anthropic_accounting_projection([base])
+
+    assert estimate_messages_tokens_rough(projected_huge) == estimate_messages_tokens_rough(
+        projected_ordered
+    )
+    assert estimate_messages_tokens_rough(projected_huge) == estimate_messages_tokens_rough(
+        projected_small
+    )
+
+
+def test_context_selection_cannot_restore_rejected_thinking(monkeypatch):
+    from agent.anthropic_thinking_replay import remember_rejected_thinking
+
+    db = _ConfigDB()
+    first = _assembly_agent(db)
+    remember_rejected_thinking(first, [_carrier_message()])
+
+    def select_canonical(agent, api, history, incoming, logger=None):
+        return copy.deepcopy(history)
+
+    _patch_assembly_loop(monkeypatch, selector=select_canonical)
+    resumed = _assembly_agent(db)
+    history = [
+        {"role": "user", "content": "Q"},
+        _carrier_message(),
+        {"role": "user", "content": "continue"},
+    ]
+    assembled = _assemble(resumed, history)
+    assistant = next(m for m in assembled.api_messages if m.get("role") == "assistant")
+
+    assert "reasoning_details" not in assistant
+    assert [b["type"] for b in assistant["anthropic_content_blocks"]] == ["text", "tool_use"]
+    _, native = convert_messages_to_anthropic(assembled.api_messages, model=resumed.model)
+    assert "sig_bad" not in repr(native)
+
+
+def test_usage_anchor_still_overrides_projected_rough_pressure(monkeypatch):
+    import agent.turn_request_assembly as assembly
+
+    _patch_assembly_loop(monkeypatch)
+    monkeypatch.setattr(assembly, "anchored_context_tokens", lambda messages, anchor: 1234)
+    agent = _assembly_agent()
+    agent._usage_anchor = object()
+    history = (
+        _signed_turn("Q1", "A1", "sig_1", thinking="x" * 8000)
+        + [{"role": "user", "content": "continue"}]
+    )
+
+    assembled = _assemble(agent, history)
+    assert assembled.approx_tokens > 1000
+    assert assembled.request_pressure_tokens == 1234
+    assert agent._request_pressure_anchored is True

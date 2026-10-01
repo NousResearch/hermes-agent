@@ -597,6 +597,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         adapter = self._delivery_adapter_for(source)
         if not adapter:
             return
+        self._flush_buffered_pending(_quick_key, adapter)
         existing = adapter._pending_messages.get(_quick_key)
         if (
             existing is None
@@ -639,7 +640,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
             self._hm_merge_pending_for_source(source, _quick_key, event)
-            return True, None
+            return True, None if event._gateway_accepted else self._pending_queue_refusal(event)
         return False, None
 
     def _hm_busy_telegram_grace_queue(
@@ -670,7 +671,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     def _hm_text_only(event: MessageEvent) -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: MessageEvent, running_agent: Any, _quick_key: str) -> None:
+    def _hm_busy_steer(self, event: MessageEvent, running_agent: Any, _quick_key: str) -> bool:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
@@ -682,9 +683,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if steered:
             self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
-            return
+            return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-        self._queue_or_replace_pending_event(_quick_key, event)
+        return self._queue_or_replace_pending_event(_quick_key, event)
 
     async def _hm_busy_interrupt(
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
@@ -729,7 +730,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
-            return None
+            return None if event._gateway_accepted else self._pending_queue_refusal(event)
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
@@ -739,11 +740,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
-            return None
+            return None if event._gateway_accepted else self._pending_queue_refusal(event)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
+                if not self._queue_or_replace_pending_event(_quick_key, event):
+                    return self._pending_queue_refusal(event)
             return (
                 t("gateway.busy.drain_queued", action=self._status_action_gerund())
                 if queue_during_drain
@@ -751,11 +753,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-            self._queue_or_replace_pending_event(_quick_key, event)
-            return None
+            return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
         if effective_busy_input_mode == "steer":
-            self._hm_busy_steer(event, running_agent, _quick_key)
-            return None
+            return None if self._hm_busy_steer(event, running_agent, _quick_key) else self._pending_queue_refusal(event)
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
@@ -768,8 +768,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
             return None
         logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
-        self._queue_or_replace_pending_event(_quick_key, event)
-        return None
+        return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
 
     def _hm_quick_commands(self) -> dict:
         """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""

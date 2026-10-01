@@ -1,9 +1,9 @@
 """A restored or adopted session keeps the user's durable flags.
 
 ``import_sessions`` (the dashboard import of a ``hermes sessions export`` backup, and stranded-session
-adoption) restored ``archived`` but not ``pinned``. Pinned is the "keep" flag the startup prune and the
-stale-archive sweep both exempt, so an old pinned session came back unpinned and the next startup
-deleted it.
+adoption) restored ``archived`` but not ``pinned`` or ``hidden``. Pinned is the "keep" flag the startup
+prune and the stale-archive sweep both exempt, so an old pinned session came back unpinned and the next
+startup deleted it; an adopted Bot Mode chat came back visible and no longer canonical.
 """
 
 from __future__ import annotations
@@ -39,3 +39,24 @@ def test_restored_pinned_session_survives_the_startup_prune(tmp_path):
     finally:
         source.close()
         target.close()
+
+
+def test_adopted_bot_chat_stays_the_hidden_canonical_chat(tmp_path):
+    """Stranded-session adoption imports the donor's Bot Mode chat into the profile store; Bot Mode
+    chats are hidden, and hidden is what keeps the canonical one out of listings and the stale sweep."""
+    donor = SessionDB(db_path=tmp_path / "default.db")
+    profile = SessionDB(db_path=tmp_path / "profile.db")
+    try:
+        donor.create_session(SESSION_ID, source="tui")
+        donor.set_session_title(SESSION_ID, SessionDB.CANONICAL_BOT_CHAT_TITLE)
+        donor.set_session_hidden(SESSION_ID, True)
+        donor.append_message(SESSION_ID, "user", "hi bot")
+
+        assert profile.adopt_session_lineage_from(donor, SESSION_ID)["adopted"]
+
+        assert profile.get_session(SESSION_ID)["hidden"]
+        assert SESSION_ID not in {s["id"] for s in profile.list_sessions_rich(limit=50)}
+        assert profile.archive_stale_sessions(idle_days=0) == 0
+    finally:
+        donor.close()
+        profile.close()

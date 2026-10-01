@@ -16,7 +16,8 @@ from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 
 if TYPE_CHECKING:
-    from gateway.platforms.base import BasePlatformAdapter, MessageHandler, TextDebounceState
+    from gateway.platforms.base import BasePlatformAdapter, MessageHandler
+    from gateway.platforms.base_text_debounce import TextDebounceState
 
 logger = logging.getLogger("gateway.platforms.base")
 

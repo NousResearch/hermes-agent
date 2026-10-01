@@ -33,7 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
@@ -51,9 +51,11 @@ import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait
 import {
   $activeSessionId,
   $connection,
+  $currentCwd,
   $lastReadAtBySessionId,
   $selectedStoredSessionId,
   $sessions,
+  $workspaceCwdOwner,
   clearReadBaseline,
   getSessionOwnerHint,
   knownSessionOwner,
@@ -67,7 +69,8 @@ import {
   setAwaitingResponse,
   setBusy,
   setSessions,
-  setTileSessionFocusStartedAt
+  setTileSessionFocusStartedAt,
+  setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedTreePaneId } from './session-focus'
@@ -90,13 +93,14 @@ import { isBrowserWindow, isSecondaryWindow } from './windows'
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
 // ---------------------------------------------------------------------------
-// Event-source scopes: which registry connection's socket delivered a runtime
-// session's events. Working/attention membership alone is profile-blind — two
-// connected gateways can both expose a 'default' profile, so the gateway
-// keep-set (pruneSecondaryGateways) must key live work by the composite
-// (connectionId, profile) scope, not the bare profile name. Recorded at
-// event fan-in (use-gateway-boot); local/primary events carry no connectionId
-// and record nothing, so single-source behavior is untouched.
+// Event-source scopes: which registry connection's socket (or local secondary
+// gateway) delivered a runtime session's events. Working/attention membership
+// alone is profile-blind — two connected gateways can both expose a 'default'
+// profile, so the gateway keep-set (pruneSecondaryGateways) must key live work
+// by the composite (connectionId, profile) scope for remote connections, or
+// by the normalized profile name for local secondary gateways. Recorded at
+// event fan-in (use-gateway-boot); local primary events carry no connectionId
+// or secondary marker and record nothing, so single-source behavior is untouched.
 // ---------------------------------------------------------------------------
 
 const sessionScopeByRuntimeId = new Map<string, string>()
@@ -133,7 +137,9 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   const profile = secondaryProfileOwnerForEvent(event as GatewayEvent)
 
   if (profile) {
-    sessionOwnerByRuntimeId.set(event.session_id, profile)
+    const profileKey = normalizeProfileKey(profile)
+    sessionOwnerByRuntimeId.set(event.session_id, profileKey)
+    sessionScopeByRuntimeId.set(event.session_id, profileKey)
   }
 
   syncPreviewScope()
@@ -160,6 +166,7 @@ export function forgetProfileOnlyRuntimeOwners(profile: string): void {
   for (const [runtimeId, owner] of sessionOwnerByRuntimeId) {
     if (typeof owner === 'string' && normalizeProfileKey(owner) === retired) {
       sessionOwnerByRuntimeId.delete(runtimeId)
+      sessionScopeByRuntimeId.delete(runtimeId)
     }
   }
 }
@@ -282,14 +289,6 @@ export function _resetSessionOwnerHoldsForTests(): void {
 export function foregroundSessionScopes(): Set<string> {
   const scopes = new Set<string>()
 
-  const addRuntimeScope = (runtimeId: string | undefined) => {
-    const scope = runtimeId ? sessionScopeByRuntimeId.get(runtimeId) : undefined
-
-    if (scope) {
-      scopes.add(scope)
-    }
-  }
-
   const addRouteScope = (route: SessionOwnerRoute | undefined) => {
     const connectionId = route?.connectionId?.trim()
     const profile = route?.profile?.trim()
@@ -297,6 +296,40 @@ export function foregroundSessionScopes(): Set<string> {
     if (connectionId && profile) {
       scopes.add(registryBackendScopeKey(connectionId, profile))
     }
+  }
+
+  const addOwnerScope = (owner: SessionOwnerScope | undefined) => {
+    if (!owner) {
+      return
+    }
+
+    if (typeof owner === 'string') {
+      const key = normalizeProfileKey(owner)
+
+      if (key) {
+        scopes.add(key)
+      }
+
+      return
+    }
+
+    addRouteScope(owner)
+  }
+
+  const addRuntimeScope = (runtimeId: string | undefined) => {
+    if (!runtimeId) {
+      return
+    }
+
+    const scope = sessionScopeByRuntimeId.get(runtimeId)
+
+    if (scope) {
+      scopes.add(scope)
+
+      return
+    }
+
+    addOwnerScope(knownOwnerForSession(runtimeId))
   }
 
   addRuntimeScope($activeSessionId.get() ?? undefined)
@@ -365,17 +398,49 @@ export function setSessionStalled(storedSessionId: string | null | undefined, st
 // suspect. Eight minutes was the other failure — longer than a user is willing
 // to sit and wonder, so the hint arrived after they had already given up on it.
 export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
-// A live turn that stops producing events — including after a partial payload —
-// must not wait out the presentation hint above. The clock resets on every
-// session event and on a live-status poll that still reports the turn working,
-// so a quiet tool call is left alone. The window outlasts the 30s live-status
-// backstop: a dead backend stops both events and polls, and this settles it
-// instead of leaving the spinner up. Not keyed on a model name or an error string.
+// A live turn that goes this long without a session event is checked against
+// its backend. Silence alone proves nothing: a foreground tool emits nothing
+// between tool.start and tool.complete, a local model can prefill for minutes,
+// and the live-status poll that also resets this clock pauses while the window
+// is not viewed and slows to 2 min on battery. Only the backend decides whether
+// the turn is over (see onEventSilence).
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
+// Bound on the status request itself; past it the check counts as unanswered.
+export const LIVE_TURN_PROBE_TIMEOUT_MS = 15_000
 const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// One token per status check in flight: an event, a settle, or a newer check
+// drops it, so a late answer cannot act on a turn that moved on.
+const silentTurnChecks = new Map<string, object>()
+
+type AmbientGatewayRequest = <R>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<R>
+
+interface LiveTurnBackend {
+  /** The window's gateway requester; the check routes through the session's
+   *  owner, so this only answers for sessions it provably owns. */
+  request: AmbientGatewayRequest
+  /** Pull the stored transcript for an on-screen session whose turn the
+   *  backend reported ended, so a reply that finished there shows up here. */
+  refreshTranscript?: (runtimeId: string, storedSessionId: string) => Promise<unknown> | unknown
+}
+
+let liveTurnBackend: LiveTurnBackend | null = null
+
+/** Register the backend a silent live turn is checked against. Returns the
+ *  unregister function; with nothing registered, a silent turn is left alone. */
+export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
+  liveTurnBackend = backend
+
+  return () => {
+    if (liveTurnBackend === backend) {
+      liveTurnBackend = null
+    }
+  }
+}
 
 function clearEventSilence(runtimeId: string) {
   const timer = sessionEventSilenceTimers.get(runtimeId)
+
+  silentTurnChecks.delete(runtimeId)
 
   if (timer) {
     clearTimeout(timer)
@@ -387,36 +452,143 @@ function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolea
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 
-const SILENT_TURN_RETRY: ErrorSurface = { code: 'stream_drop', layer: 'streaming', retryable: true }
+export type LiveTurnVerdict = 'ended' | 'running' | 'unknown'
 
-function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): ChatMessage[] {
-  const occurredAt = Date.now() / 1000
-  const error = 'The connection dropped before the reply finished.'
+interface LiveTurnStatusResponse {
+  sessions?: { id?: string; status?: string }[]
+}
 
-  const targetId =
-    (streamId && messages.some(message => message.id === streamId) ? streamId : null) ??
-    [...messages].reverse().find(message => message.role === 'assistant' && message.pending)?.id ??
-    null
+/** What one `session.active_list` snapshot says about `runtimeId`'s turn. A
+ *  runtime missing from a well-formed list has been reaped: its turn is over.
+ *  `starting` is an agent build for a turn the backend accepted. */
+export function liveTurnVerdict(
+  response: LiveTurnStatusResponse | null | undefined,
+  runtimeId: string
+): LiveTurnVerdict {
+  if (!Array.isArray(response?.sessions)) {
+    return 'unknown'
+  }
 
-  const unpended = messages
-    .filter(message => !(message.pending && message.parts.length === 0 && message.id !== targetId))
-    .map(message =>
-      message.pending || message.id === targetId ? { ...message, completedAt: occurredAt, pending: false } : message
+  const status = response.sessions.find(session => session.id?.trim() === runtimeId)?.status
+
+  if (status === undefined || status === 'idle') {
+    return 'ended'
+  }
+
+  return status === 'starting' || status === 'waiting' || status === 'working' ? 'running' : 'unknown'
+}
+
+async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
+  const backend = liveTurnBackend
+
+  if (!backend) {
+    return 'unknown'
+  }
+
+  try {
+    // Owner-routed: a turn in another profile's pane is answered by the
+    // backend running it, not by whichever gateway this window shows. An
+    // unresolved owner throws, which counts as no answer.
+    const response = await requestForOwnedSession<LiveTurnStatusResponse>(
+      runtimeId,
+      backend.request,
+      'session.active_list',
+      {},
+      LIVE_TURN_PROBE_TIMEOUT_MS
     )
 
-  if (targetId && unpended.some(message => message.id === targetId)) {
-    return unpended.map(message =>
-      message.id === targetId ? { ...message, error, errorSurface: SILENT_TURN_RETRY, pending: false } : message
+    return liveTurnVerdict(response, runtimeId)
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** Write through the wiring cache when it holds the runtime, so the cache,
+ *  the focused view, and tile mirrors agree (#93059); otherwise the mirror. */
+function writeSessionState(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState) {
+  if (sessionTileDelegate()?.updateHeldSession?.(runtimeId, updater)) {
+    return
+  }
+
+  const current = $sessionStates.get()[runtimeId]
+
+  if (current) {
+    publishSessionState(runtimeId, updater(current))
+  }
+}
+
+/** The backend reported the turn over and its end events never arrived. Settle
+ *  it like the running=false edge: nothing is interrupted, the kept stream
+ *  bubble is remembered so a late message.complete settles onto it. */
+function settleEndedLiveTurn(runtimeId: string) {
+  const occurredAt = Date.now() / 1000
+
+  writeSessionState(runtimeId, state => {
+    if (!isLiveTurnAwaitingEvents(state)) {
+      return state
+    }
+
+    const messages = sealOpenToolParts(finalizeInterruptedMessages(state.messages, state.streamId, occurredAt))
+
+    return {
+      ...state,
+      awaitingResponse: false,
+      busy: false,
+      heartbeatSettledStreamId:
+        state.streamId && messages.some(message => message.id === state.streamId) ? state.streamId : null,
+      messages,
+      pendingBranchGroup: null,
+      streamId: null,
+      turnLive: false,
+      turnStartedAt: null
+    }
+  })
+}
+
+// Raised only after the backend confirmed the turn is over and no reply reached
+// this window, so Retry cannot run the prompt twice.
+const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
+const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
+
+function turnHasReply(messages: ChatMessage[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+
+    if (message.hidden) {
+      continue
+    }
+
+    if (message.role === 'user') {
+      return false
+    }
+
+    if (message.role === 'assistant' && (message.error || chatMessageText(message).trim())) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
+  const last = messages.findLast(message => !message.hidden)
+
+  // A turn that ran tools but never wrote text carries the notice on its own bubble.
+  if (last?.role === 'assistant') {
+    return messages.map(message =>
+      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
     )
   }
 
+  const occurredAt = Date.now() / 1000
+
   return [
-    ...unpended,
+    ...messages,
     {
       completedAt: occurredAt,
-      error,
-      errorSurface: SILENT_TURN_RETRY,
-      id: `assistant-interrupted-${Date.now()}`,
+      error: NO_REPLY_ERROR,
+      errorSurface: NO_REPLY_SURFACE,
+      id: `assistant-no-reply-${Date.now()}`,
       parts: [],
       pending: false,
       role: 'assistant',
@@ -425,29 +597,67 @@ function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): 
   ]
 }
 
-function settleSilentLiveTurn(runtimeId: string) {
-  const current = $sessionStates.get()[runtimeId]
+/** Stamp the retry card on an ended turn that has no reply. A newer turn the
+ *  user started meanwhile is either live (skipped) or has its own reply. */
+function markTurnWithoutReply(runtimeId: string) {
+  writeSessionState(runtimeId, state =>
+    isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
+      ? state
+      : { ...state, messages: withNoReplyNotice(state.messages) }
+  )
+}
 
-  if (!current || !isLiveTurnAwaitingEvents(current)) {
+async function recoverEndedLiveTurn(runtimeId: string) {
+  const storedSessionId = $sessionStates.get()[runtimeId]?.storedSessionId ?? null
+  const refreshTranscript = liveTurnBackend?.refreshTranscript
+
+  // Only a session on screen reads its history now; a background session
+  // reads it when the user opens it, like the running=false edge.
+  if (refreshTranscript && storedSessionId && runtimeReferenced(runtimeId, storedSessionId)) {
+    try {
+      await refreshTranscript(runtimeId, storedSessionId)
+    } catch {
+      // The local transcript still decides whether a reply arrived.
+    }
+  }
+
+  markTurnWithoutReply(runtimeId)
+}
+
+/** The silence window ran out: ask the backend. Running keeps the turn and
+ *  restarts the clock; no answer (gateway down, request failed, owner unknown)
+ *  also keeps it — the stall hint and Stop remain — and asks again next window.
+ *  Only a backend that reports the turn over settles it. */
+async function onEventSilence(runtimeId: string) {
+  sessionEventSilenceTimers.delete(runtimeId)
+
+  if (!isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
     return
   }
 
-  publishSessionState(runtimeId, {
-    ...current,
-    awaitingResponse: false,
-    busy: false,
-    interrupted: true,
-    messages: withSilentTurnRetry(current.messages, current.streamId),
-    pendingBranchGroup: null,
-    streamId: null,
-    turnLive: false,
-    turnStartedAt: null
-  })
+  const check = {}
+  silentTurnChecks.set(runtimeId, check)
+  const verdict = await checkLiveTurn(runtimeId)
+
+  if (silentTurnChecks.get(runtimeId) !== check) {
+    return
+  }
+
+  silentTurnChecks.delete(runtimeId)
+
+  if (verdict !== 'ended') {
+    noteSessionEvent(runtimeId)
+
+    return
+  }
+
+  settleEndedLiveTurn(runtimeId)
+  await recoverEndedLiveTurn(runtimeId)
 }
 
 /** Record that this session just produced an event. A live turn that then goes
- *  silent is force-settled; a turn still receiving events, or waiting on the
- *  user, is not. */
+ *  silent is checked against its backend; a turn still receiving events, or
+ *  waiting on the user, is not. */
 export function noteSessionEvent(runtimeId: string) {
   if (!runtimeId) {
     return
@@ -463,10 +673,7 @@ export function noteSessionEvent(runtimeId: string) {
 
   sessionEventSilenceTimers.set(
     runtimeId,
-    setTimeout(() => {
-      sessionEventSilenceTimers.delete(runtimeId)
-      settleSilentLiveTurn(runtimeId)
-    }, LIVE_TURN_EVENT_SILENCE_MS)
+    setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
   )
 }
 
@@ -842,6 +1049,7 @@ export function clearAllSessionStates() {
   }
 
   sessionEventSilenceTimers.clear()
+  silentTurnChecks.clear()
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
@@ -861,10 +1069,10 @@ export function clearAllSessionStates() {
  *  hours after the turn actually ended (#53902, #73082 — stale-flag half).
  *
  *  `scope` picks which socket's sessions to reconcile, keyed by the event-
- *  source scope recorded at fan-in: a SECONDARY (registry) reconnect passes
- *  its composite scope and touches only runtimes that arrived on that socket;
+ *  source scope recorded at fan-in: a SECONDARY (registry or local secondary)
+ *  reconnect passes its scope and touches only runtimes that arrived on that socket;
  *  the PRIMARY reconnect passes undefined and touches only scope-less
- *  runtimes (primary/local events record no scope). Neither can clear live
+ *  runtimes (primary events record no scope). Neither can clear live
  *  work riding a different, still-healthy connection.
  *
  *  Direction of failure is deliberate: a turn that IS still live (transient
@@ -891,6 +1099,8 @@ export function clearAllSessionStates() {
  *  alone — a background socket says nothing about the primary composer. */
 export function reconcileBusyStatesOnReconnect(scope?: string) {
   const states = $sessionStates.get()
+  const focusedRuntimeId = $activeSessionId.get()
+  let retiredFocusedTurn = false
 
   // Only the primary socket has a confirm producer for a parked completion
   // (the active profile's `session.active_list` poll); a scoped reconcile
@@ -909,13 +1119,23 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
         continue
       }
 
+      if (runtimeId === focusedRuntimeId) {
+        retiredFocusedTurn = true
+      }
+
       sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
 
       // Re-read — the write path may have republished (and released) this entry.
       const published = $sessionStates.get()[runtimeId]
 
       if (published?.busy || published?.awaitingResponse) {
-        publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
+        publishSessionState(runtimeId, {
+          ...published,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        })
       }
     }
   } finally {
@@ -925,6 +1145,12 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
   if (scope === undefined) {
     setBusy(false)
     setAwaitingResponse(false)
+  }
+
+  // The global clock mirrors the focused session, whichever socket owns it.
+  // A reconnect for a different backend must not reset that session's timer.
+  if (retiredFocusedTurn) {
+    setTurnStartedAt(null)
   }
 }
 
@@ -2074,11 +2300,28 @@ export interface SessionTileDelegate {
    *  it — the caller downgrades the mirror itself. Reconnect-time twin of
    *  invalidateRuntimeBindings (#93059). */
   retireBusyClaim?(runtimeId: string): boolean
-  /** Submit a prompt to a tile's live session. */
-  submitToSession(runtimeId: string, text: string): Promise<void>
+  /** Apply `updater` through the wiring cache when it holds `runtimeId`, so
+   *  cache, focused view, and tile mirrors settle together. Returns false
+   *  without writing when the cache never held it (no phantom entries); the
+   *  caller writes the mirror itself. */
+  updateHeldSession?(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): boolean
+  /**
+   * Resolves with the EXACT identity that ACCEPTED the prompt. A
+   * session-not-found recovery can rebind the runtime, so the accepted runtime
+   * id may differ from the input id; `storedSessionId` is the durable session
+   * the accepted runtime is bound to, or null when that binding is unknown. A
+   * caller that reports delivery must prove the requested target from this.
+   */
+  submitToSession(runtimeId: string, text: string): Promise<AcceptedSessionIdentity>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
   updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState
+}
+
+/** Exact identity a prompt was accepted into: live runtime id + durable stored id. */
+export interface AcceptedSessionIdentity {
+  runtimeSessionId: string
+  storedSessionId: null | string
 }
 
 let delegate: SessionTileDelegate | null = null
@@ -2320,14 +2563,37 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
-    revealTreePane('workspace')
-    noteActiveTreeGroup(null)
-
+  // Bot scopes never claim main here — a Bot tab for the same stored id must
+  // stay mintable — they front through frontMainIfSelected at their own door.
+  if (workspaceScope.workspaceMode === 'sessions' && frontMainIfSelected(storedSessionId)) {
     return 'main'
   }
 
   return null
+}
+
+/** Front the workspace pane when `storedSessionId` names the chat MAIN already
+ *  holds (through any compression-lineage alias). False when main holds
+ *  another chat or nothing — the caller then owns the open.
+ *
+ *  The door for a Bot Mode roster click whose owner lost its tile: closing the
+ *  main tab promotes a neighbouring tile INTO the workspace pane (dropping its
+ *  tile, close-tab.ts), so the canonical Bot Chat lives in main with no tile
+ *  left. The route already points at that session, so navigating is a no-op,
+ *  and focusOpenSession won't claim the 'main' hit for a Bot scope — a Bot tab
+ *  for the same stored id must stay mintable. Without this front, a zone
+ *  parked on another bot's tile left the row click looking dead (#125899). */
+export function frontMainIfSelected(storedSessionId: string): boolean {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (!aliases.includes($selectedStoredSessionId.get() ?? '')) {
+    return false
+  }
+
+  revealTreePane('workspace')
+  noteActiveTreeGroup(null)
+
+  return true
 }
 
 /** Front the tab a Bot Mode owner already has open and report its stored id:
@@ -2798,6 +3064,52 @@ export const $focusedRuntimeId = computed(
 /** The focused session's state slice (undefined while unresolved/unbound). */
 export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates], (runtimeId, states) =>
   runtimeId ? states[runtimeId] : undefined
+)
+
+/** The workspace CWD of the currently focused session (the focused tile's cwd,
+ *  else the primary session's confirmed workspace cwd, with fallback to historical session cwd). */
+export const $focusedWorkspaceCwd = computed(
+  [
+    $focusedStoredSessionId,
+    $selectedStoredSessionId,
+    $focusedSessionState,
+    $sessions,
+    $currentCwd,
+    $workspaceCwdOwner
+  ],
+  (focusedStoredId, selectedStoredId, focusedSessionState, sessions: readonly SessionInfo[], currentCwd, workspaceCwdOwner) => {
+    const isTile = Boolean(focusedStoredId && focusedStoredId !== selectedStoredId)
+
+    if (isTile && focusedStoredId) {
+      const tileCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, focusedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      return tileCwd
+    }
+
+    const hasPrimaryWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredId ?? null)
+
+    if (hasPrimaryWorkspace) {
+      return currentCwd.trim()
+    }
+
+    if (selectedStoredId) {
+      const fallbackCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, selectedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      if (fallbackCwd) {
+        return fallbackCwd
+      }
+    }
+
+    return ''
+  }
 )
 
 /** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to

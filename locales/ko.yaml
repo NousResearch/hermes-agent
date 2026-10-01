@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — 표준 처리"
     choice_auto: "auto — 매 턴의 처음 몇 초 동안 빠름"
     choice_cold: "cold — 세션의 첫 턴에만 빠름"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 가격 6배)"
+    ultrafast_not_supported: "⚡ Ultrafast는 GPT-6 Astra에서만 사용할 수 있습니다 (현재 모델: `{model}`)."
   footer:
     status: "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
     usage: "사용법: `/footer [on|off|status]`"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ 확인 질문이 취소되었어요 — 메시지는 후속 메시지로 처리돼요."
     expired: "⏳ 이 질문은 만료되었어요 — 새 요청을 보내 주세요."
     native_stream_placeholder: "💬 선택을 기다리고 있어요..."
+    skip_hint: '이 질문을 건너뛰려면 "skip"이라고 답장하세요.'
   errors:
     rate_limited: "⏱️ AI 모델 서비스가 요청을 제한하고 있어요. 잠시 기다린 뒤 /retry를 사용하세요."
     auth_failed: "⚠️ AI 모델 서비스 로그인에 실패했어요. /login으로 다시 로그인하거나, 이 봇 운영자에게 호스트에서 `hermes doctor`를 실행해 달라고 요청하세요."
@@ -1597,7 +1600,7 @@ slash:
   reasoning:
     description: "추론 강도와 표시 관리"
   fast:
-    description: "빠른 모드 — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "빠른 모드 — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "화면 스킨/테마 표시 또는 변경"
   indicator:
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "기타 (아래에 입력)"
     clarify_other_type_answer: "기타 (직접 입력)"
     clarify_guidance: "아래 프롬프트에 답을 입력한 뒤 Enter를 누르세요."
-    clarify_question_truncated: "… (질문이 잘렸어요)"
     picker_title_provider: "⚙ 모델 선택기 — 제공자 선택"
     picker_provider_row_one: "{name} (모델 {count}개)"
     picker_provider_row_other: "{name} (모델 {count}개)"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "입력 내용 표시됨 · Enter로 계속"
     hint_clarify_freetext: "답을 입력하고 Enter를 누르세요"
     hint_clarify_batch: "↑/↓로 선택, Enter로 확정, Tab으로 다음 질문"
-    hint_clarify_choice: "↑/↓로 선택, Enter로 확인"
     hint_input_disabled: "입력이 일시적으로 비활성화됨"
     hint_input_queues: "입력 가능 · Enter로 대기열에 추가"
     hint_command_running: "{frame} 명령 실행 중 · {detail}"
@@ -2260,7 +2261,6 @@ cli:
   clarify:
     bell_context: "명확화"
     label: "명확화"
-    timed_out_agent_decides: "(명확화 요청이 {timeout}초 후 시간 초과 — 에이전트가 결정해요)"
     timed_out_locked_answers: "(명확화 요청이 {timeout}초 후 시간 초과 — 확정된 답변을 반환했어요)"
   connect:
     bell_context: "연결 설정"
@@ -2653,7 +2653,9 @@ cli:
       feature_generic: "빠른 모드"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "사용법: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast는 GPT-6 Astra에서만 사용할 수 있습니다 (현재 모델: {model})."
+      usage: "사용법: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}을(를) {value}(으)로 설정했어요 {scope}"
     hatch:

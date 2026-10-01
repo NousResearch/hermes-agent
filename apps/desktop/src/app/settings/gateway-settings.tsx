@@ -541,9 +541,15 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           remoteAuthMode: state.remoteAuthMode,
           remoteUrl: coerceRemoteUrlScheme(state.remoteUrl),
           sshHost: state.sshHost.trim(),
-          sshUser: state.sshUser.trim() || undefined,
+          // Send an explicit '' for cleared fields. Main merges with `??`, so
+          // `undefined` means "inherit the saved value" and a cleared Identity
+          // file (or User) could never be removed once saved: the form kept
+          // refilling the stale path, and the stale key path made the v1 SSH
+          // route's identity differ from the registered gateway's, leaving
+          // the window unscoped.
+          sshUser: state.sshUser.trim(),
           sshPort: state.sshPort,
-          sshKeyPath: state.sshKeyPath.trim() || undefined,
+          sshKeyPath: state.sshKeyPath.trim(),
           sshRemoteHermesPath: state.sshRemoteHermesPath.trim(),
           // A blank clears an existing remote-profile mapping.
           sshRemoteProfile: state.sshRemoteProfile.trim()

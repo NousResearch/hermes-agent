@@ -2118,9 +2118,13 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
+        # pythonw/console-less backend startup reaches this probe; powershell.exe is a
+        # console-subsystem binary and would flash a window per spawn (#117781).
+        from hermes_cli._subprocess_compat import windows_hide_flags
         result = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None

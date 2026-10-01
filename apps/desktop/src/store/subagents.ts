@@ -397,6 +397,20 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   setSessionSubagents(sid, list, nextList)
 }
 
+// Statuses that end a subagent run. The store's asStatus normalizes the last
+// three to failed/interrupted, so the event path treats them as terminal too.
+const SUBAGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'interrupted', 'timeout', 'error', 'cancelled', 'canceled'])
+
+/** True only for a `subagent.complete` carrying a status that ends the run —
+ *  the one event the interrupted-session guard in the message-stream must let
+ *  through (#75505). */
+export const isTerminalSubagentCompletion = (
+  eventType: string,
+  payload: Record<string, unknown> | undefined | null
+): boolean =>
+  eventType === 'subagent.complete' &&
+  SUBAGENT_TERMINAL_STATUSES.has(typeof payload?.status === 'string' ? payload.status : '')
+
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {
   const nodes = new Map<string, SubagentNode>()
 
@@ -427,6 +441,20 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'queued' || item.status === 'running').length
+
+/** Spawn-tree panel scope (#75505): running/queued rows from EVERY session —
+ *  cross-session visibility is the point, a background session's live work
+ *  must stay visible — but terminal rows only for the session the user is in.
+ *  The status-bar indicator counts the same way, so the count and the tree it
+ *  opens can never disagree, while finished history from inactive sessions
+ *  stops accumulating forever. */
+export const subagentsForPanel = (
+  bySession: Record<string, SubagentProgress[]>,
+  activeSessionId: string | null
+): SubagentProgress[] =>
+  Object.entries(bySession).flatMap(([sid, items]) =>
+    sid === activeSessionId ? items : items.filter(item => item.status === 'running' || item.status === 'queued')
+  )
 
 export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'failed' || item.status === 'interrupted').length

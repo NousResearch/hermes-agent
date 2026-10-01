@@ -58,6 +58,7 @@ const REMOTE_PROBE_TIMEOUT_SECS = 15
 const DEFAULT_TUNNEL_RESTART_LIMIT = 5
 const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
+const CONTROL_FORWARD_KEEPALIVE_MS = Math.min(60_000, Math.floor((CONTROL_PERSIST_SECONDS * 1_000) / 2))
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
@@ -257,7 +258,15 @@ function baseSshOptions(controlPath, connectTimeoutMs?) {
     '-o',
     'ExitOnForwardFailure=yes',
     '-o',
-    `ConnectTimeout=${connectSecs}`
+    `ConnectTimeout=${connectSecs}`,
+    // Keepalive: send a message every 15s, drop after 3 missed replies (45s)
+    // so NAT/firewall timeouts don't silently kill an idle connection.
+    '-o',
+    'ServerAliveInterval=15',
+    '-o',
+    'ServerAliveCountMax=3',
+    '-o',
+    'TCPKeepAlive=yes'
   ]
 }
 
@@ -396,6 +405,7 @@ function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
 const SSH_ERROR = {
   UNREACHABLE: 'unreachable',
   AUTH_FAILED: 'auth-failed',
+  INTERACTIVE_AUTH: 'interactive-auth',
   HOST_KEY_CHANGED: 'host-key-changed',
   TIMEOUT: 'timeout',
   UNKNOWN: 'unknown'
@@ -412,6 +422,12 @@ function classifySshError(stderr) {
     )
   ) {
     return SSH_ERROR.HOST_KEY_CHANGED
+  }
+
+  if (
+    /Tailscale SSH requires an additional check|To authenticate, visit:\s*https:\/\/login\.tailscale\.com\//i.test(text)
+  ) {
+    return SSH_ERROR.INTERACTIVE_AUTH
   }
 
   if (
@@ -452,6 +468,16 @@ function sshErrorMessage(kind, conn, stderr?) {
         `ssh-agent first (e.g. \`ssh-add ~/.ssh/id_ed25519\`), or set an IdentityFile in ` +
         `~/.ssh/config. Original error: ${String(stderr || '').trim()}`
       )
+    case SSH_ERROR.INTERACTIVE_AUTH: {
+      const portArg = conn.port && conn.port !== 22 ? ` -p ${conn.port}` : ''
+
+      return (
+        `Tailscale SSH requires an interactive browser check for ${host}. ` +
+        `Hermes Desktop runs SSH non-interactively. In Terminal, run ` +
+        `\`ssh${portArg} ${host} true\`, complete the browser check, then retry. ` +
+        `If checks recur, use a key-authenticated OpenSSH route or adjust the tailnet SSH check policy.`
+      )
+    }
 
     case SSH_ERROR.UNREACHABLE:
       return `Could not reach ${host} over SSH. Check the host, port, and your network. Original error: ${String(stderr || '').trim()}`
@@ -468,8 +494,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
 // (null on a normal exit). On timeout the child is SIGKILLed and the promise
-// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
-function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests; `command`
+// is the ssh client binary (resolveSshBinary; bare `ssh` by default).
+function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const error: any = new Error('SSH operation was cancelled.')
@@ -483,7 +510,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
     let child
 
     try {
-      child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn(command, args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     } catch (error) {
       reject(error)
 
@@ -513,6 +540,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
 
       const err: any = new Error(`ssh timed out after ${timeoutMs}ms`)
       err.kind = SSH_ERROR.TIMEOUT
+      // Keep only a safe classification of buffered stderr. Tailscale's
+      // browser-check line carries a one-time URL that must not escape through
+      // Desktop errors or lifecycle logs.
+      err.stderrKind = classifySshError(stderr)
       signal?.removeEventListener('abort', onAbort)
       reject(err)
     }, timeoutMs)
@@ -641,6 +672,8 @@ class SshConnection {
   port: number
   keyPath: string
   controlPath: string
+  /** ssh client binary every spawn uses (resolveSshBinary; bare `ssh` by default). */
+  sshBinary: string
   _spawnFn: any
   _log: (msg: string) => void
   _connectTimeoutMs: number
@@ -652,6 +685,8 @@ class SshConnection {
   _mux: boolean
   _tunnels: Map<string, any>
   _controlMasters: ControlMasterHolders
+  _forwardedSpecs: Set<string>
+  _controlKeepaliveTimer: ReturnType<typeof setInterval> | null
 
   constructor(cfg, opts: any = {}) {
     if (!cfg || !cfg.host) {
@@ -684,8 +719,10 @@ class SshConnection {
       : ''
     this._tunnels = new Map()
     this._controlMasters = opts.controlMasterHolders || sharedControlMasterHolders
+    this._forwardedSpecs = new Set()
 
     this._spawnFn = opts.spawnFn || spawn
+    this.sshBinary = opts.sshBinary || 'ssh'
 
     this._log = typeof opts.rememberLog === 'function' ? opts.rememberLog : () => {}
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
@@ -693,6 +730,7 @@ class SshConnection {
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
     this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
+    this._controlKeepaliveTimer = null
     this._opened = false
   }
 
@@ -707,8 +745,11 @@ class SshConnection {
     }
 
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
-      const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
-      err.kind = SSH_ERROR.TIMEOUT
+      const kind =
+        stderrOrErr.stderrKind === SSH_ERROR.INTERACTIVE_AUTH ? SSH_ERROR.INTERACTIVE_AUTH : SSH_ERROR.TIMEOUT
+
+      const err: any = new Error(sshErrorMessage(kind, this))
+      err.kind = kind
 
       return err
     }
@@ -825,6 +866,7 @@ class SshConnection {
         result = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
           timeoutMs: this._connectTimeoutMs,
           spawnFn: this._spawnFn,
+          command: this.sshBinary,
           signal
         })
       } catch (error) {
@@ -846,7 +888,12 @@ class SshConnection {
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
+      result = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary,
+        signal
+      })
     } catch (error) {
       throw this._connectFailed(error)
     }
@@ -871,7 +918,12 @@ class SshConnection {
       : buildExecArgs(this, 'exit 0', this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
+      const result: any = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary,
+        signal
+      })
 
       return sshCloseOk(result)
     } catch (error: any) {
@@ -883,6 +935,32 @@ class SshConnection {
     }
   }
 
+  // `ssh -O forward` does not keep a ControlPersist master busy by itself.
+  // Refresh the mux while Desktop owns local forwards so the 300s idle timer
+  // cannot silently remove their listener sockets. The finite persist timeout
+  // still cleans up an orphaned master if Desktop crashes.
+  _startControlKeepalive() {
+    if (!this._mux || this._controlKeepaliveTimer || this._forwardedSpecs.size === 0) {
+      return
+    }
+
+    this._controlKeepaliveTimer = setInterval(() => {
+      // Remote liveness owns reconnect/teardown. Keep refreshing through a
+      // transient failed check rather than turning one timeout into expiry.
+      void this.isAlive()
+    }, CONTROL_FORWARD_KEEPALIVE_MS)
+    this._controlKeepaliveTimer.unref?.()
+  }
+
+  _stopControlKeepalive() {
+    if (!this._controlKeepaliveTimer) {
+      return
+    }
+
+    clearInterval(this._controlKeepaliveTimer)
+    this._controlKeepaliveTimer = null
+  }
+
   // A real exec through the master (`exit 0` works under POSIX shells and
   // cmd.exe); a wedged mux hangs to the timeout.
   async _verifyMuxChannel({ signal }: any = {}) {
@@ -890,6 +968,7 @@ class SshConnection {
       const result: any = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
         spawnFn: this._spawnFn,
+        command: this.sshBinary,
         signal
       })
 
@@ -911,7 +990,8 @@ class SshConnection {
     try {
       await runSsh(buildControlArgs(this, 'exit', [], this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
-        spawnFn: this._spawnFn
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
       })
     } catch {
       void 0
@@ -936,6 +1016,7 @@ class SshConnection {
       result = await runSsh(args, {
         timeoutMs: timeoutMs ?? this._execTimeoutMs,
         spawnFn: this._spawnFn,
+        command: this.sshBinary,
         ...(stdinData != null ? { stdinData } : {})
       })
     } catch (error) {
@@ -959,7 +1040,7 @@ class SshConnection {
   // cascaded into SIGTERM of a healthy backend (#96266).
   _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
     return new Promise<void>((resolve, reject) => {
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn(this.sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
       tunnel.child = child
       let stderr = ''
       let readyConfirmed = false
@@ -1131,7 +1212,11 @@ class SshConnection {
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+      result = await runSsh(args, {
+        timeoutMs: this._forwardTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
+      })
     } catch (error) {
       throw this._fail(error)
     }
@@ -1139,6 +1224,9 @@ class SshConnection {
     if (!sshCloseOk(result)) {
       throw this._fail(result)
     }
+
+    this._forwardedSpecs.add(spec)
+    this._startControlKeepalive()
   }
 
   // Cancel a previously-established forward. Best-effort: a failure here is
@@ -1169,10 +1257,16 @@ class SshConnection {
     const args = buildControlArgs(this, 'cancel', ['-L', spec], this._connectTimeoutMs)
 
     try {
-      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn, command: this.sshBinary })
       this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
     } catch (error: any) {
       this._logLine(`cancelForward failed (ignored): ${error.message}`)
+    } finally {
+      this._forwardedSpecs.delete(spec)
+
+      if (this._forwardedSpecs.size === 0) {
+        this._stopControlKeepalive()
+      }
     }
   }
 
@@ -1181,6 +1275,8 @@ class SshConnection {
   // this connection's claim (#97264). No-mux: kill the tunnel children.
   // Best-effort; never throws.
   async close() {
+    this._stopControlKeepalive()
+    this._forwardedSpecs.clear()
     const action = this._mux ? this._controlMasters.release(this.controlPath, this) : 'exit-master'
 
     if (!this._opened) {
@@ -1219,7 +1315,11 @@ class SshConnection {
     const args = buildControlArgs(this, 'exit', [], this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
+      const result: any = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
+      })
 
       if (!sshCloseOk(result)) {
         throw this._fail(result)
@@ -1282,6 +1382,7 @@ export {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_FORWARD_KEEPALIVE_MS,
   CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,

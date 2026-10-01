@@ -68,7 +68,10 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
 def _load_durable_truncation_history(
     session: dict, fallback_sid: str = "", repair_alternation: bool = True):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
-    session_key = str(session.get("session_key") or fallback_sid or "")
+    # Same stale-key hazard as the submit row and the out-of-band probe: a compression rotation moves the
+    # live tip off session_key, and this is the load every adoption path replays from — reading the parent
+    # returns a transcript without the continuation (#123545).
+    session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
     try:
@@ -97,12 +100,20 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     """
     if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
         return hit
-    db_history = _load_durable_truncation_history(session)
+    # Identity lookups read the UN-REPAIRED transcript: repair merges any user;user run
+    # into its first row (a model-switch marker run, or an interrupted turn that persisted
+    # no assistant row followed by a resend), and the merged row keeps only the first
+    # row's _row_id — the absorbed rows' ids vanish from the repaired view, so resolving
+    # against it fails closed on rows that are physically present (#94486's live-session
+    # shape). Resolution must read the physical rows, the same discipline the rebind path
+    # applies below for the active-id set.
+    db_history = _load_durable_truncation_history(session, repair_alternation=False)
     if db_history is None:
         return None
-    # Heal missing stamps only when EVERY pair agrees: the durable copy is alternation-
-    # repaired while the live list can carry optimistic/marker rows, and a stamp on a
-    # misaligned pair is sticky (re-aims every later rewind at the wrong durable row).
+    # Heal missing stamps only when EVERY pair agrees: the live list can carry
+    # optimistic/marker rows while the durable copy is physical, and the two can coincide
+    # in length while position-shifted; a stamp on a misaligned pair is sticky (re-aims
+    # every later rewind at the wrong durable row).
     if len(db_history) == len(history) and all(
             _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
         for mem, db_msg in zip(history, db_history):
@@ -114,8 +125,10 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
         return None
     db_ord, db_idx = db_hit
     mem_user_indices = _history_user_indices(history)
-    # Same-ordinal mapping across lists that can diverge (repair may merge a user;user
-    # pair): trust it only when the mapped live turn shows the durable target's content.
+    # Same-ordinal mapping across lists that can still diverge (the live list itself may
+    # have been materialized from a repaired, merged view on resume, shifting every later
+    # user ordinal relative to the physical rows): trust the mapping only when the mapped
+    # live turn shows the same content as the durable target.
     if db_ord >= len(mem_user_indices) or not _mem_db_pair_agrees(
             history[mem_user_indices[db_ord]], db_history[db_idx]):
         return None
@@ -1020,7 +1033,8 @@ def _(rid, params: dict) -> dict:
     if not request_id or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
     answer = params.get("answer", "")
-    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if answer is not None and not isinstance(answer, str):
+        answer = json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
     from tui_gateway import server_requests

@@ -856,6 +856,9 @@ class CLICommandsMixin:
         if restore_quick_snapshot(snap_id):
             _pr(f"  {_t('snapshot.restored', snapshot_id=snap_id)}",
                 f"  {_t('snapshot.restart_recommended')}")
+        elif snap_id in {s.get("id") for s in list_quick_snapshots(limit=10**6)}:
+            # False also means the auth.json merge was refused; don't call an existing snapshot missing.
+            print(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}")
         else:
             print(f"  {_t('snapshot.not_found', snapshot_id=snap_id)}")
 

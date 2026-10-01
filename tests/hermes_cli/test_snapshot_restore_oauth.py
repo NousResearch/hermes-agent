@@ -87,7 +87,7 @@ def test_quick_snapshot_restore_keeps_live_oauth_and_restores_static_auth(
         assert (home / "auth.json").stat().st_mode & 0o777 == 0o600
 
 
-def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypatch):
+def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypatch, capsys):
     """A partial restore must not report success after refusing the auth store (#127010)."""
     from hermes_cli.backup import restore_quick_snapshot
 
@@ -103,10 +103,22 @@ def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypat
     (snap_dir / "config.yaml").write_text("model: snapshot\n", encoding="utf-8")
     (snap_dir / "auth.json").write_text("{invalid-json", encoding="utf-8")
     files = {name: (snap_dir / name).stat().st_size for name in ("auth.json", "config.yaml")}
-    (snap_dir / "manifest.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+    (snap_dir / "manifest.json").write_text(json.dumps({"id": "partial", "files": files}), encoding="utf-8")
 
     result = restore_quick_snapshot("partial", hermes_home=home)
 
     assert live_path.read_bytes() == before
     assert (home / "config.yaml").read_text(encoding="utf-8") == "model: snapshot\n"
     assert result is False
+
+    # The /snapshot restore caller must not report an existing snapshot as missing.
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    capsys.readouterr()
+    CLICommandsMixin._snapshot_restore(SimpleNamespace(), ["/snapshot", "restore", "partial"])
+    out = capsys.readouterr().out
+    assert "partial" in out and "auth.json" in out
+    assert "not found" not in out.lower()
+    assert live_path.read_bytes() == before

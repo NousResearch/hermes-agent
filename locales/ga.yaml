@@ -2721,6 +2721,7 @@ cli:
       restored: "Staid aischurtha ó: {snapshot_id}"
       restart_recommended: "Moltar atosú do phróisis gateway/deais chun athruithe state.db a ghlacadh."
       not_found: "Níor aimsíodh an roghchóip: {snapshot_id}"
+      restore_incomplete: "Athchóiríodh an roghchóip {snapshot_id} go páirteach: diúltaíodh auth.json (féach na logaí)"
       usage_prune: "Úsáid: /snapshot prune [keep-count]"
       pruned: "Baineadh {deleted} seanroghchóip(eanna) (ag coinneáil {keep})."
     export:

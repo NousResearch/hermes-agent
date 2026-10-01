@@ -167,20 +167,21 @@ def test_closing_claim_does_not_take_over_a_detached_runtimes_lease(turn_env, mo
     holder = _session(agent=_built_agent([]), transport=server._detached_ws_transport)
     turn_env.append(holder)
     server._sessions["holder-sid"] = holder
-    assert server._ensure_active_session_slot("holder-sid", holder) is None
+    ensure_slot = getattr(server, "_ensure_active_session_slot")
+    assert ensure_slot("holder-sid", holder) is None
     held = holder["active_session_lease"]
 
     session = _session()
     turn_env.append(session)
     server._sessions[SID] = session
-    claim = server._claim_active_session_slot
+    claim = getattr(server, "_claim_active_session_slot")
 
     def _close_then_claim(*args, **kwargs):
         assert _rpc("session.close")["result"]["closed"] is True
         return claim(*args, **kwargs)
 
     monkeypatch.setattr(server, "_claim_active_session_slot", _close_then_claim)
-    refusal = server._ensure_active_session_slot(SID, session)
+    refusal = ensure_slot(SID, session)
     monkeypatch.setattr(server, "_claim_active_session_slot", claim)
 
     server._sessions.pop("holder-sid", None)

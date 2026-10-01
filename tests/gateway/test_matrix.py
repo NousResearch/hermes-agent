@@ -1544,19 +1544,16 @@ async def test_context_preserves_user_quotes_and_removes_reply_fallbacks(
         entry = await cache.resolve(client, "!room", "$parent")
     else:
         client.get_event = AsyncMock(side_effect=RuntimeError("root unavailable"))
-        client.api.request = AsyncMock(
-            return_value={
-                "chunk": [
-                    {
-                        "event_id": "$parent",
-                        "sender": "@alice:example.org",
-                        "content": content,
-                    }
-                ]
-            }
-        )
+        content["m.relates_to"] = {"rel_type": "m.thread", "event_id": "$root"}
+        client.api.request = AsyncMock(side_effect=[
+            {"start": "trigger-boundary"},
+            {"start": "messages-boundary", "chunk": []},
+            {"chunk": [{"event_id": "$parent", "sender": "@alice:example.org",
+                        "content": content}]},
+        ])
         [entry] = await fetch_thread_entries(
-            client, cache, "!room", "$root", limit=10, exclude_event_ids=["$root"]
+            client, cache, "!room", "$root", limit=10, before_event_id="$trigger",
+            exclude_event_ids=["$root"],
         )
     assert entry == MatrixEventContext("@alice:example.org", expected)
 

@@ -235,29 +235,43 @@ export function ChatSidebar({
     // the counter; unmount or a scope switch (version bump) cancels the
     // pending timer because this effect tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
-    // onState replays the current state synchronously. Ignore that snapshot:
-    // after a redial bumps `version`, the previous client is closed during
-    // effect cleanup, and replaying `closed` here would schedule a second
-    // redial for the newly-created client. Only state changes observed after
-    // subscription should consume the retry budget.
-    let hasObservedState = false;
+    let healthyOpenTimer: ReturnType<typeof setTimeout> | null = null;
+    // onState replays the current state synchronously. Ignore only that
+    // subscription-time snapshot; real transitions in the same effect must
+    // still consume the retry budget.
+    let replayingInitialState = true;
+    queueMicrotask(() => {
+      replayingInitialState = false;
+    });
     const offRedial = gw.onState((s) => {
-      if (!hasObservedState) {
-        hasObservedState = true;
+      if (replayingInitialState) {
         return;
       }
       if (s === "open") {
-        sidecarRedialAttemptRef.current = 0;
-        if (sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = false;
-          setError((current) =>
-            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
-          );
+        if (healthyOpenTimer) {
+          clearTimeout(healthyOpenTimer);
         }
+        // Do not reset the budget on every open: an open→immediate-close
+        // cycle would otherwise reset it forever. Reset only after a stable
+        // connection has remained open for the grace period.
+        healthyOpenTimer = setTimeout(() => {
+          healthyOpenTimer = null;
+          sidecarRedialAttemptRef.current = 0;
+          if (sidecarGaveUpRef.current) {
+            sidecarGaveUpRef.current = false;
+            setError((current: string | null) =>
+              current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+            );
+          }
+        }, 10_000);
         return;
       }
       if (s !== "closed" && s !== "error") {
         return;
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer);
+        healthyOpenTimer = null;
       }
       if (cancelled || redialTimer) {
         return;
@@ -312,6 +326,10 @@ export function ChatSidebar({
       if (redialTimer) {
         clearTimeout(redialTimer)
         redialTimer = null
+      }
+      if (healthyOpenTimer) {
+        clearTimeout(healthyOpenTimer)
+        healthyOpenTimer = null
       }
       offRedial()
       offState()

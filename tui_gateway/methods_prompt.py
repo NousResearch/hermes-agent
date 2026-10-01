@@ -801,11 +801,8 @@ def _client_message_ack(session: dict, client_message_id: str | None) -> dict | 
             return None
     if not isinstance(row, dict):
         return None
-    # The never-drained marker (#125577) is exactly "accepted into the busy queue, not yet run".
-    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
-    metadata = row.get("display_metadata") if isinstance(row.get("display_metadata"), dict) else {}
     return _submit_ack(
-        "queued" if metadata.get(QUEUED_PROMPT_METADATA_KEY) else "streaming", client_message_id,
+        "streaming", client_message_id,
         user_timestamp=float(row["timestamp"]) if isinstance(row.get("timestamp"), (int, float)) else None,
         user_row_id=row["_row_id"] if isinstance(row.get("_row_id"), int) else None)
 

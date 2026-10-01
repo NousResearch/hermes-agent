@@ -1,6 +1,6 @@
 """External message identity lookups for SessionDB (platform message ids, gateway input owners, client
-message ids). Mixin bound via the MRO, built on SessionDB's _read_one / _resume_lineage_ids /
-_decode_display_metadata primitives."""
+message ids). Mixin bound via the MRO, built on SessionDB's _read_one / _resume_lineage_ids
+primitives."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class SessionMessageIdentityMixin:
         if not session_ids or not client_message_id:
             return None
         row = self._read_one(
-            f"SELECT id, timestamp, display_metadata FROM messages "
+            f"SELECT id, timestamp FROM messages "
             f"WHERE session_id IN ({_placeholders(session_ids)}) AND role = 'user' "
             "AND (active = 1 OR compacted = 1) "
             f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) != 1 "
@@ -54,8 +54,4 @@ class SessionMessageIdentityMixin:
         )
         if row is None:
             return None
-        return {
-            "_row_id": row["id"],
-            "timestamp": row["timestamp"],
-            "display_metadata": self._decode_display_metadata(row["display_metadata"]) or {},
-        }
+        return {"_row_id": row["id"], "timestamp": row["timestamp"]}

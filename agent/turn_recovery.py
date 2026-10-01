@@ -1318,7 +1318,8 @@ def abort_turn_on_interrupt(
     _vlines(agent, f"⚡ {abort_message}")
     # Empty-response recovery can leave a synthetic assistant+nudge pair after an
     # already-executed tool result. Strip only that request-local scaffold before
-    # closing, so this exit owner can persist its specific interrupt reason.
+    # closing, so this exit owner persists its specific interrupt reason on the real
+    # tool tail rather than the scaffold.
     agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)

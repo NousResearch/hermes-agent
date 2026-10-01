@@ -2071,6 +2071,38 @@ class TestCronDeliveryMirror:
         assert args[2].startswith("[Cron delivery: Morning Brief]")
         assert "Market movers today" in args[2]
 
+    def test_wrapper_is_opt_in(self, tmp_path):
+        """Fork default sends clean output; cron.wrap_response: true restores the wrapper."""
+        from gateway.config import Platform
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {
+            "id": "test-job",
+            "name": "daily-report",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        for config_text, wrapped in (("{}\n", False), ("cron:\n  wrap_response: true\n", True)):
+            (tmp_path / "config.yaml").write_text(config_text)
+            token = set_hermes_home_override(tmp_path)
+            try:
+                with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                     patch("tools.send_message_tool._send_to_platform",
+                           new=AsyncMock(return_value={"success": True})) as send_mock:
+                    _deliver_result(job, "Here is today's summary.")
+            finally:
+                reset_hermes_home_override(token)
+
+            sent = send_mock.call_args[0][3]
+            assert ("Cronjob Response: daily-report" in sent) is wrapped
+            assert ("To stop or manage this job" in sent) is wrapped
+            assert "Here is today's summary." in sent
+
     def test_delivery_mirrors_clean_content_not_wrapped(self):
         """When enabled, the mirror receives the CLEAN agent output, not the
         cron header/footer-wrapped delivery text."""

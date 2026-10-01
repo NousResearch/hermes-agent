@@ -1941,12 +1941,12 @@ def _deliver_result(
 
     from gateway.config import load_gateway_config
 
-    # Wrap with header/footer unless cron.wrap_response: false.
-    wrap_response = True
+    # Wrap with header/footer only when cron.wrap_response: true.
+    wrap_response = False
     user_cfg = None
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        wrap_response = user_cfg.get("cron", {}).get("wrap_response", False)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);

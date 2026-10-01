@@ -92,7 +92,7 @@ Each messaging platform bot needs specific permissions to receive messages. If d
 
 ### Check 4: Response wrapping
 
-By default, cron responses are wrapped with a header and footer (`cron.wrap_response: true` in `config.yaml`). Some platforms or integrations may not handle this well. To disable:
+Cron responses are delivered without a header or footer by default. If you set `cron.wrap_response: true`, some platforms or integrations may not handle the wrapper well. To disable it:
 
 ```yaml
 cron:

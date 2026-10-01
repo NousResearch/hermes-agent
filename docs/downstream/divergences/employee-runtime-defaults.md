@@ -7,8 +7,8 @@
 ## Downstream intent
 
 Default to quiet Telegram delivery, medium reasoning, 85% compression with three
-real user messages retained, approvals off, no restart/transcript echoes, and
-local transcription. Explicit operator preferences still win. An unrelated cloud
+real user messages retained, approvals off, no restart/transcript echoes, unwrapped
+cron deliveries, and local transcription. Explicit operator preferences still win. An unrelated cloud
 key must never make the default local transcription upload audio.
 
 ## Reconciliation
@@ -20,6 +20,6 @@ exception that treats a default local selection as cloud autodetection.
 
 ## Validation
 
-Run `tests/hermes_cli/test_employee_runtime_defaults.py`, gateway display/config,
+Run `tests/hermes_cli/test_employee_runtime_defaults.py`, cron delivery wrapping, gateway display/config,
 compression-default and transcription tests through `scripts/run_tests.sh`.
 Exercise defaults and explicit overrides across profiles A → B → A.

@@ -630,23 +630,24 @@ This applies only to cron deliveries. `TELEGRAM_HOME_CHANNEL_THREAD_ID` (used el
 
 ### Response wrapping
 
-By default, delivered cron output is wrapped with a header and footer so the recipient knows it came from a scheduled task:
-
-```
-Cronjob Response: Morning feeds
--------------
-
-<agent output here>
-
-Note: The agent cannot see this message, and therefore cannot respond to it.
-```
-
-To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
+By default, delivered cron output is sent as-is. To wrap it with a header and footer so the recipient knows it came from a scheduled task, set `cron.wrap_response` to `true`:
 
 ```yaml
 # ~/.hermes/config.yaml
 cron:
-  wrap_response: false
+  wrap_response: true
+```
+
+Wrapped output looks like this:
+
+```
+Cronjob Response: Morning feeds
+(job_id: abc123)
+-------------
+
+<agent output here>
+
+To stop or manage this job, send me a new message (e.g. "stop reminder Morning feeds").
 ```
 
 ### Push notifications (`cron.delivery.notify`)

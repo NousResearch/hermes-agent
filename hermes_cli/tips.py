@@ -110,7 +110,7 @@ TIPS = [
     "Set browser.record_sessions: true to auto-record browser sessions as WebM videos.",
     "Set worktree: true in config.yaml to always create a git worktree (same as hermes -w).",
     "Set security.website_blocklist.enabled: true to block specific domains from web tools.",
-    "Set cron.wrap_response: false to deliver raw agent output without the cron header/footer.",
+    "Set cron.wrap_response: true to add a job-name header and footer to cron deliveries.",
     "HERMES_TIMEZONE overrides the server timezone with any IANA timezone string.",
     "Environment variable substitution works in config.yaml: use ${VAR_NAME} syntax.",
     "Quick commands in config.yaml run shell commands instantly with zero token usage.",

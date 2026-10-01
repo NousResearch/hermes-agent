@@ -1472,7 +1472,7 @@ class GatewayTurnMixin(GatewayQueuedFollowupMixin, GatewayPendingDrainMixin):
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the event time and keep transport notes out of the persisted user message."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
-        from gateway.run_inbound import strip_inbound_source_note
+        from gateway.run_inbound_context import strip_inbound_source_note
         persist_user_message = None
         persist_user_timestamp = None
         try:

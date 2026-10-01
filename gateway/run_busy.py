@@ -134,6 +134,9 @@ class GatewayBusySessionMixin:
                 pending_slot[session_key] = earlier
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
+        elif overflow := self._overflow_queue(session_key):
+            pending_slot[session_key] = overflow.pop(0)
+            overflow.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True

@@ -6,16 +6,34 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from gateway.platforms.base import SendResult
-
-if TYPE_CHECKING:
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.send_retry import MatrixSendRetryMixin
 
 logger = logging.getLogger("plugins.platforms.matrix.adapter")
 
 
-class MatrixMediaUploadMixin:
+class MatrixMediaUploadMixin(MatrixSendRetryMixin):
+    if TYPE_CHECKING:
+        from plugins.platforms.matrix.delivery import MatrixSendTarget
+
+        _max_media_bytes: int
+
+        def _media_too_large(self, size: int) -> SendResult: ...
+
+        async def _resolve_send_destination(
+            self, chat_id: str, metadata: Dict[str, Any] | None, *, upload: bool,
+        ) -> MatrixSendTarget: ...
+
+        async def _check_room_encryption(self, room_id: str) -> bool: ...
+
+        async def _synced_room_encryption(self, room_id: str) -> bool | None: ...
+
+        def _apply_relation_metadata(
+            self, room_id: str, msg_content: Dict[str, Any], *,
+            reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        ) -> None: ...
+
     async def _upload_and_send(
-        self: MatrixAdapter, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
+        self, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
         caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
         is_voice: bool = False, voice_metadata: Optional[dict[str, Any]] = None) -> SendResult:
         from .adapter import asyncio

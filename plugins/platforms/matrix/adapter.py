@@ -1548,17 +1548,6 @@ class MatrixAdapter(MatrixMediaUploadMixin, MatrixSendRetryMixin, MatrixDelivery
                           continuation_message_ids=tuple(event_ids[:-1]))
 
 
-
-
-
-
-
-
-
-
-
-
-
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
         no create-thread API: a thread is the events whose ``m.relates_to``/``rel_type: m.thread``

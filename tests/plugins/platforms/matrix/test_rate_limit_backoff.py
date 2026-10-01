@@ -1,13 +1,7 @@
-"""Matrix homeserver rate limiting (429/M_LIMIT_EXCEEDED) must be retried with backoff (#126493).
-
-Approval-gated commands burst ``send``/``redact``/reaction calls; on a public homeserver
-(matrix.org) that trip-wires ``M_LIMIT_EXCEEDED`` and the adapter used to fail the send
-outright, so the reaction-based approval prompt never reached the user and the fallback
-plain-text message raced the 60s approval timeout. Every outbound path used by a prompt
-(``_send_room_message``, ``_send_reaction``, ``redact_message``) now retries 429s with
-capped exponential backoff; other Matrix errors still fail immediately."""
+"""Rate-limited Matrix writes retry without changing payloads (#126493)."""
 
 import asyncio
+from copy import deepcopy
 
 import pytest
 from mautrix.errors.request import MForbidden, MLimitExceeded, MatrixStandardRequestError
@@ -30,15 +24,19 @@ class _FlakyClient:
         self.exc_factory = exc_factory
         self.send_calls = 0
         self.redact_calls = 0
+        self.send_payloads = []
+        self.redact_payloads = []
 
     async def send_message_event(self, room_id, event_type, content):
         self.send_calls += 1
+        self.send_payloads.append((str(room_id), str(event_type), deepcopy(content)))
         if self.send_calls <= self.failures:
             raise self.exc_factory()
         return "$sent"
 
     async def redact(self, room_id, event_id, reason=None):
         self.redact_calls += 1
+        self.redact_payloads.append((str(room_id), str(event_id), reason))
         if self.redact_calls <= self.failures:
             raise self.exc_factory()
         return "$redacted"
@@ -60,36 +58,58 @@ def backoff_delays(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation, failures, error, expected", [
-    ("send", 2, "limit", (True, "$sent", 3, 0, [1.5, 3.0])),
-    ("send", 99, "limit", (False, None, 4, 0, [1.5, 3.0, 6.0])),
-    ("send", 99, "forbidden", (False, None, 1, 0, [])),
-    ("send", 1, "plain429", (True, "$sent", 2, 0, [1.5])),
-    ("redact", 1, "limit", (True, None, 0, 2, [1.5])),
-    ("reaction", 1, "limit", (True, "$sent", 2, 0, [1.5])),
+@pytest.mark.parametrize("operation", ["send", "reaction", "redact"])
+@pytest.mark.parametrize("error, failures, attempts, delays, success", [
+    ("limit", 2, 3, [1.5, 3.0], True),
+    ("plain429", 1, 2, [1.5], True),
+    ("limit", 99, 4, [1.5, 3.0, 6.0], False),
+    ("forbidden", 1, 1, [], False),
+    ("unknown", 1, 1, [], False),
+    ("cancelled", 1, 1, [], False),
 ])
-async def test_rate_limited_outbound_paths(operation, failures, error, expected, backoff_delays):
+async def test_rate_limited_outbound_paths(operation, error, failures, attempts, delays, success, backoff_delays):
     errors = {
         "limit": _limit_exceeded,
-        "forbidden": lambda: MForbidden(http_status=403, message="not for you"),
         "plain429": lambda: MatrixStandardRequestError(429, "Too Many Requests"),
+        "forbidden": lambda: MForbidden(http_status=403, message="not for you"),
+        "unknown": lambda: RuntimeError("connection lost"),
+        "cancelled": asyncio.CancelledError,
     }
     adapter = _make_adapter()
     adapter._client = _FlakyClient(failures, errors[error])
-    if operation == "send":
-        result = await adapter.send("!room:example.org", "hello")
-        expected_result = SendResult(
-            success=expected[0], message_id=expected[1],
-            error=f"Matrix target '!room:example.org': {errors[error]()}" if not expected[0] else None,
-        )
-    elif operation == "redact":
-        result = await adapter.redact_message("!room:example.org", "$evt")
-        expected_result = expected[0]
+    calls = {
+        "send": lambda: adapter.send("!room:example.org", "hello"),
+        "reaction": lambda: adapter._send_reaction("!room:example.org", "$evt", "\u2705"),
+        "redact": lambda: adapter.redact_message("!room:example.org", "$evt"),
+    }
+    if error == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await calls[operation]()
+        result = None
     else:
-        result = await adapter._send_reaction("!room:example.org", "$evt", "\u2705")
-        expected_result = expected[1]
-    assert (result, adapter._client.send_calls, adapter._client.redact_calls, backoff_delays) == (
-        expected_result, *expected[2:],
+        result = await calls[operation]()
+    expected_results = {
+        "send": SendResult(success=success, message_id="$sent" if success else None,
+                           error=f"Matrix target '!room:example.org': {errors[error]()}" if not success else None),
+        "reaction": "$sent" if success else None,
+        "redact": success,
+    }
+    expected_payloads = {
+        "send": ("!room:example.org", "m.room.message", {"msgtype": "m.text", "body": "hello"}),
+        "reaction": ("!room:example.org", "m.reaction", {
+            "m.relates_to": {"rel_type": "m.annotation", "event_id": "$evt", "key": "\u2705"},
+        }),
+    }
+    assert (
+        result, adapter._client.send_calls, adapter._client.redact_calls, backoff_delays,
+        adapter._client.send_payloads, adapter._client.redact_payloads,
+    ) == (
+        None if error == "cancelled" else expected_results[operation],
+        0 if operation == "redact" else attempts,
+        attempts if operation == "redact" else 0,
+        delays,
+        [] if operation == "redact" else [expected_payloads[operation]] * attempts,
+        [("!room:example.org", "$evt", None)] * attempts if operation == "redact" else [],
     )
 
 
@@ -103,7 +123,6 @@ async def test_rate_limited_outbound_paths(operation, failures, error, expected,
     ("unknown", 1, 1, [], False),
 ])
 async def test_media_upload_retries_only_rate_limited_content(msgtype, error, failures, attempts, delays, success, backoff_delays):
-    from copy import deepcopy
     from unittest.mock import AsyncMock
 
     errors = {

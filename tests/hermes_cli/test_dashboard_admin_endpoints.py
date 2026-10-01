@@ -104,6 +104,19 @@ class TestMcpEndpoints:
         assert "token: ${MCP_QUERY_SERVER_API_KEY}" in config_text
         assert f"MCP_QUERY_SERVER_API_KEY={secret}" in env_text
 
+    def test_embedded_query_secret_is_redacted_on_create_and_read(self):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        url = "https://example.test/mcp?TOKEN=saved-secret&foo=bar"
+        response = self.client.post("/api/mcp/servers", json={"name": "embedded-token", "url": url})
+        assert response.status_code == 200, response.text
+        assert "saved-secret" not in response.text
+        servers = self.client.get("/api/mcp/servers")
+        assert servers.status_code == 200
+        stored = next(server for server in servers.json()["servers"] if server["name"] == "embedded-token")
+        assert "saved-secret" not in stored["url"] and "foo=bar" in stored["url"]
+        assert _get_mcp_servers()["embedded-token"]["url"] == url
+
     def test_http_oauth_mode_is_persisted_for_existing_auth_flow(self):
         response = self.client.post(
             "/api/mcp/servers",

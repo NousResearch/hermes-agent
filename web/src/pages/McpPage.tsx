@@ -452,7 +452,7 @@ export default function McpPage() {
                       />
                       <p className="text-xs text-muted-foreground">
                         {httpAuth === "query"
-                          ? "Stored in this profile's .env and sent as a redacted ?token= query parameter."
+                          ? "Stored in this profile's .env; added as ?token= when connecting and hidden in the dashboard."
                           : "Stored in this profile's .env; config.yaml keeps only an environment-variable reference."}
                       </p>
                     </div>

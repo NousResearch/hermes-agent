@@ -49,3 +49,13 @@ def test_mcp_server_summary_handles_none_url():
     cfg = {"command": "npx"}
     summary = _mcp_server_summary("local", cfg)
     assert summary["url"] is None
+
+
+@pytest.mark.parametrize("url", ["http://[broken?token=secret", "https://[::1?api_key=secret"])
+def test_malformed_url_never_exposes_query_secrets(url):
+    from hermes_cli.web_server_mcp import _mcp_server_summary
+
+    config = {"url": url}
+    summary = _mcp_server_summary("windmill", config)
+    assert "secret" not in summary["url"]
+    assert config["url"] == url

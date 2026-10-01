@@ -659,7 +659,7 @@ export default function ProfileBuilderPage() {
                         />
                         <p className="text-xs text-muted-foreground">
                           {mcpDraft.httpAuth === "query"
-                            ? "Stored in the new profile's .env and sent as a redacted ?token= query parameter."
+                            ? "Stored in the new profile's .env; added as ?token= when connecting and hidden in the dashboard."
                             : "Stored in the new profile's .env; config.yaml keeps only an environment-variable reference."}
                         </p>
                       </div>

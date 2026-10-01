@@ -282,11 +282,9 @@ class MCPServerRunMixin:
         # Windmill-style MCP endpoints require ``?token=<token>``. Build the
         # effective URL once so validation, preflight and the SDK all see
         # the same request target.
-        _url_with_token = _errors._mcp_url_with_token(
-            config["url"], config.get("token"),
-        )
         try:
-            _errors._validate_remote_mcp_url(self.name, _url_with_token)
+            url = _errors._validate_remote_mcp_url(self.name, config.get("url"))
+            _url_with_token = _errors._mcp_url_with_token(url, config.get("token"))
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
@@ -310,7 +308,7 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
-    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "token", "transport")
 
     def _refresh_remote_config(self, config: dict) -> dict:
         """Before rebuilding a remote transport, re-read this server's definition from config.yaml and

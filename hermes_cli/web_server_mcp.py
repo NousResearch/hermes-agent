@@ -89,7 +89,7 @@ def _redact_mcp_url(url: Any) -> Any:
     try:
         scheme, netloc, path, query, fragment = urllib.parse.urlsplit(url)
     except (ValueError, TypeError):
-        return url
+        return "<invalid URL>"
     params = urllib.parse.parse_qsl(query, keep_blank_values=True)
     parts: list[str] = []
     for k, v in params:

@@ -16,6 +16,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
+from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -100,18 +101,18 @@ class A2ASecurityContext:
         return None
 
     def is_loopback_bind(self) -> bool:
-        """True when the resolved bind host is loopback."""
-        from agent.proxy_bypass import is_loopback_host
         return is_loopback_host(self.resolve_bind_host())
+
+    def dispatch_fails_closed(self) -> bool:
+        """Network-exposed token bind with no allow-list and no allow-all: refuse every peer."""
+        return not (self.allow_all_users or self.localhost_only() or self.trusted_peers or self.is_loopback_bind())
 
     def is_trusted_peer(self, identity: str) -> bool:
         """Fail closed on network-exposed binds with no allow-list; loopback
         binds without an allow-list stay open for backward compatibility."""
-        if self.allow_all_users or self.localhost_only():
-            return True
-        if not self.trusted_peers:
-            return self.is_loopback_bind()  # the misconfiguration is logged once in A2AAdapter.connect()
-        return identity in self.trusted_peers
+        if self.dispatch_fails_closed():
+            return False  # the misconfiguration is logged once in A2AAdapter.connect()
+        return self.allow_all_users or self.localhost_only() or not self.trusted_peers or identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:
         """HMAC-SHA256 hex over the sorted-key JSON body; "" when no secret."""

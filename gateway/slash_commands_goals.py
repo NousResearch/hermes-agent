@@ -4,9 +4,13 @@ Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
+
+if TYPE_CHECKING:
+    from gateway.config import Platform
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -29,6 +33,9 @@ def _mgr_call(prefix: str, fn, *args, errors=(RuntimeError, ValueError)):
 
 class GatewayGoalCommandsMixin:
     """Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review."""
+
+    if TYPE_CHECKING:
+        def _typed_command_prefix_for(self, platform: Platform) -> str: ...
 
     async def _handle_goal_command(self, event: MessageEvent) -> str:
         from hermes_cli.goal_command import dispatch_goal_command

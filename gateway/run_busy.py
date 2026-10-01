@@ -108,6 +108,7 @@ class GatewayBusySessionMixin:
         _delivery_adapter_for = GatewayRunner._delivery_adapter_for
         _session_key_for_source = GatewayRunner._session_key_for_source
 
+        def _typed_command_prefix_for(self, platform: Platform) -> str: ...
 
     async def _strict_session_current(
         self, event: MessageEvent, session_key: str, *, session_id: str | None = None,

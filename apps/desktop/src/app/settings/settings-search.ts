@@ -11,24 +11,6 @@ import type { DesktopConfigSection, SettingsView } from './types'
 
 export type CredentialSettingsView = 'settings' | 'tools'
 
-export const APPEARANCE_SETTING_IDS = {
-  appActions: 'appearance.app-actions',
-  backdrop: 'appearance.backdrop',
-  embeds: 'appearance.embeds',
-  hideCodeDiffs: 'appearance.hide-code-diffs',
-  hideThreadTimeline: 'appearance.hide-thread-timeline',
-  introSplash: 'appearance.intro-splash',
-  language: 'appearance.language',
-  minimizeToTray: 'appearance.minimize-to-tray',
-  textDirection: 'appearance.text-direction',
-  theme: 'appearance.theme',
-  toolView: 'appearance.tool-view',
-  interfaceMode: 'appearance.interface-mode',
-  translucency: 'appearance.translucency',
-  uiScale: 'appearance.ui-scale',
-  userBubble: 'appearance.user-bubble'
-} as const
-
 export interface SettingsSearchTarget {
   subpage?: string
   field?: string

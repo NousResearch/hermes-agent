@@ -3,9 +3,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Test harness drives the host's request scope, as a connection switch does.
+// eslint-disable-next-line no-restricted-imports
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 // Test harness supplies the host's locale registration, as plugin loading does.
 // eslint-disable-next-line no-restricted-imports
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
+// Test harness reads the host's toast stack.
+// eslint-disable-next-line no-restricted-imports
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { bindApi, taskKey } from './api'
 import { TaskDrawer } from './drawer'
@@ -68,6 +74,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setApiRequestConnection(null)
+  setApiRequestProfile(null)
+  clearNotifications()
+  vi.unstubAllGlobals()
   cleanup()
   client.clear()
   disposeApi()
@@ -84,6 +94,102 @@ function openDrawer() {
 }
 
 describe('task attachment compatibility', () => {
+  it('downloads the persisted attachment through its original remote owner', async () => {
+    const save = vi.fn().mockResolvedValue({ saved: true })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    setApiRequestConnection('remote-owner')
+    setApiRequestProfile('research')
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 42, filename: 'report.md', stored_path: '/persisted/attachments/report.md' }]
+    }
+    openDrawer()
+    const download = await screen.findByRole('button', { name: 'Download report.md' })
+    setApiRequestConnection('other-host')
+    setApiRequestProfile('other-profile')
+    fireEvent.click(download)
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        connectionId: 'remote-owner',
+        profile: 'research',
+        path: '/persisted/attachments/report.md',
+        suggestedName: 'report.md'
+      })
+    )
+    await waitFor(() => expect($notifications.get()[0]).toMatchObject({ kind: 'info', message: 'Saved' }))
+  })
+
+  it('keeps a local-backend attachment on this computer after switching to a remote', async () => {
+    const save = vi.fn().mockResolvedValue({ saved: true })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    setApiRequestConnection('local')
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 7, filename: 'notes.txt', stored_path: '/home/me/.hermes/kanban/notes.txt' }]
+    }
+    openDrawer()
+    const download = await screen.findByRole('button', { name: 'Download notes.txt' })
+    setApiRequestConnection('remote-host')
+    fireEvent.click(download)
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        connectionId: 'local',
+        path: '/home/me/.hermes/kanban/notes.txt',
+        suggestedName: 'notes.txt'
+      })
+    )
+  })
+
+  it('disables downloads with no persisted path instead of guessing a workspace path', async () => {
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download gone.md' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('reports a failed download and allows retry', async () => {
+    const save = vi.fn().mockRejectedValue(new Error('File not found'))
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md', stored_path: '/persisted/gone.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download gone.md' })
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect($notifications.get()[0]).toMatchObject({
+        kind: 'error',
+        message: 'File not found',
+        title: 'Download failed'
+      })
+    )
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    save.mockResolvedValueOnce({ saved: true })
+    fireEvent.click(button)
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+  })
+
+  it('disables a pending download and treats save-dialog cancellation quietly', async () => {
+    let finish!: (value: { saved: boolean; canceled: boolean }) => void
+
+    const save = vi.fn(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'report.md', stored_path: '/persisted/report.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download report.md' })
+    fireEvent.click(button)
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true))
+    fireEvent.click(button)
+    expect(save).toHaveBeenCalledOnce()
+    await act(async () => finish({ saved: false, canceled: true }))
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    expect($notifications.get()).toEqual([])
+  })
+
   it.each([{}, { attachments: null }])(
     'keeps older task details usable without attachment controls (%j)',
     async extra => {
@@ -248,5 +354,83 @@ describe('dependency chips resolve titles', () => {
 
     expect(await screen.findByText('parent')).toBeTruthy()
     expect(screen.getByText('child')).toBeTruthy()
+  })
+})
+
+// #124391: block_kind / block_recurrences / consecutive_failures /
+// last_failure_error arrive on every payload — the drawer must show them,
+// and a blocked task's diagnostic unblock action must PATCH the task ready.
+describe('blocked task detail', () => {
+  const blockedDetail = {
+    ...legacyDetail,
+    attachments: [] as [],
+    task: {
+      ...legacyDetail.task,
+      status: 'blocked',
+      block_kind: 'needs_input',
+      block_recurrences: 2,
+      consecutive_failures: 3,
+      last_failure_error: 'RuntimeError: boom',
+      diagnostics: [
+        {
+          kind: 'stuck_in_blocked',
+          severity: 'warning',
+          title: 'Parked in blocked',
+          detail: 'This task has been blocked for a while.',
+          actions: [{ kind: 'unblock', label: 'Unblock task' }],
+          count: 1,
+          last_seen_at: 0,
+          data: {}
+        }
+      ]
+    }
+  }
+
+  it('renders the block kind, recurrences, failures and last error the API returns', async () => {
+    detail = blockedDetail
+    openDrawer()
+
+    expect(await screen.findByText('needs_input')).toBeTruthy()
+    expect(screen.getByText('×2')).toBeTruthy()
+    expect(screen.getByText('3')).toBeTruthy()
+    expect(screen.getByText('RuntimeError: boom')).toBeTruthy()
+  })
+
+  it('hides block detail on legacy payloads and recovered tasks', async () => {
+    // Legacy payload: none of the four fields.
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+    await screen.findByRole('heading', { name: legacyDetail.task.title })
+    expect(screen.queryByText(en.blockReason)).toBeNull()
+    expect(screen.queryByText(en.consecutiveFailures)).toBeNull()
+    expect(screen.queryByText(en.lastFailureError)).toBeNull()
+    cleanup()
+  })
+
+  it('does not present a retained block kind as current after recovery', async () => {
+    // block_kind is retained across unblock — present but the task is no
+    // longer blocked, so it must not read as a current block reason.
+    detail = {
+      ...blockedDetail,
+      task: { ...blockedDetail.task, status: 'todo', consecutive_failures: 0, last_failure_error: null }
+    }
+    openDrawer()
+    await screen.findByRole('heading', { name: blockedDetail.task.title })
+    expect(screen.queryByText(en.blockReason)).toBeNull()
+    expect(screen.queryByText('needs_input')).toBeNull()
+  })
+
+  it('fires the diagnostic unblock action as a PATCH to ready', async () => {
+    detail = blockedDetail
+    openDrawer()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unblock task' }))
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(
+        '/tasks/t_example',
+        expect.objectContaining({ method: 'PATCH', body: { status: 'ready' } })
+      )
+    )
   })
 })

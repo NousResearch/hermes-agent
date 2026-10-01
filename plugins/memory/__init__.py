@@ -67,7 +67,7 @@ def _is_memory_provider_dir(path: Path) -> bool:
     try:
         if not init_file.exists():
             return False
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
@@ -463,7 +463,7 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
         return False
     names = {name, provider_dir.name}
     try:
-        import yaml
+        import hermes_yaml as yaml
         with open(provider_dir / "plugin.yaml", encoding="utf-8-sig") as f:
             names.add(str((yaml.safe_load(f) or {}).get("name") or ""))
     except Exception:

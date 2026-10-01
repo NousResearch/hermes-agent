@@ -18,6 +18,58 @@ const THINKING_PREFIX_RE =
 
 const URL_RE = /\bhttps?:\/\/\S+/gi
 
+// --- Identifier-dense tokens (#119207) --------------------------------------
+// Filenames with extensions, hashes, UUIDs, dense model/version IDs and paths
+// are read character-by-character ("peyton-sample-20260922.wav" becomes
+// "peyton dash sample dash two zero two six..."), making clean audio sound
+// corrupted. They become silence, never a hardcoded English placeholder word
+// (#86602: the reply may be in any language). Mirrored token-for-token by
+// tools/tts_text_normalize.py (`prune_identifier_tokens_for_tts`) — keep both
+// in lockstep and extend the shared corpus
+// (tests/fixtures/identifier_speech_corpus.json) first.
+const FILENAME_EXT_RE =
+  /[\w.-]{0,60}\.(?:wav|ogg|mp3|flac|m4a|aac|py|pyc|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|md|mdx|txt|csv|xlsx|xls|pdf|png|jpg|jpeg|gif|webp|svg|log|sql|sh|bash|zsh|rs|go|java|rb|php|html|css|lock|tar|gz|zip|db|sqlite|sqlite3|onnx|pt|bin|env|ini|conf|cfg|xml)\b/i
+const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
+const HASH_PREFIX_HEX_RE = /\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}/gi
+const HEX_RUN_RE = /[0-9a-fA-F]{7,64}/
+const IDENTIFIER_TOKEN_RE = /[A-Za-z0-9_./~@-]+/g
+const DATE_TOKEN_RE = /^\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?$/
+
+function isDenseIdentifier(token: string): boolean {
+  if (token.includes('@') || DATE_TOKEN_RE.test(token)) {
+    return false // email addresses, dates ("2026-09-28", "2026/06/02")
+  }
+  if (/^(?:~\/|\.\.?\/|\/)/.test(token)) {
+    return true // filesystem paths
+  }
+  if (token.includes('/') && (FILENAME_EXT_RE.test(token) || /\d/.test(token))) {
+    return true // paths and dense model IDs ("meta-llama/Llama-3.3-70B-Instruct")
+  }
+  if (FILENAME_EXT_RE.test(token) || UUID_RE.test(token)) {
+    return true
+  }
+  // Hex-hash runs ("73688014f78", "e3b0c442...") — digit-free runs
+  // ("defaced") are legitimate words and stay.
+  if (HEX_RUN_RE.test(token) && /\d/.test(token)) {
+    return true
+  }
+  if (!/\d/.test(token)) {
+    return false
+  }
+  const seps = ['_', '.', '/'].filter(char => token.includes(char)).length
+  const hyphens = (token.match(/-/g) ?? []).length
+  if (seps >= 2 || hyphens >= 2) {
+    return true // v2.1.0-beta.3, Llama-3.3-70B, dated filename slugs
+  }
+  return token.includes('/') || (hyphens >= 1 && seps >= 1)
+}
+
+function pruneIdentifierTokens(text: string): string {
+  return text
+    .replace(HASH_PREFIX_HEX_RE, ' ')
+    .replace(IDENTIFIER_TOKEN_RE, token => (isDenseIdentifier(token) ? ' ' : token))
+}
+
 const MARKDOWN_TABLE_DELIMITER_CELL_RE = /^:?-{3,}:?$/
 
 interface MarkdownTableRow {
@@ -181,6 +233,82 @@ function normalizeLineBreaks(text: string): string {
     .replace(SOFT_BREAK_RE, ' ')
 }
 
+// ---------------------------------------------------------------------------
+// Sentence cutter for the streaming TTS session — mirrors the server-side
+// SentenceChunker's contract: emit complete sentences as they form, hold
+// the incomplete tail, flush everything on finish.
+// ---------------------------------------------------------------------------
+
+const SENTENCE_CUT_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
+const MIN_SENTENCE_CHARS = 24
+
+export function cutSentences(
+  buffer: string,
+  flush: boolean,
+  minSentenceChars?: null | number
+): { sentences: string[]; rest: string } {
+  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
+  // whole clause); the historical 24 for older backends without the key.
+  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
+  const sentences: string[] = []
+  let rest = buffer
+  let start = 0
+
+  SENTENCE_CUT_RE.lastIndex = 0
+
+  let match = SENTENCE_CUT_RE.exec(buffer)
+
+  while (match) {
+    const end = match.index + match[0].length
+    const candidate = buffer.slice(start, end).trim()
+
+    // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
+    // provider call per abbreviation — unless a later boundary extends them.
+    if (candidate.length >= minChars) {
+      sentences.push(candidate)
+      start = end
+    }
+
+    match = SENTENCE_CUT_RE.exec(buffer)
+  }
+
+  rest = buffer.slice(start)
+
+  if (flush) {
+    const tail = rest.trim()
+
+    if (tail) {
+      sentences.push(tail)
+    }
+
+    rest = ''
+  }
+
+  return { sentences, rest }
+}
+
+/** Incremental wrapper over cutSentences() for the sync (non-streaming
+ *  provider) fallback. Deliberately a pure accumulator — like the streaming
+ *  session's ingest (voice-playback.ts) — because the reply text it is fed is
+ *  already text-parts-only (reasoning lives in separate parts). */
+export class IncrementalSpeechSentenceBuffer {
+  private buffer = ''
+
+  append(delta: string): string[] {
+    const { sentences, rest } = cutSentences(this.buffer + delta, false)
+    this.buffer = rest
+
+    return sentences
+  }
+
+  flush(): string[] {
+    const { sentences } = cutSentences(this.buffer, true)
+    this.buffer = ''
+
+    return sentences
+  }
+}
+
 export function sanitizeTextForSpeech(text: string): string {
   // Tables first: their right-align marker is a trailing colon (":-"), and
   // closing colons before the table detector runs would mangle it.
@@ -193,14 +321,20 @@ export function sanitizeTextForSpeech(text: string): string {
 
   // Unspeakable tokens are silence, never a placeholder word: an English
   // "code block omitted" / "link" is wrong for every non-English voice.
-  return normalizeLineBreaks(pre)
+  // Identifier-dense tokens (filenames, hashes, model IDs, paths — #119207)
+  // run AFTER code fences/inline code/links are consumed so their contents
+  // are not double-processed, and AFTER URLs/MEDIA: tokens, which own
+  // themselves.
+  const withoutIdentifiers = pruneIdentifierTokens(normalizeLineBreaks(pre)
     .replace(FENCED_CODE_RE, '')
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')
     .replace(URL_RE, '')
     .replace(MEDIA_PATH_RE, '')
-    .replace(EMOJI_RE, ' ')
+    .replace(EMOJI_RE, ' '))
+
+  return withoutIdentifiers
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[*_~>#]/g, '')
     .replace(/^\s*[-+*]\s+/gm, '')

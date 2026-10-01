@@ -39,8 +39,9 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
+from gateway.platforms.base_exec_approval import ea_header_text
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
@@ -464,11 +465,22 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                  "description": self._truncate_button_label(choice_text, limit=72)}
                 for idx, choice_text in enumerate(choices_list)
             ]
-            rows.append({"id": f"cl:{clarify_id}:other", "title": "✏️ Other", "description": "Type your own answer"})
-            interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
+            rows.append({
+                "id": f"cl:{clarify_id}:other",
+                "title": self._truncate_button_label(t("platform.whatsapp.clarify_other_title"), limit=24),
+                "description": self._truncate_button_label(t("platform.whatsapp.clarify_other_description"), limit=72),
+            })
+            interactive = {
+                "type": "list", "body": {"text": body_text},
+                "action": {"button": self._truncate_button_label(t("platform.whatsapp.clarify_list_button")),
+                           "sections": [{"title": t("platform.whatsapp.clarify_list_section"), "rows": rows}]},
+            }
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    _EA_HEADER = f"⚠️ *{EA_HEADER_TEXT}*\n\n"
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — WhatsApp bold markup around the shared header
+        return f"⚠️ *{ea_header_text()}*\n\n"
+
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 
@@ -478,7 +490,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         approval_id = uuid.uuid4().hex[:12]
         interactive = self._button_interactive(
             self._truncate_body(prompt.text),
-            (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
+            (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
+            (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
         return await self._send_interactive(
             prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
 
@@ -487,8 +500,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Approve Once / Always / Cancel buttons; ``confirm_id`` is caller-supplied."""
         interactive = self._button_interactive(
-            self._truncate_body(f"*{title}*\n\n{message}"), (f"sc:once:{confirm_id}", "✅ Approve Once"),
-            (f"sc:always:{confirm_id}", "🔒 Always"), (f"sc:cancel:{confirm_id}", "❌ Cancel"),
+            self._truncate_body(f"*{title}*\n\n{message}"),
+            (f"sc:once:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_once"))),
+            (f"sc:always:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_always"))),
+            (f"sc:cancel:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_cancel"))),
         )
         return await self._send_interactive(chat_id, interactive, metadata, self._slash_confirm_state, confirm_id, session_key)
 
@@ -852,7 +867,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             # Keep the mapping live for further taps on the same prompt.
             self._clarify_state[clarify_id] = session_key
-            await self._reply_best_effort(to, "✏️ Type your answer:", "[whatsapp_cloud] clarify other-prompt failed")
+            await self._reply_best_effort(to, t("platform.whatsapp.clarify_type_answer"), "[whatsapp_cloud] clarify other-prompt failed")
             return True
         try:
             idx = int(choice)
@@ -882,10 +897,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:
-            confirm_text = "✅ Approved." if choice == "approve" else "❌ Denied."
+            confirm_text = t("platform.whatsapp.approved" if choice == "approve" else "platform.whatsapp.denied")
         else:
             logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) — likely already resolved", session_key)
-            confirm_text = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
+            confirm_text = t("platform.whatsapp.approval_expired")
         await self._reply_best_effort(to, confirm_text, "[whatsapp_cloud] approval confirm failed")
         return True
 
@@ -945,7 +960,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     logger.info("[whatsapp_cloud] skipping text injection for %s (%d bytes > %d)", doc, file_size, _MAX_TEXT_INJECT_BYTES)
                     continue
-                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
+                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8-sig', errors='replace')}"
                 body = f"{injection}\n\n{body}" if body else injection
                 inlined[i] = True
             except OSError:

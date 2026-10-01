@@ -23,6 +23,8 @@ def _fmt_pending_list(subsystem: str) -> str:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        if subsystem == wa.MEMORY:
+            lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
@@ -74,13 +76,14 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed, overwritten = 0, [], []
+    applied, failed, overwritten, removed = 0, [], [], []
     for rec in targets:
         ok, msg, result = _apply_one(subsystem, rec, memory_store)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
-            overwritten.extend(f"  {rec['id']}: {text}" for text in _replaced_entries(result))
+            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
+            removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
         else:
             failed.append(f"{rec['id']}: {msg}")
 
@@ -90,17 +93,30 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         # is the last person who can notice a clause went missing, so show what was lost.
         out.append("Overwrote entire entry (re-add anything you still need):")
         out.extend(overwritten)
+    if removed:
+        out.append("Removed entry (re-add anything you still need):")
+        out.extend(removed)
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
     return "\n".join(out)
 
 
-def _replaced_entries(result: dict) -> List[str]:
-    """Full text of every entry a memory replace overwrote, single-op or batch shape."""
-    single = result.get("replaced_entry")
-    batch = result.get("replaced_entries") or {}
+def _changed_entries(result: dict, kind: str) -> List[str]:
+    """Full text of every entry a memory replace overwrote (``kind="replaced"``) or remove
+    deleted (``"removed"``), single-op or batch shape."""
+    single = result.get(f"{kind}_entry")
+    batch = result.get(f"{kind}_entries") or {}
     return ([single] if single else []) + [batch[k] for k in sorted(batch, key=int)]
+
+
+def _matched_entries(payload) -> List[str]:
+    """The full entry each staged memory replace/remove is pinned to: the summary shows only
+    the old_text search string, and approval applies to this entry, not to that search."""
+    from tools.memory_tool import destructive_ops
+    return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
+            else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
+            for op in destructive_ops(payload)]
 
 
 def _apply_one(subsystem: str, rec, memory_store):

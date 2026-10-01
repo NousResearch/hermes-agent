@@ -51,7 +51,7 @@ def test_path_key_ignores_unicode_form():
     assert kbw._path_key("/tmp/repo-Personlich") != kbw._path_key(composed)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_nfc_workspace_path_resolves_against_nfd_repo_root(tmp_path):
     """A task row in NFC form resolves on macOS, where git reports NFD."""
     repo = tmp_path / _nfd("repo-Persönlich")
@@ -80,7 +80,7 @@ def test_nfc_workspace_path_resolves_against_nfd_repo_root(tmp_path):
     )
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_repo_root_treated_as_repo_root_in_other_unicode_form(tmp_path):
     """A root passed in NFC form must take the anchored-worktree path, not fail."""
     repo = tmp_path / _nfd("root-Persönlich")

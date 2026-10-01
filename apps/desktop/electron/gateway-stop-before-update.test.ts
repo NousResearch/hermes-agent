@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
+import { GATEWAY_STOP_TIMEOUT_MS, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 
 const CLI = 'C:\\Users\\x\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe'
 const HOME = 'C:\\Users\\x\\hermes'
@@ -75,33 +75,21 @@ test('Windows with failing CLI returns false (best-effort, never throws)', () =>
   assert.equal(ran, false)
 })
 
-test('abort-path counterpart invokes "gateway start --all" (drain-semantics restore)', () => {
-  let seenArgs: string[] = []
-
-  const ran = startGatewaysAfterUpdateAbort(CLI, {
+test('passes a generous timeout with hidden console (taskkill window suppression)', () => {
+  let seenOptions: unknown
+  stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: true,
     existsSync: () => true,
-    execFileSync: ((_c: string, args: string[]) => {
-      seenArgs = args
+    execFileSync: ((_c: string, _a: string[], options: unknown) => {
+      seenOptions = options
 
       return Buffer.from('')
     }) as never
   })
-
-  assert.equal(ran, true)
-  assert.deepEqual(seenArgs, ['gateway', 'start', '--all'])
-})
-
-test('abort-path counterpart is a no-op off Windows', () => {
-  const calls: Array<[string, string[]]> = []
-
-  const ran = startGatewaysAfterUpdateAbort(CLI, {
-    isWindows: false,
-    existsSync: () => true,
-    execFileSync: fakeExec(true) as never,
-    spy: (c, a) => calls.push([c, a])
+  assert.deepEqual(seenOptions, {
+    timeout: GATEWAY_STOP_TIMEOUT_MS,
+    windowsHide: true,
+    stdio: 'ignore',
+    encoding: 'utf8'
   })
-
-  assert.equal(ran, false)
-  assert.deepEqual(calls, [])
 })

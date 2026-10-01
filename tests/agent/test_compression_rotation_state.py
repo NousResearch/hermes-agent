@@ -31,6 +31,7 @@ from agent.conversation_compression import (
     CompressionCommitFence,
     _is_real_user_message,
 )
+from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state import SessionDB
 
 
@@ -1465,10 +1466,12 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER}
+                if k not in {"_row_id", "timestamp", "message_uid", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
             }
             for m in compressed
         ] == expected
+        # The rotation handoff stamps each child row's stored digest, so a re-flush takes the versioned path.
+        assert all(isinstance(m.get(DB_ROW_SNAPSHOT), str) for m in compressed)
         assert not any(
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed

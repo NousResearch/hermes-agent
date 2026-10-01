@@ -685,7 +685,7 @@ model:
   default: "step-5-preview"
 ```
 
-**Upgrading.** A pre-split `stepfun` config is migrated automatically (config version 47) to
+**Upgrading.** A pre-split `stepfun` config is migrated automatically (config version 50) to
 whichever of the four ids matches the endpoint it was actually using, and a China config's key is
 moved from `STEPFUN_API_KEY` to `STEPFUN_CN_API_KEY` so it keeps authenticating.
 

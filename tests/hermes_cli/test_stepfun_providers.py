@@ -172,7 +172,7 @@ class TestStepfunBuiltinMetadata:
 
 
 class TestStepfunMigration:
-    """v46 → v47: the single `stepfun` id becomes four, and a China key moves var."""
+    """v49 → v50: the single `stepfun` id becomes four, and a China key moves var."""
 
     def _run(self, tmp_path, monkeypatch, model_cfg, env_seed=None):
         """Run migrate_config against an isolated temp hermes home.

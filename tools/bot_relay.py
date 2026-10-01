@@ -44,7 +44,7 @@ DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 
 # Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
-# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
+# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay-budget.ts; both test suites pin it.
 DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
     TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
@@ -164,7 +164,8 @@ def write_remote_roster(root: Path | str, rows: Any) -> int:
 def read_remote_roster(root: Path | str) -> list[dict]:
     """The current remote roster (possibly empty). Never raises."""
     try:
-        data = json.loads((relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8"))
+        raw = (relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
         agents = data.get("agents") if isinstance(data, dict) else None
         return [r for r in map(_normalize_roster_row, agents) if r] if isinstance(agents, list) else []
     except FileNotFoundError:
@@ -313,7 +314,7 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     """True when the outbox envelope is older than ``ttl``; writes the 'queued_expired'
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
-        env = json.loads(path.read_text(encoding="utf-8"))
+        env = json.loads(path.read_text(encoding="utf-8-sig"))  # BOM-tolerant (pm-era read fix)
         if not isinstance(env, dict):
             raise ValueError(f"expected a JSON object, got {type(env).__name__}")
         created = float(env.get("created_at") or path.stat().st_mtime)
@@ -364,7 +365,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
             os.utime(claimed, (now, now))  # the re-offer window counts from the claim, not the enqueue
-            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+            envelope = json.loads(claimed.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
             out.append(envelope)
@@ -392,7 +393,7 @@ def _reoffer_unanswered(root: Path | str, base: Path, ttl: float, now: float) ->
             continue
         with contextlib.suppress(OSError, ValueError):
             claimed_at = path.stat().st_mtime
-            envelope = json.loads(path.read_text(encoding="utf-8"))
+            envelope = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
             env_id = str(envelope.get("id") or "")
@@ -499,17 +500,20 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 
 
 def _hermes_cli() -> str:
-    """hermes CLI beside this interpreter, then ``shutil.which``, then the bare name
-    (service contexts lack PATH, so a bare "hermes" died with ENOENT).
+    """Prefer this install's published launcher, then interpreter/PATH fallbacks.
 
-    The deliver RPC runs on the target gateway, whose process is the venv python — its bin/Scripts directory
-    holds the matching ``hermes`` entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
-    service contexts (systemd units, desktop launchers, non-login SSH shells) do not provide, so delivery
-    died with ENOENT there (#93590). When no sibling exists (e.g. running from a source tree without an
-    installed script), a ``shutil.which`` lookup runs next — it honors whatever PATH the process does have —
-    before falling back to the bare name, preserving today's behavior for interactive shells.
+    A long-lived caller can still run in an older dependency generation. Its
+    sibling console script pins that generation, whereas the published launcher
+    selects current dependencies at child start. Keep the historical fallbacks
+    for external/developer installs that have no published launcher (#93590).
     """
-    sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
+    # (for example an ampersand in a query-file path), even with shell=False.
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
+    if published.is_file():
+        return str(published)
+    sibling = Path(sys.executable or "").parent / name
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 

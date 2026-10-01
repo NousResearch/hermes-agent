@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture

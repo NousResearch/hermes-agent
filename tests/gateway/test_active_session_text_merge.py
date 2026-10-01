@@ -447,7 +447,7 @@ async def test_busy_merges_preserve_reply_context_and_attachments(
 async def test_third_sender_not_dropped_when_debounce_store_is_stuck(lifecycle, tmp_path, monkeypatch):
     import time as _time
 
-    from gateway.platforms.base import TextDebounceState
+    from gateway.platforms.base_text_debounce import TextDebounceState
 
     adapter = _make_initialized_adapter()
 

@@ -212,6 +212,15 @@ def test_retirement_downgrade_rejects_divergent_history(tmp_path):
         _refuse_retirement_downgrade(request, terminal, ["git"], root)
 
 
+def test_retirement_downgrade_fails_closed_without_git(tmp_path):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    with pytest.raises(ValueError, match="without Git"):
+        _refuse_retirement_downgrade(request, terminal, None, tmp_path)
+
+
 @pytest.mark.parametrize("channel", ["stable", "canary"])
 @pytest.mark.parametrize("start", ["old", "ahead", "local"])
 def test_source_check_and_apply_land_on_selected_release(releases, monkeypatch, capsys, channel, start):

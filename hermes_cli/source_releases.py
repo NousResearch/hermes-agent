@@ -159,6 +159,8 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
             # it is not evidence that the installed source is safe to retire.
             # Keep the decision conservative until ancestry can be verified.
             raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
+    else:
+        raise ValueError("Source retirement cannot verify source order without Git; select the destination channel explicitly")
 
 
 def _read(url: str, *, missing_ok: bool = False) -> str | None:

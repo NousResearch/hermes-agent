@@ -365,3 +365,9 @@ class TestDesktopSurface:
             "remote import outside the SDK (desktop/plugin.js:3)",
             "remote import outside the SDK (desktop/plugin.js:4)",
         ]
+
+
+def test_calver_requires_hermes_floor_fails_admission(tmp_path: Path) -> None:
+    report = validate_plugin_dir(_make_plugin(tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=2026.9.24"}))
+    assert not report.ok
+    assert any("CalVer" in failure for failure in report.failures)

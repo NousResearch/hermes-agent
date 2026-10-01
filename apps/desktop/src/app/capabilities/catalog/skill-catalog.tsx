@@ -104,6 +104,7 @@ function ScopedSkillCatalog({
         name: skill.name,
         description: skill.description,
         category: skill.category,
+        author: skill.author,
         source: skill.provenance === 'bundled' ? 'built-in' : skill.provenance === 'hub' ? 'hub' : 'local'
       }))
     ).map(entry => {

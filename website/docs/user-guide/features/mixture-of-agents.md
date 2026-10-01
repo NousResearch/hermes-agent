@@ -68,11 +68,15 @@ For each main model call when provider `moa` is selected, Hermes:
 Provider selection retains each slot's native protocol, such as Codex Responses.
 Auxiliary clients expose a chat-completions surface, however, so Relay decodes the
 chat-shaped request and usage at that boundary rather than the provider's native
-wire format. No provider or model assignment changes during this adaptation.
+wire format. `agent/auxiliary_wire.py` selects that boundary codec without
+changing the native mode used for client resolution. No provider or model
+assignment changes during this adaptation.
 
 Native async aggregator results are adapted before a synchronous Relay or MoA
 consumer iterates them. `agent/async_stream.py` owns one worker event loop for
 opening, reading and closing a stream; the consumer must close it on early exit.
+Close waits for a cancelled read to finish before releasing the source, including
+OpenAI SDK streams with an async `close()` rather than `aclose()`.
 This preserves loop-bound resources, per-operation context, and a single provider
 dispatch. `agent/auxiliary_client.py` handles the inner Relay boundary, while
 `agent/moa_loop.py` preserves the facade's synchronous streaming contract.

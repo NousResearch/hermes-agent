@@ -12,7 +12,7 @@ import contextlib
 import inspect
 import threading
 from concurrent.futures import Future
-from typing import Any, Awaitable, Callable, cast
+from typing import AsyncIterator, Awaitable, Callable, cast
 
 
 class _SyncFromAsyncIterator:
@@ -21,14 +21,16 @@ class _SyncFromAsyncIterator:
     Opening and consuming the stream share ONE loop: HTTP clients and async
     generators can retain loop-bound resources after create() returns. Each
     submitted operation inherits the caller's contextvars. A single consumer
-    pulls chunks lazily; close cancels an outstanding pull before closing the
-    source, and the worker (never the caller) finally closes its event loop.
+    pulls chunks lazily; close awaits a cancelled pull before releasing the
+    source via aclose or sync/async close. The worker, never the caller, finally
+    closes its event loop. The loop alone owns the tracked pull Task.
     """
 
-    def __init__(self, source: Any) -> None:
+    def __init__(self, source: object) -> None:
         self._source = source
         self._loop = asyncio.new_event_loop()
-        self._pending: Future[Any] | None = None
+        self._pending: Future[object] | None = None
+        self._pull_task: asyncio.Task[object] | None = None
         self._closed = False
         ready = threading.Event()
 
@@ -54,12 +56,12 @@ class _SyncFromAsyncIterator:
         self._thread.start()
         ready.wait()
 
-    def resolve(self) -> Any:
+    def resolve(self) -> object:
         """Await creation on the same loop that will later read and close it."""
 
-        async def open_source() -> Any:
+        async def open_source() -> object:
             if inspect.isawaitable(self._source):
-                return await self._source
+                return await cast(Awaitable[object], self._source)
             return self._source
 
         try:
@@ -74,12 +76,16 @@ class _SyncFromAsyncIterator:
     def __iter__(self) -> "_SyncFromAsyncIterator":
         return self
 
-    def __next__(self) -> Any:
+    def __next__(self) -> object:
         if self._closed:
             raise StopIteration
 
-        async def pull() -> Any:
-            return await anext(self._source)
+        async def pull() -> object:
+            self._pull_task = asyncio.current_task()
+            try:
+                return await anext(cast(AsyncIterator[object], self._source))
+            finally:
+                self._pull_task = None
 
         self._pending = asyncio.run_coroutine_threadsafe(pull(), self._loop)
         try:
@@ -103,12 +109,22 @@ class _SyncFromAsyncIterator:
             self._pending.cancel()
 
         async def release() -> None:
-            closer = cast(
-                Callable[[], Awaitable[object]] | None,
-                getattr(self._source, "aclose", None),
-            )
-            if callable(closer):
-                await closer()
+            try:
+                # Cancelling the concurrent Future wakes its consumer before the
+                # loop-bound Task finishes unwinding an async generator's finally.
+                # Await that actual Task before closing the source; never race aclose.
+                task = self._pull_task
+                if task is not None:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            finally:
+                closer = getattr(self._source, "aclose", None)
+                if not callable(closer):
+                    closer = getattr(self._source, "close", None)
+                if callable(closer):
+                    result = cast(Callable[[], object], closer)()
+                    if inspect.isawaitable(result):
+                        await cast(Awaitable[object], result)
 
         try:
             asyncio.run_coroutine_threadsafe(release(), self._loop).result(timeout=5.0)
@@ -119,7 +135,7 @@ class _SyncFromAsyncIterator:
                 raise RuntimeError("MoA async stream worker did not stop after close")
 
 
-def coerce_sync_stream(result: Any) -> Any:
+def coerce_sync_stream(result: object) -> object:
     """Adapt native async results without re-dispatch or a loop-lifetime split."""
     if not inspect.isawaitable(result) and not (
         hasattr(result, "__aiter__") and not hasattr(result, "__iter__")

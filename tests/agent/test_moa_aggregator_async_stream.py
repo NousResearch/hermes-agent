@@ -1,29 +1,22 @@
-"""MoA aggregator facade: a native async aggregator client's stream must become synchronous.
+"""Regression #130132: consume native MoA async results through the sync facade.
 
-An async aggregator client (the Claude/Anthropic native async wrapper, an async
-OpenAI client, or any provider-supplied async client) answers ``call_llm(stream=True)``
-with an awaitable that resolves to either a completed response or an async token
-stream.  ``MoAChatCompletions`` is a *synchronous* facade: its result is iterated
-synchronously by Relay's managed stream and by the chat-completions loop.  Handing
-that consumer a coroutine surfaces as ``TypeError: 'coroutine' object is not
-iterable`` inside Relay's provider callback, which abandons the aggregator stream
-and silently collapses the MoA turn onto a standalone fallback model.
-
-The facade must therefore adapt an awaitable/async-iterator result into a sync
-iterator: await the provider exactly once (never a second dispatch), keep the
-stream lazy, carry the caller's contextvars into each async step (Relay runs its
-in-chunk sanitization/observers under that context), and release the underlying
-async stream on exhaustion or ``close()``.  A plain synchronous iterator and a
-completed response keep their existing pass-through behaviour.
+The consumer owns each returned stream and closes it on early exit. One provider
+request must yield lazy, ordered chunks with caller context and loop-affine cleanup;
+synchronous and nonstream results retain their existing behavior.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import threading
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import AsyncOpenAI, AsyncStream
+from openai.types.chat import ChatCompletionChunk
 
 from agent import moa_loop
 
@@ -38,8 +31,26 @@ def _completed(content="aggregator acted"):
     return SimpleNamespace(choices=[choice], usage=None, model="claude-native")
 
 
+def _coro(value):
+    """A fresh awaitable resolving to *value* (one per provider dispatch)."""
+
+    async def _resolve():
+        return value
+
+    return _resolve()
+
+
+def _texts(chunks):
+    """Delta content from a mix of wrapped completed responses and raw token chunks."""
+    out = []
+    for chunk in chunks:
+        choices = getattr(chunk, "choices", None)
+        out.append(choices[0].delta.content if choices else chunk.text)
+    return out
+
+
 class _AsyncStream:
-    """Async token stream double that records close and contextvar visibility."""
+    """Async token stream double that records consumption, close, and context visibility."""
 
     def __init__(self, items, *, probe=None):
         self._items = list(items)
@@ -83,7 +94,7 @@ def facade(monkeypatch):
     return f
 
 
-def _open(monkeypatch, on_call, facade):
+def _open(monkeypatch, on_call, facade, *, stream=True, tools=()):
     """Wire ``moa_loop.call_llm`` to *on_call* and open the prepared aggregator stream."""
     calls = []
 
@@ -98,159 +109,103 @@ def _open(monkeypatch, on_call, facade):
         "aggregator": {"provider": "anthropic", "model": "claude-native"},
         "aggregator_temperature": None,
     }
-    return facade.create(_moa_prepared_request=prepared, stream=True, tools=[]), calls
+    return facade.create(
+        _moa_prepared_request=prepared, stream=stream, tools=list(tools)
+    ), calls
 
 
-# ---------------------------------------------------------------------------
-# Awaitable (coroutine) result -> synchronous iterator
-# ---------------------------------------------------------------------------
-
-
-def test_awaitable_completed_response_becomes_iterable_one_chunk_stream(
+def test_stream_create_adapts_native_async_results_and_passes_sync_shapes(
     monkeypatch, facade
 ):
-    """A coroutine resolving to a completed response is awaited ONCE and wrapped
-    as the one-chunk delta iterator the outer accumulator already understands."""
+    """Every shape ``call_llm(stream=True)`` can return reaches the synchronous consumer
+    correctly, with exactly one provider dispatch (regression #130132)."""
+    ordered = _AsyncStream([_chunk("a"), _chunk("b"), _chunk("c")])
+    direct = _AsyncStream([_chunk("only")])
+    sync_sentinel = iter([_chunk("x")])
+    nonstream_response = _completed("raw")
 
-    async def _awaitable():
-        return _completed("aggregator acted")
+    def lazy_ordered(stream, _calls):
+        # Laziness: one pull reaches the source exactly once, in order, before the rest.
+        first = next(stream)
+        pulled_one = ordered._index == 1
+        rest = list(stream)
+        return (
+            pulled_one and _texts([first, *rest]) == ["a", "b", "c"] and ordered.closed
+        )
 
-    stream, calls = _open(monkeypatch, lambda _kw: _awaitable(), facade)
+    cases = [
+        (
+            "awaitable resolving to a completed response",
+            lambda: _coro(_completed("aggregator acted")),
+            True,
+            lambda stream, _calls: _texts(stream) == ["aggregator acted"],
+        ),
+        (
+            "awaitable resolving to an async iterator (lazy, ordered, closed)",
+            lambda: _coro(ordered),
+            True,
+            lazy_ordered,
+        ),
+        (
+            "async iterator returned directly",
+            lambda: direct,
+            True,
+            lambda stream, _calls: _texts(stream) == ["only"] and direct.closed,
+        ),
+        (
+            "plain synchronous iterator is returned unchanged",
+            lambda: sync_sentinel,
+            True,
+            lambda stream, _calls: stream is sync_sentinel,
+        ),
+        (
+            "completed response with stream=True becomes one delta chunk",
+            lambda: _completed("done"),
+            True,
+            lambda stream, _calls: _texts(stream) == ["done"],
+        ),
+        (
+            "non-streaming call returns the raw response",
+            lambda: nonstream_response,
+            False,
+            lambda stream, _calls: stream is nonstream_response,
+        ),
+    ]
 
-    # The bug: this used to be the raw coroutine -> `iter(stream)` raised TypeError.
-    iter(stream)
-    chunks = list(stream)
-    assert [c.choices[0].delta.content for c in chunks] == ["aggregator acted"]
-    # Exactly one provider dispatch (awaiting the coroutine is that dispatch).
-    assert len(calls) == 1
-    assert calls[0]["stream"] is True
+    for name, producer, stream_flag, check in cases:
+        stream, calls = _open(
+            monkeypatch, lambda _kw, p=producer: p(), facade, stream=stream_flag
+        )
+        assert check(stream, calls), name
+        assert len(calls) == 1, name
+        assert bool(calls[0].get("stream")) == stream_flag, name
 
 
-def test_awaitable_async_iterator_streams_lazily_in_order_and_closes(
+def test_stream_create_owns_one_loop_with_caller_context_and_deterministic_close(
     monkeypatch, facade
 ):
-    """A coroutine resolving to an async stream is wrapped so the consumer can
-    iterate it synchronously; chunky order is preserved and the source is closed."""
-    source = _AsyncStream([_chunk("a"), _chunk("b"), _chunk("c")])
-
-    async def _awaitable():
-        return source
-
-    stream, calls = _open(monkeypatch, lambda _kw: _awaitable(), facade)
-
-    assert [c.text for c in stream] == ["a", "b", "c"]
-    assert source.closed is True
-    assert len(calls) == 1
-
-
-def test_async_iterator_returned_directly_is_wrapped(monkeypatch, facade):
-    """A client whose ``create`` returns an async iterator (not a coroutine) is
-    adapted too — ``__aiter__`` without ``__iter__`` is the trigger."""
-    source = _AsyncStream([_chunk("only")])
-
-    stream, _calls = _open(monkeypatch, lambda _kw: source, facade)
-
-    assert [c.text for c in stream] == ["only"]
-    assert source.closed is True
-
-
-def test_close_propagates_to_the_async_source_without_exhaustion(monkeypatch, facade):
-    """Closing the facade stream early must stop the async source (resource close),
-    even though iteration never reached StopAsyncIteration."""
-    source = _AsyncStream([_chunk("a"), _chunk("b"), _chunk("c")])
-
-    stream, _calls = _open(monkeypatch, lambda _kw: source, facade)
-    assert next(stream).text == "a"
-    stream.close()
-
-    assert source.closed is True
-
-
-def test_async_steps_run_under_the_callers_contextvars(monkeypatch, facade):
-    """Each async step runs in the context captured at the facade boundary so an
-    in-context event sanitizer/observer still sees the turn's contextvars."""
+    """Creation, reads, and cleanup share one owning loop; async steps inherit the caller's
+    contextvars; exhaustion and early close both release the source; and opening or consuming
+    works while a caller event loop is already running (regression #130132)."""
     probe = contextvars.ContextVar("moa_aggregator_probe")
-    source = _AsyncStream([_chunk("a")], probe=probe)
-
-    stream, _calls = _open(monkeypatch, lambda _kw: source, facade)
-    token = probe.set("turn-context")
-    try:
-        chunks = list(stream)
-    finally:
-        probe.reset(token)
-
-    assert [c.text for c in chunks] == ["a"]
-    # Every async step (including the terminating __anext__) saw the turn's context.
-    assert source.seen_context and set(source.seen_context) == {"turn-context"}
-
-
-def test_bridging_works_while_an_event_loop_is_running(monkeypatch, facade):
-    """Relay's provider callback runs on a live event loop; the bridge must not
-    re-enter it (a plain ``asyncio.run`` would raise)."""
-
-    async def _awaitable():
-        return _completed("ok")
-
-    stream, _calls = _open(monkeypatch, lambda _kw: _awaitable(), facade)
-
-    async def _drive():
-        # Executing synchronously inside a running loop must still yield chunks.
-        return [c.choices[0].delta.content for c in stream]
-
-    assert asyncio.run(_drive()) == ["ok"]
-
-
-# ---------------------------------------------------------------------------
-# Pass-through regressions (unchanged contracts)
-# ---------------------------------------------------------------------------
-
-
-def test_plain_sync_stream_is_returned_unchanged(monkeypatch, facade):
-    sentinel = iter([_chunk("x")])
-    stream, _calls = _open(monkeypatch, lambda _kw: sentinel, facade)
-    assert stream is sentinel
-
-
-def test_completed_response_is_wrapped_as_one_chunk(monkeypatch, facade):
-    completed = _completed("done")
-    stream, _calls = _open(monkeypatch, lambda _kw: completed, facade)
-    assert [c.choices[0].delta.content for c in stream] == ["done"]
-
-
-def test_non_streaming_call_still_returns_the_raw_response(monkeypatch, facade):
-    completed = _completed("done")
-    calls = []
-
-    def fake_call_llm(**kwargs):
-        calls.append(kwargs)
-        return completed
-
-    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
-    prepared = {
-        "messages": [{"role": "user", "content": "q"}],
-        "guidance": None,
-        "aggregator": {"provider": "anthropic", "model": "claude-native"},
-        "aggregator_temperature": None,
-    }
-    out = facade.create(_moa_prepared_request=prepared, tools=[])
-    assert out is completed
-
-
-def test_stream_creation_iteration_and_close_share_one_event_loop(monkeypatch, facade):
-    """A real async client can bind sockets/tasks to the loop opening its stream."""
-    loops = []
+    opened = []
 
     class LoopBoundStream:
+        """A real client can bind sockets/tasks to the loop that opened its stream."""
+
         def __init__(self):
             self.owner = asyncio.get_running_loop()
-            loops.append(self.owner)
+            self.creation_context = probe.get(None)
+            self.closed = False
             self.delivered = False
+            self.steps = []
 
         def __aiter__(self):
             return self
 
         async def __anext__(self):
             assert asyncio.get_running_loop() is self.owner
+            self.steps.append(probe.get(None))
             if self.delivered:
                 raise StopAsyncIteration
             self.delivered = True
@@ -258,27 +213,129 @@ def test_stream_creation_iteration_and_close_share_one_event_loop(monkeypatch, f
 
         async def aclose(self):
             assert asyncio.get_running_loop() is self.owner
-            loops.append(asyncio.get_running_loop())
+            self.closed = True
 
     async def open_stream():
-        return LoopBoundStream()
+        source = LoopBoundStream()
+        opened.append(source)
+        return source
 
-    stream, calls = _open(monkeypatch, lambda _kw: open_stream(), facade)
-    assert [chunk.text for chunk in stream] == ["loop-bound"]
-    assert len(calls) == 1
-    assert len(loops) == 2 and loops[0] is loops[1]
-    assert loops[0].is_closed()
-
-
-def test_factory_is_awaited_inside_the_running_loop_bridge(monkeypatch, facade):
-    """Open the facade inside a live loop, not before it as the earlier test did."""
-
-    async def open_stream():
-        return _completed("inside-loop")
-
-    async def drive():
+    # Exhaustion: StopAsyncIteration closes the source and shuts the owning loop down.
+    token = probe.set("turn-context")
+    try:
         stream, calls = _open(monkeypatch, lambda _kw: open_stream(), facade)
-        assert len(calls) == 1
-        return [chunk.choices[0].delta.content for chunk in stream]
+        chunks = list(stream)
+    finally:
+        probe.reset(token)
+    source = opened[-1]
+    assert _texts(chunks) == ["loop-bound"]
+    assert len(calls) == 1
+    assert source.steps and set(source.steps) == {"turn-context"}
+    assert source.creation_context == "turn-context"
+    assert source.closed
+    assert source.owner.is_closed()
 
-    assert asyncio.run(drive()) == ["inside-loop"]
+    # Early close: deterministic cleanup without ever reaching StopAsyncIteration.
+    early = _AsyncStream([_chunk("a"), _chunk("b"), _chunk("c")])
+    stream, _calls = _open(monkeypatch, lambda _kw: early, facade)
+    assert next(stream).text == "a"
+    stream.close()
+    assert early.closed is True
+    assert next(stream, None) is None
+
+    # Real OpenAI SDK streams own an HTTP response and expose async close, not aclose.
+    async def close_sdk_stream():
+        async with AsyncOpenAI(api_key="test-key") as client:
+            for consume_first in (False, True):
+                response = httpx.Response(
+                    200,
+                    request=httpx.Request("POST", "https://example.invalid"),
+                    stream=httpx.ByteStream(
+                        b'data: {"id":"chunk","object":"chat.completion.chunk",'
+                        b'"created":0,"model":"test","choices":[{"index":0,'
+                        b'"delta":{"content":"sdk"},"finish_reason":null}]}\n\n'
+                    ),
+                )
+                source = AsyncStream(
+                    cast_to=ChatCompletionChunk, response=response, client=client
+                )
+                stream, calls = _open(monkeypatch, lambda _kw: _coro(source), facade)
+                try:
+                    if consume_first:
+                        assert next(stream).choices[0].delta.content == "sdk"
+                    stream.close()
+                    assert response.is_closed
+                    assert not client.is_closed()
+                    assert len(calls) == 1
+                finally:
+                    stream.close()
+                    await response.aclose()
+
+    asyncio.run(close_sdk_stream())
+
+    # A caller event loop may already be running when the facade opens or is consumed.
+    outside = _AsyncStream([_chunk("outside-loop")])
+    pending, _calls = _open(monkeypatch, lambda _kw: _coro(outside), facade)
+
+    async def consume():
+        return _texts(list(pending))
+
+    assert asyncio.run(consume()) == ["outside-loop"]
+    assert outside.closed is True
+
+    async def open_and_consume():
+        live, live_calls = _open(
+            monkeypatch, lambda _kw: _coro(_AsyncStream([_chunk("live")])), facade
+        )
+        return _texts(list(live)), len(live_calls)
+
+    assert asyncio.run(open_and_consume()) == (["live"], 1)
+
+    # Provider failures remain visible while releasing their owning resources.
+    failed_loops = []
+
+    async def fail_open():
+        failed_loops.append(asyncio.get_running_loop())
+        raise ValueError("provider open failed")
+
+    with pytest.raises(ValueError, match="provider open failed"):
+        _open(monkeypatch, lambda _kw: fail_open(), facade)
+    assert failed_loops[0].is_closed()
+
+    class FailingStream(_AsyncStream):
+        async def __anext__(self):
+            raise ValueError("provider read failed")
+
+    failing = FailingStream([])
+    stream, _calls = _open(monkeypatch, lambda _kw: failing, facade)
+    with pytest.raises(ValueError, match="provider read failed"):
+        next(stream)
+    assert failing.closed
+
+    # Close from another thread cancels a blocked pull instead of leaking a worker.
+    entered = threading.Event()
+    cancelled = threading.Event()
+
+    async def blocked_generator():
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+            yield _chunk("unreachable")
+        finally:
+            # Cancellation completes only after async generator cleanup has yielded.
+            await asyncio.sleep(0)
+            cancelled.set()
+
+    blocked = blocked_generator()
+    stream, _calls = _open(monkeypatch, lambda _kw: blocked, facade)
+    with ThreadPoolExecutor(max_workers=1) as consumer:
+        pull = consumer.submit(next, stream)
+        try:
+            assert entered.wait(timeout=5)
+        finally:
+            stream.close()
+        with pytest.raises(CancelledError):
+            pull.result(timeout=5)
+    assert cancelled.is_set()
+    with pytest.raises(StopAsyncIteration):
+        asyncio.run(anext(blocked))

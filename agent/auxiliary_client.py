@@ -2616,46 +2616,19 @@ def _relay_auxiliary_metadata(
     }
 
 
-def _relay_boundary_api_mode(client: Any, api_mode: str | None) -> str:
-    """The Relay-facing ``api_mode`` for an auxiliary client: its *surface*, not its wire.
-
-    Every auxiliary client (``CodexAuxiliaryClient``/``AnthropicAuxiliaryClient``/…) exposes
-    only ``.chat.completions.create()`` and re-shapes the provider response to a
-    ``chat.completions`` object before the caller sees it. Relay intercepts exactly that
-    surface, so the request body it codecs is always chat-shaped. Labelling it with the
-    provider's native wire mode (e.g. ``codex_responses``) makes ``relay_llm`` select
-    ``OpenAIResponsesCodec`` and decode a ``messages`` body, raising ``OpenAI Responses
-    request is missing input`` and collapsing the call — and it mis-normalizes the
-    chat-shaped usage via the Codex field layout.
-
-    The native ``api_mode`` still drives client selection upstream; Relay just needs the
-    boundary mode. Falls back to ``api_mode`` for any non-chat client.
-
-    Flow::
-
-        moa_loop._run_reference (slot api_mode=codex_responses)
-            └─ call_llm → _prepare_aux_request (native mode selects CodexAuxiliaryClient)
-                   └─ _relay_sync_completion
-                          ├─ metadata api_mode = chat_completions  → Relay OpenAIChatCodec
-                          └─ provider callback = client.chat.completions.create (chat shim)
-                                 └─ Codex Responses wire (adapted inside the shim)
-    """
-    if getattr(getattr(client, "chat", None), "completions", None) is not None:
-        return "chat_completions"
-    return api_mode or "chat_completions"
-
-
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_boundary_api_mode
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     callback = create or (lambda request: _create_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=_relay_boundary_api_mode(client, api_mode))
+    route = _relay_auxiliary_metadata(
+        provider=provider, api_mode=relay_boundary_api_mode(client, api_mode)
+    )
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
@@ -2679,12 +2652,14 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_boundary_api_mode
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=_relay_boundary_api_mode(client, api_mode))
+    route = _relay_auxiliary_metadata(
+        provider=provider, api_mode=relay_boundary_api_mode(client, api_mode)
+    )
     if route is None:
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
@@ -2705,14 +2680,16 @@ def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
     from agent.async_stream import coerce_sync_stream
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_boundary_api_mode
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     def create(request: dict[str, Any]) -> Any:
         return coerce_sync_stream(client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client)))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=_relay_boundary_api_mode(client, api_mode))
+    route = _relay_auxiliary_metadata(
+        provider=provider, api_mode=relay_boundary_api_mode(client, api_mode)
+    )
     if route is None:
         return create(kwargs)
     provider_name, fallback_model, metadata = route

@@ -15,9 +15,11 @@ def _clear_jwt_cache():
     import hermes_cli.copilot_auth as mod
     mod._jwt_cache.clear()
     mod._exchange_failure_cache.clear()
+    mod._exchange_locks.clear()
     yield
     mod._jwt_cache.clear()
     mod._exchange_failure_cache.clear()
+    mod._exchange_locks.clear()
 
 
 class TestExchangeCopilotToken:
@@ -230,3 +232,27 @@ class TestExchangeFailureFastPath:
         mod._exchange_failure_cache[fp] = time.time() + 999
         evict_cached_exchanged_token("gho_stale")
         assert fp not in mod._exchange_failure_cache
+
+
+class TestCopilotAuthCachePruning:
+    def test_purges_expired_entries_but_keeps_live_state(self):
+        import hermes_cli.copilot_auth as mod
+
+        now = time.time()
+        expired_fp = "expired"
+        live_fp = "live"
+        mod._jwt_cache[expired_fp] = ("old", now - 1, None)
+        mod._jwt_cache[live_fp] = ("current", now + 1800, None)
+        mod._exchange_failure_cache[expired_fp] = now - 1
+        mod._exchange_failure_cache[live_fp] = now + 60
+        mod._exchange_locks[expired_fp] = __import__("threading").Lock()
+        mod._exchange_locks[live_fp] = __import__("threading").Lock()
+
+        mod._purge_stale_copilot_auth_caches()
+
+        assert expired_fp not in mod._jwt_cache
+        assert expired_fp not in mod._exchange_failure_cache
+        assert expired_fp not in mod._exchange_locks
+        assert live_fp in mod._jwt_cache
+        assert live_fp in mod._exchange_failure_cache
+        assert live_fp in mod._exchange_locks

@@ -26,16 +26,27 @@ def github(tmp_path, monkeypatch):
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
                 value = [[]]
+            elif "/check-runs/" in self.path and self.path.endswith("/annotations"):
+                message = (
+                    "The job was not started because recent account payments have failed "
+                    "or your spending limit needs to be increased. Please check Billing & plans."
+                    if state.get("billing") else "Tests failed after executing steps."
+                )
+                value = [{"annotation_level": "failure", "message": message}]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
-                runs = [] if state.get("missing") else [run]
-                value = [{"total_count": 100 + len(runs), "check_runs": [
-                    {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
-                    for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
+                if state.get("empty"):
+                    value = [{"total_count": 0, "check_runs": []}]
+                else:
+                    opt_conclusion = "success" if state["conclusion"] == "success" else "skipped"
+                    runs = [] if state.get("missing") else [run]
+                    value = [{"total_count": 100 + len(runs), "check_runs": [
+                        {**run, "id": 1000 + i, "name": "optional", "conclusion": opt_conclusion}
+                        for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()
                 if state.get("head_change"):
@@ -43,7 +54,7 @@ def github(tmp_path, monkeypatch):
             elif "/statuses" in self.path:
                 value = [[]]
             elif "/pulls/" in self.path:
-                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+                value = {"head": {"sha": sha}, "base": {"ref": "main", "sha": "c" * 40}, "state": "open"}
             else:
                 self.send_error(404)
                 return
@@ -107,6 +118,91 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_board_billing_exception_is_repo_scoped_and_requires_not_started_annotation(github):
+    policy = {
+        "github_actions_billing_exception": {
+            "enabled": True,
+            "repositories": ["acme/repo"],
+        }
+    }
+    kb.write_board_metadata("default", pr_acceptance=policy)
+    with connect() as conn:
+        github.update(conclusion="failure", head="a" * 40, billing=True)
+        tid = kb.create_task(conn, title="billing", completion_contract="acme/repo")
+        assert kb.complete_task(
+            conn, tid, summary="local verification passed",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["ok"] is True
+        assert receipt["classification"] == "billing/paywall — not executed"
+        assert receipt["head_sha"] == "a" * 40
+        assert receipt["base_branch"] == "main"
+        assert receipt["base_sha"] == "c" * 40
+        assert any(check["classification"] == "billing/paywall — not executed" for check in receipt["checks"])
+
+        github.update(conclusion="failure", head="a" * 40, billing=False)
+        tid = kb.create_task(conn, title="real failure", completion_contract="acme/repo")
+        assert not kb.complete_task(
+            conn, tid, summary="local verification passed",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["ok"] is False
+        assert receipt["classification"] == "failure"
+
+        # Case 3: all checks pass on a free-plan repo with billing exception.
+        # The rules API is unavailable (403); the check-runs API works and all pass.
+        github.update(conclusion="success", head="a" * 40, billing=False)
+        tid = kb.create_task(conn, title="all succeed", completion_contract="acme/repo")
+        assert kb.complete_task(
+            conn, tid, summary="local verification passed",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["ok"] is True
+        assert receipt["classification"] == "billing/paywall — not executed"
+        assert receipt["head_sha"] == "a" * 40
+        assert receipt["base_branch"] == "main"
+        assert receipt["base_sha"] == "c" * 40
+        assert len(receipt["checks"]) == 101
+        github.pop("empty", None)
+
+        # Case 4: no check-runs at all on a free-plan repo with billing exception.
+        # Must NOT auto-accept — zero CI evidence means the guard cannot be satisfied.
+        github.update(conclusion="success", head="a" * 40, billing=False, empty=True)
+        tid = kb.create_task(conn, title="no checks", completion_contract="acme/repo")
+        assert not kb.complete_task(
+            conn, tid, summary="local verification passed",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["ok"] is False
+
+        # Case 5: non-success check-runs (all skipped) on a free-plan repo.
+        # Must NOT auto-accept — skipped is not success per Kanban acceptance docs.
+        github.pop("empty", None)
+        github.update(conclusion="skipped", head="a" * 40, billing=False)
+        tid = kb.create_task(conn, title="all skipped", completion_contract="acme/repo")
+        assert not kb.complete_task(
+            conn, tid, summary="local verification passed",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["ok"] is False
 
 
 @pytest.mark.platforms("linux")

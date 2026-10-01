@@ -10,6 +10,18 @@ def _snapshot(conn, task_id):
     return tuple(row) if row else None
 
 
+def _board_acceptance_policy():
+    """Read the active board's fail-closed PR policy override.
+
+    Workers are pinned to their board by HERMES_KANBAN_BOARD/HERMES_KANBAN_DB,
+    so this cannot leak a temporary exception to another board.
+    """
+    from hermes_cli import kanban_db as kb
+
+    policy = kb.read_board_metadata(kb.get_current_board()).get("pr_acceptance")
+    return policy if isinstance(policy, dict) else None
+
+
 def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     snapshot = _snapshot(conn, task_id)
     if snapshot is None:
@@ -29,7 +41,10 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
             conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
         snapshot = (run_id, status, published_pr)
         contract = published_pr
-    return snapshot, collect_acceptance(contract, published_pr)
+    assert isinstance(contract, str)
+    return snapshot, collect_acceptance(
+        contract, published_pr, policy=_board_acceptance_policy(),
+    )
 
 
 def record_acceptance(conn, task_id, acceptance):

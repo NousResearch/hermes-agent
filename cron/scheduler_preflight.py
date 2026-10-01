@@ -236,6 +236,7 @@ class SharedRouteAdapters:
 def cron_delivery_adapters(
     profile: Optional[str], primary_adapters: Optional[dict], *,
     profile_adapters: Optional[dict] = None, primary_profile: Optional[str] = None,
+    profile_failed_platforms: Optional[dict] = None,
 ) -> dict | SharedRouteAdapters | None:
     """Select cron delivery adapters inside the job profile's runtime scope.
 
@@ -245,7 +246,7 @@ def cron_delivery_adapters(
     if profile is None or profile == primary_profile:
         return primary_adapters
     adapters = (profile_adapters or {}).get(profile) or {}
-    if adapters or not primary_adapters:
+    if adapters or not primary_adapters or (profile_failed_platforms or {}).get(profile):
         return adapters
     return SharedRouteAdapters(primary_adapters, _primary_profile_routes_for_current_home())
 

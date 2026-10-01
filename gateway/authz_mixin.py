@@ -256,7 +256,8 @@ class GatewayAuthorizationMixin:
         from cron.scheduler_preflight import cron_delivery_adapters
         return cron_delivery_adapters(
             profile, self._primary_adapters(), profile_adapters=self._profile_adapters_map(),
-            primary_profile=getattr(self, "_primary_profile_name", None) or "default")
+            primary_profile=getattr(self, "_primary_profile_name", None) or "default",
+            profile_failed_platforms=getattr(self, "_profile_failed_platforms", None))
 
     def _intake_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that RECEIVED *source*'s event — the only one whose intake policy (ignored

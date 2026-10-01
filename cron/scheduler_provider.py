@@ -438,6 +438,7 @@ class InProcessCronScheduler(CronScheduler):
     def start(
         self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
         profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_failed_platforms=None,
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
@@ -458,6 +459,7 @@ class InProcessCronScheduler(CronScheduler):
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
                 interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
                 default_profile=default_profile, profile_gate=profile_gate,
+                profile_failed_platforms=profile_failed_platforms,
             )
             return
 
@@ -534,6 +536,7 @@ class InProcessCronScheduler(CronScheduler):
     def _start_multiplex(
         self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
         can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_failed_platforms=None,
     ):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
         home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
@@ -609,7 +612,8 @@ class InProcessCronScheduler(CronScheduler):
                                 cron_tick(
                                     verbose=False, adapters=cron_delivery_adapters(
                                         _pname, adapters, profile_adapters=profile_adapters,
-                                        primary_profile=default_profile), loop=loop,
+                                        primary_profile=default_profile,
+                                        profile_failed_platforms=profile_failed_platforms), loop=loop,
                                     sync=False, can_dispatch=can_dispatch,
                                 )
                         except CronTickYielded as e:

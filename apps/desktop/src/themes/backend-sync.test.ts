@@ -7,8 +7,6 @@ import {
   __resetBackendSkinSync,
   ingestBackendSkin
 } from './backend-sync'
-import * as contextModule from './context'
-import * as userThemesModule from './user-themes'
 
 const skin = (name: string) => ({
   name,
@@ -88,12 +86,11 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBe('default')
   })
 
-  it('lets the provider resolve and keep default (not retired → nous)', () => {
+  it('lets the provider resolve and keep default (not retired → nous)', async () => {
     // skinPref / normalizeSkin must accept `default` once the backend registers
-    // it; RETIRED_SKINS no longer includes default (#76743 review). Static
-    // imports — the dynamic ones deadlocked under vitest's module runner.
-    const { skinPref } = contextModule
-    const { resolveTheme } = userThemesModule
+    // it; RETIRED_SKINS no longer includes default (#76743 review).
+    const { skinPref } = await import('./context')
+    const { resolveTheme } = await import('./user-themes')
 
     ingestBackendSkin(
       {
@@ -142,12 +139,10 @@ describe('ingestBackendSkin', () => {
   it('keys default-named skin CSS under the resolved desktop default', () => {
     ingestBackendSkin(skinWithCSS('default', 'body { background: red; }'), { apply: true })
 
-    // Since #76579 the classic `default` skin registers as its own palette
-    // (label "Classic Hermes"), and the converted theme carries the customCSS
-    // itself — the separate CSS store stays for built-in-named skins only.
-    expect($backendThemes.get().default?.label).toBe('Classic Hermes')
-    expect($backendThemes.get().default?.customCSS).toBe('body { background: red; }')
-    expect($backendCustomCSS.get().nous).toBeUndefined()
+    expect($backendThemes.get().default).toBeUndefined()
+    // setTheme normalizes `default` → DEFAULT_SKIN_NAME ('nous'), so the CSS
+    // must be findable under that name when the theme is derived.
+    expect($backendCustomCSS.get().nous).toBe('body { background: red; }')
   })
 
   it('clears customCSS when a built-in-named skin drops the field', () => {

@@ -534,6 +534,14 @@ def _start_codex_thread(agent) -> str:
         return agent._codex_session.ensure_started()
 
 
+def _codex_wire_model(agent) -> str | None:
+    """The slug codex should run: ``-900k`` picker variants are Hermes-side aliases the backend rejects
+    ("not supported when using Codex with a ChatGPT account"); codex already applies the catalog's
+    extended window to the base slug itself."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+    return strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
+
+
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
@@ -594,7 +602,7 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
-        model=getattr(agent, "model", None), model_provider=model_provider,
+        model=_codex_wire_model(agent), model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
     )
 

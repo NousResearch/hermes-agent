@@ -227,6 +227,9 @@ class TestLifecycle:
         assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == {
             **base, "model": "gpt-5.4"}
         assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == {**base, "model": "gpt-5.4"}
+        # ``-900k`` is a Hermes-side alias the backend rejects; codex gets the base slug.
+        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex",
+                                   model="gpt-5.6-sol-900k")["model"] == "gpt-5.6-sol"
 
     def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a

@@ -1683,6 +1683,8 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
 
     homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
+    if os.getenv("HERMES_GATEWAY_LOCK_DIR"):
+        return [(name, home) for name, home in homes if name == active] or [(active, get_profile_dir(active))]
     if any(name == active for name, _home in homes):
         return homes
     try:

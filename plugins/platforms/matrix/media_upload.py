@@ -80,7 +80,10 @@ class MatrixMediaUploadMixin:
             if encrypted and "url" in msg_content:
                 raise ValueError("Room encryption changed during upload; plaintext attachment was not sent")
             event_id = await asyncio.wait_for(
-                self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+                self._call_with_rate_limit_backoff(
+                    lambda: self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content),
+                    label="media send",
+                ), timeout=45)
             self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
             self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
             return SendResult(success=True, message_id=str(event_id))

@@ -1,0 +1,27 @@
+name: gbrain-retrieval-reflex
+repo: https://github.com/aean0x/hermes-gbrain-retrieval-reflex
+sha: d54ae4b80463ce7ec9d6a7919cbe4cce13bd89d4
+description: "Ambient context from a GBrain instance: volunteer_context then a hybrid-query fallback, merged and injected before each turn."
+maintainer: aean0x
+tier: community
+category: memory
+docs_url: https://github.com/aean0x/hermes-gbrain-retrieval-reflex#readme
+version: "0.6.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - GBRAIN_HOME
+    - GBRAIN_MCP_URL
+    - GBRAIN_RESOLVE_IPC_TIMEOUT_S
+    - GBRAIN_RESOLVE_SOCKET
+    - GBRAIN_RETRIEVAL_AUDIT
+    - GBRAIN_RETRIEVAL_REFLEX_HISTORY_TURNS
+    - GBRAIN_RETRIEVAL_REFLEX_MAX_CONTEXT_BYTES
+    - GBRAIN_RETRIEVAL_REFLEX_MAX_POINTERS
+    - GBRAIN_RETRIEVAL_REFLEX_MIN_CONF
+    - GBRAIN_RETRIEVAL_REFLEX_SYNOPSIS_MAX
+    - GBRAIN_TOKEN
+    - GBRAIN_VOLUNTEER_HTTP_TIMEOUT_S

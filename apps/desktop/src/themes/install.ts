@@ -79,39 +79,29 @@ export function buildThemeFromMarketplace(result: DesktopMarketplaceThemeResult)
  * fullest dark), falling back to the first light variant, then the first entry.
  */
 function installMultiVariantThemes(result: DesktopMarketplaceThemeResult): DesktopTheme {
-  const installed: DesktopTheme[] = []
-  let firstDark: DesktopTheme | undefined
-  let firstLight: DesktopTheme | undefined
-
-  for (const file of result.themes) {
+  const variants = result.themes.map(file => {
     const raw = parseVscodeTheme(file.contents)
     const label = file.label || raw.name || result.displayName
     const { mode, theme } = convertVscodeColorTheme(raw, { label, source: result.extensionId })
 
-    // Each variant is a standalone single-mode theme.  Omitting darkColors means
-    // getBaseColors returns `colors` for *both* light and dark — the light/dark
-    // toggle stays a no-op on the palette, which is correct since each variant
-    // IS a single mode and shouldn't jump to another variant when toggled.
-    const standalone: DesktopTheme = {
-      ...theme,
-      label,
-      darkColors: undefined
-    }
+    // Keep both color slots: an absent darkColors makes light mode synthesize a
+    // different palette. The terminal must likewise retain this exact variant.
+    return { mode, theme: { ...theme, ...(theme.terminal ? { darkTerminal: theme.terminal } : {}) } }
+  })
 
-    const stored = installUserTheme(standalone)
-    installed.push(stored)
+  const primary = variants.find(variant => variant.mode === 'dark') ?? variants[0]
 
-    if (mode === 'dark' && !firstDark) {
-      firstDark = stored
-    }
+  // Store the activation target first so either Marketplace selector reselects
+  // the same variant, even when an extension contributes its light theme first.
+  installUserTheme(primary.theme)
 
-    if (mode === 'light' && !firstLight) {
-      firstLight = stored
+  for (const variant of variants) {
+    if (variant !== primary) {
+      installUserTheme(variant.theme)
     }
   }
 
-  // Activate the first dark variant so a Catppuccin install lands on Mocha.
-  return firstDark ?? firstLight ?? installed[0]
+  return primary.theme
 }
 
 /**

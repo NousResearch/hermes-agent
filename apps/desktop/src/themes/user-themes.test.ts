@@ -92,7 +92,7 @@ describe('marketplace install tracking', () => {
     const theme = installUserTheme(makeTheme('Dracula', 'dracula-theme.theme-dracula'))
     const map = $marketplaceInstalls.get()
 
-    expect(map.get('dracula-theme.theme-dracula')).toEqual(theme)
+    expect(map.get('dracula-theme.theme-dracula')).toEqual([theme])
 
     removeUserTheme(theme.name)
     expect($marketplaceInstalls.get().has('dracula-theme.theme-dracula')).toBe(false)

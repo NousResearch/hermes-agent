@@ -75,18 +75,19 @@ def record_aux_usage(
             return
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
-        cost_status = "unknown"
-        cost_source = "none"
+        cost_status = None
+        cost_source = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)
-            cost_status = cost.status
-            cost_source = cost.source
+                cost_status = cost.status
+                cost_source = cost.source
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         session_db.record_auxiliary_usage(
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
+            billing_mode="subscription_included" if cost_status == "included" else None,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,

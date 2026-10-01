@@ -1091,6 +1091,7 @@ export function usePromptActions({
             }
 
             const refreshed = $messages.get()
+
             const retryPlan = planRestore(refreshed, messageId, {
               text: target?.text ?? plan.sourceText,
               userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal

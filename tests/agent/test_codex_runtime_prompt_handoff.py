@@ -101,3 +101,21 @@ def test_each_turn_sends_the_agent_s_current_wire_model(monkeypatch):
         codex_runtime.run_codex_app_server_turn(agent, user_message="hi", original_user_message="hi",
                                                 messages=[], effective_task_id="t")
     assert turns == ["gpt-5.6-sol", "gpt-5.5"]
+
+
+def test_runtime_retires_thread_when_an_in_place_switch_changes_the_codex_provider(monkeypatch):
+    """turn/start can change the model but not the provider: switching between codex's own provider and a
+    named custom provider (``[model_providers.<id>]``) starts a thread carrying the new modelProvider."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "load_config", lambda: {"providers": {"my-gateway": {"api": "https://gw.example/v1"}}})
+    client = _FakeClient()
+    monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: client)
+    agent = _agent(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.5")
+    for provider, requested in (("openai-codex", "openai-codex"), ("openai-codex", "openai-codex"),
+                                ("custom", "custom:my-gateway")):
+        agent.provider, agent.requested_provider = provider, requested
+        codex_runtime._ensure_codex_session(agent)
+        agent._codex_session.ensure_started()
+    starts = [p.get("modelProvider") for (m, p) in client.requests if m == "thread/start"]
+    assert starts == [None, "my-gateway"]
+    assert client.closed == 1

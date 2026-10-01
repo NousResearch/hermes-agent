@@ -50,19 +50,49 @@ Sites that ask for a code after the password are handled the same way:
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.
 
-## Already using 1Password or Bitwarden?
+## Already using 1Password, Bitwarden or Proton Pass?
 
-Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
-in, Hermes picks it up automatically and its website logins become fillable
-alongside the local ones. The first time the agent needs one of those logins it
-asks you to unlock the manager with your master password (masked prompt; once
-per session, 30 minutes idle). Hermes hands the master password to the manager's
-CLI through its non-interactive channel (`op signin` on stdin, `bw unlock
---passwordenv` in the child's environment) and keeps only the session token in
-memory. The agent never sees the master password, the token, or any login.
-A manager item that lists several websites (say `amazon.co.uk`,
-`www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
-origins; nothing is inferred beyond the URLs saved on the item.
+Nothing to enable for 1Password/Bitwarden: if the `op` or `bw` command-line
+tool is installed and signed in, Hermes picks it up automatically and its
+website logins become fillable alongside the local ones. The first time the
+agent needs one of those logins it asks you to unlock the manager with your
+master password (masked prompt; once per session, 30 minutes idle). Hermes
+hands the master password to the manager's CLI through its non-interactive
+channel (`op signin` on stdin, `bw unlock --passwordenv` in the child's
+environment) and keeps only the session token in memory. The agent never
+sees the master password, the token, or any login. A manager item that
+lists several websites (say `amazon.co.uk`, `www.amazon.co.uk` and
+`eu.account.amazon.com`) fills on each of those exact origins; nothing is
+inferred beyond the URLs saved on the item.
+
+**Proton Pass** is different: the `pass-cli` CLI has no master-password
+unlock. Instead, give Hermes a read-only Personal Access Token and it uses
+the CLI's headless agent mode — logins appear automatically, tagged
+"Proton Pass", and fill like any other source. The agent's `pass-cli`
+session is isolated in its own temp dir, never touching your desktop
+session.
+
+```yaml
+vault:
+  protonpass:
+    enabled: true           # `pass-cli` CLI; Login items with URLs become fillable handles.
+    vault: Personal         # named Proton Pass vault the agent may read logins from.
+    # Env var holding a read-only Personal Access Token (agent sessions are
+    # headless; there is no master-password unlock). Set it in ~/.hermes/.env.
+    pat_env: PROTON_PASS_PERSONAL_ACCESS_TOKEN
+```
+
+Create the token at **Proton Pass → Settings → API access** (Personal Access
+Token) with View-only access to the `Personal` vault. Put it in
+`~/.hermes/.env`:
+
+```
+PROTON_PASS_PERSONAL_ACCESS_TOKEN=pst_…
+```
+
+Every read carries a `PROTON_PASS_AGENT_REASON` audit marker. Without a PAT
+the backend is reported as locked with `unavailable_in_this_session` — there
+is no prompt path, so a headless session can never be asked.
 
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
@@ -105,6 +135,10 @@ vault:
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
     enabled: false
+  protonpass:
+    enabled: true           # on when `pass-cli` is installed; needs PROTON_PASS_PERSONAL_ACCESS_TOKEN
+    vault: Personal         # named Proton Pass vault to read logins from
+    pat_env: PROTON_PASS_PERSONAL_ACCESS_TOKEN
 ```
 
 ## What this does and does not guarantee

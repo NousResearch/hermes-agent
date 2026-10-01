@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -51,7 +52,10 @@ sys.exit(2)
 '''
 
 
-pytestmark = pytest.mark.platforms("posix")  # fake bw is a shebang script; the backend under test is host-agnostic
+# bw/op fakes are shebang scripts → POSIX only. Proton Pass tests use a
+# Windows-compatible `.cmd` shim and run on posix + windows.
+_POSIX_ONLY = pytest.mark.platforms("posix")
+_PP_PLATFORMS = pytest.mark.platforms("posix", "windows")
 
 
 @pytest.fixture
@@ -73,6 +77,7 @@ def _enabled(exe):
     return patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
 
 
+@_POSIX_ONLY
 def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypatch):
     exe, log = fake_bw
     from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
@@ -94,6 +99,7 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
     assert not unlock_mod.is_unlocked("bitwarden")
 
 
+@_POSIX_ONLY
 def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake_bw):
     exe, log = fake_bw
     from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
@@ -148,6 +154,7 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
     assert os.environ.get("BW_SESSION") is None, "session token must never touch the process env"
 
 
+@_POSIX_ONLY
 def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_token(fake_bw, monkeypatch):
     """A Lock acknowledged while `bw unlock` is still running must not be undone when the child returns;
     a session teardown releases only the tokens that session unlocked."""
@@ -170,6 +177,7 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.set_current_session_id(None)
 
 
+@_POSIX_ONLY
 def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
     """A Bitwarden login with several URIs binds all of them (deduped, first stays
     primary); non-web URIs and URIs marked match=Never (5) never widen the fill set."""
@@ -194,6 +202,7 @@ def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
                                               "https://eu.account.amazon.com"]
 
 
+@_POSIX_ONLY
 def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     """A 1Password login with several websites binds all of them; the app URI is kept
     out of the fill set and a single-URL item is unchanged."""
@@ -223,6 +232,7 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
 
 
+@_POSIX_ONLY
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     """Vault reads use the same explicit 1Password CLI config location."""
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
@@ -231,3 +241,174 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+# ── Proton Pass (pass-cli) ─────────────────────────────────────────────────
+
+# A stand-in `pass-cli` that mimics the four commands the backend uses and the CLI's
+# agent-session contract: `login --pat`, `vault list --output json`,
+# `item list --vault-name … --filter-type login --filter-state active --output json`,
+# and `item view --vault-name … --item-id … --field …`. It records argv + the child env
+# so the test can prove the PAT travelled via the documented env var and session dir/reason
+# were set. `--pat` is pass-cli's documented argv interface for the PAT (it is not a
+# master password), so the PAT legitimately appears in argv for `login` only.
+_FAKE_PASS = r'''#!/usr/bin/env python3
+import json, os, sys
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pass.log"), "a")
+argv = sys.argv[1:]
+log.write(json.dumps({"argv": argv,
+                      "PAT": os.environ.get("PROTON_PASS_PERSONAL_ACCESS_TOKEN"),
+                      "SESSION_DIR": os.environ.get("PROTON_PASS_SESSION_DIR"),
+                      "REASON": os.environ.get("PROTON_PASS_AGENT_REASON")}) + "\n")
+if argv[:2] == ["login", "--pat"]:
+    if os.environ.get("PROTON_PASS_PERSONAL_ACCESS_TOKEN") != argv[2]:
+        sys.stderr.write("PAT mismatch: argv %r vs env %r" % (argv[2], os.environ.get("PROTON_PASS_PERSONAL_ACCESS_TOKEN")))
+        sys.exit(1)
+    sys.exit(0)
+if argv[:2] == ["vault", "list"]:
+    print(json.dumps({"vaults": [{"name": "Personal", "vault_id": "v1", "share_id": "s1"}]})); sys.exit(0)
+if argv[:2] == ["item", "list"]:
+    print(json.dumps({"items": [
+        {"id": "item-1", "title": "Google", "create_time": "2026-01-01T00:00:00Z", "item_type": "login"},
+        {"id": "item-2", "title": "Shop", "create_time": "2026-01-02T00:00:00Z", "item_type": "login"},
+    ]})); sys.exit(0)
+if argv[:2] == ["item", "view"]:
+    # item view --field <name>
+    field = argv[argv.index("--field") + 1] if "--field" in argv else ""
+    item_id = argv[argv.index("--item-id") + 1] if "--item-id" in argv else ""
+    if field == "urls":
+        print("https://google.com, https://accounts.google.com, androidapp://com.google"); sys.exit(0)
+    if field == "email":
+        print("jane@example.com" if item_id == "item-1" else "shop@example.com"); sys.exit(0)
+    if field == "username":
+        sys.exit(1)
+    if field == "password":
+        print("hunter2-proton"); sys.exit(0)
+    if field == "totp_uri":
+        print("otpauth://totp/Google:jane@example.com?secret=JBSWY3DPEHPK3PXP"); sys.exit(0)
+    sys.exit(1)
+if argv[:2] == ["totp", "generate"]:
+    print("123456"); sys.exit(0)
+sys.exit(2)
+'''
+
+
+@pytest.fixture
+def fake_pass(tmp_path, monkeypatch):
+    """A pass-cli shim that runs on both POSIX and Windows.
+
+    POSIX: the shebang script above. Windows: a `.cmd` sibling that the backend's
+    ``binary_path`` points at, which invokes the same python script via `python -c`.
+    """
+    exe = tmp_path / "pass-cli"
+    exe.write_text(_FAKE_PASS, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "pass.log"
+    if sys.platform == "win32":
+        # Native python cannot exec a shebang script; wrap it in a .cmd shim.
+        shim = tmp_path / "pass-cli.cmd"
+        shim.write_text(
+            "@echo off\r\n"
+            f'"{sys.executable}" "{exe}" %*\r\n',
+            encoding="utf-8",
+        )
+        exe = shim
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    yield exe, log
+
+
+def _pass_enabled(exe, **cfg):
+    from agent.vault_backends.protonpass import ProtonPassLoginBackend
+
+    backend = ProtonPassLoginBackend({"enabled": True, "binary_path": str(exe),
+                                      "pat_env": "PROTON_PASS_PERSONAL_ACCESS_TOKEN", **cfg})
+    return patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
+
+
+@_PP_PLATFORMS
+def test_protonpass_locked_without_pat_is_reported_not_prompted(fake_pass, monkeypatch):
+    """No PAT → nothing prompts (there is no master-password path) and nothing runs."""
+    exe, log = fake_pass
+    from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
+
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    patcher, backend = _pass_enabled(exe)
+    # The backend's own is_unlocked gate is what actually prevents the call; also ensure
+    # a wired prompt (there is none for pass-cli) would never fire.
+    try:
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            listed = json.loads(browser_vault_list())
+            assert listed["items"] == []
+            assert listed["locked"] == [{"backend": "protonpass", "display_name": "Proton Pass",
+                                         "unlock": "unavailable_in_this_session"}]
+            filled = json.loads(browser_vault_fill("pp:item-1", task_id="t"))
+            assert filled["success"] is False and filled["error_type"] == "unlock_unavailable"
+    finally:
+        pass
+    assert not log.exists(), "pass-cli must not be invoked at all while locked without a PAT"
+
+
+@_PP_PLATFORMS
+def test_protonpass_list_maps_metadata_via_field_reads(fake_pass, monkeypatch):
+    """PAT present → `item list` gives instant titles; `get_meta` resolves the one
+    item's URLs+identifier via field reads. The metadata path must never call a full
+    item view (totp_uri/passkeys would leak), and list_items must not do per-item reads."""
+    exe, log = fake_pass
+    patcher, backend = _pass_enabled(exe)
+
+    _require_pat(monkeypatch)
+    with patcher:
+        metas = backend.list_items()
+        assert len(metas) == 2
+        assert all(m.origin is None for m in metas), "list_items must not resolve per-item detail"
+
+        meta = backend.get_meta("pp:item-1")
+        assert meta is not None
+        assert meta.label == "Google"
+        assert meta.origin == "https://google.com"
+        assert meta.identifier == "jane@example.com"
+        assert meta.identifier_type == "email"
+        assert list(meta.allowed_origins) == ["https://google.com", "https://accounts.google.com"]
+
+    calls = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+    views = [c for c in calls if c["argv"][:2] == ["item", "view"]]
+    assert views, "expected at least one item view"
+    assert all("--output" not in c["argv"] or "json" not in c["argv"] for c in views), \
+        "metadata reads must use --field only, never the full JSON item view"
+    assert all(c["REASON"] for c in calls), "PROTON_PASS_AGENT_REASON is mandatory for agent reads"
+    assert all(c["SESSION_DIR"] for c in calls), "agent sessions must be isolated via PROTON_PASS_SESSION_DIR"
+
+
+def _require_pat(monkeypatch, value="test-token-value"):
+    monkeypatch.setenv("PROTON_PASS_PERSONAL_ACCESS_TOKEN", value)
+
+
+@_PP_PLATFORMS
+def test_protonpass_login_pat_uses_documented_argv_channel_and_child_env(fake_pass, monkeypatch):
+    """The PAT reaches pass-cli through its documented `login --pat` argv slot, and the
+    child env also carries it (the CLI's env contract). It must never appear on ANY
+    non-login argv (metadata/password reads), and never leak into our process env."""
+    exe, log = fake_pass
+    patcher, backend = _pass_enabled(exe)
+
+    _require_pat(monkeypatch)
+    with patcher:
+        assert backend.resolve_password("pp:item-1") == "hunter2-proton"
+
+    calls = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+    login_calls = [c for c in calls if c["argv"][:2] == ["login", "--pat"]]
+    assert login_calls and login_calls[0]["argv"][2] == "test-token-value"
+    non_login = [c for c in calls if c["argv"][:2] != ["login", "--pat"]]
+    assert all("test-token-value" not in " ".join(c["argv"]) for c in non_login), \
+        "the PAT must never appear on item/vault argv (those are the audited reads)"
+    assert all(c["PAT"] == "test-token-value" for c in calls), "PAT must reach the child via env"
+
+
+@_PP_PLATFORMS
+def test_protonpass_resolve_otp_uses_totp_generate(fake_pass, monkeypatch):
+    exe, log = fake_pass
+    patcher, backend = _pass_enabled(exe)
+
+    _require_pat(monkeypatch)
+    with patcher:
+        assert backend.resolve_otp("pp:item-1") == "123456"

@@ -223,10 +223,10 @@ DEFAULT_CONFIG = {
         "verify_on_stop": False,
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
-        # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a
-        # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
-        # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
-        # top-level ``clarify.timeout`` still wins when explicitly set).
+        # Max seconds a messaging platform blocks an agent awaiting a clarify-tool reply; then it
+        # unblocks with "[user did not respond within Xm]". 0 or less = unlimited. CLI, TUI and
+        # Desktop wait until answered. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout
+        # (a legacy top-level ``clarify.timeout`` still wins when explicitly set).
         # 1h because users step away and a shorter value evicted the entry mid-think so a later
         # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
@@ -1662,8 +1662,9 @@ DEFAULT_CONFIG = {
     #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
     #   deny blocks instantly so the agent finds another way instead of waiting out the
     #   timeout and failing closed.
-    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
-    #   proved too tight for Telegram/Discord push notifications, hence 300.
+    # timeout: seconds before an unanswered prompt fails closed on messaging platforms, ACP and
+    #   approval transport plugins; CLI, TUI and Desktop wait until answered. 60s proved too
+    #   tight for Telegram/Discord push notifications, hence 300.
     "approvals": {
         # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
         # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer
@@ -2458,6 +2459,19 @@ DEFAULT_CONFIG = {
         "bitwarden": {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
+        },
+        "protonpass": {
+            "enabled": True,        # `pass-cli` CLI; Login items with a website URL become fillable handles.
+            "binary_path": "",      # absolute path to pass-cli; empty = PATH.
+            # Env var holding the agent's Personal Access Token (headless auth with
+            # `pass-cli login --pat`; no master-password CLI unlock exists). Unset = "locked",
+            # reported as unavailable. Create one at https://account.proton.me/pass/api-access.
+            "pat_env": "PROTON_PASS_PERSONAL_ACCESS_TOKEN",
+            # Named vault the agent reads logins from (only one per backend instance).
+            "vault": "Personal",
+            # Session dir for the agent's pass-cli session; empty = Hermes temp dir. Never share it
+            # with your own desktop pass-cli session.
+            "session_dir": "",
         },
     },
     "secrets": {

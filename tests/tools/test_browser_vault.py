@@ -706,9 +706,10 @@ class TestManagerAutoDetection:
 
         with patch.object(base, "is_installed", return_value=True):
             with patch.object(base, "_cfg", return_value={}):
-                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword", "bitwarden"}
+                assert {b.name for b in base.enabled_backends()} == {
+                    "local", "onepassword", "bitwarden", "protonpass"}
             with patch.object(base, "_cfg", return_value={"bitwarden": {"enabled": False}}):
-                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword"}
+                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword", "protonpass"}
         with patch.object(base, "is_installed", return_value=False), patch.object(base, "_cfg", return_value={}):
             assert [b.name for b in base.enabled_backends()] == ["local"]
 

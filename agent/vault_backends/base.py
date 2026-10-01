@@ -97,7 +97,8 @@ def _cfg() -> Dict:
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    from agent.vault_backends.protonpass import ProtonPassLoginBackend
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, ProtonPassLoginBackend)
 
 
 def is_installed(name: str) -> bool:
@@ -110,6 +111,8 @@ def is_installed(name: str) -> bool:
     if name == "onepassword":
         from agent.secret_sources.onepassword import find_op
         return find_op() is not None
+    if name == "protonpass":
+        return shutil.which("pass-cli") is not None
     return shutil.which("bw") is not None
 
 

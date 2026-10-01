@@ -298,6 +298,60 @@ def test_sanitize_keeps_parallel_results_keyed_by_responses_id_variant():
     ]
 
 
+def test_sanitize_rewrites_composite_persisted_result_alias():
+    """Replay normalizes the exact composite alias used by a persisted result."""
+    import hashlib
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "run both"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "chatcmpl-tool-alpha",
+                    "id": "chatcmpl-tool-alpha|item-a",
+                    "type": "function",
+                    "function": {"name": "first", "arguments": "{}"},
+                },
+                {
+                    "call_id": "chatcmpl-tool-beta",
+                    "id": "chatcmpl-tool-beta|item-b",
+                    "type": "function",
+                    "function": {"name": "second", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "chatcmpl-tool-alpha|item-a", "content": "r1"},
+        {"role": "tool", "tool_call_id": "chatcmpl-tool-beta", "content": "r2"},
+    ]
+
+    out = sanitize_api_messages(messages)
+    alpha = "call_" + hashlib.sha256(b"chatcmpl-tool-alpha").hexdigest()[:12]
+    beta = "call_" + hashlib.sha256(b"chatcmpl-tool-beta").hexdigest()[:12]
+    calls = out[1]["tool_calls"]
+    results = [message for message in out if message.get("role") == "tool"]
+    assert calls[0]["call_id"] == alpha
+    assert calls[0]["id"] == alpha + "|item-a"
+    assert calls[1]["call_id"] == beta
+    assert calls[1]["id"] == beta + "|item-b"
+    assert [result["tool_call_id"] for result in results] == [alpha + "|item-a", beta]
+
+
+def test_normalize_provider_ids_preserves_independent_composite_fields():
+    """Normalization keeps each field's own response-item suffix."""
+    from agent.message_sanitization import normalize_provider_tool_call_ids
+
+    tool_calls = [
+        {"call_id": "chatcmpl-tool-alpha", "id": "chatcmpl-tool-alpha|item-a"},
+        {"call_id": "chatcmpl-tool-beta", "id": "chatcmpl-tool-beta|item-b"},
+    ]
+    normalize_provider_tool_call_ids(tool_calls)
+    assert tool_calls[0]["id"].endswith("|item-a")
+    assert tool_calls[1]["id"].endswith("|item-b")
+    assert tool_calls[0]["call_id"] != tool_calls[0]["id"]
+
 def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
     """Consuming one alias group must not orphan a different parallel call."""
     from agent.agent_runtime_helpers import repair_message_sequence

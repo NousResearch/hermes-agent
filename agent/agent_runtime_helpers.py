@@ -3094,10 +3094,25 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         tool_calls = message.get("tool_calls")
         if not isinstance(tool_calls, list) or len(tool_calls) < 2:
             continue
-        old_ids = [coalesce_tool_call_id(tool_call) for tool_call in tool_calls]
+        def _field(tool_call, field):
+            return tool_call.get(field) if isinstance(tool_call, dict) else getattr(tool_call, field, None)
+
+        old_fields = [
+            {
+                field: _field(tool_call, field)
+                for field in ("call_id", "id", "response_item_id")
+            }
+            for tool_call in tool_calls
+        ]
         normalize_provider_tool_call_ids(tool_calls)
-        new_ids = [coalesce_tool_call_id(tool_call) for tool_call in tool_calls]
-        if old_ids == new_ids:
+        new_fields = [
+            {
+                field: _field(tool_call, field)
+                for field in ("call_id", "id", "response_item_id")
+            }
+            for tool_call in tool_calls
+        ]
+        if old_fields == new_fields:
             continue
         result_index = index + 1
         result_messages = []
@@ -3106,14 +3121,39 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             result_index += 1
         for position, result in enumerate(result_messages):
             old_id = result.get("tool_call_id")
+            candidates = []
+            for call_position, (old_call, new_call) in enumerate(zip(old_fields, new_fields)):
+                aliases = set()
+                for value in old_call.values():
+                    aliases.update(tool_result_id_variants(value))
+                if old_id in aliases:
+                    candidates.append(call_position)
+            if not candidates and position < len(old_fields):
+                candidates = [position]
+            if len(candidates) != 1:
+                continue
+            call_position = candidates[0]
             target = None
-            if position < len(old_ids) and old_id in tool_result_id_variants(old_ids[position]):
-                target = new_ids[position]
-            else:
-                matches = [new_id for old, new_id in zip(old_ids, new_ids)
-                           if old_id in tool_result_id_variants(old)]
-                if len(matches) == 1:
-                    target = matches[0]
+            old_call = old_fields[call_position]
+            new_call = new_fields[call_position]
+            # Prefer the exact field spelling so composite result ids retain their
+            # response-item suffix instead of collapsing to the bare call id.
+            for field in ("call_id", "id", "response_item_id"):
+                if old_id == old_call.get(field) and new_call.get(field):
+                    target = new_call[field]
+                    break
+            if target is None:
+                for field in ("call_id", "id", "response_item_id"):
+                    old_value = old_call.get(field)
+                    new_value = new_call.get(field)
+                    if old_value and new_value and old_id in tool_result_id_variants(old_value):
+                        old_parts = old_value.split("|", 1)
+                        new_parts = new_value.split("|", 1)
+                        if len(old_parts) == len(new_parts) == 2 and old_id == old_parts[1]:
+                            target = new_parts[1]
+                        else:
+                            target = new_value
+                        break
             if target:
                 result["tool_call_id"] = target
     messages = _dedupe_tool_call_ids(messages)

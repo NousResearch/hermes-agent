@@ -82,6 +82,7 @@ function Harness() {
     getRouteToken: () => `${routedStoredId ? sessionRoute(routedStoredId) : '/'}::`,
     getRoutedStoredSessionId: () => routedStoredId,
     navigate: navigate as never,
+    routedSessionId: null,
     requestGateway,
     selectedStoredSessionId
   })

@@ -30,7 +30,7 @@ every answering client attached to the session has declined; then the request re
 Capability: a client says once per connection that it answers server→client requests
 (``client.capabilities {server_requests: true}`` → :func:`advertise`). A WebSocket client that never
 did is a build older than this half of the protocol — it drops the frame silently and the agent
-would wait the full deadline (clarify's 300s) for nothing — so :func:`send` / :func:`send_async`
+would wait out the request (a clarify or approval with no deadline, forever) for nothing — so :func:`send` / :func:`send_async`
 return the same ``None`` an error response produces without writing the frame (#112548).
 """
 
@@ -62,7 +62,7 @@ class ServerRequest:
         self.created_at = time.time()
         # Batch clarify: question ids still to lock, and the answers locked so far.
         self.qids = list(qids) if qids else None
-        self.locked: dict[str, str] = {}
+        self.locked: dict[str, str | None] = {}
         self.on_result = on_result
         # Client transports that answered NOT_SHOWN_CODE (no window there shows this session).
         self.declined: set = set()
@@ -166,8 +166,8 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
 
     Returns ``None`` when the renderer never answered (timeout, cancel, or an error response — e.g.
     a client without a handler for ``method``). ``timeout`` semantics: None → wait until answered or
-    cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that times out
-    returns ``{"answers": <locked so far>, "timed_out": True}`` instead of None.
+    cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that settled returns
+    ``{"answers": <locked so far>, "outcome"}`` (``submitted`` / ``cancelled`` / ``timed_out``).
     """
     if _unanswerable(method, sid):
         return None
@@ -195,7 +195,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return {"answers": locked, "timed_out": True}
+            return {"answers": locked, "outcome": "timed_out"}
     return None
 
 
@@ -283,7 +283,9 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
                 merged = dict(req.locked)
                 if isinstance(answers, dict):
                     merged.update(answers)
-                req.result = {**req.result, "answers": merged}
+                req.result = {**req.result, "answers": merged, "outcome": "submitted"}
+            elif req.qids:
+                req.result = {"answers": dict(req.locked), "outcome": "cancelled"}
             req.answered = True
     if req.on_result is not None:
         req.on_result(req.result)
@@ -291,10 +293,10 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
     return True
 
 
-def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | None:
-    """Lock one batch-clarify answer (update-in-place). Returns the question ids still unanswered;
-    the last lock resolves the request with the full ``{"answers"}`` set. ``None`` when no open
-    batch has that id (expired or foreign); ``ValueError`` for an unknown question id."""
+def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[str] | None:
+    """Lock one batch-clarify answer (update-in-place; ``None`` = skipped). Returns the question ids
+    still unanswered; the last lock resolves the request with the full ``{"answers"}`` set. ``None``
+    when no open batch has that id (expired or foreign); ``ValueError`` for an unknown question id."""
     with _lock:
         req = _open.get(request_id)
         if req is None or req.qids is None:
@@ -304,7 +306,7 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
         req.locked[question_id] = answer
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
-            req.result, req.answered = {"answers": dict(req.locked)}, True
+            req.result, req.answered = {"answers": dict(req.locked), "outcome": "submitted"}, True
             _open.pop(request_id, None)
     if not remaining:
         req.event.set()
@@ -313,13 +315,17 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
 
 def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
     """Withdraw open requests — only *sid*'s (session.interrupt must not touch other sessions'), or
-    every one when *sid* is None (shutdown). Blocked waits return None; queue-backed requests run
-    ``on_result(None)`` so their owner can settle. Returns the number withdrawn."""
+    every one when *sid* is None (shutdown). Blocked waits return None (a batch returns its locked
+    answers with ``outcome: cancelled``); queue-backed requests run ``on_result(None)`` so their
+    owner can settle. Returns the number withdrawn."""
     with _lock:
         targets = [req for req in _open.values() if sid is None or req.sid == sid]
         for req in targets:
             _open.pop(req.id, None)
-            req.result, req.answered = None, False
+            if req.qids is not None:
+                req.result, req.answered = {"answers": dict(req.locked), "outcome": "cancelled"}, True
+            else:
+                req.result, req.answered = None, False
     for req in targets:
         if req.on_result is not None:
             req.on_result(None)

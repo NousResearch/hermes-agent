@@ -182,11 +182,13 @@ gateway:
     label_normal: "NORMÁL"
     status_fast: "gyors"
     status_normal: "normál"
-    picker_title: "⚡ **Priority Processing**\\n\\nJelenlegi mód: `{mode}`\\n\\nVálassz egy opciót:"
+    picker_title: "⚡ **Priority Processing**\n\nJelenlegi mód: `{mode}`\n\nVálassz egy opciót:"
     choice_fast: "fast — Priority Processing bekapcsolva"
     choice_normal: "normal — normál feldolgozás"
     choice_auto: "auto — gyors minden kör első másodperceiben"
     choice_cold: "cold — gyors csak a munkamenet első körében"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, hatszoros ár)"
+    ultrafast_not_supported: "⚡ Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: `{model}`)."
   footer:
     status: "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
     usage: "Használat: `/footer [on|off|status]`"
@@ -283,7 +285,7 @@ gateway:
     reset_global_unsupported: "⚠️ A `/reasoning reset --global` nem támogatott. Használd a `/reasoning <level> --global` parancsot a globális alapérték módosításához."
     reset_done: "🧠 ✓ A munkamenet gondolkodási felülbírálása törölve; visszaállás a globális konfigurációra."
     unknown_arg: "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes szintek:** none, minimal, low, medium, high, xhigh, max, ultra\n**Megjelenítés:** show, hide\n**Megőrzés:** add hozzá a `--global` opciót a munkameneten túli mentéshez"
-    picker_title: "🧠 **Gondolkodási beállítások**\\n\\n**Erőfeszítés:** `{level}`\\n**Hatókör:** {scope}\\n**Megjelenítés:** {display}\\n\\nVálassz egy opciót:"
+    picker_title: "🧠 **Gondolkodási beállítások**\n\n**Erőfeszítés:** `{level}`\n**Hatókör:** {scope}\n**Megjelenítés:** {display}\n\nVálassz egy opciót:"
     choice_none: "none — gondolkodás kikapcsolása"
     choice_reset: "reset — munkameneti felülbírálás törlése"
     choice_show: "gondolkodás megjelenítése a válaszokban"
@@ -663,6 +665,7 @@ gateway:
     cancelled: "↩️ Pontosítás megszakítva — az üzenetedet folytatásként kezelem."
     expired: "⏳ Ez a kérdés lejárt — küldj új kérést."
     native_stream_placeholder: "💬 Várom a választásodat..."
+    skip_hint: 'Válaszolj „skip” szóval a kérdés kihagyásához.'
   errors:
     rate_limited: "⏱️ Az AI-modellszolgáltatás korlátozza a kérések számát. Várj egy kicsit, majd használd a /retry parancsot."
     auth_failed: "⚠️ Nem sikerült bejelentkezni az AI-modellszolgáltatásba. Jelentkezz be újra a /login paranccsal, vagy kérd meg a bot üzemeltetőjét, hogy futtassa a `hermes doctor` parancsot a gépen."
@@ -1614,7 +1617,7 @@ slash:
   reasoning:
     description: "Gondolkodási erőfeszítés és megjelenítés kezelése"
   fast:
-    description: "Gyors mód — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Gyors mód — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "A megjelenítési skin/téma megjelenítése vagy módosítása"
   indicator:
@@ -2049,7 +2052,6 @@ cli:
     clarify_other_type_below: "Egyéb (írd be lent)"
     clarify_other_type_answer: "Egyéb (írd be a válaszodat)"
     clarify_guidance: "Írd be a válaszodat az alábbi mezőbe, majd nyomj Entert."
-    clarify_question_truncated: "… (a kérdés csonkolva)"
     picker_title_provider: "⚙ Modellválasztó — Válassz szolgáltatót"
     picker_provider_row_one: "{name} ({count} modell)"
     picker_provider_row_other: "{name} ({count} modell)"
@@ -2094,7 +2096,6 @@ cli:
     hint_vault_username: "gépelés közben látható · Enter a folytatáshoz"
     hint_clarify_freetext: "írd be a válaszodat, és nyomj Entert"
     hint_clarify_batch: "↑/↓ a választáshoz, Enter rögzít, Tab a következő kérdés"
-    hint_clarify_choice: "↑/↓ a választáshoz, Enter a megerősítéshez"
     hint_input_disabled: "a bevitel átmenetileg le van tiltva"
     hint_input_queues: "a bevitel aktív marad; az Enter sorba állít"
     hint_command_running: "{frame} parancs folyamatban · {detail}"
@@ -2268,8 +2269,6 @@ cli:
   approval:
     bell_context: "jóváhagyás"
     label: "Jóváhagyás"
-    timeout_denying: "⏱ Időtúllépés — a parancs elutasítva"
-    timed_out_no_response: "időtúllépés (nem jött válasz)"
     outcome_once: "egyszer engedélyezve"
     outcome_session: "a munkamenetre engedélyezve"
     outcome_always: "engedélyezőlistára téve"
@@ -2277,8 +2276,6 @@ cli:
   clarify:
     bell_context: "pontosítás"
     label: "Pontosítás"
-    timed_out_agent_decides: "(a pontosítás {timeout} mp után lejárt — az ügynök dönt)"
-    timed_out_locked_answers: "(a pontosítás {timeout} mp után lejárt — a rögzített válaszok visszaküldve)"
   connect:
     bell_context: "kapcsolat beállítása"
     cannot_restart: "Ezt a kapcsolatot nem lehet újraindítani. Szakítsd meg, és kérd újra az ügynöktől."
@@ -2670,7 +2667,9 @@ cli:
       feature_generic: "Gyors mód"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Használat: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Az Ultrafast csak a GPT-6 Astra modellhez érhető el (jelenlegi modell: {model})."
+      usage: "Használat: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} beállítva: {value} {scope}"
     hatch:

@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "rápido"
     status_normal: "normal"
-    picker_title: "⚡ **Priority Processing**\\n\\nModo atual: `{mode}`\\n\\nEscolha uma opção:"
+    picker_title: "⚡ **Priority Processing**\n\nModo atual: `{mode}`\n\nEscolha uma opção:"
     choice_fast: "fast — Priority Processing ativado"
     choice_normal: "normal — processamento padrão"
     choice_auto: "auto — rápido nos primeiros segundos de cada turno"
     choice_cold: "cold — rápido apenas no primeiro turno de uma sessão"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, preço 6x)"
+    ultrafast_not_supported: "⚡ O Ultrafast só está disponível para o GPT-6 Astra (modelo atual: `{model}`)."
   footer:
     status: "📎 Rodapé de execução: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` não é suportado. Usa `/reasoning <level> --global` para alterar o predefinido global."
     reset_done: "🧠 ✓ Substituição de raciocínio da sessão removida; a regressar à configuração global."
     unknown_arg: "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
-    picker_title: "🧠 **Definições de raciocínio**\\n\\n**Esforço:** `{level}`\\n**Âmbito:** {scope}\\n**Visualização:** {display}\\n\\nEscolha uma opção:"
+    picker_title: "🧠 **Definições de raciocínio**\n\n**Esforço:** `{level}`\n**Âmbito:** {scope}\n**Visualização:** {display}\n\nEscolha uma opção:"
     choice_none: "none — desativar raciocínio"
     choice_reset: "reset — limpar o override de sessão"
     choice_show: "mostrar raciocínio nas respostas"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Esclarecimento cancelado — sua mensagem será tratada como continuação."
     expired: "⏳ Este prompt expirou — envie uma nova solicitação."
     native_stream_placeholder: "💬 Aguardando sua escolha..."
+    skip_hint: 'Responda "skip" para pular esta pergunta.'
   errors:
     rate_limited: "⏱️ O serviço do modelo de IA está limitando a taxa de requisições. Aguarde um momento e use /retry."
     auth_failed: "⚠️ Falha ao entrar no serviço do modelo de IA. Use /login para entrar novamente ou peça a quem administra este bot para executar `hermes doctor` no host."
@@ -1597,7 +1600,7 @@ slash:
   reasoning:
     description: "Gerenciar o esforço e a exibição do raciocínio"
   fast:
-    description: "Modo rápido — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Modo rápido — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Mostrar ou alterar a skin/tema de exibição"
   indicator:
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "Outro (digite abaixo)"
     clarify_other_type_answer: "Outro (digite sua resposta)"
     clarify_guidance: "Digite sua resposta no prompt abaixo e pressione Enter."
-    clarify_question_truncated: "… (pergunta truncada)"
     picker_title_provider: "⚙ Seletor de modelos — Selecione o fornecedor"
     picker_provider_row_one: "{name} ({count} modelo)"
     picker_provider_row_other: "{name} ({count} modelos)"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "visível ao digitar · Enter para continuar"
     hint_clarify_freetext: "digite sua resposta e pressione Enter"
     hint_clarify_batch: "↑/↓ para selecionar, Enter para fixar, Tab próxima pergunta"
-    hint_clarify_choice: "↑/↓ para selecionar, Enter para confirmar"
     hint_input_disabled: "entrada temporariamente desativada"
     hint_input_queues: "entrada continua ativa; Enter enfileira"
     hint_command_running: "{frame} comando em andamento · {detail}"
@@ -2251,8 +2252,6 @@ cli:
   approval:
     bell_context: "aprovação"
     label: "Aprovação"
-    timeout_denying: "⏱ Tempo limite — negando o comando"
-    timed_out_no_response: "tempo limite esgotado (sem resposta)"
     outcome_once: "permitido uma vez"
     outcome_session: "permitido para a sessão"
     outcome_always: "adicionado à lista de permissões"
@@ -2260,8 +2259,6 @@ cli:
   clarify:
     bell_context: "esclarecimento"
     label: "Esclarecer"
-    timed_out_agent_decides: "(esclarecimento expirou após {timeout}s — o agente decidirá)"
-    timed_out_locked_answers: "(esclarecimento expirou após {timeout}s — respostas travadas retornadas)"
   connect:
     bell_context: "configuração de conexão"
     cannot_restart: "Esta conexão não pode ser iniciada novamente. Cancele e peça ao agente de novo."
@@ -2653,7 +2650,9 @@ cli:
       feature_generic: "Modo rápido"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Uso: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) O Ultrafast só está disponível para o GPT-6 Astra (modelo atual: {model})."
+      usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} definido como {value} {scope}"
     hatch:

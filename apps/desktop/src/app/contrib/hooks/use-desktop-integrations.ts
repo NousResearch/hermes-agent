@@ -5,6 +5,7 @@ import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-li
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
@@ -38,7 +39,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
@@ -121,7 +122,12 @@ export function useDesktopIntegrations({
   // This ref is a one-time lifecycle latch, not a mirror of reactive atom state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    if (!profileReady || isHudWindow() || isBrowserWindow()) {
+    // A peer instance window (Ctrl+Shift+N / New Window) boots on the fresh
+    // draft route by design: it must not replay the primary window's
+    // remembered-route/remembered-session restore, which lands it back on the
+    // very session Window 1 has open (#74948). Connections' source
+    // restoration already skips peers for the same reason.
+    if (!profileReady || isHudWindow() || isBrowserWindow() || isPeerInstanceWindow()) {
       return
     }
 
@@ -472,9 +478,17 @@ export function useDesktopIntegrations({
   // OS-standard window close, esp. secondary windows). The Win/Linux keyboard
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(
-      () => void closeActiveTab(id => navigate(sessionRoute(id)))
-    )
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => {
+      // A focused user terminal owns the chord as the shell's word erase: main
+      // claimed the keystroke (before-input-event), so re-deliver the ^W byte
+      // to the PTY instead of closing the pane and killing the shell (#65457).
+      // Read-only agent mirrors and everything else keep the close meaning.
+      if (wordEraseFocusedTerminal()) {
+        return
+      }
+
+      void closeActiveTab(id => navigate(sessionRoute(id)))
+    })
 
     return () => unsubscribe?.()
   }, [navigate])
@@ -485,6 +499,10 @@ export function useDesktopIntegrations({
   // app-level meaning to fall back to; an unfocused swipe is a no-op.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
+      if (commandFocusedTerminal(command)) {
+        return
+      }
+
       if (!commandFocusedPreview(command) && command === 'reload') {
         window.location.reload()
       }

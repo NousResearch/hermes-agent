@@ -23,29 +23,8 @@ if _REPO_ROOT not in sys.path:
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from gateway.platforms.yuanbao import (
-    InboundContext,
-    InboundMiddleware,
-    InboundPipeline,
-    DecodeMiddleware,
-    ExtractFieldsMiddleware,
-    DedupMiddleware,
-    SkipSelfMiddleware,
-    ChatRoutingMiddleware,
-    AccessPolicy,
-    AccessGuardMiddleware,
-    AutoSetHomeMiddleware,
-    ExtractContentMiddleware,
-    PlaceholderFilterMiddleware,
-    GroupAtGuardMiddleware,
-    QuoteContextMiddleware,
-    MediaResolveMiddleware,
-    PatchAnchorsMiddleware,
-    InboundPipelineBuilder,
-    YuanbaoAdapter,
-    _MIN_RESOLVE_CONCURRENCY,
-    _MAX_RESOLVE_CONCURRENCY,
-)
+from gateway.platforms.yuanbao import (YuanbaoAdapter, _MIN_RESOLVE_CONCURRENCY, _MAX_RESOLVE_CONCURRENCY)
+from gateway.platforms.yuanbao_inbound import (InboundContext, InboundMiddleware, InboundPipeline, DecodeMiddleware, ExtractFieldsMiddleware, DedupMiddleware, SkipSelfMiddleware, ChatRoutingMiddleware, AccessPolicy, AccessGuardMiddleware, AutoSetHomeMiddleware, ExtractContentMiddleware, PlaceholderFilterMiddleware, GroupAtGuardMiddleware, QuoteContextMiddleware, MediaResolveMiddleware, PatchAnchorsMiddleware, InboundPipelineBuilder)
 from gateway.config import PlatformConfig
 
 

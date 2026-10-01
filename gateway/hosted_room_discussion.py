@@ -553,7 +553,10 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int) -> str:
-    delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
+    # A Bot's own replies are never "new messages" for it, even past its watermark.
+    delta = [event for event in messages if watermark < event.seq <= seen_through_seq
+             and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
+             ][-MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '

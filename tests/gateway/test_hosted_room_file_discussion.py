@@ -142,3 +142,26 @@ def test_the_next_mentioned_bot_receives_the_shared_files_but_the_author_does_no
         room, local_profiles=LOCAL_PROFILES))
     message = next(event for event in events if event.kind == "message.member")
     assert discussion._event_attachments(message, task.member) == []
+
+
+def test_a_bots_own_replies_never_appear_in_its_next_prompt(room_db):
+    """The watermark normally covers them; the prompt also drops any that sit past it."""
+    db, room = room_db
+    _user(db, "@build Draft the plan.")
+    task = _task(room, db)
+    for event in discussion.plan_publication(room, _events(db), task, status="settled",
+                                             result={"text": "My own earlier draft."},
+                                             local_profiles=LOCAL_PROFILES).events:
+        hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID), now=time.time())
+    _user(db, "@build Now the details.", event_id="user-2")
+    checked = discussion.validate_room(room, local_profiles=LOCAL_PROFILES)
+    messages = [e for e in discussion._validated_events(_events(db), room=checked)
+                if e.kind in {"message.user", "message.member"}]
+    member = next(m for m in checked.members if m.member_id == "member-build")
+    prompt = discussion._build_prompt(room=checked, member=member, messages=messages, watermark=0,
+                                      seen_through_seq=messages[-1].seq)
+    assert "Now the details." in prompt and "Draft the plan." in prompt
+    assert "My own earlier draft." not in prompt
+    other = next(m for m in checked.members if m.member_id == "member-review")
+    assert "My own earlier draft." in discussion._build_prompt(
+        room=checked, member=other, messages=messages, watermark=0, seen_through_seq=messages[-1].seq)

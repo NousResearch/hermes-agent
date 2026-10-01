@@ -149,6 +149,54 @@ class TestMemoryFileLockPermissions:
         assert outside.read_text(encoding="utf-8") == "do not touch"
 
 
+@pytest.mark.platforms("posix")
+class TestMemoryFilePermissions:
+    """The memory files themselves are owner-only, not just their ``.lock``.
+
+    Regression guard: ``_write_file`` passed no ``mode`` to
+    ``atomic_write_text``, so a NEW ``MEMORY.md``/``USER.md`` was created at
+    ``0o666 & ~umask`` — world-readable at the common umask 0o022, exposing the
+    user's private notes to every other account on the host (and to anything
+    sharing a volume mount). ``_file_lock`` already compensated for the same
+    hazard on the lock path; the payload was left behind.
+    """
+
+    def test_new_memory_file_is_owner_only_under_permissive_umask(self, store):
+        previous_umask = os.umask(0o022)
+        try:
+            store.add("memory", "User prefers concise answers.")
+        finally:
+            os.umask(previous_umask)
+
+        path = store._path_for("memory")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_new_user_file_is_owner_only(self, store):
+        previous_umask = os.umask(0o022)
+        try:
+            store.add("user", "Lives in UTC+8.")
+        finally:
+            os.umask(previous_umask)
+
+        path = store._path_for("user")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_drift_backup_is_owner_only(self, store):
+        """The ``.bak.<ts>`` snapshot holds the same private notes verbatim."""
+        store.add("memory", "User prefers concise answers.")
+        path = store._path_for("memory")
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n\n## Vendor Master\n" + "x" * 800,
+            encoding="utf-8",
+        )
+
+        result = store.replace("memory", "User prefers", "User prefers terse.")
+        assert result["success"] is False
+        backup = Path(result["drift_backup"])
+
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
 class TestMemoryStoreAdd:
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")

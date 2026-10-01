@@ -521,9 +521,16 @@ class MemoryStore:
     def _write_file(path: Path, entries: List[str]):
         """Atomic temp-file + rename: readers never see a truncated file. Callers
         hold ``_file_lock`` (via ``_mutate``): a bare write from an earlier snapshot
-        drops concurrent entries (#119668)."""
+        drops concurrent entries (#119668).
+
+        ``mode=0o600`` — the store holds the user's private notes verbatim, so the
+        file must not be readable by other accounts on the host. Without an explicit
+        mode a NEW file gets ``0o666 & ~umask`` (0o644 at the common umask 0o022),
+        which is what ``_file_lock`` already compensates for on the ``.lock`` path.
+        ``mode`` (unlike ``create_mode``) also repairs a file an older Hermes or an
+        external ``write_text`` left world-readable."""
         try:
-            atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_")
+            atomic_write_text(path, ENTRY_DELIMITER.join(entries), tmp_prefix=".mem_", mode=0o600)
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
@@ -538,7 +545,9 @@ class MemoryStore:
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
         try:
-            bak_path.write_text(raw, encoding="utf-8")
+            # The snapshot holds the same private notes as the store itself, so it gets
+            # the same owner-only mode (a plain ``write_text`` here is 0o644 at umask 0o022).
+            atomic_write_text(bak_path, raw, tmp_prefix=".membak_", mode=0o600)
         except OSError:
             return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
         return str(bak_path)

@@ -374,7 +374,7 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
 
 def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:
     """Root-level ``provider``/``base_url`` belong under ``model:`` (raw-file diagnostic)."""
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.config import atomic_config_replace, read_user_config_raw
     raw_config = read_user_config_raw(config_path)
     stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
     if not stale_root_keys:
@@ -391,7 +391,7 @@ def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:
         value = raw_config.pop(k)
         if not raw_model.get(k):
             raw_model[k] = value
-    atomic_config_write(config_path, raw_config)
+    atomic_config_replace(config_path, raw_config)
     check_ok("Migrated stale root-level keys into model section")
     f.fixed += 1
 

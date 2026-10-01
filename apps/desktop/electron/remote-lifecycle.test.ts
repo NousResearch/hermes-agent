@@ -14,6 +14,7 @@ import {
   classifySshReuseProof,
   cleanupStale,
   connect,
+  DEFAULT_READY_TIMEOUT_MS,
   disconnect,
   expandRemotePath,
   fingerprintToken,
@@ -23,6 +24,7 @@ import {
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
+  MIN_READY_TIMEOUT_MS,
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
@@ -34,6 +36,7 @@ import {
   READY_RE,
   remotePidAlive,
   remoteSupportsSshOwnership,
+  resolveReadyTimeoutMs,
   scrapeReadyPort,
   spawnLogPath,
   spawnRemoteDashboard,
@@ -184,6 +187,8 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   assert.match(commands[0], /home\.parent\.name/)
   assert.match(commands[0], /profiles/)
   assert.match(commands[0], /\.hermes-update-in-progress/)
+  assert.match(commands[0], /marker\.unlink/)
+  assert.match(commands[0], /\/proc\/%d\/cmdline/)
 })
 
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
@@ -955,6 +960,26 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
+test('buildSpawnCommand never pins a non-slug profile into the remote argv', () => {
+  // The roster/SSH bridge hands the profile verbatim; a numeric id or display
+  // label must never cross into the remote serve argv, where the CLI used to
+  // str()-coerce it into a phantom profiles/0/ directory (#88842).
+  const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, {
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+  assert.ok(!bad.includes('--profile'), 'a non-string profile must not be pinned')
+
+  const empty = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.ok(!empty.includes('--profile'), 'an empty profile must not be pinned')
+
+  const label = buildSpawnCommand('/x/hermes', 'My Profile!', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.ok(!label.includes('--profile'), 'a non-slug label must not be pinned')
+
+  const good = buildSpawnCommand('/x/hermes', 'Work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.ok(good.includes('--profile'), 'a valid profile stays pinned')
+  assert.ok(good.includes("'work'"), 'the profile is normalized like the CLI would')
+})
+
 test.skipIf(process.platform === 'win32')(
   'detached backend does not inherit the update mutex descriptor',
   async (): Promise<void> => {
@@ -1411,6 +1436,54 @@ test('managed update drain never falls back to a bare kill when the identity-bou
     'the final signal must stay inside the identity-checking helper'
   )
 })
+
+test.skipIf(process.platform === 'win32')(
+  'managed update drain reports the real POSIX refusal, not a generic transport error',
+  async () => {
+    // Regression for #124617: the termination probe prints REFUSED (and, on
+    // Darwin, DARWIN_UNAVAILABLE) but used to exit non-zero for it. ssh.exec()
+    // throws on any non-zero remote exit, so the specific message built below
+    // from the probe's stdout was dead code in production — every refusal
+    // collapsed into the generic "Could not terminate the Desktop-owned
+    // remote serve for update." Run the real probe (not a canned string)
+    // against a live-but-foreign local process so its actual exit code
+    // decides the outcome, the same way the real SSH transport does.
+    const dummy = spawn('sleep', ['5'], { stdio: 'ignore' })
+
+    try {
+      const lock = ownedLock({ pid: dummy.pid })
+      const rawLock = JSON.stringify(lock)
+
+      const ssh: Pick<SshConnection, 'exec'> = {
+        async exec(cmd: string): Promise<string> {
+          if (/cat .*lock\.json/.test(cmd)) {
+            return rawLock
+          }
+
+          if (/kill -0 /.test(cmd)) {
+            return 'ALIVE'
+          }
+
+          if (/fields\[19\]/.test(cmd)) {
+            return lock.creationTime
+          }
+
+          if (/print\("OWNED" if ok else "FOREIGN"\)/.test(cmd)) {
+            return 'OWNED'
+          }
+
+          // The real termination probe: execute it for real so its actual
+          // exit code — not a canned string — is what drives the caller.
+          return (await exec(cmd)).stdout
+        }
+      }
+
+      await assert.rejects(terminateOwnedDashboardForUpdate(ssh, lock), /identity changed at the signal boundary/)
+    } finally {
+      dummy.kill('SIGKILL')
+    }
+  }
+)
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
   const reuseToken = 'stored'
@@ -1951,7 +2024,6 @@ test('cleanupStale escalates to SIGKILL when the backend survives the graceful w
     hermesPath: '/x/hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
   })
-
   assert.ok(
     ssh.calls.some(c => /kill -9 9\b/.test(c)),
     'must escalate to SIGKILL after the graceful wait fails'
@@ -1961,7 +2033,6 @@ test('cleanupStale escalates to SIGKILL when the backend survives the graceful w
     'lockfile must still be dropped after the forced kill'
   )
 })
-
 test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid died', async () => {
   const ssh = fakeSsh([
     [/print\("OWNED"/, 'OWNED\n'],
@@ -1978,7 +2049,6 @@ test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid d
     }),
     /Could not terminate/
   )
-
   // The record must survive so the next connect's reap pass retries.
   assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
 })
@@ -2144,4 +2214,30 @@ test('connect() post-spawn cleanup that cannot prove ownership keeps the origina
     !ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
     'record must survive for the next connect to reap'
   )
+})
+
+// ---------------------------------------------------------------------------
+// resolveReadyTimeoutMs (issue #94642): cold-start-tolerant remote budgets
+// ---------------------------------------------------------------------------
+test('honors a valid HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS override', () => {
+  const env = { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: '180000' }
+  assert.equal(resolveReadyTimeoutMs(env), 180_000)
+})
+test('clamps an override below the floor up to the 45s minimum', () => {
+  const env = { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: '1000' }
+  assert.equal(resolveReadyTimeoutMs(env), MIN_READY_TIMEOUT_MS)
+})
+test('rounds a fractional override', () => {
+  const env = { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: '60000.7' }
+  assert.equal(resolveReadyTimeoutMs(env), 60_001)
+})
+test('falls back to the default for malformed / non-positive overrides', () => {
+  for (const bad of ['', 'abc', '0', '-5', 'NaN', undefined]) {
+    const env = bad === undefined ? {} : { HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS: bad }
+    assert.equal(
+      resolveReadyTimeoutMs(env),
+      DEFAULT_READY_TIMEOUT_MS,
+      `override ${JSON.stringify(bad)} should fall through to the default`
+    )
+  }
 })

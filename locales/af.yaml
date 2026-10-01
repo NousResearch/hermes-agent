@@ -179,7 +179,7 @@ gateway:
     label_normal: "NORMAAL"
     status_fast: "vinnig"
     status_normal: "normaal"
-    picker_title: "⚡ **Priority Processing**\\n\\nHuidige modus: `{mode}`\\n\\nKies \\'n opsie:"
+    picker_title: "⚡ **Priority Processing**\n\nHuidige modus: `{mode}`\n\nKies \\'n opsie:"
     choice_fast: "fast — Priority Processing aan"
     choice_normal: "normal — standaardverwerking"
     choice_auto: "auto — vinnig vir die eerste sekondes van elke beurt"
@@ -282,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` word nie ondersteun nie. Gebruik `/reasoning <level> --global` om die globale verstek te verander."
     reset_done: "🧠 ✓ Sessie-redenering-oorskryf verwyder; val terug op globale konfigurasie."
     unknown_arg: "⚠️ Onbekende argument: `{arg}`\n\n**Geldige vlakke:** none, minimal, low, medium, high, xhigh, max, ultra\n**Vertoon:** show, hide\n**Permanent:** voeg `--global` by om verby hierdie sessie te stoor"
-    picker_title: "🧠 **Redenering-instellings**\\n\\n**Inspanning:** `{level}`\\n**Bereik:** {scope}\\n**Vertoon:** {display}\\n\\nKies \\'n opsie:"
+    picker_title: "🧠 **Redenering-instellings**\n\n**Inspanning:** `{level}`\n**Bereik:** {scope}\n**Vertoon:** {display}\n\nKies \\'n opsie:"
     choice_none: "none — deaktiveer redenering"
     choice_reset: "reset — vee sessie-oorskrywing uit"
     choice_show: "wys redenering in antwoorde"
@@ -2252,8 +2252,6 @@ cli:
   approval:
     bell_context: "goedkeuring"
     label: "Goedkeuring"
-    timeout_denying: "⏱ Tyd verstreke — opdrag word geweier"
-    timed_out_no_response: "tyd verstreke (geen antwoord)"
     outcome_once: "eenmalig toegelaat"
     outcome_session: "vir sessie toegelaat"
     outcome_always: "by toelaatlys gevoeg"
@@ -2261,7 +2259,6 @@ cli:
   clarify:
     bell_context: "verduideliking"
     label: "Verduidelik"
-    timed_out_locked_answers: "(verduideliking se tyd het na {timeout}s verstryk — vasgestelde antwoorde teruggestuur)"
   connect:
     bell_context: "verbindingsopstelling"
     cannot_restart: "Hierdie verbinding kan nie weer begin word nie. Kanselleer en vra die agent weer."

@@ -59,13 +59,15 @@ def test_pre_build_setup_prints_the_dispatch_before_any_other_work():
 @pytest.mark.parametrize("kind,extra", [
     ("commit", {}),
     ("channel", {"CHANNEL": "magic-test"}),
+    ("channel", {"CHANNEL": "magic-test", "BRANDING": "stable"}),
     ("commit", {"BUNDLE_ENV_JSON": json.dumps({"HERMES_SKIP_INTRO": "1", "HERMES_HOME": None})}),
 ])
 def test_printed_command_is_the_dispatcher_command(kind, extra):
     values = env(BUILD_COMMIT=SHA, **extra)
     baked = json.loads(values["BUNDLE_ENV_JSON"])
     if kind == "channel":
-        expected = channel_dispatch(values["CHANNEL"], SHA, REPOSITORY, BRANCH, baked or None)
+        expected = channel_dispatch(values["CHANNEL"], SHA, REPOSITORY, BRANCH, baked or None,
+                                    values.get("BRANDING", "preview"))
     else:
         expected = commit_dispatch(SHA, REPOSITORY, BRANCH, baked or None)
     text = dispatch_log.report(values)
@@ -73,6 +75,7 @@ def test_printed_command_is_the_dispatcher_command(kind, extra):
     assert "workflow: " + shlex.join(expected) in text
     flags = dispatch_log.command_flags(dispatch_log.describe(values))
     assert "release.py: " + shlex.join(["python", "scripts/release.py", "--publish", "--remote", "<remote>", *flags]) in text
+    assert ("--branding stable" in text) == (values.get("BRANDING") == "stable")
     assert "receipt: v<version>+" + kind + ".<run-created-utc>.35629258153" in text
     facts = json.loads(text.split("facts: ", 1)[1].splitlines()[0])
     assert facts["run_id"] == "35629258153"

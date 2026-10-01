@@ -5,7 +5,7 @@ import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-li
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
-import { commandFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { getSession } from '@/hermes'
@@ -478,9 +478,17 @@ export function useDesktopIntegrations({
   // OS-standard window close, esp. secondary windows). The Win/Linux keyboard
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(
-      () => void closeActiveTab(id => navigate(sessionRoute(id)))
-    )
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => {
+      // A focused user terminal owns the chord as the shell's word erase: main
+      // claimed the keystroke (before-input-event), so re-deliver the ^W byte
+      // to the PTY instead of closing the pane and killing the shell (#65457).
+      // Read-only agent mirrors and everything else keep the close meaning.
+      if (wordEraseFocusedTerminal()) {
+        return
+      }
+
+      void closeActiveTab(id => navigate(sessionRoute(id)))
+    })
 
     return () => unsubscribe?.()
   }, [navigate])

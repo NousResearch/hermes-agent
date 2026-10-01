@@ -384,11 +384,25 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 if db is None:
                     return
                 try:
-                    db.set_user_message_content(session.get("session_key"), staged["_row_id"], envelope["text"])
+                    # The staged dict records the session its row was written under; a rotated-away
+                    # ``session_key`` misses that row's session_id and the merge update no-ops. An
+                    # in-place compaction of the live turn may also have re-sequenced the row to a
+                    # new id (the original was deactivated and cloned): follow it or the update
+                    # no-ops against the dead original (#123675).
+                    key = _submit_row_owner_key(staged, session)
+                    live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                    updated = live_id is not None and bool(
+                        db.set_user_message_content(key, live_id, envelope["text"]))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
-            staged["content"] = envelope["text"]
+            if not updated:
+                # No live row carries the prompt any more (compaction re-sequenced it away):
+                # drop the staged row so the drained turn writes its own, rather than letting
+                # the envelope claim a durable row that no longer exists.
+                envelope.pop("_submit_user_row", None)
+                return
+            staged["_row_id"], staged["content"] = live_id, envelope["text"]
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
@@ -435,7 +449,16 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
         if db is None:
             return
         try:
-            db.deactivate_message(session.get("session_key"), early["_row_id"])
+            # The accept-time dict records the session its row was written under; a rotated-away
+            # ``session_key`` would miss it and leave that row ACTIVE beside its replacement in the
+            # continuation — the [uA, uB, aA] shape this function exists to prevent. An in-place
+            # compaction of the live turn may also have re-sequenced the row to a new id: deactivate
+            # the row that is live NOW, or the clone stays active beside its replacement and the
+            # queued prompt is active twice after the drain (#123675).
+            key = _submit_row_owner_key(early, session)
+            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            if live_id is not None:
+                db.deactivate_message(key, live_id)
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.

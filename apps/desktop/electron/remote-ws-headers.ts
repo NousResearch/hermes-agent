@@ -112,8 +112,14 @@ export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
   headersForRequest: (requestUrl: string) => Record<string, string>
 ) {
+  // Chromium carries arbitrary app-set headers across redirects. Remember
+  // every configured header value this session has injected so a later hop can
+  // remove that secret outside its gateway scope without stripping an
+  // unrelated request that happens to use the same common header name.
+  const managedHeaderValues = new Map<string, Set<string>>()
+
   sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest)
+    applyRemoteRequestHeaders(details, callback, headersForRequest, managedHeaderValues)
   })
 }
 
@@ -158,17 +164,46 @@ export function createRemoteWsHeaderStore(limit = 100) {
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  managedHeaderValues: Map<string, Set<string>> = new Map<string, Set<string>>()
 ) {
   const headers = headersForRequest(details.url)
+  const allowedHeaderNames = new Set<string>()
 
-  if (Object.keys(headers).length === 0) {
+  for (const [name, value] of Object.entries(headers)) {
+    const normalizedName = name.toLowerCase()
+    const values = managedHeaderValues.get(normalizedName) || new Set<string>()
+
+    values.add(String(value))
+    managedHeaderValues.set(normalizedName, values)
+    allowedHeaderNames.add(normalizedName)
+  }
+
+  const requestHeaders: Record<string, string> = {}
+  let changed = false
+
+  for (const [name, value] of Object.entries(details.requestHeaders || {})) {
+    const normalizedName = name.toLowerCase()
+
+    if (allowedHeaderNames.has(normalizedName) || managedHeaderValues.get(normalizedName)?.has(String(value))) {
+      changed = true
+    } else {
+      requestHeaders[name] = value
+    }
+  }
+
+  for (const [name, value] of Object.entries(headers)) {
+    requestHeaders[name] = value
+    changed = true
+  }
+
+  if (!changed) {
     callback({})
 
     return
   }
 
-  callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+  callback({ requestHeaders })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {

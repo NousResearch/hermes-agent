@@ -187,7 +187,7 @@ describe('OAuth login and registry extra headers', () => {
     })
   })
 
-  it('injects extra headers on an OAuth partition session, not only defaultSession', () => {
+  it('keeps configured headers inside their gateway path and strips them from redirects outside it', () => {
     const listeners = []
 
     const oauthSession = {
@@ -198,18 +198,60 @@ describe('OAuth login and registry extra headers', () => {
       }
     }
 
+    const scopedHeaders = { ...accessHeaders, Authorization: 'Bearer configured-secret' }
+
     const sources = collectRemoteHeaderSources({
-      connections: [{ kind: 'remote', url: 'https://gateway.example', headers: accessHeaders }]
+      connections: [{ kind: 'remote', url: 'https://gateway.example/hermes', headers: scopedHeaders }]
     })
 
     attachRemoteRequestHeaderListener(oauthSession, url => resolveRemoteRequestHeaders(url, { sources }))
 
-    const callback = vi.fn()
-    listeners[0]({ url: 'https://gateway.example/login', requestHeaders: { Origin: 'app://hermes' } }, callback)
-
-    expect(listeners).toHaveLength(1)
-    expect(callback).toHaveBeenCalledWith({
-      requestHeaders: { Origin: 'app://hermes', ...accessHeaders }
+    const initial = vi.fn()
+    listeners[0]({ url: 'https://gateway.example/hermes/login', requestHeaders: { Origin: 'app://hermes' } }, initial)
+    expect(initial).toHaveBeenCalledWith({
+      requestHeaders: { Origin: 'app://hermes', ...scopedHeaders }
     })
+
+    const sameScope = vi.fn()
+    listeners[0](
+      {
+        url: 'https://gateway.example/hermes/ready',
+        requestHeaders: { Origin: 'app://hermes', Cookie: 'session=live', ...scopedHeaders }
+      },
+      sameScope
+    )
+    expect(sameScope).toHaveBeenCalledWith({
+      requestHeaders: { Origin: 'app://hermes', Cookie: 'session=live', ...scopedHeaders }
+    })
+
+    for (const redirectUrl of ['https://gateway.example/login', 'https://identity.example/callback']) {
+      const redirected = vi.fn()
+      listeners[0](
+        {
+          url: redirectUrl,
+          requestHeaders: {
+            Origin: 'app://hermes',
+            Cookie: 'idp-session=live',
+            authorization: scopedHeaders.Authorization,
+            'cf-access-client-id': scopedHeaders['CF-Access-Client-Id'],
+            'CF-Access-Client-Secret': scopedHeaders['CF-Access-Client-Secret']
+          }
+        },
+        redirected
+      )
+      expect(redirected).toHaveBeenCalledWith({
+        requestHeaders: { Origin: 'app://hermes', Cookie: 'idp-session=live' }
+      })
+    }
+
+    const unrelatedAuthorization = vi.fn()
+    listeners[0](
+      {
+        url: 'https://identity.example/token',
+        requestHeaders: { Authorization: 'Bearer identity-provider-token' }
+      },
+      unrelatedAuthorization
+    )
+    expect(unrelatedAuthorization).toHaveBeenCalledWith({})
   })
 })

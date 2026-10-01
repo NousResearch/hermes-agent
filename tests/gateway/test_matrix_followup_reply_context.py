@@ -1,6 +1,7 @@
 """A reaction to a split final uses the logical reply's current excerpt."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 from urllib.parse import unquote
 
@@ -60,36 +61,43 @@ async def _split_followup(tmp_path):
 @pytest.mark.asyncio
 async def test_split_logical_reply_survives_restart_with_delivery_order(tmp_path):
     adapter, event, runner, ids, parts, final = await _split_followup(tmp_path)
-    prompt = await runner._prepare_inbound_message_text(event=event, source=event.source, history=[])
-    assert prompt == (
-        f'[Replying to your previous message: "{final[:REPLY_EXCERPT_CHARS]}"]\n\n'
-        f"Matrix reaction by {event.user_id}: 👍 on reply {ids[-1]} (reaction event $reaction)."
-    )
-    resolved = [unquote(call.args[1].rsplit("/", 1)[1]) for call in adapter._client.api.request.await_args_list
-                if "/event/" in call.args[1]]
-    assert resolved == [ids[0], ids[1], ids[2]]
+    try:
+        prompt = await runner._prepare_inbound_message_text(event=event, source=event.source, history=[])
+        excerpt = json.dumps(final[:REPLY_EXCERPT_CHARS], ensure_ascii=False)
+        assert prompt == (
+            f'[Replying to your previous message: {excerpt}]\n\n'
+            f"Matrix reaction by {event.user_id}: 👍 on reply {ids[-1]} (reaction event $reaction)."
+        )
+        resolved = [unquote(call.args[1].rsplit("/", 1)[1]) for call in adapter._client.api.request.await_args_list
+                    if "/event/" in call.args[1]]
+        assert resolved == [ids[0], ids[1], ids[2]]
+    finally:
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["prefix-edit", "prefix-redaction", "prefix-error", "target-redaction", "target-edit"])
 async def test_split_quote_rechecks_current_prefix_and_reacted_target(tmp_path, change):
     adapter, event, runner, ids, parts, final = await _split_followup(tmp_path)
-    snapshot = await adapter.fetch_inbound_context(event)
-    await snapshot.refresh()
-    cache = adapter._event_context_cache
-    if change == "prefix-edit":
-        cache.store(_ROOM_ID, ids[0], MatrixEventContext(adapter._user_id, "Updated decision"))
-        expected = ("Updated decision\n" + parts[1].strip())[:REPLY_EXCERPT_CHARS]
-    elif change == "prefix-redaction":
-        cache.redact(_ROOM_ID, ids[0])
-        expected = "[redacted]"
-    elif change == "prefix-error":
-        cache.store(_ROOM_ID, ids[0], MatrixEventContext(adapter._user_id, "", state_error="undecryptable"))
-        expected = "[event content unavailable]"
-    elif change == "target-edit":
-        cache.store(_ROOM_ID, ids[-1], MatrixEventContext(adapter._user_id, "Changed reaction target"))
-        expected = "Changed reaction target"
-    else:
-        cache.redact(_ROOM_ID, ids[-1])
-        expected = "[redacted]"
-    assert snapshot.reply_event(event).reply_to_text == expected
+    try:
+        snapshot = await adapter.fetch_inbound_context(event)
+        await snapshot.refresh()
+        cache = adapter._event_context_cache
+        if change == "prefix-edit":
+            cache.store(_ROOM_ID, ids[0], MatrixEventContext(adapter._user_id, "Updated decision"))
+            expected = ("Updated decision\n" + parts[1].strip())[:REPLY_EXCERPT_CHARS]
+        elif change == "prefix-redaction":
+            cache.redact(_ROOM_ID, ids[0])
+            expected = "[redacted]"
+        elif change == "prefix-error":
+            cache.store(_ROOM_ID, ids[0], MatrixEventContext(adapter._user_id, "", state_error="undecryptable"))
+            expected = "[event content unavailable]"
+        elif change == "target-edit":
+            cache.store(_ROOM_ID, ids[-1], MatrixEventContext(adapter._user_id, "Changed reaction target"))
+            expected = "Changed reaction target"
+        else:
+            cache.redact(_ROOM_ID, ids[-1])
+            expected = "[redacted]"
+        assert snapshot.reply_event(event).reply_to_text == expected
+    finally:
+        runner.session_store.close_all_db_handles()

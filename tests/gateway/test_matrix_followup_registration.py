@@ -563,7 +563,10 @@ async def test_replacement_transport_preserves_turn_queue_and_final_choice(
     runner._delivery_adapter_for = lambda _source: live[0]
     runner._get_proxy_url = lambda: None
     overflow = []
-    state = SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
+    from gateway.session_state import SessionState
+
+    state = SessionState()
+    state.conversation.queued_events = overflow
     runner._session_state = lambda _key: state
     runner._peek_session_state = lambda _key: state
     runner._strict_session_current = AsyncMock(return_value=True)

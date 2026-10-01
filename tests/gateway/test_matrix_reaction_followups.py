@@ -910,9 +910,11 @@ def test_strict_reaction_followup_is_discarded_before_recursive_drain():
             lookup_by_session_key=lambda _key: SimpleNamespace(session_id=current_session[0]),
         )
         overflow = []
-        runner._peek_session_state = lambda _key: SimpleNamespace(
-            conversation=SimpleNamespace(queued_events=overflow, ephemeral_pin=None, channel_pin=None),
-        )
+        from gateway.session_state import SessionState
+
+        state = SessionState()
+        state.conversation.queued_events = overflow
+        runner._peek_session_state = lambda _key: state
         runner._pending_event_audio_paths = Mock(return_value=[])
         pending_messages = {"session": event}
         adapter = SimpleNamespace(

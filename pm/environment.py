@@ -73,6 +73,19 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     return InstallError("venv", cause)
 
 
+def _is_missing_windows_cleanup_failure(result: subprocess.CompletedProcess) -> bool:
+    """uv can lose a Windows cleanup race while removing a package's ``.data`` dir.
+
+    The directory is already gone by the time uv reports the failure (OS error 2),
+    so retrying the same locked sync lets uv finish from the partially-installed
+    environment without masking other installation failures.
+    """
+    if sys.platform != "win32" or result.returncode == 0:
+        return False
+    output = (result.stderr or result.stdout or "").lower()
+    return "failed to remove directory" in output and "os error 2" in output
+
+
 def _project_name(source: Path) -> str:
     """``[project].name`` of *source*'s pyproject, on any Python that can run the bootstrap.
 
@@ -382,6 +395,8 @@ class PythonEnvironment:
         for group in sorted(set(groups)):
             command += ["--group", group]
         result = self._run(command, cwd=source, timeout=timeout)
+        if _is_missing_windows_cleanup_failure(result):
+            result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
 

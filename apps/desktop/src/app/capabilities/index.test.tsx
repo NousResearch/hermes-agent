@@ -265,6 +265,41 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(screen.queryByText(/version: 1\.2\.0/)).toBeNull()
   })
 
+  it('shows plugin provenance without edit/archive and loads qualified detail content', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'meap:using-meap',
+        description: 'Use MEAP',
+        category: 'plugin',
+        enabled: true,
+        usage: 0,
+        provenance: 'plugin'
+      }
+    ])
+    getSkillContent.mockResolvedValue({
+      name: 'meap:using-meap',
+      path: '/plugins/meap/skills/using-meap/SKILL.md',
+      content: '---\nname: using-meap\n---\n\nPlugin detail body.'
+    })
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'meap:using-meap' }))
+    expect(await screen.findByText('Plugin · read-only')).toBeTruthy()
+    await waitFor(() => expect(getSkillContent).toHaveBeenCalledWith('meap:using-meap', 'default'))
+    expect(await screen.findByText(/Plugin detail body/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
+  })
+
   it('keeps installed skills on their toggle and installs new cards into the pinned remote profile', async () => {
     const { installHubSkill } = await import('@/store/hub-actions')
     getSkills.mockResolvedValue([

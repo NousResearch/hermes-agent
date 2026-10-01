@@ -1,3 +1,5 @@
+import argparse
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -70,6 +72,27 @@ def _capture(source_filter: str = "all") -> str:
     return sink.getvalue()
 
 
+def _write_plugin_skill(home):
+    plugin_dir = home / "plugins" / "skills_probe"
+    skill_dir = plugin_dir / "skills" / "visible"
+    skill_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: skills_probe\nversion: 0.1.0\ndescription: skills CLI probe\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: visible\ndescription: visible plugin skill\n---\n\nPlugin body.\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "def register(ctx):\n"
+        "    skill = Path(__file__).parent / 'skills' / 'visible' / 'SKILL.md'\n"
+        "    ctx.register_skill('visible', skill, 'visible plugin skill')\n",
+        encoding="utf-8",
+    )
+
+
 def _capture_check(monkeypatch, results, name=None) -> str:
     import tools.skills_hub_install as hub_install
 
@@ -123,6 +146,56 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
+
+
+def test_do_list_matches_successful_qualified_plugin_view(hub_env):
+    from hermes_constants import get_hermes_home
+    from tools.skills_tool import skill_view
+
+    home = get_hermes_home()
+    _write_plugin_skill(home)
+    (home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - skills_probe\n",
+        encoding="utf-8",
+    )
+
+    viewed = json.loads(skill_view("skills_probe:visible"))
+    assert viewed["success"] is True
+    assert "Plugin body." in viewed["content"]
+
+    listing = _capture()
+    assert "skills_probe:visible" in listing
+    assert "1 plugin" in listing
+
+
+def test_do_list_does_not_infer_plugin_provenance_from_category(hub_env, monkeypatch):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(
+        skills_tool,
+        "_find_all_skills",
+        lambda **_kwargs: [{"name": "local-probe", "category": "plugin", "description": "local"}],
+    )
+    monkeypatch.setattr(skills_tool, "_find_plugin_skills", lambda **_kwargs: [])
+
+    listing = _capture()
+    assert "local-probe" in listing
+    assert "1 local, 0 plugin" in listing
+
+
+def test_skills_list_parser_accepts_plugin_source():
+    from hermes_cli.subcommands.skills import build_skills_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_skills_parser(subparsers, cmd_skills=lambda args: None)
+
+    args = parser.parse_args(["skills", "list", "--source", "plugin"])
+    assert args.source == "plugin"
 
 
 # ---------------------------------------------------------------------------

@@ -429,6 +429,33 @@ class TestSkillViewPluginGuards:
         result = json.loads(skill_view("myplugin:foo"))
         assert result["success"] is False
 
+    def test_environment_mismatch_is_omitted_from_plugin_listing(self, tmp_path, monkeypatch):
+        from tools.skills_tool import _find_plugin_skills
+
+        self._reg(tmp_path, "---\nname: foo\nenvironments: [docker]\n---\nBody.\n")
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("tools.skills_tool.skill_matches_environment", lambda _frontmatter: False)
+
+        assert _find_plugin_skills(skip_disabled=True) == []
+
+    def test_listing_does_not_consume_plugin_manager_metadata(self, monkeypatch):
+        from tools.skills_tool import _find_plugin_skills
+
+        metadata = {
+            "name": "myplugin:foo",
+            "description": "A plugin skill",
+            "category": "plugin",
+            "frontmatter": {"name": "foo", "description": "A plugin skill"},
+        }
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr(self.pm, "list_plugin_skill_metadata", lambda: [metadata])
+
+        first = _find_plugin_skills()
+        second = _find_plugin_skills()
+
+        assert first == second == [{"name": "myplugin:foo", "description": "A plugin skill", "category": "plugin"}]
+        assert metadata["frontmatter"] == {"name": "foo", "description": "A plugin skill"}
+
     def test_injection_logged_but_served(self, tmp_path, caplog):
         from tools.skills_tool import skill_view
 

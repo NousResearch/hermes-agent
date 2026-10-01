@@ -25,6 +25,13 @@ interface SkillCatalogProps {
   renderInstalledAction?: (skill: SkillInfo) => ReactNode
 }
 
+const INSTALLED_SKILL_SOURCE: Record<NonNullable<SkillInfo['provenance']>, string> = {
+  agent: 'local',
+  bundled: 'built-in',
+  hub: 'hub',
+  plugin: 'plugin'
+}
+
 /** Public discovery and the profile's local skills share one browser. Management
  * stays in SkillsTab; catalog install actions have exactly one owner here. */
 export function SkillCatalog(props: SkillCatalogProps) {
@@ -104,7 +111,7 @@ function ScopedSkillCatalog({
         name: skill.name,
         description: skill.description,
         category: skill.category,
-        source: skill.provenance === 'bundled' ? 'built-in' : skill.provenance === 'hub' ? 'hub' : 'local'
+        source: INSTALLED_SKILL_SOURCE[skill.provenance ?? 'agent']
       }))
     ).map(entry => {
       const skill = skillsByName.get(entry.name)!

@@ -271,6 +271,9 @@ function ScopedSkillsTab({
             {usageOf(skill) > 0 && (
               <p className="text-xs text-(--ui-text-tertiary)">{t.skills.usageCount(usageOf(skill))}</p>
             )}
+            {skill.provenance === 'plugin' && (
+              <p className="text-xs text-(--ui-text-tertiary)">{t.skills.provenance.plugin}</p>
+            )}
             <SkillDetail
               onArchive={() => {
                 if (!saving.current) {

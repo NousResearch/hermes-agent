@@ -933,7 +933,7 @@ slashCmd.session.compress.compressedOther: "стиснуто повідомле�
 slashCmd.session.compress.nothing: "нічого стискати"
 slashCmd.session.compress.tokSuffix: " · {0} ток"
 slashCmd.session.fast.mode: "швидкий режим: {0}"
-slashCmd.session.fast.usage: "використання: /fast [normal|fast|status|on|off|toggle]"
+slashCmd.session.fast.usage: "використання: /fast [normal|fast|ultrafast|status|on|off|toggle]"
 slashCmd.session.indicator.current: "індикатор: {0}"
 slashCmd.session.indicator.switched: "індикатор → {0}"
 slashCmd.session.indicator.usage: "використання: /indicator [{0}]"

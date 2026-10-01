@@ -228,6 +228,7 @@ const COMPARED_FIELDS = [
   'hidden',
   'branchGroupId',
   'interim',
+  'interrupted',
   'reactions',
   'timestamp',
   'completedAt',
@@ -305,7 +306,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   // audio, data-*), fall back to shallow primitive-key comparison — conservative:
   // if we're not sure, claim not-equal (one extra setMessages is harmless, but
   // skipping an update would break the UI).
+  // SAFETY: both parts already narrowed by `type` to flat primitive part kinds;
+  // the cast only exposes their keys for comparison, never reinterprets them.
   const aPrimitive = aPart as unknown as Record<string, unknown>
+  // SAFETY: same narrowing as above; key comparison only.
   const bPrimitive = bPart as unknown as Record<string, unknown>
   const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
   const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
@@ -555,6 +559,47 @@ const hasStreamedContent = (message: ChatMessage): boolean =>
   chatMessageText(message).trim().length > 0 || hasStructuralParts(message)
 
 /**
+ * #80151: the store's flat projection and the streamed parts join the same
+ * segments with different separators (blank lines around folded tool rounds,
+ * reference lines), so byte-prefix pairing misses the same turn. Compare the
+ * answer text with reference lines stripped and separators folded away.
+ */
+const foldAnswerTextForCompare = (text: string): string => textWithoutReferenceLines(text).replace(/\s+/g, '')
+
+/**
+ * #80151: may a still-pending local stream claim a COMMITTED row whose answer
+ * text the stream provably holds? With the turn proven by shared tool-call
+ * ids (call ids are unique to the turn), the committed text is the mid-turn
+ * segment the store flushed — it must be one of the stream's own folded text
+ * segments, or a prefix of one (a mid-segment flush). Without that proof the
+ * whole folded answer must strictly extend the committed text, mirroring the
+ * live-shell prefix rule. An empty-text committed row is never claimable
+ * here: empty prose carries no identity (#114543); the settled-final shell
+ * case is preserveLocalPendingTurnMessages' own rule (#123047).
+ */
+const streamedAnswerHoldsCommittedText = (local: ChatMessage, authoritative: ChatMessage): boolean => {
+  const foldedAuthoritative = foldAnswerTextForCompare(chatMessageText(authoritative))
+
+  if (!foldedAuthoritative.length) {
+    return false
+  }
+
+  const authoritativeToolIds = toolCallIdsOf(authoritative)
+
+  if (authoritativeToolIds.length > 0 && authoritativeToolIds.every(id => toolCallIdsOf(local).includes(id))) {
+    const localSegments = local.parts.flatMap(part =>
+      part.type === 'text' ? [foldAnswerTextForCompare(part.text)] : []
+    )
+
+    return localSegments.some(segment => segment.startsWith(foldedAuthoritative))
+  }
+
+  const foldedLocal = foldAnswerTextForCompare(chatMessageText(local))
+
+  return foldedLocal.length > foldedAuthoritative.length && foldedLocal.startsWith(foldedAuthoritative)
+}
+
+/**
  * May the cached local row stand in for this authoritative assistant?
  *
  * Only for a live projection of the SAME reply that the local copy is further
@@ -563,25 +608,45 @@ const hasStreamedContent = (message: ChatMessage): boolean =>
  * — or the stream id — of a genuine stored reply. A retained failure snapshot
  * (`inflight.error`, projected with empty text) is never a shell: repainting it
  * from the local partial would hide the error and mark the turn healthy again.
+ *
+ * #80151: a COMMITTED row at the same ordinal can be this turn's mid-turn
+ * partial — the backend persists segments while the turn runs, so switching
+ * chats mid-stream and back hydrates the store's flat projection next to the
+ * still-streaming local copy, and that projection need not be a byte prefix of
+ * the streamed text. Only a still-PENDING local row may claim it, and only
+ * with same-turn proof: every tool-call id the committed row names also
+ * streams locally (call ids are unique to the turn, so a different turn at
+ * the same ordinal — a resent prompt answered earlier — cannot pass), or the
+ * committed answer text is a strict folded prefix of the streamed text. In
+ * both arms the streamed copy must cover the committed text, so a complete
+ * earlier answer is never traded for a shorter local row.
  */
 const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage): boolean => {
   if (local.role !== 'assistant' || !isLiveTailRow(local)) {
     return false
   }
 
-  if (!isLiveTailRow(authoritative) || authoritative.error) {
+  if (authoritative.error) {
     return false
   }
 
   const authoritativeText = chatMessageText(authoritative).trim()
 
-  if (!authoritativeText.length) {
-    return hasStreamedContent(local)
+  if (isLiveTailRow(authoritative)) {
+    if (!authoritativeText.length) {
+      return hasStreamedContent(local)
+    }
+
+    const localText = chatMessageText(local).trim()
+
+    return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
   }
 
-  const localText = chatMessageText(local).trim()
+  if (local.pending !== true) {
+    return false
+  }
 
-  return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
+  return hasStreamedContent(local) && streamedAnswerHoldsCommittedText(local, authoritative)
 }
 
 const answerText = (message: ChatMessage) => textWithoutReferenceLines(chatMessageText(message)).trim()
@@ -855,7 +920,34 @@ export function preserveLocalPendingTurnMessages(
     const isPendingAssistant =
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
-    if (!isOptimisticUser && !isPendingAssistant) {
+    // A settled live-tail reply the backend has not committed yet is the only
+    // copy of that reply and must survive a stale refreshed page (#121613).
+    // Stream-id rows already enter through isPendingAssistant; this covers the
+    // settled rows that do not (an interim id the completion settled onto, or
+    // an appended `assistant-<ts>` bubble). Only the single newest row is
+    // guarded: anything with a newer local row after it (stale compression
+    // history, a superseded segment, the next turn's stream) belongs to the
+    // reconcile paths. Interim, hidden, and persisted rows stay out for the
+    // same reason: superseded interims, invisible rows, and fetchable rows
+    // are not the live tail.
+    //
+    // A page that brings its own assistant row for this same reply ordinal has
+    // rotated or compacted the transcript: that answer owns the slot, so the
+    // cached row is superseded history rather than a live tail — resurrecting
+    // it puts the pre-compression answer back on screen beside its
+    // replacement. A stale page ends at the prompt (the reply is uncommitted),
+    // so the ordinal stays empty there and the only copy still survives.
+    const isSettledUnpersistedAssistant =
+      index === previousMessages.length - 1 &&
+      message.role === 'assistant' &&
+      message.pending !== true &&
+      message.interim !== true &&
+      message.hidden !== true &&
+      message.rowId === undefined &&
+      chatMessageText(message).trim() !== '' &&
+      !nextByRoleOrdinal.has(`assistant:${ordinal}`)
+
+    if (!isOptimisticUser && !isPendingAssistant && !isSettledUnpersistedAssistant) {
       continue
     }
 
@@ -938,7 +1030,7 @@ export function preserveLocalPendingTurnMessages(
     // (#70209). Only text-identical rows are dropped — a settled row the backend
     // has NOT committed yet is the only copy of that reply and must survive.
     if (
-      isPendingAssistant &&
+      (isPendingAssistant || isSettledUnpersistedAssistant) &&
       message.pending !== true &&
       candidates.some(
         candidate =>
@@ -1882,6 +1974,14 @@ function upsertResolvedSession(
   storedSessionId: string,
   tombstoneGenerationsAtRequestStart: SessionTombstoneGenerationSnapshot
 ) {
+  // Exact-id lookup intentionally resolves internal delegate children so a
+  // watch tile can open them. They are not ordinary user conversations,
+  // though, and the authoritative list endpoints omit them; caching one here
+  // would bypass that boundary and leak it into the Sessions sidebar.
+  if (session.is_internal_child) {
+    return
+  }
+
   const removed = $removedSessionIds.get()
   const identities = [storedSessionId, session.id, session._lineage_root_id]
 

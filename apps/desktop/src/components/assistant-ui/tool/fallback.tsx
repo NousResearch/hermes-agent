@@ -50,7 +50,6 @@ import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $showToolActivity } from '@/store/tool-activity'
-import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import {
   $anyToolDisclosureOpen,
@@ -74,7 +73,6 @@ import {
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
-  stripInlineDiffChrome,
   toolCopyPayload,
   toolEntryDisclosureId,
   type ToolPart,
@@ -360,12 +358,24 @@ function ToolEntry({ part }: ToolEntryProps) {
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, completedAt, interrupted, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
+  const {
+    args,
+    completedAt,
+    innerToolName,
+    interrupted,
+    isError,
+    result,
+    toolResultMetadata,
+    timestamp,
+    toolCallId,
+    toolName
+  } = part
 
   const stablePart = useMemo<ToolPart>(
     () => ({
       args,
       completedAt,
+      innerToolName,
       interrupted,
       isError,
       result,
@@ -375,16 +385,24 @@ function ToolEntry({ part }: ToolEntryProps) {
       toolName,
       type: 'tool-call'
     }),
-    [args, completedAt, interrupted, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
+    [
+      args,
+      completedAt,
+      innerToolName,
+      interrupted,
+      isError,
+      result,
+      toolResultMetadata,
+      timestamp,
+      toolCallId,
+      toolName
+    ]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined && completedAt === undefined
-  // Subscribe to this tool's diff only, so a live patch for one tool doesn't
-  // re-render every mounted tool row (the factory caches a per-id atom).
-  const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
-  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
+  const inlineDiff = inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs
   const disclosureOpen = useDisclosureOpen(disclosureId, defaultOpen)
@@ -1094,13 +1112,14 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * group-shape changes.
  */
 type TimelineToolCallProps = ToolCallMessagePartProps &
-  Pick<ToolPart, 'completedAt' | 'interrupted' | 'timestamp' | 'toolResultMetadata'>
+  Pick<ToolPart, 'completedAt' | 'innerToolName' | 'interrupted' | 'timestamp' | 'toolResultMetadata'>
 
 export const ToolFallback = ({
   toolCallId,
   toolName,
   args,
   completedAt,
+  innerToolName,
   interrupted,
   isError,
   result,
@@ -1110,6 +1129,7 @@ export const ToolFallback = ({
   const part: ToolPart = {
     args,
     completedAt,
+    innerToolName,
     interrupted,
     isError,
     result,

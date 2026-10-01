@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
   $browserPages,
-  $dismissedPreviewTargets,
   $previewServerRestart,
   $previewServerRestartStatus,
   $previewTabs,
   $previewTarget,
   beginPreviewServerRestart,
+  clearPreviewDismissals,
   closeArtifactPreviewTabs,
   closeBrowserPreviewMatchingLiveUrl,
   closePreviewForSource,
@@ -44,7 +44,7 @@ describe('preview store', () => {
     $browserPages.set({})
     $previewServerRestart.set(null)
     closeRightRail()
-    $dismissedPreviewTargets.set([])
+    clearPreviewDismissals()
     window.localStorage.clear()
   })
 
@@ -52,7 +52,7 @@ describe('preview store', () => {
     $browserPages.set({})
     $previewServerRestart.set(null)
     closeRightRail()
-    $dismissedPreviewTargets.set([])
+    clearPreviewDismissals()
     window.localStorage.clear()
   })
 
@@ -356,11 +356,12 @@ describe('preview store', () => {
     expect($previewTabs.get()).toHaveLength(1)
   })
 
-  it('persists dismissed targets so they survive a reload', () => {
+  it('keeps dismissed targets out of localStorage so they never leak across app runs', () => {
     openPreview(fileTarget('/tmp/test.html'))
     closePreviewForSource('/tmp/test.html')
 
-    expect(window.localStorage.getItem('hermes.desktop.dismissedPreviewTargets.v1') ?? '').toContain('/tmp/test.html')
+    expect(isPreviewDismissed('/tmp/test.html')).toBe(true)
+    expect(window.localStorage.getItem('hermes.desktop.dismissedPreviewTargets.v1')).toBeNull()
   })
 
   it('persists file and url tabs but never artifacts, whose content is memory-only', () => {

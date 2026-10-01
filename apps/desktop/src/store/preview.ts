@@ -1,7 +1,6 @@
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
-import { Codecs, persistentAtom } from '@/lib/persisted'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
@@ -318,14 +317,16 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   }
 }
 
-/** Targets the user closed. `preview.open` replay re-runs on every session
- * load (refresh, restart, reconnect), so without a durable marker a closed
- * tab resurrects forever (#92975). Any later explicit open clears the marker. */
-export const $dismissedPreviewTargets = persistentAtom<string[]>(
-  'hermes.desktop.dismissedPreviewTargets.v1',
-  [],
-  Codecs.stringArray
-)
+/** Targets the user closed this app run. `preview.open` replay re-runs on
+ * every session load (refresh, restart, reconnect), so without a marker a
+ * closed tab resurrects on every reload (#92975). Deliberately NOT
+ * persisted: a fresh, agent-driven `preview.open` (no `replayed` tag) is a
+ * new verdict from the user's current request, not history to suppress — a
+ * permanent localStorage marker would silently swallow preview opens for a
+ * recycled port or path forever. Dying with the app run bounds the marker
+ * to the "user just closed this" intent replay can actually violate; a
+ * restart is a fresh session. Any explicit open re-admits the target. */
+const dismissedPreviewTargets = new Set<string>()
 
 /** Bound the marker list; dismissals are consulted on every replayed open. */
 const DISMISSED_MAX = 100
@@ -336,21 +337,44 @@ function recordDismissedTargets(targets: PreviewTarget[]): void {
     .map(key => key.trim())
     .filter(key => key !== '')
 
-  if (keys.length === 0) {
-    return
+  for (const key of keys) {
+    dismissedPreviewTargets.add(key)
   }
 
-  const next = [...new Set([...$dismissedPreviewTargets.get(), ...keys])]
+  if (dismissedPreviewTargets.size > DISMISSED_MAX) {
+    for (const key of dismissedPreviewTargets) {
+      dismissedPreviewTargets.delete(key)
 
-  $dismissedPreviewTargets.set(next.slice(-DISMISSED_MAX))
+      if (dismissedPreviewTargets.size <= DISMISSED_MAX) {
+        break
+      }
+    }
+  }
 }
 
-/** Replay must never beat the user: a `preview.open` for a target the user
- * closed is skipped until they open it again by hand. */
+/** A REPLAYED open must never beat the user: a `preview.open` for a target
+ * the user closed stays closed until they open it again by hand. Only the
+ * replayed event path consults this — a fresh (non-replayed) open always
+ * shows. */
 export function isPreviewDismissed(target: string): boolean {
   const key = target.trim()
 
-  return key !== '' && $dismissedPreviewTargets.get().includes(key)
+  return key !== '' && dismissedPreviewTargets.has(key)
+}
+
+/** Re-admit a dismissed target (any explicit open clears the marker). */
+export function clearPreviewDismissal(target: PreviewTarget): void {
+  for (const key of [target.source, target.url].map(k => k.trim())) {
+    if (key !== '') {
+      dismissedPreviewTargets.delete(key)
+    }
+  }
+}
+
+/** Forget every dismissal — used between isolated scenarios (a fresh app
+ * run starts with an empty set; nothing is persisted). */
+export function clearPreviewDismissals(): void {
+  dismissedPreviewTargets.clear()
 }
 
 if (typeof window !== 'undefined') {
@@ -641,11 +665,7 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
 export function openPreview(target: PreviewTarget) {
   // An explicit open re-admits a dismissed target — the marker only guards
   // replayed events, never a fresh user action.
-  const dismissed = $dismissedPreviewTargets.get()
-
-  if (dismissed.includes(target.source) || dismissed.includes(target.url)) {
-    $dismissedPreviewTargets.set(dismissed.filter(key => key !== target.source && key !== target.url))
-  }
+  clearPreviewDismissal(target)
 
   const current = $previewTabs.get()
   const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)

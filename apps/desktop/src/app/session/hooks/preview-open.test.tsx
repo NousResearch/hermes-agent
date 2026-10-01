@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
   $browserPages,
-  $dismissedPreviewTargets,
   $previewTabs,
   $previewTarget,
+  clearPreviewDismissals,
   closePreviewForSource,
   closeRightRail,
   markBrowserTabPopped,
@@ -50,10 +50,15 @@ function Harness() {
   return null
 }
 
-async function emitPreviewOpen(url = '/tmp/artifact-test.html', sessionId = RUNTIME_SESSION_ID) {
+async function emitPreviewOpen(
+  url = '/tmp/artifact-test.html',
+  sessionId = RUNTIME_SESSION_ID,
+  replayed = false
+) {
   await act(async () => {
     handleEvent({
       payload: { label: 'hi bestie', url },
+      replayed,
       session_id: sessionId,
       type: 'preview.open'
     } as unknown as GatewayEvent)
@@ -78,7 +83,7 @@ describe('preview routing', () => {
     $messages.set([])
     $browserPages.set({})
     closeRightRail()
-    $dismissedPreviewTargets.set([])
+    clearPreviewDismissals()
     window.localStorage.clear()
 
     Object.defineProperty(window, 'hermesDesktop', {
@@ -92,7 +97,7 @@ describe('preview routing', () => {
     $messages.set([])
     $browserPages.set({})
     closeRightRail()
-    $dismissedPreviewTargets.set([])
+    clearPreviewDismissals()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
@@ -183,9 +188,30 @@ describe('preview routing', () => {
     })
 
     // Replay re-delivers preview.open on every session load (refresh,
-    // restart, reconnect); a tab the user closed must not resurrect from it
-    // (#92975).
-    it('does not resurrect a tab the user closed when the open event replays', async () => {
+    // restart, reconnect); a tab the user closed must not resurrect from a
+    // REPLAYED open (#92975). Only the gateway's `replayed: true` frames
+    // (#117288) count — a fresh agent open is a new verdict.
+    it('does not resurrect a user-closed tab when a replayed open event re-delivers it', async () => {
+      render(<Harness />)
+
+      await emitPreviewOpen('/tmp/test.html')
+      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+
+      await act(async () => {
+        closePreviewForSource('/tmp/test.html')
+      })
+      expect($previewTabs.get()).toHaveLength(0)
+
+      await emitPreviewOpen('/tmp/test.html', RUNTIME_SESSION_ID, true)
+
+      expect($previewTabs.get()).toHaveLength(0)
+      expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(1)
+    })
+
+    // A fresh (non-replayed) open for the same URL after dismissal is the
+    // agent acting on the user's current request — it must always open, even
+    // for a recycled port or path the user closed long ago.
+    it('opens a fresh preview.open for the same target after dismissal', async () => {
       render(<Harness />)
 
       await emitPreviewOpen('/tmp/test.html')
@@ -198,8 +224,7 @@ describe('preview routing', () => {
 
       await emitPreviewOpen('/tmp/test.html')
 
-      expect($previewTabs.get()).toHaveLength(0)
-      expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
     })
 
     it('re-admits a dismissed target once the user opens it again by hand', async () => {
@@ -215,12 +240,12 @@ describe('preview routing', () => {
 
       // A hand open (status row, context menu, file browser) is a fresh
       // verdict: it clears the marker, so a later replay re-fronts the tab
-      // instead of being swallowed forever.
+      // instead of being swallowed.
       await act(async () => {
         openPreview(fileTarget('/tmp/test.html'))
       })
 
-      await emitPreviewOpen('/tmp/test.html')
+      await emitPreviewOpen('/tmp/test.html', RUNTIME_SESSION_ID, true)
 
       await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
     })

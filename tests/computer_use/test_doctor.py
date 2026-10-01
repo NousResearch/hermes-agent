@@ -417,3 +417,71 @@ def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_se
     assert "tccutil reset ScreenCapture com.trycua.driver" in checks["tcc_screen_recording"]["hint"]
     assert "reset Accessibility" not in checks["tcc_screen_recording"]["hint"]
     assert "tccutil" not in checks["tcc_accessibility"].get("hint", "")
+
+
+# ── native_wayland opt-in advisory (#130824) ───────────────────────────────
+
+
+@pytest.mark.platforms("linux")
+def test_wayland_optin_note_added_when_wayland_session_and_unset(monkeypatch):
+    """Linux + WAYLAND_DISPLAY + ``native_wayland`` unset → doctor appends the advisory check naming the
+    config opt-in, without degrading overall (the X11 path is correct for X11/XWayland targets)."""
+    from tools.computer_use import doctor
+
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    report = {"platform": "linux", "checks": [{"name": "ax_capability", "status": "pass", "message": "ok"}], "overall": "ok"}
+
+    with patch("tools.computer_use.cua_backend._computer_use_cfg", return_value={}):
+        guarded = doctor._apply_wayland_optin_guard(report)
+
+    names = [c["name"] for c in guarded["checks"]]
+    assert "native_wayland opt-in" in names
+    note = next(c for c in guarded["checks"] if c["name"] == "native_wayland opt-in")
+    assert note["status"] == "skip"
+    assert "computer_use.native_wayland: true" in note["hint"]
+    assert guarded["overall"] == "ok"  # advisory, not a failure
+
+
+@pytest.mark.platforms("linux")
+def test_wayland_optin_note_uses_report_platform_not_host(monkeypatch):
+    """A darwin report on a Linux/Wayland host (the JSON round-trip fixture) must NOT get the advisory —
+    the guard keys on the report's platform like ``_wayland_environment_context``, not ``sys.platform``,
+    so fixture-driven tests stay deterministic on Wayland dev boxes."""
+    from tools.computer_use import doctor
+
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    report = {"platform": "darwin", "checks": [{"name": "ax_capability", "status": "pass", "message": "ok"}], "overall": "ok"}
+
+    with patch("tools.computer_use.cua_backend._computer_use_cfg", return_value={}):
+        guarded = doctor._apply_wayland_optin_guard(report)
+
+    assert all(c["name"] != "native_wayland opt-in" for c in guarded["checks"])
+
+
+@pytest.mark.platforms("linux")
+def test_wayland_optin_note_absent_when_opted_in(monkeypatch):
+    """``native_wayland: true`` in config → no advisory: the driver child env gets the flag and native
+    toplevels are reachable."""
+    from tools.computer_use import doctor
+
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    report = {"platform": "linux", "checks": [{"name": "ax_capability", "status": "pass", "message": "ok"}], "overall": "ok"}
+
+    with patch("tools.computer_use.cua_backend._computer_use_cfg", return_value={"native_wayland": True}):
+        guarded = doctor._apply_wayland_optin_guard(report)
+
+    assert all(c["name"] != "native_wayland opt-in" for c in guarded["checks"])
+
+
+@pytest.mark.platforms("linux")
+def test_wayland_optin_note_absent_without_wayland_session(monkeypatch):
+    """No WAYLAND_DISPLAY (X11 session) → no advisory: the X11 backend is the correct one there."""
+    from tools.computer_use import doctor
+
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    report = {"platform": "linux", "checks": [{"name": "ax_capability", "status": "pass", "message": "ok"}], "overall": "ok"}
+
+    with patch("tools.computer_use.cua_backend._computer_use_cfg", return_value={}):
+        guarded = doctor._apply_wayland_optin_guard(report)
+
+    assert all(c["name"] != "native_wayland opt-in" for c in guarded["checks"])

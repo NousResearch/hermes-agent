@@ -2549,6 +2549,11 @@ DEFAULT_CONFIG = {
         # registers (or repairs) the task at install time — needed to drive Windows over SSH,
         # where Session 0 has no interactive desktop (see the computer-use guide).
         "autostart": False,
+        # Linux/Wayland: opt in to cua-driver's native-Wayland backend. Unset (default), the driver runs its
+        # X11 backend, which cannot enumerate native-Wayland-only toplevels — a Wayland-native window (e.g.
+        # Firefox on GNOME/Hyprland defaults) is then invisible to computer_use capture while `computer-use
+        # doctor` stays green. Hermes injects CUA_DRIVER_RS_ENABLE_WAYLAND=1 into every driver child env only
+        # when this is true and the process has WAYLAND_DISPLAY; restart the gateway after changing it.
         "native_wayland": False,
         # Cap driver screenshot longest edge (pixels) via set_config at session start; shrinks SOM
         # multimodal payloads. 0 disables.

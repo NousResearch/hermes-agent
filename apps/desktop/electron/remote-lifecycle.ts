@@ -1157,6 +1157,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // phantom profiles/0/ directory (#88842).
   const pinned = backendProfileArg(profile)
   const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
+
   // The lockfile the spawn script publishes must carry the SAME normalized
   // profile as the argv: pidIsOurDashboard and the managed-update drain both
   // prove ownership by comparing the live `--profile` value against
@@ -1164,6 +1165,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   if (opts.lockMetadata && opts.lockMetadata.profile !== (pinned ?? '')) {
     opts.lockMetadata = { ...opts.lockMetadata, profile: pinned ?? '' }
   }
+
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''

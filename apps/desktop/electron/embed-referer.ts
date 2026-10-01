@@ -11,10 +11,7 @@ const YOUTUBE_REFERER_HOST_RE =
  * (player error 153). Chat embeds are plain iframes in the window session, and
  * the production renderer loads from a file:// URL, so the browser sends none.
  */
-function stampEmbedRefererHeaders(
-  url: string,
-  headers: Record<string, string>
-): Record<string, string> {
+function stampEmbedRefererHeaders(url: string, headers: Record<string, string>): Record<string, string> {
   let host = ''
 
   try {
@@ -49,10 +46,7 @@ function withEmbedRefererStamp(
     callback: (result: { requestHeaders?: Record<string, string> }) => void
   ) => void
 ) {
-  return (
-    details: EmbedRequestDetails,
-    callback: (result: { requestHeaders?: Record<string, string> }) => void
-  ) => {
+  return (details: EmbedRequestDetails, callback: (result: { requestHeaders?: Record<string, string> }) => void) => {
     listener(details, result => {
       if (result.requestHeaders) {
         callback({ requestHeaders: stampEmbedRefererHeaders(details.url, result.requestHeaders) })

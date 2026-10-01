@@ -153,9 +153,22 @@ describe('composer keybind rows', () => {
   })
 
   it('prints the submit chord when Enter only breaks the line and nothing else is armed', () => {
-    expect(keysFor({}, 'composer.send')).toEqual(['mod+enter'])
-    expect(keysFor({}, 'composer.newline')).toEqual(['enter'])
-    expect(keysFor({}, 'composer.steer')).toEqual(['shift+enter'])
+    const only = { enterNewline: true, sendOnDoubleTap: false, sendOnHold: false }
+
+    expect(keysFor(only, 'composer.send')).toEqual(['mod+enter'])
+    expect(keysFor(only, 'composer.newline')).toEqual(['enter'])
+    expect(keysFor(only, 'composer.steer')).toEqual(['shift+enter'])
+  })
+
+  it('ships the gate with double tap and hold armed, and no newline row', () => {
+    const ids = readonlyKeybindsFor(prefs()).map(row => row.id)
+
+    expect(ids).toContain('composer.send.double')
+    expect(ids).toContain('composer.send.hold')
+    // The press is inert by default, so there is no newline row to advertise, and
+    // an unarmed gesture never gets a row of its own.
+    expect(ids).not.toContain('composer.send.pause')
+    expect(ids).not.toContain('composer.newline')
   })
 
   it('gives each armed gesture its own row, because they are different instructions', () => {
@@ -198,13 +211,15 @@ describe('composer keybind rows', () => {
     const labelFor = (over: Record<string, unknown>) =>
       readonlyKeybindsFor(prefs(over)).find(row => row.id.startsWith('composer.send.'))?.labelKey
 
-    expect(labelFor({ sendOnDoubleTap: true })).toBe('composer.send.double')
-    expect(labelFor({ sendOnHold: true })).toBe('composer.send.hold')
-    expect(labelFor({ sendOnPause: true })).toBe('composer.send.pause')
+    expect(labelFor({ sendOnDoubleTap: true, sendOnHold: false })).toBe('composer.send.double')
+    expect(labelFor({ sendOnDoubleTap: false, sendOnHold: true })).toBe('composer.send.hold')
+    expect(labelFor({ sendOnDoubleTap: false, sendOnHold: false, sendOnPause: true })).toBe(
+      'composer.send.pause'
+    )
   })
 
   it('falls back to the chord row, labelled, when the gate is closed with nothing armed', () => {
-    expect(primarySendRow(prefs())).toEqual({
+    expect(primarySendRow(prefs({ sendOnDoubleTap: false, sendOnHold: false }))).toEqual({
       id: 'composer.send',
       category: 'composer',
       keys: ['mod+enter'],

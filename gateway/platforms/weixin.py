@@ -34,7 +34,9 @@ from agent.i18n import t
 from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    classify_send_error,
 )
+from gateway.platforms.weixin_session_backoff import SessionBackoffRegistry
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -719,6 +721,16 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        self._session_backoff_enabled = _coerce_bool(
+            _extra_or_secret(extra, "session_backoff_enabled", ""), default=True)
+        self._session_backoff_base_seconds = float(
+            _extra_or_secret(extra, "session_backoff_base_seconds", "30"))
+        self._session_backoff_max_seconds = float(
+            _extra_or_secret(extra, "session_backoff_max_seconds", "1800"))
+        self._session_alert_threshold = max(1, int(_extra_or_secret(extra, "session_alert_threshold", "3")))
+        self._session_alert_webhook_url = _extra_or_secret(extra, "weixin_alert_webhook_url")
+        self._session_backoff = SessionBackoffRegistry(
+            hermes_home, self._session_backoff_base_seconds, self._session_backoff_max_seconds)
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -889,6 +901,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
+        self._session_backoff.clear(self._account_id, effective_chat_id)
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
         media_paths, media_types = [], []  # type: List[str], List[str]
@@ -1029,6 +1042,17 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+        if self._session_backoff_enabled:
+            suppressed, remaining, failures, last_error = self._session_backoff.should_suppress(
+                self._account_id, chat_id)
+            if suppressed:
+                error = (
+                    f"Weixin session not ready backoff active for {_safe_id(chat_id)}: "
+                    f"{remaining:.0f}s remaining after {failures} consecutive failure(s); "
+                    f"last error: {last_error}")
+                logger.warning("[%s] send suppressed to=%s: %.0fs remaining",
+                               self.name, _safe_id(chat_id), remaining)
+                return SendResult(success=False, error_kind="session_not_ready", error=error)
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
@@ -1053,10 +1077,56 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
+            self._session_backoff.clear(self._account_id, chat_id)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
+            error_kind = classify_send_error(exc)
+            if self._session_backoff_enabled and error_kind == "session_not_ready":
+                self._record_session_not_ready(chat_id, str(exc))
+            else:
+                self._session_backoff.clear(self._account_id, chat_id)
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error_kind=error_kind, error=str(exc))
+
+    def _record_session_not_ready(self, chat_id: str, error: str) -> None:
+        should_alert = self._session_backoff.record_failure(
+            self._account_id, chat_id, error, threshold=self._session_alert_threshold)
+        if not should_alert:
+            return
+        _suppressed, _remaining, failures, last_error = self._session_backoff.should_suppress(
+            self._account_id, chat_id)
+        logger.critical(
+            "[%s] Weixin session not ready for to=%s after %d consecutive failure(s); "
+            "last_error=%s; recovery: the user must send the bot a message first (or re-pair)",
+            self.name, _safe_id(chat_id), failures, last_error)
+        if self._session_alert_webhook_url:
+            asyncio.create_task(self._send_session_alert(chat_id, failures, last_error))
+
+    async def _send_session_alert(self, chat_id: str, failures: int, last_error: str) -> None:
+        payload = {
+            "profile": Path(self._hermes_home).name or self._hermes_home,
+            "platform": "weixin",
+            "chat_id": _safe_id(chat_id),
+            "consecutive_failures": failures,
+            "last_error": last_error,
+            "detected_at": datetime.now().isoformat(),
+            "reason": "session_not_ready",
+        }
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self._session_alert_webhook_url, json=payload) as response:
+                        body = await response.json(content_type=None)
+                        if 200 <= response.status < 300 and isinstance(body, dict) and body.get("ok") is True:
+                            return
+                        logger.warning("[%s] Weixin session alert rejected (attempt %d): status=%s body=%r",
+                                       self.name, attempt + 1, response.status, body)
+            except Exception as exc:
+                logger.warning("[%s] Weixin session alert delivery failed (attempt %d): %s",
+                               self.name, attempt + 1, exc)
+            if attempt < 2:
+                await asyncio.sleep(0.1 * (2 ** attempt))
+        logger.warning("[%s] Weixin session alert abandoned after 3 attempts", self.name)
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —

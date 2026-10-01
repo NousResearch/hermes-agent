@@ -92,6 +92,9 @@ def _same_chat_key_slots(
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    if TYPE_CHECKING:
+        def _typed_command_prefix_for(self, platform: Platform) -> str: ...
+
     async def _strict_session_current(
         self, event: MessageEvent, session_key: str, *, session_id: str | None = None,
     ) -> bool:

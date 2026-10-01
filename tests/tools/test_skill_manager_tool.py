@@ -43,7 +43,7 @@ def _skill_dir(tmp_path):
 
 VALID_SKILL_CONTENT = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill for unit testing.
 ---
 
@@ -54,7 +54,7 @@ Step 1: Do the thing.
 
 VALID_SKILL_CONTENT_2 = """\
 ---
-name: test-skill
+name: my-skill
 description: Updated description.
 ---
 
@@ -65,7 +65,7 @@ Step 1: Do the new thing.
 
 LONG_DESC_CONTENT = """\
 ---
-name: long-desc
+name: my-skill
 description: Use when deploying multi-region Kubernetes clusters with custom CNI plugins and service mesh.
 ---
 
@@ -73,6 +73,13 @@ description: Use when deploying multi-region Kubernetes clusters with custom CNI
 
 Step 1.
 """
+
+
+def _content_for(name: str) -> str:
+    """VALID_SKILL_CONTENT with the frontmatter ``name`` aligned to ``name`` — the write
+    paths reject a frontmatter/dir-name divergence (#21782), so setup must stay in sync."""
+    return VALID_SKILL_CONTENT.replace("name: my-skill", f"name: {name}", 1)
+
 
 
 # ---------------------------------------------------------------------------
@@ -181,16 +188,16 @@ class TestCreateSkill:
             target.mkdir()
             data = target / "data.bin"
             data.write_bytes(b"keep me")
-            result = _create_skill("new-skill", VALID_SKILL_CONTENT)
+            result = _create_skill("new-skill", _content_for("new-skill"))
 
             # An EMPTY pre-existing directory (leftover of an earlier failed create) is a valid target;
             # a blocked scan removes what create wrote and the then-empty dir (rmdir, never rmtree).
             empty = tmp_path / "empty-skill"
             empty.mkdir()
-            empty_result = _create_skill("empty-skill", VALID_SKILL_CONTENT)
+            empty_result = _create_skill("empty-skill", _content_for("empty-skill"))
 
             # A directory create made itself is its own to remove when the scan blocks.
-            fresh_result = _create_skill("fresh-skill", VALID_SKILL_CONTENT)
+            fresh_result = _create_skill("fresh-skill", _content_for("fresh-skill"))
 
             # A directory create cannot even list is somebody's: refuse cleanly, never raise.
             unreadable_result = None
@@ -199,7 +206,7 @@ class TestCreateSkill:
                 unreadable.mkdir()
                 unreadable.chmod(0)
                 try:
-                    unreadable_result = _create_skill("unreadable-skill", VALID_SKILL_CONTENT)
+                    unreadable_result = _create_skill("unreadable-skill", _content_for("unreadable-skill"))
                 finally:
                     unreadable.chmod(0o700)
 
@@ -226,12 +233,12 @@ class TestCreateSkill:
             category.mkdir()
             nested = category / "nested-skill.md"
             nested.write_bytes(b"nested")
-            result = _create_skill("category", VALID_SKILL_CONTENT)
+            result = _create_skill("category", _content_for("category"))
 
             # Empty pre-existing directory + clean scan: create succeeds (retry after a leftover works).
             empty = tmp_path / "empty-skill"
             empty.mkdir()
-            empty_result = _create_skill("empty-skill", VALID_SKILL_CONTENT)
+            empty_result = _create_skill("empty-skill", _content_for("empty-skill"))
 
         assert result["success"] is False
         assert "Choose another name" in result["error"]
@@ -252,8 +259,26 @@ class TestCreateSkill:
         fm, _ = parse_frontmatter(LONG_DESC_CONTENT)
         assert extract_skill_description(fm) in result["system_prompt_preview"]
 
+    def test_create_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Frontmatter 'name' must match the directory name parameter (#21782)."""
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", _content_for("different-name"))
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        assert "different-name" in result["error"]
+        assert not (tmp_path / "my-skill").exists()
+
 
 class TestEditSkill:
+    def test_edit_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Frontmatter 'name' must match the directory name on edit (#21782)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", _content_for("different-name"))
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        original = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "name: my-skill" in original
     def test_edit_existing_skill(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -305,6 +330,17 @@ class TestEditSkill:
         assert "A test skill" in content
 
 class TestPatchSkill:
+    def test_patch_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Patching the frontmatter 'name' away from the directory name is rejected
+        and the original content is preserved (#21782)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "name: my-skill", "name: renamed-away")
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        assert "renamed-away" in result["error"]
+        original = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "name: my-skill" in original and "renamed-away" not in original
     def test_patch_unique_match(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -331,7 +367,7 @@ class TestPatchSkill:
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill.
 ---
 
@@ -447,7 +483,7 @@ class TestDeleteSkill:
 
     def test_delete_with_absorbed_into_equals_self_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_skill("narrow", _content_for("narrow"))
             result = _delete_skill("narrow", absorbed_into="narrow")
         assert result["success"] is False
         assert (tmp_path / "narrow").exists()
@@ -594,7 +630,7 @@ class TestSkillManageDispatcher:
         or prune it).
         """
         with _skill_dir(tmp_path):
-            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="create", name="my-skill", content=VALID_SKILL_CONTENT)
             from tools.skill_usage import load_usage
             usage = load_usage()
         result = json.loads(raw)
@@ -602,7 +638,7 @@ class TestSkillManageDispatcher:
         # Foreground create carries the "learn" learning-signal marker — never the
         # curator-management opt-in ("agent"), and the record may be missing
         # entirely (telemetry best-effort).
-        rec = usage.get("test-skill") or {}
+        rec = usage.get("my-skill") or {}
         assert rec.get("created_by") in {"learn", None, "", False}
 
 
@@ -622,8 +658,8 @@ class TestSkillManageDispatcher:
                  patch("tools.skill_usage.is_hub_installed", return_value=False), \
                  patch("tools.skill_usage.is_bundled",
                        side_effect=lambda skill_name: skill_name == "bundled"):
-                skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
-                skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
+                skill_manage(action="create", name="umbrella", content=_content_for("umbrella"))
+                skill_manage(action="create", name="bundled", content=_content_for("bundled"))
                 raw = skill_manage(
                     action="delete",
                     name="bundled",
@@ -649,7 +685,7 @@ class TestPatchRecoveryLoop:
 
     CONTENT = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill.
 ---
 
@@ -871,7 +907,7 @@ class TestExternalSkillMutations:
         )
 
         with _skill_dir(tmp_path):
-            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            _create_skill("manual-skill", _content_for("manual-skill"))
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
                 with patch(
@@ -928,7 +964,7 @@ class TestBackgroundOwnershipPolicyConsistency:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes" / "skills").mkdir(parents=True, exist_ok=True)
         with _skill_dir(tmp_path):
-            _create_skill("flip-skill", VALID_SKILL_CONTENT)
+            _create_skill("flip-skill", _content_for("flip-skill"))
             first = self._bg_patch(
                 tmp_path, "flip-skill", "Do the thing.", "Do the new thing.",
             )
@@ -947,7 +983,7 @@ class TestBackgroundOwnershipPolicyConsistency:
         foreground edit to their own skill must keep working."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         with _skill_dir(tmp_path):
-            _create_skill("no-record", VALID_SKILL_CONTENT)
+            _create_skill("no-record", _content_for("no-record"))
             with patch("tools.skill_usage.load_usage", return_value={}):
                 res = json.loads(skill_manage(
                     action="patch", name="no-record",
@@ -959,7 +995,7 @@ class TestBackgroundOwnershipPolicyConsistency:
         """Adoption is the documented path from refused to allowed."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         with _skill_dir(tmp_path):
-            _create_skill("adopt-me", VALID_SKILL_CONTENT)
+            _create_skill("adopt-me", _content_for("adopt-me"))
             with patch("tools.skill_usage.load_usage", return_value={}):
                 before = self._bg_patch(
                     tmp_path, "adopt-me", "Do the thing.", "Do the new thing.",
@@ -1045,7 +1081,7 @@ class TestDeleteSkillRmtreeGuard:
 
     def test_normal_delete_still_works(self, tmp_path):
         with _skill_dir(tmp_path):
-            _create_skill("good-skill", VALID_SKILL_CONTENT)
+            _create_skill("good-skill", _content_for("good-skill"))
             result = _delete_skill("good-skill", absorbed_into="")
         assert result["success"] is True, result
         assert not (tmp_path / "good-skill").exists()
@@ -1166,7 +1202,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_bare_prune_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", _skill_content("active-skill"))
             result = _delete_skill("active-skill", absorbed_into="")
         assert result["success"] is False
         assert result.get("_fail_closed") is True

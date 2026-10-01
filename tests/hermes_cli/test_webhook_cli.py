@@ -49,6 +49,22 @@ def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
     assert _get_webhook_base_url() == "http://localhost:9123"
 
 class TestSubscribe:
+    @pytest.mark.parametrize("script", ["", "filter_payload.py"])
+    def test_basic_create(self, capsys, script):
+        webhook_command(_make_args(webhook_action="subscribe", name="test-hook", script=script))
+        out = capsys.readouterr().out
+        assert "Created" in out
+        assert "/webhooks/test-hook" in out
+        assert "HMAC-SHA256 signature validation when supported" in out
+        assert "fixed auth tokens" in out
+        assert "Bearer scheme" in out
+        subs = _load_subscriptions()
+        assert "test-hook" in subs
+        if script:
+            assert subs["test-hook"]["script"] == script
+            assert f"Script: {script}" in out
+        else:
+            assert "script" not in subs["test-hook"]
 
     def test_custom_secret(self):
         webhook_command(_make_args(
@@ -141,7 +157,7 @@ class TestPersistence:
     def test_corrupted_file(self):
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("broken{{{")
+        path.write_text("broken{{{", encoding="utf-8")
         assert _load_subscriptions() == {}
 
     @pytest.mark.platforms("posix")  # POSIX mode bits are platform-specific
@@ -161,7 +177,10 @@ class TestPersistence:
         # Simulate a pre-existing 0o644 file from before this hardening landed.
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"old": {"secret": "stale", "prompt": "x"}}))
+        path.write_text(
+            json.dumps({"old": {"secret": "stale", "prompt": "x"}}),
+            encoding="utf-8",
+        )
         path.chmod(0o644)
 
         _save_subscriptions({"demo": {"secret": "FRESH", "prompt": "x"}})

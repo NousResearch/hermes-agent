@@ -1006,6 +1006,17 @@ function ModelFamilyRow({
   // reads as the model's reasoning setting, never as part of a differently-
   // named model. The provider chip only paints in the Favorites section,
   // where rows from every provider sit together.
+  //
+  // Width policy (#130349): the row's fixed menu width cannot always fit
+  // name + every chip whole, and the name is the identity the picker exists
+  // to show — so it is the LAST element allowed to disappear, not the first.
+  // Chips participate in shrinking (badge base sets `whitespace-nowrap` +
+  // `shrink-0`), each yielding proportionally to the name until it hits its
+  // own 4rem clip; past that point the name truncates as the single graceful
+  // loser. The name span carries a title tooltip so identity survives even a
+  // worst-case squeeze, and the row's submenu trigger title duplicates it for
+  // pointer users. Chips are never hidden wholesale: clipping a few letters
+  // loses less than losing WHICH model the row names.
   const metaTags = [
     showProvider ? provider.name : null,
     tag || null,
@@ -1038,6 +1049,7 @@ function ModelFamilyRow({
   return (
     <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)}>
       <DropdownMenuSubTrigger
+        title={[name, ...metaTags].filter(Boolean).join(' · ')}
         onClick={event => {
           // Shift-click stars, the same gesture that pins a chat row in the
           // sidebar. Nothing is picked and the menu stays open, so a second
@@ -1084,12 +1096,12 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="min-w-0 truncate">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5" title={metaTags.length > 0 ? name : undefined}>
+          <span className="min-w-0 shrink truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>
           {metaTags.map(chip => (
-            <Badge className="shrink-0 uppercase tracking-wide" key={chip} size="xs" variant="muted">
+            <Badge className="shrink max-w-16 truncate uppercase tracking-wide" key={chip} size="xs" variant="muted">
               {chip}
             </Badge>
           ))}

@@ -323,6 +323,53 @@ describe('the catalog owns favorite models', () => {
   })
 })
 
+// A crowded Favorites row once collapsed the model NAME to its first letter
+// while every meta chip stayed whole (#130349): the name was the only
+// shrinkable element, so it lost all its width first. The name is the
+// identity the picker exists to show — the row must never squeeze any other
+// element before it, and must keep a readable minimum even in the worst case.
+describe('row width: the model name never loses first (#130349)', () => {
+  it('lets the meta badges shrink AFTER the name, never before it', async () => {
+    renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
+
+    const badge = await screen.findByText('High')
+    const nameSpan = badge.parentElement?.querySelector('.truncate')
+
+    // The name keeps shrink (it starts sharing the squeeze); the badge does
+    // NOT keep the old never-shrink contract.
+    expect(nameSpan?.className).toContain('shrink')
+    expect(badge.className).not.toContain('shrink-0')
+    expect(badge.className).toContain('shrink')
+  })
+
+  it('caps how far a badge may shrink before the name has to absorb it', async () => {
+    renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
+
+    const badge = await screen.findByText('High')
+
+    // `max-w-16 truncate`: a badge yields down to its own 4rem clip instead
+    // of squeezing every last px out of the name. Without the cap the
+    // squeeze just moves the collapse from the name to the chips — both
+    // unreadable; with it the name keeps a floor in the common case.
+    expect(badge.className).toContain('max-w-16')
+    expect(badge.className).toContain('truncate')
+  })
+
+  it('survives a worst-case squeeze: the full name stays hoverable (title)', async () => {
+    // Crowded as it gets: provider chip, variant tag, effort chip.
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+    renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
+
+    const row = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
+
+    // The row's own title carries name first + every chip, so the complete
+    // identity is always one hover away — the title is the fallback that
+    // makes ANY truncation acceptable, name or chip.
+    expect(row.getAttribute('title')).toBe('Gemini 2.5 · Google · Flash · High')
+    expect(row.getAttribute('title')).toContain('Gemini 2.5')
+  })
+})
+
 describe('in-flight local downloads', () => {
   const DOWNLOAD_JOB: LocalRuntimeJob = {
     job_id: 'dl1',

@@ -848,13 +848,18 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             _platform_config_key,
         )
         from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
+        from gateway.display_config import resolve_display_setting as _base_resolve_display_setting, resolve_tool_progress as _base_resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         from gateway.session_policy import policy_for_source, policy_turn_toolsets
         policy = policy_for_source(self, source)
         from gateway.session_authorities import active_authority
         user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
+        chat_type = getattr(source, "chat_type", None)
+        def resolve_display_setting(config, platform, setting, fallback=None):
+            return _base_resolve_display_setting(config, platform, setting, fallback, chat_type)
+        def resolve_tool_progress(config, platform, env_mode=None):
+            return _base_resolve_tool_progress(config, platform, env_mode, chat_type)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
             enabled_toolsets = policy_turn_toolsets(active_authority(self), policy, user_config, source.chat_id)

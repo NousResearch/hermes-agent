@@ -227,10 +227,25 @@ def _defer_shared_workspace_cleanup(
     return True
 
 
-def _worktree_guard_applies(path: Path | str) -> bool:
-    """Only a real linked worktree is ever removed; check sharing just for those."""
+def _defer_shared_worktree_cleanup(
+    conn: sqlite3.Connection, task_id: str, path: Path | str
+) -> bool:
+    """Defer removing a linked worktree another live task may still use.
+
+    Only a real linked worktree is ever removed, so the sharing scan runs just
+    for those; one ``rev-parse`` call answers git-dir and common-dir together.
+    """
     wt = Path(path).expanduser()
-    return wt.is_dir() and _is_linked_worktree_checkout(wt)
+    if not wt.is_dir():
+        return False
+    out = _kb._git_out(
+        wt, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"
+    )
+    lines = out.splitlines() if out else []
+    linked = len(lines) == 2 and (
+        Path(lines[0]).resolve(strict=False) != Path(lines[1]).resolve(strict=False)
+    )
+    return linked and _defer_shared_workspace_cleanup(conn, task_id, path)
 
 
 def _lexical_path(path: Path | str) -> Path:
@@ -371,10 +386,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # lingering worker never has its cwd deleted from under it.
         if kind == "worktree":
             _cleanup_worker_tmux(conn, task_id)
-            if not (
-                _worktree_guard_applies(path)
-                and _defer_shared_workspace_cleanup(conn, task_id, path)
-            ):
+            if not _defer_shared_worktree_cleanup(conn, task_id, path):
                 _cleanup_worktree_workspace(task_id, path, row["branch_name"])
             _try_cleanup_parent_workspaces(conn, task_id)
             return
@@ -503,9 +515,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 continue
             ws_path = row["workspace_path"]
             if row["workspace_kind"] == "worktree":
-                if _worktree_guard_applies(ws_path) and _defer_shared_workspace_cleanup(
-                    conn, parent_id, ws_path
-                ):
+                if _defer_shared_worktree_cleanup(conn, parent_id, ws_path):
                     continue
                 _cleanup_worktree_workspace(parent_id, ws_path, row["branch_name"])
                 continue

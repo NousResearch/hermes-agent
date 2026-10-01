@@ -20,7 +20,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from hermes_cli.commands import resolve_command
 
-_TYPED_PREFIX = {Platform.TELEGRAM: "/", Platform.MATRIX: "!"}
+_TYPED_PREFIX = {Platform.TELEGRAM: "/", Platform.MATRIX: "!", Platform.SLACK: "!"}
 
 # A slash that starts a command spelling, as opposed to the " / " separator in
 # "/goal status / pause / clear".
@@ -29,8 +29,13 @@ _SLASH_COMMAND = re.compile(r"(?<=[\s`(])/(?=[a-z])")
 
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.slack.adapter import SlackAdapter
+
     runner.adapters = {
-        platform: SimpleNamespace(typed_command_prefix=prefix) for platform, prefix in _TYPED_PREFIX.items()
+        Platform.TELEGRAM: SimpleNamespace(typed_command_prefix="/"),
+        Platform.MATRIX: object.__new__(MatrixAdapter),
+        Platform.SLACK: object.__new__(SlackAdapter),
     }
     runner.session_store = None
     runner.config = None
@@ -69,6 +74,7 @@ async def _busy_command(runner: GatewayRunner, event: MessageEvent) -> str:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", [Platform.MATRIX, Platform.SLACK])
 @pytest.mark.parametrize(
     ("text", "reply_for"),
     [
@@ -84,13 +90,13 @@ async def _busy_command(runner: GatewayRunner, event: MessageEvent) -> str:
         ("/busy sideways", _busy_command),
     ],
 )
-async def test_busy_notice_uses_platform_typed_prefix(monkeypatch, text, reply_for):
+async def test_busy_notice_uses_platform_typed_prefix(monkeypatch, platform, text, reply_for):
     # Show the one-time busy-input hint on every call; it is part of the ack.
     monkeypatch.setattr(agent.onboarding, "is_seen", lambda *_args: False)
     monkeypatch.setattr(agent.onboarding, "mark_seen", lambda *_args: None)
 
     telegram = await reply_for(_make_runner(), _make_event(Platform.TELEGRAM, text))
-    matrix = await reply_for(_make_runner(), _make_event(Platform.MATRIX, text))
+    matrix = await reply_for(_make_runner(), _make_event(platform, text))
 
     assert _SLASH_COMMAND.search(telegram), telegram
-    assert matrix == _SLASH_COMMAND.sub(_TYPED_PREFIX[Platform.MATRIX], telegram)
+    assert matrix == _SLASH_COMMAND.sub(_TYPED_PREFIX[platform], telegram)

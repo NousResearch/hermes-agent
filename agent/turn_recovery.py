@@ -452,6 +452,13 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"
 
 
+def reset_codex_reasoning_replay(agent: Any) -> None:
+    """The replay verdict belongs to the route that earned it: a ``/model`` switch, fallback
+    activation or primary restore starts the new route with replay on (#61552)."""
+    agent._codex_reasoning_replay_enabled = True
+    agent._codex_reasoning_replay_rejected = False
+
+
 def _recover_stale_codex_reasoning(
     agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]], api_messages: Any,
 ) -> bool:

@@ -288,6 +288,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // backend rows, so the folded message has to report how many it covers
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
+  // Highest durable row id among the pending tool rows — folded tool rows are
+  // written to the DB after the assistant rows they belong to, so they extend
+  // the row span of whichever bubble eventually absorbs them.
+  let pendingToolEndRowId: number | undefined
   let activeAssistantIndex: null | number = null
   // Todo history is stateful. Only a result from the nearest prior assistant
   // call in this turn may update it; a display-only orphan can still render.
@@ -321,10 +325,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     })
   }
 
+  const rowIdOf = (message: SessionMessage): number | undefined =>
+    message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+
+  const extendEndRowId = (message: ChatMessage, rowId: number | undefined): ChatMessage =>
+    rowId !== undefined && rowId > (message.endRowId ?? -Infinity) ? { ...message, endRowId: rowId } : message
+
+  const maxRowId = (current: number | undefined, rowId: number | undefined): number | undefined =>
+    rowId === undefined ? current : current === undefined || rowId > current ? rowId : current
+
   const clearPendingTools = () => {
     pendingToolParts = []
     pendingToolTimestamp = undefined
     pendingToolRows = 0
+    pendingToolEndRowId = undefined
   }
 
   /** Attribute `rows` backend rows to a folded message (absent field means one). */
@@ -378,10 +392,16 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       activeAssistantIndex = result.length - 1
     }
 
+    if (activeAssistantIndex !== null && pendingToolEndRowId !== undefined) {
+      result[activeAssistantIndex] = extendEndRowId(result[activeAssistantIndex], pendingToolEndRowId)
+    }
+
     clearPendingTools()
   }
 
   messages.forEach((message, index) => {
+    const rowId = rowIdOf(message)
+
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {
@@ -389,6 +409,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (message.role === 'tool') {
+      pendingToolEndRowId = maxRowId(pendingToolEndRowId, rowId)
+
       if (isTodoToolName(message.tool_name) && !pairedTodoResult(message)) {
         pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
         pendingToolTimestamp ??= message.timestamp
@@ -406,7 +428,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         return
       }
 
-      if (applyStoredToolResult(result, message)) {
+      const appliedIndex = applyStoredToolResult(result, message, rowId)
+
+      if (appliedIndex !== null) {
         return
       }
 
@@ -445,7 +469,6 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
     const parts: ChatMessagePart[] = []
-    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
@@ -528,18 +551,24 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
           pendingAbsorbedRows = pendingToolRows
         }
 
+        if (activeAssistantIndex !== null && pendingToolEndRowId !== undefined) {
+          result[activeAssistantIndex] = extendEndRowId(result[activeAssistantIndex], pendingToolEndRowId)
+        }
+
         clearPendingTools()
       }
 
-      const activeAssistant =
+      const activeIndex =
         activeAssistantIndex !== null && result[activeAssistantIndex]?.role === 'assistant'
-          ? result[activeAssistantIndex]
+          ? activeAssistantIndex
           : null
+
+      const activeAssistant = activeIndex !== null ? result[activeIndex] : null
 
       const currentHasToolCall = parts.some(part => part.type === 'tool-call')
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
-      if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
+      if (activeAssistant && activeIndex !== null && (currentHasToolCall || activeHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
         activeAssistant.durableComplete = durableComplete
         activeAssistant.timestamp = earliestTimestamp(
@@ -548,6 +577,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
           ...parts.map(part => part.timestamp)
         )
         absorbRows(activeAssistant, 1)
+        result[activeIndex] = extendEndRowId(activeAssistant, rowId)
 
         return
       }
@@ -556,9 +586,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
-    // Gateway resume names the durable row id `row_id`; the REST transcript
-    // prefetch ships the same messages.id as a numeric `id`. Either one lets
-    // reactions address this exact row later.
+    // Every row keeps its durable id on `rowId` (gateway resume names the
+    // durable row `row_id`; the REST transcript prefetch ships the same
+    // messages.id as a numeric `id`); when rows merge into one bubble the LAST
+    // id survives as `endRowId`, so row-addressed consumers (branch) can name
+    // the whole span a bubble covers. Reactions only need the first row, and
+    // keep addressing it via the surviving `rowId`.
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
@@ -575,6 +608,14 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(reactions.length ? { reactions } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
+
+    if (rowId !== undefined) {
+      const pushed = result[result.length - 1]
+
+      if (pushed.endRowId === undefined || rowId > pushed.endRowId) {
+        pushed.endRowId = rowId
+      }
+    }
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
   })

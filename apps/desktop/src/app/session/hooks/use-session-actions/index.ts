@@ -16,6 +16,7 @@ import {
   fetchStoredTranscriptAcrossBackends,
   getAllSessionMessages,
   getLatestSessionMessages,
+  getSessionMessages,
   setSessionArchived
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -189,6 +190,7 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
+  resolveDurableRowIdForMessage,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
@@ -248,24 +250,24 @@ const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
 // flight instead of minting a second child. The OWNER is part of the identity:
 // the same parent id served by two connections is two different sessions.
 function branchCreateKey({
-  branchCount,
   branchMessages,
   cwd,
   ownerRoute,
   parentStoredId,
   profile,
-  sourceSessionId
+  sourceSessionId,
+  upToRowId
 }: {
-  branchCount?: number
   branchMessages: BranchMessage[]
   cwd?: string
   ownerRoute?: SessionOwnerRoute
   parentStoredId: null | string
   profile?: null | string
   sourceSessionId: null | string
+  upToRowId?: number
 }): string {
   return JSON.stringify({
-    branchCount: branchCount ?? null,
+    cutRowId: upToRowId ?? null,
     connectionId: ownerRoute?.connectionId || null,
     cwd: cwd?.trim() || null,
     messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
@@ -2710,6 +2712,10 @@ export function useSessionActions({
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then open it as its own tab
   // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
+  // `upToRowId` (optional) is the durable DB row id of the message the branch
+  // was cut at. session.branch truncates the parent's raw history by row id —
+  // NOT by a merged-message count, which has no stable mapping onto the raw
+  // rows and silently dropped the conversation tail (branch context-loss bug).
   const forkBranch = useCallback(
     async (
       branchMessages: BranchMessage[],
@@ -2717,8 +2723,8 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchCount?: number,
-      ownerRoute?: SessionOwnerRoute
+      ownerRoute?: SessionOwnerRoute,
+      upToRowId?: number
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
@@ -2756,22 +2762,28 @@ export function useSessionActions({
         // connections is two different sessions, so a route-blind key would
         // coalesce them onto one create.
         const createKey = branchCreateKey({
-          branchCount,
           branchMessages,
           cwd,
           ownerRoute,
           parentStoredId,
           profile,
-          sourceSessionId
+          sourceSessionId,
+          // The cut address is part of the identity: two branches taken at
+          // different messages of the same live parent are two different cuts.
+          upToRowId
         })
 
         let createFlight = branchCreateFlightsRef.current.get(createKey)
 
         // No title: the backend auto-names the branch from its parent's lineage.
+        // Full-history fork (no row id) omits any truncation; a specific-message
+        // fork names the durable row id so the backend cuts the RAW history at
+        // exactly that row (a merged-message count would land in the wrong
+        // place and silently drop the conversation tail).
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
-            ...(branchCount !== undefined ? { count: branchCount } : {})
+            ...(upToRowId !== undefined ? { up_to_row_id: upToRowId } : {})
           }
 
           const createParams = {
@@ -2785,7 +2797,9 @@ export function useSessionActions({
           createFlight = (
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
-                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
+                  // A named cut needs the echoed child transcript (row ids the
+                  // renderer will address later); a whole-chat fork does not.
+                  upToRowId === undefined ? 'session.branch_whole' : 'session.branch',
                   branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
@@ -3011,6 +3025,12 @@ export function useSessionActions({
         return false
       }
 
+      if (messageId && !messages.some(message => message.id === messageId)) {
+        notifyError(new Error('The selected message is no longer available in this session.'), copy.branchFailed)
+
+        return false
+      }
+
       const branchMessages = messageId ? selectBranchMessages(messages, authoritativeMessages, messageId) : []
 
       if (messageId && !branchMessages.length) {
@@ -3021,14 +3041,56 @@ export function useSessionActions({
 
       clearNotifications()
 
+      // Address the cut by durable row id (#80973): a merged-message count has
+      // no stable mapping onto the backend's raw rows and silently dropped the
+      // conversation tail. The terminal bubble of the selected prefix carries
+      // the span it covers — endRowId for a merged bubble (continuation rows,
+      // folded tool rows), else its own rowId. A fresh turn that has never
+      // round-tripped row ids falls back to resolving against the REST
+      // transcript; if it cannot be resolved the fork is refused rather than
+      // silently retargeted.
+      let upToRowId: number | undefined
+
+      if (messageId) {
+        const terminal = branchMessages[branchMessages.length - 1]?.source
+
+        upToRowId = terminal?.endRowId ?? terminal?.rowId
+
+        if (upToRowId === undefined && storedSessionId) {
+          try {
+            const persisted = await getSessionMessages(storedSessionId, profile)
+            const localIndex = messages.findIndex(message => message.id === messageId)
+
+            upToRowId =
+              localIndex >= 0 ? resolveDurableRowIdForMessage(messages, localIndex, persisted.messages) : undefined
+          } catch {
+            // Fall through to the explicit refusal below.
+          }
+        }
+
+        if (upToRowId === undefined) {
+          notifyError(new Error('The selected message is not persisted yet.'), copy.branchFailed)
+
+          return false
+        }
+      }
+
+      // The open chat's owning profile, NOT the picker's / launch profile —
+      // /profile only retargets new chats, so a branch of an existing thread
+      // must stay on that thread's backend (cache hit for an open session).
       return forkBranch(
         branchMessages,
         runtimeId,
         storedSessionId,
         cwd?.trim(),
         profile,
-        messageId ? branchMessages.length : undefined,
-        ownerRoute
+        ownerRoute,
+        // Forking from a specific message: name its durable DB row id so the
+        // backend truncates the RAW history at exactly that row. Without an id
+        // (branch the whole chat) no truncation is sent — a merged-message
+        // count has no stable mapping onto the backend's raw rows and used to
+        // silently drop the conversation tail (branch context-loss bug).
+        upToRowId
       )
     },
     [copy, forkBranch]
@@ -3108,7 +3170,6 @@ export function useSessionActions({
           stored?.id ?? storedSessionId,
           stored?.cwd?.trim(),
           profile,
-          undefined,
           ownerRoute
         )
       } catch (err) {

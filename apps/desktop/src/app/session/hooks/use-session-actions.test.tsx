@@ -3256,18 +3256,18 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 
-  it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
+  it('branches an open live chat via session.branch with no merged-count truncation (branch context-loss bug)', async () => {
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.branch') {
+      if (method === 'session.branch_whole') {
         branchParams = params
 
         return {
           session_id: 'branch-runtime',
           stored_session_id: 'branch-stored',
           title: 'Branch',
-          message_count: 2,
+          message_count: 4,
           messages: [],
           info: {}
         } as never
@@ -3294,16 +3294,61 @@ describe('branchStoredSession desktop source tagging', () => {
     )
     await waitFor(() => expect(branchCurrentSession).not.toBeNull())
 
-    // Branch from the FIRST assistant reply ("a1"), not the last message �
-    // this is exactly the scenario that used to drop the question (bug #1):
-    // only the clicked message survived instead of everything up to it.
+    // Branching the whole open chat sends NO truncation: the backend copies
+    // the full raw history. A merged-message count used to be sent here and
+    // silently dropped the conversation tail (the branch context-loss bug).
+    await expect(branchCurrentSession!()).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('session.branch_whole', {
+      session_id: 'live-parent'
+    })
+    expect(branchParams).toEqual({ session_id: 'live-parent' })
+  })
+
+  it('branches from a specific message by durable row id', async () => {
+    let branchParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch') {
+        branchParams = params
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 3,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }], rowId: 101 },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }], rowId: 102 },
+      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }], rowId: 103 },
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }], rowId: 104 }
+    ])
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    // Branch from the first assistant reply ("a1"): the request names its
+    // durable DB row id so the backend truncates the RAW history at exactly
+    // that row instead of a merged-message count.
     await expect(branchCurrentSession!('a1')).resolves.toBe(true)
 
-    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
-      session_id: 'live-parent',
-      count: 2
-    })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    expect(branchParams).toEqual({ session_id: 'live-parent', up_to_row_id: 102 })
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
@@ -3395,10 +3440,10 @@ describe('branchStoredSession desktop source tagging', () => {
     })
 
     const messages = [
-      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
-      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
-      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
-      { id: 'a2', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
+      { id: 'q1', rowId: 101, role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', rowId: 102, role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', rowId: 103, role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
+      { id: 'a2', rowId: 104, role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
     ]
 
     setSessions([storedSession({ id: 'tile-stored', message_count: messages.length })])
@@ -3423,9 +3468,11 @@ describe('branchStoredSession desktop source tagging', () => {
       })
     ).resolves.toBe(true)
 
+    // The cut is addressed by the terminal bubble's durable row id (#80973):
+    // a merged-message count has no stable mapping onto the backend's raw rows.
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'tile-runtime',
-      count: 2
+      up_to_row_id: 102
     })
   })
 

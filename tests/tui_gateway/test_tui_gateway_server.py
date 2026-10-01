@@ -16547,6 +16547,285 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     assert str(seen.get("db_path")).endswith("state.db")
 
 
+def test_session_branch_full_history_by_default_truncates_by_row_id(monkeypatch, tmp_path):
+    """session.branch copies the WHOLE raw history by default; a legacy
+    merged-message ``count`` is ignored (it has no mapping onto raw rows and
+    used to silently drop the conversation tail); ``up_to_row_id`` truncates
+    at exactly that durable DB row."""
+    captured = {}
+
+    # The handler resolves the parent's DB through the cached ``server._db``
+    # handle when the session has no profile home. A earlier test in this
+    # file may have left a real SessionDB cached there — drop it so the
+    # monkeypatched ProfileDB below is what the handler actually gets, and
+    # restore the previous handle afterwards.
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            pass
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def create_session(self, new_key, **kwargs):
+            captured["created"] = new_key
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            captured["msgs"] = [dict(m, session_id=session_id) for m in messages]
+            return len(messages)
+
+        def get_messages_as_conversation(self, session_id, include_row_ids=False, **kwargs):
+            if not include_row_ids:
+                return [dict(m) for m in captured.get("msgs", [])]
+            return [
+                dict(m, _row_id=1000 + i)
+                for i, m in enumerate(captured.get("msgs", []))
+            ]
+
+        def set_session_title(self, key, title):
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *a, **k):
+            return None
+
+        def close(self):
+            pass
+
+    class FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+            self.session_id = None
+
+    def _run_branch(history, params=None):
+        parent = {
+            "session_key": "parent-key",
+            "history": history,
+            "history_lock": __import__("threading").Lock(),
+            "running": False,
+            "cols": 80,
+            "profile_home": None,
+            "source": "tui",
+            "agent": FakeAgent(),
+            "created_at": 1.0,
+            "last_active": 1.0,
+            "cwd": str(tmp_path),
+        }
+        server._sessions["parent"] = parent
+        monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+        monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+        monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
+        monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
+        monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+        monkeypatch.setattr(server, "_session_cwd", lambda s: str(tmp_path))
+        monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+        req = {"id": "1", "method": "session.branch", "params": {"session_id": "parent", "name": "forked"}}
+        req["params"].update(params or {})
+        captured.pop("msgs", None)
+        response = server.handle_request(req)
+        if "result" in response:
+            child_sid = response["result"]["session_id"]
+            captured["live_history"] = server._sessions[child_sid]["history"]
+        return response
+
+    try:
+        history = [
+            {"role": "user", "content": "q1", "_row_id": 1},
+            {"role": "assistant", "content": "a1", "_row_id": 2},
+            {"role": "user", "content": "q2", "_row_id": 4},
+            {"role": "assistant", "content": "a2", "_row_id": 5},
+        ]
+        # No truncation params → the whole history is copied. (The desktop
+        # used to send a merged-message count here, which silently dropped
+        # the conversation tail — the branch bug.)
+        resp = _run_branch(history, {"count": 2})
+        assert "result" in resp, resp
+        msgs = captured["msgs"]
+        assert [m["content"] for m in msgs] == ["q1", "a1", "q2", "a2"]
+
+        # Branch from the second user turn: rows up to and including that
+        # bubble's durable row survive.
+        resp = _run_branch(history, {"up_to_row_id": 4})
+        assert "result" in resp, resp
+        msgs = captured["msgs"]
+        assert [m["content"] for m in msgs] == ["q1", "a1", "q2"]
+
+        # A merged-bubble cut may name a row this projection never carried
+        # (a folded tool row); the ordinal cut still lands between the rows
+        # that bracket it.
+        resp = _run_branch(history, {"up_to_row_id": 3})
+        assert "result" in resp, resp
+        assert [m["content"] for m in captured["msgs"]] == ["q1", "a1"]
+
+        # A row id below every visible row refuses rather than forking an
+        # empty child; an id above every row cannot silently broaden.
+        resp = _run_branch(history, {"up_to_row_id": 0})
+        assert "result" in resp  # ignored: only positive ids address rows
+        assert [m["content"] for m in captured["msgs"]] == ["q1", "a1", "q2", "a2"]
+
+        # A row id from a DIFFERENT (stale) session must fail instead of
+        # silently becoming a full-history branch.
+        resp = _run_branch(history, {"up_to_row_id": 9999})
+        assert resp["error"]["code"] == 4009
+        assert "branch target row not found" in resp["error"]["message"]
+    finally:
+        for k in list(server._sessions):
+            server._sessions.pop(k, None)
+
+
+def test_session_branch_compacted_parent_cuts_on_persisted_rows(monkeypatch, tmp_path):
+    """#87949: a message-level branch of a COMPACTED long session copies the full
+    persisted display history up to the clicked bubble's durable row — aligned
+    from the first persisted row, never from the compacted model projection —
+    and the copied rows are re-stamped with the CHILD's row ids so a
+    second-generation branch addresses its own transcript, not the parent's."""
+    profile_home = tmp_path / "profiles" / "mlperf"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seen: dict = {"msgs": []}
+
+    # The reporter's shape: a 614-row conversation compacted to a summary +
+    # tail. A tool row sits inside the display projection within the cut span —
+    # the branch copy is the VISIBLE projection, so it is excluded by role.
+    display_history: list = []
+
+    for i in range(614):
+        row_id = i + 1 if i <= 10 else i + 2
+        display_history.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}", "_row_id": row_id})
+
+        if i == 10:
+            display_history.append({"role": "tool", "content": "tool output", "tool_call_id": "call-1", "_row_id": 12})
+
+    class LaunchDB:
+        def get_session_title(self, _key):
+            return "launch"
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            pass
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def get_resume_conversations(self, key):
+            assert key == "parent-key"
+            # The model projection has already been compacted: summary + tail.
+            return (
+                [{"role": "assistant", "content": "compact summary"}],
+                display_history,
+            )
+
+        def create_session(self, _new_key, **_kwargs):
+            return None
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            seen["msgs"] = [dict(message, session_id=session_id) for message in messages]
+            return len(messages)
+
+        def get_messages_as_conversation(self, session_id, include_row_ids=False, **kwargs):
+            if not include_row_ids:
+                return [dict(message) for message in seen.get("msgs", [])]
+            # The CHILD's own durable ids — fresh numbers, in insertion order.
+            return [dict(message, _row_id=5000 + i) for i, message in enumerate(seen.get("msgs", []))]
+
+        def set_session_title(self, _key, _title):
+            return True
+
+        def set_auto_title(self, _key, _title, *, source="llm"):
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeAgent:
+        model = "test-model"
+        session_id = None
+
+    parent = {
+        "session_key": "parent-key",
+        # Compacted model projection: a 614-turn conversation reduced to a
+        # summary + the tail the model still reasons over.
+        "history": [
+            {"role": "assistant", "content": "compact summary"},
+            {"role": "user", "content": "m612"},
+            {"role": "assistant", "content": "m613"},
+        ],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "cols": 80,
+        "profile_home": str(profile_home),
+        "source": "tui",
+        "agent": FakeAgent(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "cwd": str(tmp_path),
+    }
+    server._sessions["parent"] = parent
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: FakeAgent())
+    monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: {})
+    monkeypatch.setattr(server, "_clear_session_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_session_cwd", lambda _session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args, **kwargs: None)
+
+    try:
+        # Branch from a bubble mid-way through the ARCHIVED region (m300, of
+        # 614): the copy must start at the first persisted row and run up to
+        # the cut — not start at the compacted summary, and not stop at the
+        # count of visible merged bubbles.
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.branch",
+                "params": {"session_id": "parent", "up_to_row_id": 302},
+            }
+        )
+
+        assert "result" in response, response
+        msgs = seen["msgs"]
+        expected = [
+            message
+            for message in display_history
+            if message["role"] in {"user", "assistant"} and message.get("_row_id", 0) <= 302
+        ]
+        assert [message["content"] for message in msgs] == [message["content"] for message in expected]
+        assert msgs[0]["content"] == "m0"  # aligned from the FIRST persisted row
+        assert len(msgs) == 301  # m0..m300; the in-span tool row (id 12) is excluded by role
+
+        # The copied rows are re-stamped with the CHILD's durable ids, so a
+        # second-generation branch cuts against the child's own transcript.
+        child_sid = response["result"]["session_id"]
+        child_history = server._sessions[child_sid]["history"]
+        assert child_history[0]["_row_id"] == 5000
+        assert child_history[-1]["_row_id"] == 5000 + len(msgs) - 1
+        assert all(m["_row_id"] != parent_row for m in child_history for parent_row in (1, 301))
+    finally:
+        for key in list(server._sessions):
+            server._sessions.pop(key, None)
+
+
 def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     """session.branch must copy history into the parent's profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"

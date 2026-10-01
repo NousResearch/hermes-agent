@@ -69,6 +69,10 @@ export type ChatMessage = {
    *  counted in backend rows, so anything that rewinds that offset must convert
    *  through this. Absent means one row. */
   serverRowSpan?: number
+  /** Highest durable row id folded into this bubble. A merged assistant bubble
+   *  (continuation rows, folded tool rows) spans several backend rows; rowId
+   *  only names the first, so row-addressed consumers (branch) need the last. */
+  endRowId?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
   /** Backend-authored transcript notice rather than a message any view sent: a

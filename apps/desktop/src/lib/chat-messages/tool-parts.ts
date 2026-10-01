@@ -822,7 +822,11 @@ function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetada
   return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
 }
 
-export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
+export function applyStoredToolResult(
+  messages: ChatMessage[],
+  toolMessage: SessionMessage,
+  toolRowId?: number
+): number | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
 
@@ -836,12 +840,23 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       continue
     }
 
-    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
+    // Folding the result row into this bubble extends both the backend row
+    // count (serverRowSpan: the older-page offset is counted in backend rows)
+    // and the durable row span (endRowId: the result row was written after the
+    // bubble's own rows, so row-addressed consumers like branch must see it).
+    messages[i] = {
+      ...message,
+      parts,
+      serverRowSpan: (message.serverRowSpan ?? 1) + 1,
+      ...(toolRowId !== undefined && toolRowId > (message.endRowId ?? -Infinity)
+        ? { endRowId: toolRowId }
+        : {})
+    }
 
-    return true
+    return i
   }
 
-  return false
+  return null
 }
 
 export function applyStoredToolResultToParts(

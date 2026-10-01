@@ -152,5 +152,38 @@ class TestSecureHelpers(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o701)
 
 
+@pytest.fixture()
+def cron_store(tmp_path, monkeypatch):
+    import cron.jobs as jobs
+    cron_dir = tmp_path / "cron"
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
+    return cron_dir
+
+
+def _save_over_mode(cron_store, mode):
+    """Seed jobs.json at *mode*, save once more, return the mode the rewrite left behind."""
+    from cron.jobs import save_jobs
+    save_jobs([{"id": "seed", "prompt": "hello"}])
+    jobs_file = cron_store / "jobs.json"
+    os.chmod(jobs_file, mode)
+    save_jobs([{"id": "seed", "prompt": "again"}])
+    return stat.S_IMODE(os.stat(jobs_file).st_mode)
+
+
+def test_save_jobs_keeps_shared_volume_mode_in_container(cron_store, monkeypatch):
+    """A jobs.json shared with a sibling container keeps its mode across a save (#29660)."""
+    monkeypatch.setenv("HERMES_CONTAINER", "1")
+    assert _save_over_mode(cron_store, 0o664) == 0o664
+
+
+def test_save_jobs_still_tightens_to_0600_outside_a_container(cron_store, monkeypatch):
+    monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+    monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+    monkeypatch.setattr("hermes_cli.config._container_or_chmod_skipped", lambda: False)
+    assert _save_over_mode(cron_store, 0o664) == 0o600
+
+
 if __name__ == "__main__":
     unittest.main()

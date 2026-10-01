@@ -177,3 +177,50 @@ class TestCliContract:
 
         assert proc.returncode == 1
         assert json.loads(proc.stdout)["state"] == "failed"
+
+
+class _ReachedPM(Exception):
+    pass
+
+
+def _self_managed_tree(tmp_path, monkeypatch):
+    """A source checkout whose install stamp says ``self``, as a real update writes it."""
+    import pm
+    from pm.paths import install_stamp_path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    root = tmp_path / "checkout"
+    (root / ".git").mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "1"\n')
+    stamp = install_stamp_path(root)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+
+    def reached(*args, **kwargs):
+        raise _ReachedPM("prepare_launch asked PM about this process's environment")
+
+    monkeypatch.setattr(pm, "venv_is_current", reached)
+    return root
+
+
+def test_legacy_in_tree_venv_never_drives_pm_launch(tmp_path, monkeypatch):
+    """Scripts pinned to ``<checkout>/venv/bin/python`` keep running on that interpreter.
+
+    After an update the stamp reads ``self``; asking PM about the legacy venv waits on a
+    worker for minutes, so every import of Hermes code from it hung.
+    """
+    root = _self_managed_tree(tmp_path, monkeypatch)
+    legacy = root / "venv"
+    legacy.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(legacy))
+    assert venv_sync.prepare_launch(root, []) is None
+
+
+def test_other_interpreters_still_reach_pm(tmp_path, monkeypatch):
+    """Control for the test above: the skip is specific to the in-tree venv."""
+    root = _self_managed_tree(tmp_path, monkeypatch)
+    (root / "venv").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "somewhere-else"))
+    with pytest.raises(_ReachedPM):
+        venv_sync.prepare_launch(root, [])

@@ -309,6 +309,21 @@ def _supervised_child() -> bool:
     )
 
 
+def _in_tree_legacy_venv(root: Path) -> bool:
+    """True when this process runs on the checkout's own ``venv/``.
+
+    Scripts pinned to ``<checkout>/venv/bin/python`` predate the managed store and must keep
+    running on it. PM currency is about the store environment, not this interpreter, and asking
+    PM from here waits on its worker for minutes before every import of Hermes code.
+    """
+    import sys
+
+    try:
+        return Path(sys.prefix).resolve() == (root / "venv").resolve()
+    except OSError:
+        return False
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -337,7 +352,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists()
-            or not (root / "pyproject.toml").is_file()):
+            or not (root / "pyproject.toml").is_file()
+            or _in_tree_legacy_venv(root)):
         return None
     stamp = read_install_stamp(root)
     if not stamp:

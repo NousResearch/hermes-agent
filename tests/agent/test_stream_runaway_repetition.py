@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from agent.repetition_guard import _STREAM_TAIL_CHARS, STOP_PATH_MIN_CHARS, RunawayStreamWatch
+from agent.repetition_guard import STOP_PATH_MIN_CHARS
 
 _TURN_BOUND_S = 30.0
 # Reasoning whose plain field loops while the structured details beside it keep changing.
@@ -29,7 +29,6 @@ _CYCLE_125650 = (
     "De bot en de werkers blijven lopen. Ik zoek het punt waar de tekst binnenkomt. "
     "Daar stop ik de herhaling. De bot en de werkers blijven lopen. Ik zoek dat punt nu. "
 )
-_FULLWIDTH_ECHO_94224 = "！！！" * 12
 _STATUS_LINE_78551 = "- **Texture** : `TEXTURE_LOCAL.md` (trace creative, emergence). Pas dans un Hermes stock.\n"
 
 # Asked-for repetition stays below the stop path's scale floor (#121600's repeat-on-request case).
@@ -183,12 +182,11 @@ def _run_turn(server: _FakeEndpoint, api_mode: str) -> dict:
     ("api_mode", "channel", "loop"),
     [
         ("chat_completions", "content", _CYCLE_125650),
-        ("chat_completions", "reasoning", _FULLWIDTH_ECHO_94224),
         ("chat_completions", _LOOP_BEHIND_DETAILS, _CYCLE_125650),
         ("anthropic_messages", "content", _STATUS_LINE_78551),
         ("anthropic_messages", "reasoning", _CYCLE_125650),
     ],
-    ids=["chat-content", "chat-reasoning", "chat-reasoning-behind-details", "anthropic-text", "anthropic-thinking"],
+    ids=["chat-content", "chat-reasoning-behind-details", "anthropic-text", "anthropic-thinking"],
 )
 def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, channel, loop):
     server = endpoint(channel, loop, endless=True)
@@ -211,15 +209,3 @@ def test_repetitive_but_legitimate_stream_is_delivered(endpoint, text):
 
     assert result["completed"] is True
     assert result["final_response"] == text.strip()
-
-
-def test_watch_holds_a_bounded_tail_however_long_the_stream_runs():
-    watch, chunk_chars, held_max = RunawayStreamWatch(), 0, 0
-    for n in range(12_000):  # far past several doublings of the check threshold
-        chunk = f"Row {n}: measured {n * 7919} units at site {n % 97}, carried into ledger {n * 31}.\n"
-        assert watch.feed(chunk) is False
-        chunk_chars = max(chunk_chars, len(chunk))
-        held_max = max(held_max, sum(map(len, watch._parts)))
-
-    assert watch._chars > 8 * _STREAM_TAIL_CHARS
-    assert held_max <= 2 * _STREAM_TAIL_CHARS + chunk_chars

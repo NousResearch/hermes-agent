@@ -1339,8 +1339,10 @@ function readLinuxPortalTheme(): 'dark' | 'light' | null {
   }
 }
 
+let configuredThemeSource = 'system'
+
 function syncLinuxPortalTheme() {
-  if (nativeTheme.themeSource !== 'system') {
+  if (configuredThemeSource !== 'system') {
     return
   }
   const portalTheme = readLinuxPortalTheme()
@@ -1349,7 +1351,8 @@ function syncLinuxPortalTheme() {
   }
 }
 
-nativeTheme.themeSource = readPersistedThemeSource()
+configuredThemeSource = readPersistedThemeSource()
+nativeTheme.themeSource = configuredThemeSource
 if (process.platform === 'linux') {
   syncLinuxPortalTheme()
   setInterval(syncLinuxPortalTheme, 500)
@@ -17954,6 +17957,7 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
     return
   }
 
+  configuredThemeSource = mode
   if (nativeTheme.themeSource !== mode) {
     nativeTheme.themeSource = mode
     writePersistedThemeSource(mode)

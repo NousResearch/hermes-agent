@@ -107,7 +107,7 @@ class HostedRoomRuntime:
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
         indeterminate_defer_seconds: float = 60.0, max_concurrent_rooms: int = 4,
         unavailable_retry_min_seconds: float = 1.0, unavailable_retry_max_seconds: float = 30.0,
-        process_generation: str | None = None) -> None:
+        process_generation: str | None = None, defer_not_admitted_members: bool = False) -> None:
         positive = dict(
             lease_ttl_seconds=lease_ttl_seconds, poll_interval_seconds=poll_interval_seconds,
             active_poll_interval_seconds=active_poll_interval_seconds,
@@ -127,6 +127,9 @@ class HostedRoomRuntime:
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
         self.pending_action, self.clock = pending_action, clock
+        # Off: a turn the member never received goes back to the queue (FIFO, bounded backoff).
+        # On: a member turn is deferred with its proof instead, so the room's next turn can run.
+        self.defer_not_admitted_members = defer_not_admitted_members
         for name, value in positive.items():
             setattr(self, name, float(value))
         self.max_concurrent_rooms = max_concurrent_rooms
@@ -607,17 +610,35 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            # A failure before the dispatch was sent proves non-admission only for the generation
+            # start_task just allocated: no earlier send can share its idempotency key.
+            fresh_preflight_failure = (
+                getattr(exc, "dispatch_not_attempted", False) is True
+                and task.get("status") == "queued"
+                and task.get("execution_generation") == attempt.execution_generation - 1)
+            if submit_attempted and (
+                    bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure):
+                deferred = None
                 try:
-                    state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
+                    if self.defer_not_admitted_members and task["payload"].get("target_member_id"):
+                        deferred = state.defer_not_admitted_task(
+                            self.db_path, attempt, reason="member_unavailable", clock=self.clock,
+                            retry_binding=getattr(transport, "nonadmission_retry_binding", None))
+                    else:
+                        state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
                     self._mark_ambiguous(binding, attempt)
                     self._record_task_error(
                         attempt, f"not-admitted proof lost its fence: {fence_exc}")
                 else:
+                    # The member backs off either way: a requeued turn, or the next turn for the
+                    # same member (or an explicit Retry), waits for the window.
                     delay = self._defer_unavailable_route(task)
-                    self._record_task_error(
-                        attempt, f"was not admitted; queued for retry in {delay:g}s")
+                    if deferred is not None:
+                        self._publish(binding, deferred)
+                    self._record_task_error(attempt, "was not admitted; " + (
+                        "deferred until retried" if deferred is not None
+                        else f"queued for retry in {delay:g}s"))
             elif submit_attempted:
                 self._mark_ambiguous(binding, attempt)
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")

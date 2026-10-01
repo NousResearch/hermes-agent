@@ -760,6 +760,64 @@ def requeue_deferred_task(
         now=now, set_params=(now,))
 
 
+_NONADMISSION_PROOF_FIELDS = frozenset({
+    "disposition", "identity", "execution_generation", "cancel_generation", "authority_epoch",
+    "run_gateway_id", "run_process_generation", "run_lease_generation", "retry_binding"})
+
+
+def is_proven_nonadmission(task: Mapping[str, Any]) -> bool:
+    """Whether a deferred task carries its producer's proof that this attempt never ran.
+
+    Only ``defer_not_admitted_task`` writes the proof, fenced to the exact running attempt. An
+    unknown attempt deferred by recovery shares the reason text, never the proof, and a requeue
+    clears it, so one proof allows one retry.
+    """
+    result = task.get("result")
+    proof = result.get("nonadmission") if isinstance(result, dict) else None
+    if (task.get("status") != "deferred" or not isinstance(proof, dict)
+            or set(proof) != _NONADMISSION_PROOF_FIELDS
+            or proof["disposition"] != "proven_nonadmission"
+            or proof["identity"] != dataclasses.asdict(task["identity"])
+            or type(proof["authority_epoch"]) is not int or proof["authority_epoch"] < 1):
+        return False
+    for key, low in (("execution_generation", 1), ("cancel_generation", 0), ("run_lease_generation", 1)):
+        if type(proof[key]) is not int or proof[key] < low or proof[key] != task.get(key):
+            return False
+    return all(isinstance(proof[key], str) and proof[key] and proof[key] == task.get(key)
+               for key in ("run_gateway_id", "run_process_generation"))
+
+
+def defer_not_admitted_task(
+    db_path: DbPath, attempt: TaskAttempt, *, reason: Any, clock: Clock,
+    retry_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Defer one running attempt the member provably never received, with that proof.
+
+    Fenced on the exact running attempt, so later member turns can proceed; only an explicit
+    ``requeue_deferred_task`` gives the turn a new generation.
+    """
+    _check_same_room(attempt.lease, attempt.identity)
+    reason = _identifier(reason, label="defer_reason")
+    lease = attempt.lease
+    proof = {
+        "disposition": "proven_nonadmission", "identity": dataclasses.asdict(attempt.identity),
+        "execution_generation": attempt.execution_generation, "cancel_generation": attempt.cancel_generation,
+        "authority_epoch": lease.authority_epoch, "run_gateway_id": lease.gateway_id,
+        "run_process_generation": lease.process_generation, "run_lease_generation": lease.lease_generation,
+        "retry_binding": None if retry_binding is None else dict(retry_binding)}
+    result_json = _canonical_json({"reason": reason, "retryable": True, "nonadmission": proof})
+    now = _timestamp(clock)
+    def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        same = _generations_match(row, "deferred", attempt.execution_generation, attempt.cancel_generation) and (
+            row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]) == _run_fence(lease)
+        return _task_from_row(row, idempotent=True) if same and row["result_json"] == result_json else None
+    return _run_fence_transition(
+        db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
+        lease_generation=lambda value: int(value or 0), now=now, replay=replay,
+        sql=_generation_update("status='deferred', result_json=?, terminal_at=?, updated_at=?", "running")
+        + f" AND {_RUN_FENCE}", set_params=(result_json, now, now),
+        stale="not-admitted task changed during deferral")
+
+
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
     """Return a running task to its durable queue after proven non-admission."""
     now = _timestamp(clock)

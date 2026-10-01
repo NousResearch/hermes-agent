@@ -205,7 +205,7 @@ describe('disband', () => {
     const onCreated = vi.fn()
     render(createElement(CreateGroupChatDialog, { onClose: vi.fn(), onCreated, open: true, roster }))
     screen.getAllByRole('checkbox').forEach(box => fireEvent.click(box))
-    fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
     const group = Object.keys(room.chat.$groupChats.get())[0]
     await act(async () => { await room.view.disbandGroupChat(group, roster) })
     expect(room.chat.$groupChats.get()[group]).toBeUndefined()

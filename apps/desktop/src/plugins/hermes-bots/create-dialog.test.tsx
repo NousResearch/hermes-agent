@@ -60,8 +60,8 @@ describe('classic group creation metadata', () => {
     const pending = new Promise<Awaited<ReturnType<typeof data.saveBotMeta>>>(resolve => { finish = resolve })
     vi.spyOn(data, 'saveBotMeta').mockReturnValue(pending)
     const view = openCreate()
-    fireEvent.click(view.submit)
-    fireEvent.click(view.submit)
+    await act(async () => { fireEvent.click(view.submit) })
+    await act(async () => { fireEvent.click(view.submit) })
     expect(view.onClose).not.toHaveBeenCalled()
     expect(view.onCreated).not.toHaveBeenCalled()
     expect(Object.keys($groupChats.get())).toHaveLength(1)
@@ -75,11 +75,11 @@ describe('classic group creation metadata', () => {
     const next = new Promise<Awaited<ReturnType<typeof data.saveBotMeta>>>(resolve => { finishNew = resolve })
     vi.mocked(data.saveBotMeta).mockReturnValueOnce(old).mockReturnValueOnce(next)
     view.reopen()
-    fireEvent.click(view.submit)
+    await act(async () => { fireEvent.click(view.submit) })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     view.reopen()
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A newer draft' } })
-    fireEvent.click(view.submit)
+    await act(async () => { fireEvent.click(view.submit) })
     expect(Object.keys($groupChats.get())).toHaveLength(3)
     await act(async () => { finishOld({ serverPersisted: true, serverOutcome: 'persisted' }) })
     expect(view.onClose).toHaveBeenCalledTimes(2)
@@ -97,7 +97,7 @@ describe('classic group creation metadata', () => {
     let finish!: (result: Awaited<ReturnType<typeof data.saveBotMeta>>) => void
     vi.spyOn(data, 'saveBotMeta').mockReturnValue(new Promise(resolve => { finish = resolve }))
     const view = openCreate()
-    fireEvent.click(view.submit)
+    await act(async () => { fireEvent.click(view.submit) })
     const state = host.state as Record<string, { get: () => string }>
     state[field].get = () => 'replacement'
     view.rerender(<CreateGroupChatDialog {...view} open />)

@@ -10,6 +10,7 @@ restart`` under X's HERMES_HOME that exited 78 while the UI reported success.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 
@@ -50,6 +51,33 @@ def test_unscoped_liveness_in_a_served_profile_process_matches_the_scoped_answer
     assert (unscoped.running, unscoped.pid, unscoped.source) == (scoped.running, scoped.pid, "multiplexer")
     plats = profile_platforms_from_multiplexer(unscoped.runtime, "alpha")
     assert plats["telegram"] == {"state": "connected"} and plats["api_server"]["state"] == "connected"
+
+
+def test_profile_action_environment_binds_launch_scope_before_scrubbing(pooled_served_process, monkeypatch):
+    import hermes_cli.web_server_gateway as web_server_gateway
+    import tools.environments.local as local_env
+    import tui_gateway.launch_profile_policy as launch_policy
+
+    entered = []
+
+    @contextlib.contextmanager
+    def _scope():
+        entered.append("enter")
+        yield
+        entered.append("exit")
+
+    monkeypatch.setattr(launch_policy, "launch_profile_scope_if_multiplexed", _scope)
+    original_build = local_env.build_subprocess_env
+
+    def _build(*args, **kwargs):
+        assert entered == ["enter"]
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(local_env, "build_subprocess_env", _build)
+    env = web_server_gateway._profile_action_environment(["-p", "alpha", "doctor"])
+
+    assert env["HERMES_HOME"] == str(pooled_served_process / "profiles" / "alpha")
+    assert entered == ["enter", "exit"]
 
 
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):

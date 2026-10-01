@@ -71,6 +71,7 @@ The A7 control plane is TypeScript. It can call this script, or port it. If it p
 | `model` | no | Model name, such as `anthropic/claude-opus-4.6`. |
 | `modelBaseUrl` | no | OpenAI-compatible base URL, used with provider `custom` (for example, a future LitKit model proxy). |
 | `modelKey` | no | Secret. It lands in the provider's own key variable (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). For `custom` it lands in `LITCO_MODEL_API_KEY`. |
+| `typesafeApiKey` | no | Secret. It lands in `TYPESAFE_API_KEY`, which `litkit_jev` (the Jev first-pass screen) reads; a machine host's supervisor takes the same field in its `PUT /slots/{id}` body. Without it the tool reports that Jev is not configured. |
 | `tailscaleAuthKey` | no | Secret. With it, the host joins the tailnet with Tailscale SSH. |
 | `hostname` | no | `matter-<shortid>`. By default it is derived from the first eight letters and digits of `matterId`. |
 | `egressAllowlist` | no | `[{"cidr": "203.0.113.0/24", "port": 443, "proto": "tcp"}]`. Allowed only with `egressPolicy: "allowlist"`. |

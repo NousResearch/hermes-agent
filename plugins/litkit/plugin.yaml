@@ -3,7 +3,7 @@ version: 0.1.0
 description: >
   LitKit toolset for the LitCo matter host: matter search, census, document text and PDFs,
   bulk text export, memos, LitSpace files, gated deliverables, quote checks, Review & Tag (criteria
-  sets, proposed runs, status), ingest status, proposals, tags, work sets, LitLex research, notifications,
+  sets, proposed runs, status), a Jev first-pass screen, ingest status, proposals, tags, work sets, LitLex research, notifications,
   matter, firm and personal memory, and cross-matter search from private threads. Calls
   the firm's LitKit instance with the matter-pinned agent token and the acting lawyer's user
   assertion. Code lives in the top-level ``litco.litkit`` package; this plugin only registers it.
@@ -22,6 +22,7 @@ provides_tools:
   - litkit_deliver
   - litkit_quote_check
   - litkit_review
+  - litkit_jev
   - litkit_ingest
   - litkit_proposals
   - litkit_tags
@@ -48,6 +49,10 @@ optional_env:
   - name: LITCO_HOST_SECRET
     description: "Host secret; the HMAC key for the acting-user assertion sent on each call during a turn"
     prompt: "LitCo host secret"
+    password: true
+  - name: TYPESAFE_API_KEY
+    description: "TypeSafe API key for litkit_jev (Jev first-pass screen); without it the tool says Jev is not configured"
+    prompt: "TypeSafe API key"
     password: true
   - name: LITCO_MATTER_ID
     description: "The matter this host serves (otherwise resolved from the token's one visible matter)"

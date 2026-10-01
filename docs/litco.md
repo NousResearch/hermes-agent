@@ -149,6 +149,7 @@ The `litkit` toolset is the host's access to the firm's LitKit instance. It is a
 | `LITCO_HOST_SECRET` | acting for a lawyer | HMAC key for the per-call user assertion. Without it, a turn with an acting user cannot call LitKit. |
 | `LITCO_MATTER_ID` | optional | The matter. When unset, the client reads `GET /api/matters`, which returns exactly the token's one matter. |
 | `LITCO_MATTER_HOME` | optional | Root of the working directories (default `~/matter`). |
+| `TYPESAFE_API_KEY` | `litkit_jev` | TypeSafe key for Jev (`POST https://api.typesafe.ai/v1/systemone`). Without it, `litkit_jev` answers that Jev is not configured on this host. |
 
 Credentials are read through `agent.secret_scope.get_secret`, so a profile's `.env` works as well as the process environment.
 
@@ -186,7 +187,8 @@ The assertion is minted fresh for each request and each retry (MAC = base64url, 
 | `litkit_files` | LitSpace list, search, content, upload | list, hits, `files/<name>`, upload result |
 | `litkit_deliver` | `POST …/deliverables` (multipart) | `blocked`, gate summary, version; full response in `qa/` |
 | `litkit_quote_check` | `POST …/quote-check/file` or `…/quote-check` | verified and unverified quotations; full response in `qa/` |
-| `litkit_review` | review-jobs list, status, records, resume, cancel, pause | pass-through |
+| `litkit_review` | review-jobs list, status, records, resume, cancel, pause; `create` proposes a run, with `firstPass` passed through when given | pass-through |
+| `litkit_jev` | `POST …/export/text` (ACL-scoped text), then TypeSafe `POST /v1/systemone` per document | `screen`: counts (read in full, set aside, uncertain) and rows, all probabilities in `jev/`; `ask`: typed answers |
 | `litkit_ingest` | productions, progress, exceptions, ingests, ingest jobs; resume, cancel, reingest, retry | pass-through |
 | `litkit_proposals` | `POST`/`GET …/proposals` | proposal id and status |
 | `litkit_tags` | `/api/tags`, `/api/documents/{id}/tags`, `…/bulk-tag` | list, create, apply, remove |

@@ -372,7 +372,9 @@ def test_toolset_registers_through_plugin_discovery(tmp_path, monkeypatch):
 
 
 def test_schemas_are_well_formed():
-    assert len(T.TOOLS) == 25
+    from hermes_yaml import safe_load
+    manifest = safe_load((Path(__file__).parents[2] / "plugins" / "litkit" / "plugin.yaml").read_text())
+    assert sorted(name for name, _s, _h in T.TOOLS) == sorted(manifest["provides_tools"])
     for name, schema, _handler in T.TOOLS:
         assert schema["name"] == name and schema["parameters"]["type"] == "object"
         assert set(schema["parameters"]["required"]) <= set(schema["parameters"]["properties"])

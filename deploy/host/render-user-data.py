@@ -19,6 +19,7 @@ Spec (camelCase, as the control plane sends it)::
     model             str   optional  model name, e.g. anthropic/claude-opus-4.6
     modelBaseUrl      str   optional  OpenAI-compatible base URL (provider custom)
     modelKey          str   optional  secret; lands in the provider's key variable
+    typesafeApiKey    str   optional  secret; TYPESAFE_API_KEY, for the litkit_jev first-pass screen
     tailscaleAuthKey  str   optional  secret; joins the tailnet with SSH when given
     hostname          str   optional  matter-<shortid>; derived from matterId when absent
     egressPolicy      str   required  "open" | "allowlist"
@@ -65,6 +66,10 @@ PROVIDER_KEY_ENV = {
     "huggingface": "HF_TOKEN",
     "custom": "LITCO_MODEL_API_KEY",
 }
+
+# The TypeSafe key for litkit_jev (Jev first-pass screen). Hermes's litkit
+# toolset reads it from the gateway's environment.
+TYPESAFE_KEY_ENV = "TYPESAFE_API_KEY"
 
 # Native channel settings the gateway reads from its environment. Values are
 # treated as secrets (they include bot tokens) and go only into the env file.
@@ -142,6 +147,7 @@ def validate(spec: dict) -> dict:
     if model_key and provider not in PROVIDER_KEY_ENV:
         raise SpecError(f"no known key variable for provider {provider!r}; "
                         f"one of {', '.join(sorted(PROVIDER_KEY_ENV))}")
+    typesafe_key = _str(spec, "typesafeApiKey")
     tailscale_key = _str(spec, "tailscaleAuthKey")
     hostname = _str(spec, "hostname") or f"matter-{short_id(matter_id)}"
     if not _HOSTNAME.match(hostname):
@@ -190,8 +196,8 @@ def validate(spec: dict) -> dict:
     return {
         "matter_id": matter_id, "instance_url": instance_url, "host_secret": host_secret,
         "agent_token": agent_token, "matter_home": matter_home, "provider": provider, "model": model,
-        "model_base_url": model_base_url, "model_key": model_key, "tailscale_key": tailscale_key,
-        "hostname": hostname, "egress": egress, "rules": rules, "approvals": approvals,
+        "model_base_url": model_base_url, "model_key": model_key, "typesafe_key": typesafe_key,
+        "tailscale_key": tailscale_key, "hostname": hostname, "egress": egress, "rules": rules, "approvals": approvals,
         "turn_host": turn_host, "turn_port": turn_port, "channels": channels,
     }
 
@@ -219,6 +225,8 @@ def build_env(v: dict) -> str:
     ]
     if v["model_key"]:
         lines.append(env_line(PROVIDER_KEY_ENV[v["provider"]], v["model_key"]))
+    if v["typesafe_key"]:
+        lines.append(env_line(TYPESAFE_KEY_ENV, v["typesafe_key"]))
     for key, value in v["channels"].items():
         lines.append(env_line(key, value))
     return "\n".join(lines) + "\n"

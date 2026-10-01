@@ -30,6 +30,7 @@ from litco.litkit.client import (TURN_GRANT_HEADER, LitKitClient, LitKitConfig, 
 from litco.litkit.context import current_acting_user, current_turn, current_turn_grant
 from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
                                 input_path, output_dir, output_path, relative, spill, work_dir)
+from litco.litkit import jev as _jev
 
 TOOLSET = "litkit"
 EXPORT_BATCH = 500
@@ -825,6 +826,21 @@ def _review_tags(value: Any) -> List[str]:
     return names
 
 
+def _first_pass(value: Any) -> Dict[str, Any]:
+    """``{enabled, thresholds?: {low, priv}}`` for the propose body's ``firstPass`` (a Jev screen)."""
+    if not isinstance(value, dict) or not isinstance(value.get("enabled"), bool):
+        raise ValueError("'firstPass' must be {enabled: true|false, thresholds?: {low, priv}}")
+    unknown = sorted(set(value) - {"enabled", "thresholds"})
+    if unknown:
+        raise ValueError(f"'firstPass' takes only enabled and thresholds; not {', '.join(unknown)}")
+    out: Dict[str, Any] = {"enabled": value["enabled"]}
+    if value.get("thresholds") is not None:
+        given = value["thresholds"]
+        limits = _jev.thresholds(given)
+        out["thresholds"] = {k: limits[k] for k in ("low", "priv") if isinstance(given, dict) and k in given}
+    return out
+
+
 def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Propose a review run. LitKit queues a proposal card in the thread; a person launches it there."""
     body: Dict[str, Any] = {"scope": _review_scope(args.get("scope"))}
@@ -841,6 +857,10 @@ def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict
             body[key] = bool(args[key])
     if args.get("name"):
         body["name"] = str(args["name"]).strip()[:200]
+    # Omitted unless Ana sets it, so the server's default applies (on when Jev is configured).
+    first_pass = args.get("firstPass", args.get("first_pass"))
+    if first_pass is not None:
+        body["firstPass"] = _first_pass(first_pass)
     quote_id = str(args.get("quoteId") or "").strip()
     if args.get("userConfirmed") and not quote_id:
         raise ValueError("userConfirmed goes with the quoteId from the price quote; send both after the person's "
@@ -926,6 +946,11 @@ def litkit_review(args: Dict[str, Any]) -> Any:
             if args.get("includeRationaleNotes") is not None else {}
         return {"action": action, "jobId": job, "result": client.post(f"{base}/{job}/accept-all-tags", body)}
     raise ValueError(f"action must be one of {', '.join(REVIEW_ACTIONS)}")
+
+
+@_tool("litkit_jev")
+def litkit_jev(args: Dict[str, Any]) -> Any:
+    return _jev.run(args)
 
 
 @_tool("litkit_ingest")
@@ -1512,7 +1537,14 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
          "quoteId": {"type": "string", "description": "billing phase 2: the quote id from requiresApproval"},
          "userConfirmed": {"type": "boolean", "description": "billing phase 2: true only after the person said yes "
                            "to the quoted price"},
-         "includeRationaleNotes": _B}),
+         "includeRationaleNotes": _B,
+         "firstPass": {"type": "object", "description": "create: a Jev first pass before the full review, "
+                       "{enabled, thresholds?: {low, priv}}. Omit for the server default (on when Jev is "
+                       "configured). Decide it first: skill jev-first-pass-review",
+                       "properties": {"enabled": _B, "thresholds": {"type": "object", "properties": {
+                           "low": {"type": "number"}, "priv": {"type": "number"}}}},
+                       "required": ["enabled"]}}),
+    "litkit_jev": _jev.SCHEMA,
     "litkit_ingest": _schema(
         "litkit_ingest", "Production and ingest status (productions, production, progress, exceptions, ingests, "
         "jobs, job) and recovery (resume, cancel, reingest, retry), which need matter admin rights.",
@@ -1602,7 +1634,8 @@ HANDLERS: Dict[str, Callable[..., str]] = {
     "litkit_document": litkit_document, "litkit_text": litkit_text, "litkit_pdf": litkit_pdf,
     "litkit_export_text": litkit_export_text, "litkit_memos": litkit_memos, "litkit_files": litkit_files,
     "litkit_deliver": litkit_deliver, "litkit_quote_check": litkit_quote_check, "litkit_review": litkit_review,
-    "litkit_ingest": litkit_ingest, "litkit_proposals": litkit_proposals, "litkit_tags": litkit_tags,
+    "litkit_jev": litkit_jev, "litkit_ingest": litkit_ingest, "litkit_proposals": litkit_proposals,
+    "litkit_tags": litkit_tags,
     "litkit_work_sets": litkit_work_sets, "litkit_litlex": litkit_litlex, "litkit_notify": litkit_notify,
     "litkit_remember": litkit_remember, "litkit_recall": litkit_recall, "litkit_actions": litkit_actions,
     "litkit_cross_matter_search": litkit_cross_matter_search,

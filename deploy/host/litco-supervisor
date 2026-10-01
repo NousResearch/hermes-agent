@@ -21,7 +21,7 @@ the port 8800 + index for its lifetime, recorded in
 /var/lib/litco-supervisor/slots.json with no secret in it.
 
 The PUT body carries the matter's secrets (host secret, agent token, model
-key). They go to one place only, the slot's env file on tmpfs, which systemd
+key, and the TypeSafe key when the firm has one). They go to one place only, the slot's env file on tmpfs, which systemd
 reads for the unit's EnvironmentFile=. No response, log line or state file
 repeats them. The supervisor's own secret is read from its env file, never
 from the process environment, so the commands it runs do not inherit it.
@@ -72,6 +72,8 @@ PROVIDER_KEY_ENV = {
     "huggingface": "HF_TOKEN",
     "custom": "LITCO_MODEL_API_KEY",
 }
+# The TypeSafe key for litkit_jev (Jev first-pass screen), as render-user-data.py writes it.
+TYPESAFE_KEY_ENV = "TYPESAFE_API_KEY"
 CHANNEL_ENV_KEYS = (
     "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS", "SLACK_HOME_CHANNEL",
     "SLACK_IGNORED_CHANNELS", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
@@ -80,7 +82,7 @@ CHANNEL_ENV_KEYS = (
 APPROVAL_MODES = ("", "manual", "smart", "off")
 BODY_KEYS = frozenset({
     "matterId", "instanceUrl", "hostSecret", "agentToken", "modelProvider", "model",
-    "modelBaseUrl", "modelKey", "approvalsMode", "channelEnv",
+    "modelBaseUrl", "modelKey", "typesafeApiKey", "approvalsMode", "channelEnv",
 })
 
 SLOT_ID = re.compile(r"^[a-z0-9]{1,30}$")
@@ -271,6 +273,7 @@ def validate_body(body) -> dict:
     model_key = _str(body, "modelKey")
     if model_key and provider not in PROVIDER_KEY_ENV:
         raise SupervisorError(400, "invalid_body", f"no known key variable for provider {provider!r}")
+    typesafe_key = _str(body, "typesafeApiKey")
     approvals = _str(body, "approvalsMode").lower()
     if approvals not in APPROVAL_MODES:
         raise SupervisorError(400, "invalid_body", "approvalsMode must be empty, manual, smart or off")
@@ -284,8 +287,8 @@ def validate_body(body) -> dict:
     return {
         "matter_id": matter_id, "instance_url": instance_url, "host_secret": host_secret,
         "agent_token": agent_token, "provider": provider, "model": model,
-        "model_base_url": model_base_url, "model_key": model_key, "approvals": approvals,
-        "channels": channels,
+        "model_base_url": model_base_url, "model_key": model_key, "typesafe_key": typesafe_key,
+        "approvals": approvals, "channels": channels,
     }
 
 
@@ -318,6 +321,8 @@ def build_env(slot_id: str, home: Path, port: int, uid: int, v: dict) -> str:
     ]
     if v["model_key"]:
         lines.append(env_line(PROVIDER_KEY_ENV[v["provider"]], v["model_key"]))
+    if v["typesafe_key"]:
+        lines.append(env_line(TYPESAFE_KEY_ENV, v["typesafe_key"]))
     for key, value in v["channels"].items():
         lines.append(env_line(key, value))
     return "\n".join(lines) + "\n"

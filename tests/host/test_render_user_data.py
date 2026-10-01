@@ -19,7 +19,8 @@ AGENT_TOKEN = "lkm_matterpinned_TOKEN_9f8e7d"
 MODEL_KEY = "sk-ant-api03-MODELKEY-0000"
 TS_KEY = "tskey-auth-kTAILSCALE-1111"
 SLACK_TOKEN = "xoxb-SLACK-2222"
-SECRETS = (HOST_SECRET, AGENT_TOKEN, MODEL_KEY, TS_KEY, SLACK_TOKEN)
+TYPESAFE_KEY = "ts-TYPESAFE-3333"
+SECRETS = (HOST_SECRET, AGENT_TOKEN, MODEL_KEY, TS_KEY, SLACK_TOKEN, TYPESAFE_KEY)
 
 
 def spec(**overrides):
@@ -93,14 +94,15 @@ def test_fields_land_in_env_matter_json_and_runcmd():
 
 
 def test_secrets_appear_only_in_env_file_and_tailscale_key_file():
-    text = rud.render(spec(tailscaleAuthKey=TS_KEY, channelEnv={"SLACK_BOT_TOKEN": SLACK_TOKEN}))
+    text = rud.render(spec(tailscaleAuthKey=TS_KEY, typesafeApiKey=TYPESAFE_KEY,
+                           channelEnv={"SLACK_BOT_TOKEN": SLACK_TOKEN}))
     for secret in SECRETS:
         assert secret not in text, "secret rendered in clear"
     doc = parse(text)
     env_text = decoded(doc, "/etc/litco-agent/env")
     matter_text = decoded(doc, "/etc/litco-agent/matter.json")
     ts_text = decoded(doc, "/etc/litco-agent/tailscale-authkey")
-    for secret in (HOST_SECRET, AGENT_TOKEN, MODEL_KEY, SLACK_TOKEN):
+    for secret in (HOST_SECRET, AGENT_TOKEN, MODEL_KEY, SLACK_TOKEN, TYPESAFE_KEY):
         assert secret in env_text
         assert secret not in matter_text and secret not in ts_text
     assert ts_text == TS_KEY and TS_KEY not in env_text and TS_KEY not in matter_text
@@ -191,6 +193,12 @@ def test_custom_provider_key_goes_to_litco_model_api_key():
     keyless = env_map(decoded(parse(rud.render(spec(modelProvider="custom", modelKey=None))),
                               "/etc/litco-agent/env"))
     assert keyless["LITCO_MODEL_KEY_ENV"] == "" and "LITCO_MODEL_API_KEY" not in keyless
+
+
+def test_typesafe_key_lands_in_its_own_variable_only_when_given():
+    env = env_map(decoded(parse(rud.render(spec(typesafeApiKey=TYPESAFE_KEY))), "/etc/litco-agent/env"))
+    assert env["TYPESAFE_API_KEY"] == TYPESAFE_KEY
+    assert "TYPESAFE_API_KEY" not in env_map(decoded(parse(rud.render(spec())), "/etc/litco-agent/env"))
 
 
 def test_no_model_key_means_no_key_variable():

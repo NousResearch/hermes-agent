@@ -20,7 +20,8 @@ HOST_SECRET = "hs-SLOT-HOST-SECRET-0123456789abcdef01"
 AGENT_TOKEN = "lkm_SLOT_AGENT_TOKEN_SECRET"
 MODEL_KEY = "sk-ant-SLOT-MODEL-KEY-SECRET"
 SLACK_TOKEN = "xoxb-SLOT-SLACK-SECRET"
-SECRETS = (SUPERVISOR_SECRET, HOST_SECRET, AGENT_TOKEN, MODEL_KEY, SLACK_TOKEN)
+TYPESAFE_KEY = "ts-SLOT-TYPESAFE-KEY-SECRET"
+SECRETS = (SUPERVISOR_SECRET, HOST_SECRET, AGENT_TOKEN, MODEL_KEY, SLACK_TOKEN, TYPESAFE_KEY)
 
 MATTER_A = "a1b2c3d4-0000-4000-8000-000000000001"
 MATTER_B = "b9c8d7e6-0000-4000-8000-000000000002"
@@ -30,7 +31,7 @@ def body(matter_id=MATTER_A, **extra):
     doc = {
         "matterId": matter_id, "instanceUrl": "https://firm.litco.ai", "hostSecret": HOST_SECRET,
         "agentToken": AGENT_TOKEN, "modelProvider": "anthropic", "model": "anthropic/claude-opus-4.6",
-        "modelKey": MODEL_KEY, "channelEnv": {"SLACK_BOT_TOKEN": SLACK_TOKEN},
+        "modelKey": MODEL_KEY, "typesafeApiKey": TYPESAFE_KEY, "channelEnv": {"SLACK_BOT_TOKEN": SLACK_TOKEN},
     }
     doc.update(extra)
     return doc
@@ -142,6 +143,7 @@ def test_env_file_is_0600_and_carries_the_slot_contract(harness):
     assert values["LITCO_AGENT_TOKEN"] == AGENT_TOKEN
     assert values["ANTHROPIC_API_KEY"] == MODEL_KEY
     assert values["SLACK_BOT_TOKEN"] == SLACK_TOKEN
+    assert values["TYPESAFE_API_KEY"] == TYPESAFE_KEY
     assert values["LITCO_MODEL_KEY_ENV"] == ""
     # the supervisor's own secret never reaches a slot
     assert SUPERVISOR_SECRET not in env.read_text()
@@ -153,6 +155,11 @@ def test_custom_provider_key_goes_to_litco_model_api_key(harness):
     assert values["LITCO_MODEL_API_KEY"] == MODEL_KEY
     assert values["LITCO_MODEL_KEY_ENV"] == "LITCO_MODEL_API_KEY"
     assert "ANTHROPIC_API_KEY" not in values
+
+
+def test_no_typesafe_key_means_no_typesafe_variable(harness):
+    harness.request("PUT", "/slots/a1b2c3d4", body(typesafeApiKey=None))
+    assert "TYPESAFE_API_KEY" not in sup.parse_env_file(harness.env_path("a1b2c3d4").read_text())
 
 
 def test_existing_user_is_reused(tmp_path):
@@ -490,6 +497,7 @@ def test_provider_key_map_matches_the_cloud_init_renderer():
     render = load_script("render_user_data", "render-user-data.py")
     assert sup.PROVIDER_KEY_ENV == render.PROVIDER_KEY_ENV
     assert sup.CHANNEL_ENV_KEYS == render.CHANNEL_ENV_KEYS
+    assert sup.TYPESAFE_KEY_ENV == render.TYPESAFE_KEY_ENV
 
 
 def test_real_runner_passes_no_environment_to_children(monkeypatch):

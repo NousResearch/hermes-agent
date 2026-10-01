@@ -9,6 +9,7 @@ Lives here, not in tool dispatch, so hits sit *after* every safety check and ski
 
 import hashlib
 import json
+from datetime import datetime, timezone
 import logging
 import re
 import threading
@@ -275,11 +276,21 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
     except Exception:  # noqa: BLE001 — evicted/pruned file == miss (or no cache dir)
         return None
     logger.info("web_extract cache hit: %s", url)
-    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    retrieved_at = entry.get("retrieved_at")
+    if not isinstance(retrieved_at, str) or not retrieved_at:
+        try:
+            retrieved_at = datetime.fromtimestamp(float(entry["fetched_at"]), timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError, KeyError):
+            retrieved_at = None  # Unknown legacy metadata must not fabricate a fresh retrieval.
+    return {
+        "url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
+        "_hermes_extract_retrieved_at": retrieved_at,
+        "_hermes_extract_served_by": provider or None,
+    }
 
 
 def extract_cache_put(
-    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "", *, retrieved_at: Optional[str] = None
 ) -> None:
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
     ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
@@ -296,6 +307,7 @@ def extract_cache_put(
             index = _load_index()
             index[_url_digest(url, format, provider)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                "retrieved_at": retrieved_at or datetime.now(timezone.utc).isoformat(),
             }
             _save_index(index)
     except Exception as exc:  # noqa: BLE001 — cache writes are best-effort

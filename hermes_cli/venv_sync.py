@@ -423,7 +423,21 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         if any(_marker_owner_is_live(marker) for marker in legacy_markers):
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         print("hermes: completing source-update dependencies...", file=sys.stderr, flush=True)
-        _sync_source_dependencies(root, arm=True)
+        try:
+            _sync_source_dependencies(root, arm=True)
+        except RuntimeError as exc:
+            # A system-level service is commonly started by root while its
+            # checkout and venv belong to the account named by User=.  Do not
+            # turn that supervisor handoff into a request to chown the user's
+            # installation or suggest an update that cannot safely run as root.
+            if hasattr(os, "geteuid") and os.geteuid() == 0 and "owned by uid" in str(exc):
+                print(
+                    "hermes: deferring source-update dependency completion to the service user: "
+                    f"{exc}",
+                    file=sys.stderr, flush=True,
+                )
+                return
+            raise
     else:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
     # Sync commits the dependency generation, but a source update also owes

@@ -1197,7 +1197,8 @@ class TestOp7ServerReconnect:
         from gateway.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
-    def test_op7_closes_websocket(self):
+    @pytest.mark.asyncio
+    async def test_op7_closes_websocket(self):
         adapter = self._make_adapter()
         adapter._session_id = "sess_keep"
         adapter._last_seq = 42
@@ -1212,6 +1213,8 @@ class TestOp7ServerReconnect:
 
         adapter._ws = FakeWS()
         adapter._dispatch_payload({"op": 7, "d": None})
+        await asyncio.sleep(0)
+        assert close_called == [True]
 
         # Session should be preserved for Resume
         assert adapter._session_id == "sess_keep"

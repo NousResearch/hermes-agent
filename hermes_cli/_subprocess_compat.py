@@ -469,6 +469,9 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
 
 
 _FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
+# ``includeIf "onbranch:..."`` is evaluated against the CURRENT branch, so a ``worktree add`` of
+# another branch can load filters this discovery never saw; refuse rather than half-harden.
+_ONBRANCH_INCLUDE_KEY = re.compile(r"^includeif\.onbranch:.*\.path$", re.IGNORECASE)
 
 
 def noninteractive_repo_git_env(
@@ -489,7 +492,7 @@ def noninteractive_repo_git_env(
         proc = subprocess.run(
             [
                 "git", "-C", str(cwd), "config", "--includes", "--name-only", "-z",
-                "--get-regexp", r"^filter\..*\.(clean|smudge|process)$",
+                "--get-regexp", r"^(filter\..*\.(clean|smudge|process)|includeif\.onbranch:.*\.path)$",
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=2, stdin=subprocess.DEVNULL, env=env, check=False,
@@ -505,6 +508,8 @@ def noninteractive_repo_git_env(
     for raw in proc.stdout.split("\0"):
         key = raw.strip()
         lowered = key.lower()
+        if _ONBRANCH_INCLUDE_KEY.fullmatch(key):
+            return None
         if not key or lowered in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
             continue
         seen.add(lowered)

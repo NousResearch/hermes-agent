@@ -380,6 +380,28 @@ def _replay_ordered_blocks(m: Dict[str, Any], ordered_blocks: List[Any]) -> Opti
     return replayed
 
 
+def _restored_tool_turn_has_ambiguous_signed_thinking(message: Dict[str, Any]) -> bool:
+    """Whether a restored tool-call turn lost enough ordering to make signatures unsafe.
+
+    Live Anthropic turns with signed thinking + tool_use carry ``anthropic_content_blocks`` and
+    return through the ordered replay path before this helper is consulted. A state.db restore has
+    only the parallel ``reasoning_details`` and ``tool_calls`` fields, so it no longer proves
+    whether a signed thinking block originally preceded or followed any tool_use block. Replaying
+    that signature in a reconstructed order can therefore produce Anthropic\'s "thinking blocks
+    cannot be modified" 400. Treat the signature as stale rather than guessing the lost order.
+    """
+    tool_calls = message.get("tool_calls")
+    details = message.get("reasoning_details")
+    if not (isinstance(tool_calls, list) and tool_calls and isinstance(details, list)):
+        return False
+    return any(
+        isinstance(detail, dict)
+        and str(detail.get("type", "") or "").strip().lower() in _THINKING_TYPES
+        and bool(detail.get("signature") or detail.get("data"))
+        for detail in details
+    )
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Assistant message -> Anthropic content blocks (thinking, text, tool_use, Kimi/DeepSeek
     reasoning_content injection)."""
@@ -395,6 +417,7 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
         replayed = _replay_ordered_blocks(m, ordered_blocks)
         if replayed:
             return {"role": "assistant", "content": replayed}
+    signature_order_ambiguous = _restored_tool_turn_has_ambiguous_signed_thinking(m)
     blocks = _extract_preserved_thinking_blocks(m)
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
@@ -425,7 +448,10 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     effective = blocks or [_text_block(_EMPTY_TEXT_PLACEHOLDER)]
     _apply_assistant_cache_control_to_last_cacheable_block(effective, relocated_cc)
     _apply_assistant_cache_control_to_last_cacheable_block(effective, m.get("cache_control"))
-    return {"role": "assistant", "content": effective}
+    converted = {"role": "assistant", "content": effective}
+    if signature_order_ambiguous:
+        converted["_thinking_signature_invalidated"] = True
+    return converted
 
 
 def _tool_result_content(m: Dict[str, Any]) -> Any:

@@ -717,16 +717,28 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   /usr/bin/nohup /usr/bin/python3 -c '
 import os, signal, sys
 env = os.environ.copy()
-os.setsid()
-# Catch teardown signals during the tiny pre-exec window. A caught
-# disposition is reset to SIG_DFL by execve, unlike SIG_IGN, so Bash starts
-# able to install its own traps while the launcher still survives the
-# Electron process-group teardown.
+# Install temporary handlers before changing process groups: Electron can
+# signal the old group in the middle of os.setsid().
 def _hold_teardown_signal(_signum, _frame):
     return None
 signal.signal(signal.SIGTERM, _hold_teardown_signal)
 signal.signal(signal.SIGHUP, _hold_teardown_signal)
-os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
+os.setsid()
+# SIG_IGN survives execve, protecting the new session while Bash starts. The
+# sourced script replaces these dispositions with its real traps below.
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+script = sys.argv[1]
+args = sys.argv[2:]
+q = chr(34)
+os.execve(
+    "/bin/bash",
+    ["/bin/bash", "-c",
+     "trap " + q + q + " TERM HUP; script=" + q + "$1" + q
+     + "; shift; . " + q + "$script" + q + " " + q + "$@" + q,
+     "bash", script, *args],
+    env,
+)
 ' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
   exit 0
 fi

@@ -118,6 +118,42 @@ def test_reason_logs_once_per_distinct_reason(cua_home, gateway_placement, caplo
     assert len(lines) == 1 and "HERMES_CUA_DRIVER_CMD" in lines[0]
 
 
+def test_recovery_resets_the_latch_so_the_same_reason_logs_again(cua_home, gateway_placement, caplog):
+    """A long-lived gateway that recovers and later fails the identical way again must not be
+    silent — the latch is cleared on the available path (the #126634 mode itself)."""
+    from pm import paths
+    from tools.computer_use.tool import check_computer_use_requirements
+
+    with caplog.at_level(logging.INFO, logger="tools.computer_use.tool"):
+        assert check_computer_use_requirements() is False
+    (first,) = _unavailable_lines(caplog)
+
+    record_driver()
+    with caplog.at_level(logging.INFO, logger="tools.computer_use.tool"):
+        assert check_computer_use_requirements() is True
+
+    paths.facts_path().unlink()  # prune the record again -> byte-identical reason text
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="tools.computer_use.tool"):
+        assert check_computer_use_requirements() is False
+    lines = _unavailable_lines(caplog)
+    assert len(lines) == 1 and lines[0] == first
+
+
+def test_entry_presence_follows_the_artifact_not_the_directory(cua_home, gateway_placement, caplog):
+    """pm skips a root whose package.binary(...) is not a file, so a lone entry dir must read as
+    missing — not 'present' with matching versions, which reads as 'nothing is wrong'."""
+    from tools.computer_use.tool import check_computer_use_requirements
+
+    binary = record_driver()
+    binary.unlink()  # entry dir remains; only the artifact pm selects on is gone
+
+    with caplog.at_level(logging.INFO, logger="tools.computer_use.tool"):
+        assert check_computer_use_requirements() is False
+    (line,) = _unavailable_lines(caplog)
+    assert "entry missing" in line and "entry present" not in line
+
+
 def test_available_driver_stays_silent(cua_home, caplog):
     record_driver()
 

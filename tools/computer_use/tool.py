@@ -900,6 +900,14 @@ def _log_unavailable_reason(reason: str) -> None:
     logger.info("computer_use unavailable: %s", reason)
 
 
+def _clear_unavailable_reason() -> None:
+    """Reset the latch on recovery, mirroring terminal_tool_backends' probe-time
+    ``_record_unavailable_reason(None)``: without it a reason stays swallowed forever, so a long-lived
+    gateway that recovers and later fails the *same* way again logs nothing (#126634)."""
+    global _last_unavailable_reason
+    _last_unavailable_reason = None
+
+
 def check_computer_use_requirements() -> bool:
     """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
     if sys.platform not in ("darwin", "win32", "linux"):
@@ -908,12 +916,14 @@ def check_computer_use_requirements() -> bool:
     from tools.computer_use.cua_backend_driver import cua_driver_binary_status
     available, reason = cua_driver_binary_status()
     if available:
+        _clear_unavailable_reason()
         return True
     # No host driver: the tool is still real when the desktop is placed inside a terminal backend whose image
     # carries cua-driver (nousresearch/hermes-sandbox:desktop). Placement is config; the binary is probed lazily
     # at first use, so this stays a cheap check_fn.
     from tools.bot_desktop import placement
     if placement.resolve().where == placement.TERMINAL:
+        _clear_unavailable_reason()
         return True
     _log_unavailable_reason(reason)
     return False

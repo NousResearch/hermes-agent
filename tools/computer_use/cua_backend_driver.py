@@ -104,6 +104,7 @@ def _diagnose_unresolved_cua_driver() -> str:
         return (f"{_CUA_DRIVER_CMD_ENV} is set to {configured!r} but does not resolve to an executable "
                 f"via PATH (PATH={os.environ.get('PATH') or ''!r})")
     try:
+        from pm import current_target, get_package
         from pm.lock import Facts, Lockfile
         from pm.paths import facts_path, lockfile_path, store_root, writable_store_root
 
@@ -113,13 +114,18 @@ def _diagnose_unresolved_cua_driver() -> str:
             fact = Facts(extra / "facts.json").get("cua-driver") if extra != root else None
             root = extra if fact else root
         pin = Lockfile(lockfile_path()).version("cua-driver")
+        # pm/install.py skips a root unless package.binary(entry, target) is a file, so presence must
+        # mean the artifact — an entry dir whose binary is gone is a pruned install, not a present one.
+        binary = (get_package("cua-driver").binary(root / fact.get("entry", ""), current_target())
+                  if fact else None)
     except Exception as exc:
         return f"the PM install state could not be read: {exc!r}"
     if not fact:
         return (f"PM has no install record for cua-driver (store {root}); install it with "
                 f"`hermes computer-use install` or set {_CUA_DRIVER_CMD_ENV}")
     entry = fact.get("entry")
-    state = "no store entry" if not entry else f"entry {'present' if (root / entry).exists() else 'missing'} ({entry})"
+    state = ("no store entry" if not entry else
+             f"entry {'present' if binary is not None and binary.is_file() else 'missing'} ({entry})")
     return (f"PM does not select cua-driver (recorded v{fact.get('version') or '?'}, pin v{pin or '?'}, "
             f"{state}, store {root}); reinstall with `hermes computer-use install`")
 

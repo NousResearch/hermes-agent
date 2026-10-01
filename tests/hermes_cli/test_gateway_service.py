@@ -323,6 +323,20 @@ class TestGeneratedSystemdUnits:
         assert expected > 60
         assert self._expected_timeout_stop_sec() in unit
 
+    def test_managed_environment_workspace_uses_stable_install_root(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        canonical = hermes_home / "hermes-agent"
+        launcher = canonical / ".hermes" / "bin" / "hermes"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        workspace = hermes_home / "installs" / "pkg" / "environments" / "generation" / "workspace"
+        workspace.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", workspace)
+
+        assert gateway_cli._service_project_root() == canonical
+
 
     def test_timeout_stop_sec_keeps_the_floor_when_cron_drain_is_opted_out(
         self, monkeypatch

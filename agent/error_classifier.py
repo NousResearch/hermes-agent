@@ -273,6 +273,7 @@ CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using code
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
+    "no router for requested model",  # llama-swap 404 for an id with no configured route
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body

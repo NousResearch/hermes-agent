@@ -84,7 +84,7 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
     if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
         return None
     try:
-        event = await decrypt_history_event(client, raw)
+        event = await decrypt_history_event(client, raw) if raw.get("type") == "m.room.encrypted" else raw
     except UndecryptableEvent:
         return None
     message = history_message(event)

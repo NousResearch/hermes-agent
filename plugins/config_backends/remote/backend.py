@@ -68,6 +68,8 @@ class _ProfileState:
     doc: Dict[str, Any] = field(default_factory=dict)            # what readers get (+ _config_version, migrated)
     etag: str = ""
     profile_version: int = 0
+    # The profile level's stored writerConfigVersion: None = stored null, _UNKNOWN = not reported.
+    profile_writer: Any = None
     locks: List[Tuple[KeyPath, str]] = field(default_factory=list)
     provenance: Dict[str, str] = field(default_factory=dict)
     changed_ns: int = 0
@@ -81,6 +83,18 @@ class _ProfileState:
     last_error: Optional[str] = None
     next_poll: float = 0.0
     lock: threading.RLock = field(default_factory=threading.RLock)
+
+
+_UNKNOWN = object()
+
+
+def _profile_writer(body: Dict[str, Any]) -> Any:
+    """The profile level's stored ``writerConfigVersion`` (int or None), or ``_UNKNOWN``."""
+    for lv in body.get("levels") or []:
+        if isinstance(lv, dict) and lv.get("kind") == "profile":
+            w = lv.get("writerConfigVersion")
+            return w if w is None or isinstance(w, int) else _UNKNOWN
+    return _UNKNOWN
 
 
 def _effective_ok(body: Dict[str, Any]) -> bool:
@@ -209,6 +223,7 @@ class RemoteBackend:
         st.doc = doc
         st.etag = etag or str(body.get("etag") or "")
         st.profile_version = int(body["profileVersion"])
+        st.profile_writer = _profile_writer(body)
         st.locks = locks
         st.provenance = dict(body.get("provenance") or {})
         st.changed_ns = time.time_ns()
@@ -376,8 +391,15 @@ class RemoteBackend:
         if not sets and not unsets:
             return None
         set_body, unset_body = encode_changes(sets, unsets)
-        body: Dict[str, Any] = {"expectedVersion": st.profile_version,
-                                "writerConfigVersion": _latest_config_version()}
+        body: Dict[str, Any] = {"expectedVersion": st.profile_version}
+        # The stamp describes the profile level's STORED data (contract §5.3: absent = unchanged).
+        # Stamp only when that data is already at this agent's version, or unstamped (null: readers
+        # already treat it as current, R6). An older stamp means the level still holds pre-migration
+        # keys that D12 forbids writing back migrated; re-stamping would make later readers skip
+        # those migration steps. A newer stamp must not be lowered either.
+        latest = _latest_config_version()
+        if st.profile_writer is None or st.profile_writer == latest:
+            body["writerConfigVersion"] = latest
         if set_body:
             body["set"] = set_body
         if unset_body:

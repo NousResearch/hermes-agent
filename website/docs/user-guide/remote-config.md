@@ -74,7 +74,9 @@ start.
 - **`secrets:` comes from the plane** like any other key, so administrators can
   manage and lock secret-source settings centrally.
 - **Schema migrations run in memory.** A document written by an older Hermes is
-  migrated when it is read, and the result is not written back.
+  migrated when it is read, and the result is not written back. A later write
+  from a newer Hermes keeps the profile's stored schema version unless that
+  data is already current, so every later reader still migrates it.
 - **Unknown keys** in the fetched document are ignored with a warning, for
   example a key added by a newer Hermes.
 

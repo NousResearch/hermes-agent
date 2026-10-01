@@ -178,7 +178,8 @@ class StubPlane:
                     if isinstance(node, dict):
                         node.pop(p[-1], None)
                 prof["version"] += 1
-                prof["writer"] = body.get("writerConfigVersion")
+                if "writerConfigVersion" in body:  # contract §5.3: absent = the stored value is unchanged
+                    prof["writer"] = body["writerConfigVersion"]
                 eff = plane.effective(profile)
                 return self._send(200, eff, eff["etag"])
 

@@ -67,6 +67,14 @@ def _fake_bot(stickers=_ALLOWED_SET, *, fail_fetch: bool = False) -> MagicMock:
     ("Quarterly review sync", "👀"),
     ("Arbitrage hedge fund memo", None),  # no face mapped: nothing eligible
     ("", None),
+    # Russian: exact table hits and inflected forms via the stem index.
+    ("Фото и видео дома для продажи жилья", "📷"),  # first title word wins
+    ("Фотографии дома на продажу", "📷"),
+    ("Домашний кинотеатр", "🏠"),
+    ("Продажа квартиры", "🏷"),
+    ("Жилье для семьи", "🏠"),
+    ("Поездка в Тбилиси", "✈️"),
+    ("Договор подряда", None),  # unmapped Russian: no eligible icon
 ])
 def test_suggest_topic_icon_emoji_projects_title_semantics(title, expected):
     assert suggest_topic_icon_emoji(title) == expected
@@ -77,6 +85,31 @@ def test_first_title_word_wins_over_icon_preference():
     # order would let a trailing mapped word steal the icon from the leading
     # concept the conversation is actually about.
     assert suggest_topic_icon_emoji("Work dinner photos") == "💼"
+    assert suggest_topic_icon_emoji("Фото и видео дома для продажи жилья") == "📷"
+
+
+def test_russian_inflections_resolve_via_stem_index():
+    # Russian titles arrive in any case form; the stem index must converge
+    # them onto the table's base keywords (дома/доме/дому/жилья/квартире...).
+    for title in ("Дома", "о доме", "к дому", "Жилья", "жилье", "квартире",
+                  "квартиру"):
+        assert suggest_topic_icon_emoji(title) == "🏠", title
+    # First-word-wins holds across languages: the leading "Фотографии" is the
+    # title's emphasis, "дачи" does not steal the icon.
+    assert suggest_topic_icon_emoji("Фотографии с дачи") == "📷"
+
+
+def test_emoji_stays_english_alphabet_safe_for_latin_and_cyrillic_mixed():
+    assert suggest_topic_icon_emoji("Код-ревью и деплой") == "💻"
+    assert suggest_topic_icon_emoji("bugfix — код") == "💻"
+
+
+def test_punctuation_is_not_part_of_a_word():
+    # \w+ tokenization: commas, dashes and question marks must not turn a
+    # keyword into "unmatched" the way a bare str.split() would.
+    assert suggest_topic_icon_emoji("Привет! Чем заняться?") == "👋"
+    assert suggest_topic_icon_emoji("Ремонт, кухня") == "🔧"
+    assert suggest_topic_icon_emoji("Цены?") == "🏷"
 
 
 # ── index fetch + resolve ─────────────────────────────────────────────────

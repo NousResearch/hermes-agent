@@ -159,6 +159,18 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
 
 
+def test_iter_skill_index_files_skips_hidden_directories(tmp_path):
+    """Hidden directories are storage artifacts, not skill categories."""
+    visible = tmp_path / "visible" / "demo-skill"
+    hidden = tmp_path / ".backup" / "demo-skill"
+    visible.mkdir(parents=True)
+    hidden.mkdir(parents=True)
+    (visible / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
+    (hidden / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [visible / "SKILL.md"]
+
+
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     """Archived package SKILL.md files under support dirs are not active skills."""
     real = tmp_path / "umbrella"

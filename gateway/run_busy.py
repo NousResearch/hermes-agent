@@ -7,6 +7,8 @@ for GatewayRunner (mixin bound via the MRO).
 
 from __future__ import annotations
 
+from gateway.platforms.base_pending import pending_dispatch_needs_snapshot
+
 import logging
 from typing import TYPE_CHECKING, Callable
 import asyncio
@@ -185,7 +187,7 @@ class GatewayBusySessionMixin:
             depth += len(buffered.earlier_events) + 1
         reservations = getattr(adapter, "_pending_dispatch_reservations", None)
         reserved = reservations.get(session_key) if isinstance(reservations, dict) else None
-        if reserved is not None:
+        if reserved is not None and pending_dispatch_needs_snapshot(adapter, reserved):
             stored = [getattr(adapter, "_pending_messages", {}).get(session_key),
                       *(self._overflow_queue(session_key) or ())]
             if isinstance(buffers, dict) and (buffered := buffers.get(session_key)) is not None:

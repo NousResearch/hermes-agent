@@ -1,5 +1,7 @@
 """Base platform adapter interface; every platform adapter inherits from BasePlatformAdapter."""
 
+from gateway.platforms.base_pending import pending_dispatch_needs_snapshot
+
 import asyncio
 import contextlib
 import inspect
@@ -3798,7 +3800,7 @@ class BasePlatformAdapter(BaseTextBatchingMixin, BaseTextDebounceMixin, ABC):
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
         if reserved is not None and (task is None or task.done()):
-            if not discard_pending and not reserved.claimed:
+            if not discard_pending and pending_dispatch_needs_snapshot(self, reserved):
                 restore = getattr(self.gateway_runner, "_restore_pending_dispatch", None)
                 if callable(restore):
                     restore(session_key, reserved.event, self)

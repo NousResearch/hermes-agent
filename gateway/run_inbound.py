@@ -1390,7 +1390,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
         from gateway.platforms.base_pending import release_pending_dispatch
-        release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
@@ -1407,10 +1406,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 from gateway.run_inbound_consumer import run_post_admission_hook
                 _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
                 if _consumed:
+                    release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
                     return _consumer_reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:
+                release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
                 # A rejected message, not a completed turn: return before the /goal judge so it
                 # cannot consume the resend notice and enqueue a synthetic continuation loop.
                 logger.error(
@@ -1420,6 +1421,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                     _quick_key, exc.session_id,
                 )
                 return t("gateway.busy.another_turn_running")
+            release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,

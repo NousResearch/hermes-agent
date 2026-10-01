@@ -2150,6 +2150,8 @@ class GatewayTurnMixin:
                      source.chat_id, source.thread_id, str(event.message_id)]
         owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
                  if event.message_id else str(uuid.uuid4()))
+        from gateway.platforms.base_pending import bind_pending_dispatch_input
+        bind_pending_dispatch_input(session_entry.session_id, owner)
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
             persist_user_display_kind, session_entry.session_id, owner,

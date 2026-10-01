@@ -102,6 +102,7 @@ def _setup(depth, monkeypatch: pytest.MonkeyPatch):
         "cancel-claimed",
         "cancel-claim-race",
         "cancel-claim-complete",
+        "cancel-claim-replaced",
         "reservation-replaced",
     ],
 )
@@ -131,13 +132,19 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 entered.set()
                 await asyncio.Event().wait()
 
-            if path in {"cancel-claim-race", "cancel-claim-complete"}:
+            if path in {
+                "cancel-claim-race",
+                "cancel-claim-complete",
+                "cancel-claim-replaced",
+            }:
 
                 async def admit(event):
                     entered.set()
                     try:
                         await asyncio.Event().wait()
                     except asyncio.CancelledError:
+                        if path == "cancel-claim-replaced":
+                            reserve_pending_dispatch(adapter, "shared", incoming)
                         return event, event.source, True
 
                 runner._hm_admit_event = admit
@@ -159,7 +166,7 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 runner._begin_session_run_generation = lambda key: 1
                 runner._handle_message_with_agent = (
                     AsyncMock(side_effect=asyncio.CancelledError)
-                    if path == "cancel-claim-race"
+                    if path != "cancel-claim-complete"
                     else AsyncMock(return_value=None)
                 )
                 runner._run_post_turn_hooks = AsyncMock()
@@ -176,13 +183,19 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
             await adapter.cancel_session_processing("shared", discard_pending=False)
             assert (
                 _events(adapter, runner),
-                adapter._pending_dispatch_reservations,
+                {
+                    key: record.event
+                    for key, record in adapter._pending_dispatch_reservations.items()
+                },
             ) == (
                 expected[1:]
                 if path
-                in {"cancel-claimed", "cancel-claim-race", "cancel-claim-complete"}
+                in {
+                    "cancel-claimed",
+                    "cancel-claim-complete",
+                }
                 else expected,
-                {},
+                {"shared": incoming} if path == "cancel-claim-replaced" else {},
             )
             return
         if path == "reserved":

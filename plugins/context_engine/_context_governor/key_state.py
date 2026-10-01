@@ -1,4 +1,4 @@
-"""Ares-owned, descriptor-safe Context Governor key lifecycle.
+"""Descriptor-safe Context Governor key lifecycle (profile-governed keys).
 
 Normal runtime resolution never creates, rotates, or reads a key by pathname.
 It holds a shared lifecycle lock and returns inherited descriptors to the Rust

@@ -101,6 +101,16 @@ async def exercise(room_id: str, bot_device: str, bot_user: str, other_login: di
         if decision != "expired":
             await send(other, {"m.relates_to": {"rel_type": "m.annotation", "event_id": first.event_id, "key": "✅"}}, "m.reaction")
             await receive_until("requester-only refusal", lambda: any("Only the user who requested" in event.body for event in events.values()))
+            refusal = next(event for event in events.values() if "Only the user who requested" in event.body)
+            expected_feedback_relation = {
+                "rel_type": "m.thread", "event_id": anchors["first"]["root"],
+                "is_falling_back": True, "m.in_reply_to": {"event_id": first.event_id},
+            }
+            assert refusal.source["content"]["m.relates_to"] == expected_feedback_relation, refusal.source
+            await send(owner, {"m.relates_to": {"rel_type": "m.annotation", "event_id": first.event_id, "key": "👍"}}, "m.reaction")
+            await receive_until("invalid reaction feedback", lambda: any("That reaction is not valid" in event.body for event in events.values()))
+            invalid = next(event for event in events.values() if "That reaction is not valid" in event.body)
+            assert invalid.source["content"]["m.relates_to"] == expected_feedback_relation, invalid.source
             assert not any(
                 label in event.body
                 for event in replacements(first.event_id)

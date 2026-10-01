@@ -73,3 +73,31 @@ def test_runtime_retires_thread_when_prompt_composition_changes(monkeypatch):
     starts = [p["developerInstructions"] for (m, p) in client.requests if m == "thread/start"]
     assert starts == ["SOUL: you are Hermes\n\nAlways start with ZZZ", "SOUL: you are Hermes\n\nPersonality: pirate"]
     assert client.closed == 1  # the stale thread's client was closed, not leaked
+
+
+def test_each_turn_sends_the_agent_s_current_wire_model(monkeypatch):
+    """CLI/TUI ``/model`` mutates the live agent; every turn/start carries the model selected now (the
+    ``-900k`` alias as its base slug), not the one the thread was started with."""
+    turns = []
+
+    class _Session:
+        def __init__(self, **_kw):
+            pass
+
+        def ensure_started(self):
+            return "t1"
+
+        def run_turn(self, **kw):
+            turns.append(kw["model"])
+            raise RuntimeError("stop after turn/start")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sess_mod, "CodexAppServerSession", _Session)
+    agent = _agent(model="gpt-5.6-sol-900k", _interrupt_requested=False, _interrupt_message=None)
+    for model in ("gpt-5.6-sol-900k", "gpt-5.5"):
+        agent.model = model
+        codex_runtime.run_codex_app_server_turn(agent, user_message="hi", original_user_message="hi",
+                                                messages=[], effective_task_id="t")
+    assert turns == ["gpt-5.6-sol", "gpt-5.5"]

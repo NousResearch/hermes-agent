@@ -311,6 +311,18 @@ class TestRunTurn:
         assert result.submitted_user_text == params["input"][0]["text"]
         assert result.submitted_user_text != rich_input
 
+    def test_turn_start_carries_the_turn_model_only_when_given(self):
+        """An in-place ``/model`` switch keeps the session; the model rides on turn/start, which codex
+        applies to this and later turns of the existing thread."""
+        sent = []
+        for model in ("gpt-5.5", None):
+            client = FakeClient()
+            client.queue_notification("turn/completed", threadId="t",
+                                      turn={"id": "turn-fake-001", "status": "completed", "error": None})
+            make_session(client).run_turn("hi", model=model, turn_timeout=2.0)
+            sent.append(next(p for (m, p) in client.requests if m == "turn/start").get("model"))
+        assert sent == ["gpt-5.5", None]
+
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
         """Approval draining must not project a child result into the parent."""
         client = FakeClient()

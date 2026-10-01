@@ -444,10 +444,13 @@ class CodexAppServerSession:
         return projection, aborted
 
     def run_turn(
-        self, user_input: Any, *, turn_timeout: float = 600.0,
+        self, user_input: Any, *, model: Optional[str] = None, turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, bridging approvals and projecting items.
+
+        model: sent on ``turn/start`` (codex applies it to this and later turns), so an in-place ``/model``
+        switch reaches a thread that was started with another model.
 
         post_tool_quiet_timeout: if codex emits a tool completion and then goes quiet for this many seconds
         without emitting another item or `turn/completed`, log a warning (once per tool result) and keep
@@ -463,11 +466,10 @@ class CodexAppServerSession:
                 result.interrupted = True
             else:
                 input_items, result.submitted_user_text = _build_turn_input(user_input)
-                ts = self._request_for(
-                    result, "turn/start",
-                    {"threadId": self._thread_id, "input": input_items},
-                    "turn/start",
-                )
+                params: dict[str, Any] = {"threadId": self._thread_id, "input": input_items}
+                if model:
+                    params["model"] = model
+                ts = self._request_for(result, "turn/start", params, "turn/start")
                 if ts is not None:
                     self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)
         self._interrupt_event.clear()

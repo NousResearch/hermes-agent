@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
+from urllib.parse import urlparse
 
 import pytest
 
@@ -75,3 +76,14 @@ def test_ensure_deps_requests_every_extra_before_reporting_a_restart(monkeypatch
     with pytest.raises(pm.InstallError, match="google installed"):
         adapter.ensure_google_chat_deps()
     assert requested == ["google", "google-chat"]
+
+
+def test_manual_oauth_redirect_uses_browser_safe_loopback_port():
+    """The manual copy flow needs a port browsers will actually navigate to."""
+
+    redirect = urlparse(oauth._REDIRECT_URI)
+    blocked_browser_ports = {1, 6000, 6667, 10080}
+    assert redirect.scheme == "http"
+    assert redirect.hostname == "localhost"
+    assert redirect.port == 8765
+    assert redirect.port not in blocked_browser_ports

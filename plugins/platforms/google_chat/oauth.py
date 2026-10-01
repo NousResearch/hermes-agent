@@ -54,7 +54,9 @@ _REQUIRED_PACKAGES = [
 
 # Google deprecated the ``oob`` flow: use a localhost redirect that is expected
 # to FAIL; the user pastes the code from the failed browser URL back into chat.
-_REDIRECT_URI = "http://localhost:1"
+# Avoid port 1: browsers block it as unsafe before navigation, so the code never
+# appears in the address bar for the user to copy.
+_REDIRECT_URI = "http://localhost:8765"
 
 
 def _sanitize_email(email: str) -> str:

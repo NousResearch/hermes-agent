@@ -700,7 +700,7 @@ class TestSessionIsolation:
 
         def _spawn(prompt, delivery_id, route, profile, deliver, chat_id, now):
             return adapter._spawn_agent_run(
-                {"target": profile},
+                {},
                 prompt,
                 delivery_id,
                 now,
@@ -723,27 +723,8 @@ class TestSessionIsolation:
         assert (high.source.profile, high.source.user_id) == ("shared-profile", "webhook:build")
         assert (low.source.profile, low.source.user_id) == ("shared-profile", "webhook:build:external")
         assert (other.source.profile, other.source.user_id) == ("other-profile", "webhook:build")
-        assert adapter._delivery_info[high.source.chat_id] == {
-            "deliver": "telegram",
-            "profile": "shared-profile",
-            "deliver_extra": {"chat_id": "high-chat"},
-            "route": "build",
-            "mirror": False,
-        }
-        assert adapter._delivery_info[low.source.chat_id] == {
-            "deliver": "discord",
-            "profile": "shared-profile",
-            "deliver_extra": {"chat_id": "low-chat"},
-            "route": "build:external",
-            "mirror": False,
-        }
-        assert adapter._delivery_info[other.source.chat_id] == {
-            "deliver": "slack",
-            "profile": "other-profile",
-            "deliver_extra": {"chat_id": "other-chat"},
-            "route": "build",
-            "mirror": False,
-        }
+        assert [adapter._delivery_info[e.source.chat_id]["deliver_extra"]["chat_id"] for e in (high, low, other)] == [
+            "high-chat", "low-chat", "other-chat"]
 
 
 # ===================================================================

@@ -119,6 +119,8 @@ def _carrier_message():
     return {
         "role": "assistant",
         "content": "answer",
+        "reasoning": "secret chain",
+        "reasoning_content": "secret chain",
         "reasoning_details": [
             {"type": "thinking", "thinking": "secret chain", "signature": "sig_bad"},
             {"type": "redacted_thinking", "data": "red_bad"},
@@ -128,6 +130,13 @@ def _carrier_message():
             {"type": "text", "text": "answer"},
             {"type": "tool_use", "id": "tool_1", "name": "search", "input": {"q": "x"}},
             {"type": "redacted_thinking", "data": "red_bad"},
+        ],
+        "tool_calls": [
+            {
+                "id": "tool_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{\"q\":\"x\"}"},
+            }
         ],
     }
 
@@ -145,12 +154,16 @@ def test_rejected_signature_is_removed_from_every_carrier_and_persists_across_re
     removed = remember_rejected_thinking(first_agent, request)
     assert removed >= 4
     assert "reasoning_details" not in request[0]
+    assert "reasoning" not in request[0]
+    assert "reasoning_content" not in request[0]
     assert [b["type"] for b in request[0]["anthropic_content_blocks"]] == ["text", "tool_use"]
 
     resumed_agent = _agent(db)
     rebuilt = [_carrier_message()]
     apply_rejected_thinking_suppression(resumed_agent, rebuilt)
     assert "reasoning_details" not in rebuilt[0]
+    assert "reasoning" not in rebuilt[0]
+    assert "reasoning_content" not in rebuilt[0]
     assert [b["type"] for b in rebuilt[0]["anthropic_content_blocks"]] == ["text", "tool_use"]
 
 
@@ -486,10 +499,33 @@ def test_context_selection_cannot_restore_rejected_thinking(monkeypatch):
     assistant = next(m for m in assembled.api_messages if m.get("role") == "assistant")
 
     assert "reasoning_details" not in assistant
+    assert "reasoning" not in assistant
+    assert "reasoning_content" not in assistant
     assert [b["type"] for b in assistant["anthropic_content_blocks"]] == ["text", "tool_use"]
     _, native = convert_messages_to_anthropic(assembled.api_messages, model=resumed.model)
     assert "sig_bad" not in repr(native)
+    assert "secret chain" not in repr(native)
 
+
+def test_preflight_ignores_persisted_rejected_thinking(monkeypatch):
+    from agent.anthropic_thinking_replay import remember_rejected_thinking
+    from agent.turn_context import _preflight_request_tokens
+
+    db = _ConfigDB()
+    first = _assembly_agent(db)
+    remember_rejected_thinking(first, [copy.deepcopy(_carrier_message())])
+
+    resumed = _assembly_agent(db)
+    history = [
+        {"role": "user", "content": "Q"},
+        _carrier_message(),
+        {"role": "user", "content": "continue"},
+    ]
+    preflight = _preflight_request_tokens(resumed, copy.deepcopy(history), "")
+
+    _patch_assembly_loop(monkeypatch)
+    assembled = _assemble(resumed, copy.deepcopy(history))
+    assert preflight == assembled.approx_tokens
 
 def test_usage_anchor_still_overrides_projected_rough_pressure(monkeypatch):
     import agent.turn_request_assembly as assembly

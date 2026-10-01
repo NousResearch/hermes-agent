@@ -797,18 +797,37 @@ _CARD_REFETCH_MAX_SIZE = 4096
 def _remember_card_refetch(message_id: str) -> bool:
     """Return True when ``message_id`` has NOT been refetched yet; record it.
 
-    Prunes the order dict down to ``_CARD_REFETCH_MAX_SIZE`` entries older than
-    ``_CARD_REFETCH_TTL_S`` so memory does not grow on a busy gateway.
+    Pruning runs in two places:
+
+    * Before the membership check, so a transient REST failure on a
+      particular ``message_id`` does not permanently suppress every later
+      redelivery of it once the TTL elapses.
+    * After insertion, evicting the oldest entries until ``len <= MAX``
+      so a burst of refetches cannot blow past the size bound even when
+      every entry is younger than the TTL (the inner prune loop would
+      otherwise delete nothing).
+
+    Without the pre-check prune, a busy gateway could keep entries in the
+    cache forever while the membership check returns ``False`` before
+    any TTL-driven eviction runs.
     """
+    now = time.time()
+    cutoff = now - _CARD_REFETCH_TTL_S
+    # 1. Pre-check prune: drop expired entries so a previously-seen id
+    #    can be re-attempted once its TTL elapses.
+    while _card_refetch_seen_order and next(iter(_card_refetch_seen_order.values())) < cutoff:
+        stale_id, _ = _card_refetch_seen_order.popitem(last=False)
+        _card_refetch_seen.discard(stale_id)
     if message_id in _card_refetch_seen:
         return False
     _card_refetch_seen.add(message_id)
-    _card_refetch_seen_order[message_id] = time.time()
-    if len(_card_refetch_seen_order) > _CARD_REFETCH_MAX_SIZE:
-        cutoff = time.time() - _CARD_REFETCH_TTL_S
-        while _card_refetch_seen_order and next(iter(_card_refetch_seen_order.values())) < cutoff:
-            stale_id, _ = _card_refetch_seen_order.popitem(last=False)
-            _card_refetch_seen.discard(stale_id)
+    _card_refetch_seen_order[message_id] = now
+    # 2. Post-insertion cap: if we're over MAX, drop the oldest entries
+    #    until we are not. This is unconditional — the post-TTL prune
+    #    above only handles expired ones, not "lots of recent ones".
+    while len(_card_refetch_seen_order) > _CARD_REFETCH_MAX_SIZE:
+        evicted_id, _ = _card_refetch_seen_order.popitem(last=False)
+        _card_refetch_seen.discard(evicted_id)
     return True
 
 

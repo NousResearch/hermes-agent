@@ -269,6 +269,66 @@ def test_remember_card_refetch_is_idempotent(monkeypatch):
     assert feishu_module._remember_card_refetch("om_dedupe_other") is True
 
 
+def test_remember_card_refetch_retries_after_ttl(monkeypatch):
+    """A failed refetch can be retried once the TTL elapses.
+
+    Regression for the bug kvnloo flagged on the PR — pre-fix, the
+    membership check ran before any pruning, so a transient REST failure
+    permanently suppressed every later redelivery of the same
+    ``message_id`` for the process lifetime.
+    """
+    import time
+
+    import plugins.platforms.feishu.adapter as feishu_module
+
+    monkeypatch.setattr(feishu_module, "_card_refetch_seen", set())
+    monkeypatch.setattr(feishu_module, "_card_refetch_seen_order", __import__("collections").OrderedDict())
+
+    # Pin time so the TTL boundary is deterministic.
+    base = 1_700_000_000.0
+    monkeypatch.setattr(feishu_module.time, "time", lambda: base)
+
+    # First sight — refetch is allowed.
+    assert feishu_module._remember_card_refetch("om_ttl_test") is True
+    # Second sight within TTL — refetch is suppressed.
+    assert feishu_module._remember_card_refetch("om_ttl_test") is False
+
+    # Advance past the TTL.
+    monkeypatch.setattr(feishu_module.time, "time", lambda: base + feishu_module._CARD_REFETCH_TTL_S + 1)
+
+    # Post-TTL the same id is fresh again — the pre-check prune
+    # removed the expired entry before the membership test.
+    assert feishu_module._remember_card_refetch("om_ttl_test") is True
+
+
+def test_remember_card_refetch_caps_size_when_all_recent(monkeypatch):
+    """The MAX cap is a hard bound even when every entry is younger than TTL.
+
+    The pre-fix post-insertion prune only removed entries older than the
+    TTL, so a burst of refetches that all landed within the same TTL
+    window could push the cache past MAX and stay there.
+    """
+    import plugins.platforms.feishu.adapter as feishu_module
+
+    monkeypatch.setattr(feishu_module, "_card_refetch_seen", set())
+    monkeypatch.setattr(feishu_module, "_card_refetch_seen_order", __import__("collections").OrderedDict())
+    # Shrink the cap so the test stays fast.
+    monkeypatch.setattr(feishu_module, "_CARD_REFETCH_MAX_SIZE", 4)
+    # Disable TTL-driven eviction by setting TTL to a very long window.
+    monkeypatch.setattr(feishu_module, "_CARD_REFETCH_TTL_S", 1_000_000.0)
+
+    for i in range(10):
+        feishu_module._remember_card_refetch(f"om_burst_{i}")
+
+    # Hard bound holds: cap == MAX.
+    assert len(feishu_module._card_refetch_seen_order) == feishu_module._CARD_REFETCH_MAX_SIZE
+    # The set and the order dict agree on what's retained.
+    assert feishu_module._card_refetch_seen == set(feishu_module._card_refetch_seen_order.keys())
+    # The oldest entries were evicted first.
+    retained = set(feishu_module._card_refetch_seen_order.keys())
+    assert retained == {f"om_burst_{i}" for i in range(6, 10)}
+
+
 # ---------------------------------------------------------------------------
 # 4. _build_get_message_request_with_full_card fallback on old SDKs
 # ---------------------------------------------------------------------------

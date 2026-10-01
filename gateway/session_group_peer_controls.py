@@ -48,8 +48,7 @@ def _snapshot(service, conn, binding, member_id, profile):
             or target.get('capability_digest') != catalog.catalog_digest
             or stored.status == 'needs_reauthorization'):
         raise RuntimeStoreError('peer_target_mismatch')
-    route = {k: v for k, v in stored.as_record().items() if k not in {'status', 'updated_at'}}
-    return {'owner': owner[0], 'members_digest': _digest(members), 'route_digest': _digest(route),
+    return {'owner': owner[0], 'members_digest': _digest(members), 'route_digest': links.route_binding_digest(stored),
             'authority_gateway_id': binding.gateway_id, 'authority_epoch': binding.authority_epoch}, stored
 
 
@@ -86,8 +85,16 @@ def _validate(service, conn, task, binding):
     if not tasks.is_proven_nonadmission(task):
         raise RuntimeStoreError('unknown_execution')
     frozen, stored = _snapshot(service, conn, binding, _member_id(task), task['payload']['target_profile'])
-    if task['result']['nonadmission']['retry_binding'] != frozen:
-        raise RuntimeStoreError('permission_denied')
+    original = task['result']['nonadmission']['retry_binding']
+    if not isinstance(original, dict) or set(original) != {
+            'owner', 'members_digest', 'route_digest', 'authority_gateway_id', 'authority_epoch'}:
+        raise RuntimeStoreError('unknown_execution')
+    if original != frozen:
+        if ({k: v for k, v in original.items() if k != 'route_digest'}
+                != {k: v for k, v in frozen.items() if k != 'route_digest'}
+                or not links.is_verified_renewal(conn, room_id=binding.room_id, member_id=_member_id(task),
+                    original_digest=original['route_digest'], current_digest=frozen['route_digest'])):
+            raise RuntimeStoreError('permission_denied')
     return stored
 
 
@@ -186,9 +193,32 @@ def _receipt(service, binding, task):
         **scope, 'task_id': task['identity'].task_id, 'execution_generation': task['execution_generation']})
 
 
+def _validate_discard(service, conn, task, binding):
+    if not tasks.is_proven_nonadmission(task):
+        raise RuntimeStoreError('unknown_execution')
+    _epoch(conn, service.authority.epoch)
+    tasks._require_room_authority(conn, binding.room_id, binding.gateway_id, binding.authority_epoch)
+    owner = conn.execute('SELECT value FROM state_meta WHERE key=?', (_OWNER + binding.room_id,)).fetchone()
+    members = json.loads(conn.execute('SELECT members_json FROM hosted_rooms WHERE room_id=?',
+                                      (binding.room_id,)).fetchone()[0])
+    original = task['result']['nonadmission']['retry_binding']
+    if not isinstance(original, dict) or set(original) != {
+            'owner', 'members_digest', 'route_digest', 'authority_gateway_id', 'authority_epoch'}:
+        raise RuntimeStoreError('unknown_execution')
+    current = {'owner': owner[0] if owner else None, 'members_digest': _digest(members),
+               'authority_gateway_id': binding.gateway_id, 'authority_epoch': binding.authority_epoch}
+    if {k: v for k, v in original.items() if k != 'route_digest'} != current:
+        raise RuntimeStoreError('permission_denied')
+
+
 def discard_available(service, task, binding):
-    """Only durable proven nonadmission can be discarded without remote Stop."""
-    return retry_available(service, task, binding)
+    """Retiring proven-unaccepted work needs no live/replacement grant."""
+    try:
+        with service.authority.db._read_ctx() as conn:
+            _validate_discard(service, conn, task, binding)
+        return True
+    except (RuntimeStoreError, ValueError, tasks.DriverStateError):
+        return False
 
 
 def discard_peer(service, task, binding):
@@ -208,7 +238,7 @@ def discard_peer(service, task, binding):
             current = tasks._task_from_row(tasks._load_task(conn, task['identity']))
             if current['execution_generation'] != task['execution_generation'] or current['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
-            _validate(service, conn, current, binding)
+            _validate_discard(service, conn, current, binding)
         result = tasks.cancel_task(service.db_path, task['identity'], cancel_id=cancel_id,
             expected_cancel_generation=task['cancel_generation'], clock=runtime.clock, authorize=authorize)
         runtime._set_blocked(binding.room_id, False)
@@ -220,6 +250,8 @@ def discard_peer(service, task, binding):
 def peer_action(service, task, binding):
     """The control a peer turn offers now: ``retry``, ``discard`` or ``None``."""
     if task['status'] == 'deferred':
-        return 'retry' if retry_available(service, task, binding) else None
+        if retry_available(service, task, binding):
+            return 'retry'
+        return 'discard' if discard_available(service, task, binding) else None
     return None
 

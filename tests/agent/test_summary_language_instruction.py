@@ -41,6 +41,18 @@ def test_no_user_turn_branch_disfavors_mixed_assistant_language():
     assert "most recent" not in text.lower() or "exclude" in text.lower()
 
 
+def test_no_user_turn_branch_is_groundable_from_source():
+    # review feedback (#130194): the no-user-turn template must not instruct the
+    # model to use signals absent from the slice it summarizes (hidden history,
+    # switch direction). It must be deterministic from the source content alone.
+    text = _SECTION_INSTRUCTIONS[False]["language"]
+    assert "user-facing surface" not in text.lower()
+    assert "historically" not in text.lower()
+    assert "recent switch" not in text.lower()
+    assert "dominant natural language" in text.lower()
+    assert "source turns" in text.lower()
+
+
 def test_templates_remain_plain_wording():
     # byte-pinned template contract: plain sentences, no injection-style framing.
     for branch in (True, False):

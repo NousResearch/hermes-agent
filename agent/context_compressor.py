@@ -2163,11 +2163,8 @@ If no outstanding task exists, write "None."]""",
     False: {
         "language": (
             "This session contains no user-authored turns. Write the summary in the "
-            "dominant language of the USER-facing surface if any user turns exist "
-            "historically; otherwise use the dominant language of the source turns' "
-            "natural-language content, EXCLUDING non-English assistant drift: if the "
-            "assistant turns are mixed-language, prefer the language that is not a "
-            "recent switch. Do not translate, invent a user, or attribute any request "
+            "dominant natural language actually present in the source turns being "
+            "summarized. Do not translate, invent a user, or attribute any request "
             "to a user. "
         ),
         "historical_task": f"""[NO user-authored turn exists in this session. Write exactly:

@@ -37,6 +37,9 @@ from hermes_cli.dashboard_auth.base import Session
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
+IOS_REDIRECT_URI = "cool.n0thing.hermes:/oauth/callback"
+
+
 # ---------------------------------------------------------------------------
 # PKCE helpers (desktop side)
 # ---------------------------------------------------------------------------
@@ -178,10 +181,11 @@ def _walk_native_login(client, *, redirect_uri, challenge, state="cli-state"):
         cookies=cookies,
     )
     assert r2.status_code == 302, r2.text
-    # 3. The callback 302s to the desktop's loopback redirect_uri.
+    # 3. The callback 302s to the native app's registered redirect_uri.
     loop = urlparse(r2.headers["location"])
-    assert f"{loop.scheme}://{loop.netloc}" == redirect_uri.rsplit("/", 1)[0] or \
-        loop.netloc in redirect_uri
+    expected = urlparse(redirect_uri)
+    assert (loop.scheme, loop.netloc, loop.path) == (
+        expected.scheme, expected.netloc, expected.path)
     loop_qs = parse_qs(loop.query)
     # No session cookie must be set on the native callback response.
     set_cookie = r2.headers.get("set-cookie", "")
@@ -206,7 +210,48 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
         },
     )
     assert r.status_code == 400
-    assert "loopback" in r.json()["detail"].lower()
+    assert "redirect" in r.json()["detail"].lower()
+
+
+def test_native_authorize_accepts_exact_hermes_ios_callback(gated_client):
+    verifier, challenge = _make_pkce()
+    code, returned_state = _walk_native_login(
+        gated_client,
+        redirect_uri=IOS_REDIRECT_URI,
+        challenge=challenge,
+        state="ios-state",
+    )
+    assert returned_state == "ios-state"
+
+    tokens = gated_client.post(
+        "/auth/native/token",
+        json={"code": code, "code_verifier": verifier},
+    )
+    assert tokens.status_code == 200, tokens.text
+    assert tokens.json()["user_id"] == "stub-user-1"
+
+
+@pytest.mark.parametrize("redirect_uri", [
+    "cool.n0thing.hermes://oauth/callback",
+    "cool.n0thing.hermes:/oauth/callback/",
+    "cool.n0thing.hermes:/oauth/callback?next=https://evil.example",
+    "cool.n0thing.hermes:/oauth/callback#fragment",
+    "cool.n0thing.hermes.evil:/oauth/callback",
+])
+def test_native_authorize_rejects_ios_callback_near_misses(gated_client, redirect_uri):
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "provider": "stub",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": redirect_uri,
+            "state": "s",
+        },
+    )
+    assert r.status_code == 400
+    assert "redirect" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +455,7 @@ def test_status_advertises_native_pkce_for_password_only_gateway(
     assert body["auth_required"] is True
     assert "cookie" in body["auth_flows"]
     assert "native_pkce" in body["auth_flows"]
+    assert "native_ios_pkce" in body["auth_flows"]
 
 
 def test_native_authorize_password_provider_redirects_to_login(

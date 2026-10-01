@@ -66,6 +66,12 @@ redirect URIs are bound to the gateway's own origin — a desktop app can't be a
 direct client of the Portal. The desktop still gets the full RFC 8252
 experience: its own PKCE pair, its own loopback redirect, and tokens it owns.
 
+The Hermes iOS client uses the same broker and token endpoints with the single
+allowlisted callback `cool.n0thing.hermes:/oauth/callback`. Arbitrary custom
+schemes, sibling paths, query-bearing callback registrations, and fragments are
+rejected. PKCE binds the one-time code to the app instance even though custom
+URL schemes are claimed at the operating-system level.
+
 **PKCE (RFC 7636)** protects the loopback hop: the one-time gateway code is
 useless without the code verifier, which never leaves the app. The code is
 single-use and short-lived.
@@ -75,11 +81,12 @@ single-use and short-lived.
 The desktop reads the gateway's public `/api/status` endpoint, which advertises
 an `auth_flows` array:
 
-| `auth_flows` value | Meaning |
-|--------------------|---------|
-| `["cookie", "native_pkce"]` | Gateway supports native sign-in → the app uses it |
-| `["cookie"]` | Gateway supports only the legacy flow → the app uses the embedded webview |
-| *(field absent)* | Older gateway → the app uses the embedded webview |
+| `auth_flows` member | Meaning |
+|---------------------|---------|
+| `native_pkce` | Gateway supports desktop loopback native sign-in |
+| `native_ios_pkce` | Gateway supports the exact Hermes iOS callback |
+| only `cookie` present | Gateway supports only the legacy flow → the desktop uses the embedded webview |
+| field absent | Older gateway → the desktop uses the embedded webview |
 
 If native sign-in is advertised but fails for a local reason — e.g. a security
 tool blocks the loopback listener, or you close the browser tab — the app

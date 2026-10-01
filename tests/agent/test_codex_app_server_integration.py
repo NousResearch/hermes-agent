@@ -74,6 +74,8 @@ class TestRunConversationCodexPath:
         [
             ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
             ({"enabled": False}, None, "none", None),
+            # Hermes-only levels are clamped to the route's vocabulary; raw "ultra" fails the turn with 400.
+            ({"enabled": True, "effort": "ultra"}, None, "xhigh", None),
         ],
     )
     def test_effective_runtime_settings_reach_codex_turn(

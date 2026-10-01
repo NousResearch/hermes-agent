@@ -557,6 +557,24 @@ def _codex_wire_model(agent, model_provider: str | None) -> str | None:
     return model
 
 
+def _codex_turn_effort(agent, model: str | None) -> str | None:
+    """``turn/start.effort``: only an explicit Hermes reasoning setting overrides codex's own default, clamped
+    to the route's vocabulary like the Responses path (a raw Hermes level such as ``ultra`` fails the turn
+    with 400 "Unsupported value"). Disabled reasoning goes out as ``none`` where the route accepts it."""
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    # Guard first: _resolve_reasoning fills an unset config with "medium", which would override codex's default.
+    if not isinstance(reasoning_config, dict) or not (
+            reasoning_config.get("enabled") is False or reasoning_config.get("effort")):
+        return None
+    from agent.transports.codex import _resolve_reasoning
+    provider = str(getattr(agent, "provider", "") or "")
+    effort, _enabled = _resolve_reasoning(model or "", {
+        "reasoning_config": reasoning_config, "provider": provider,
+        "base_url": getattr(agent, "base_url", None), "is_codex_backend": provider == "openai-codex",
+    })
+    return effort
+
+
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
@@ -691,13 +709,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
-    reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = None
-    if isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is False:
-            reasoning_effort = "none"
-        elif reasoning_config.get("effort"):
-            reasoning_effort = str(reasoning_config["effort"])
+    model_provider = getattr(agent, "_codex_session_model_provider", None)
+    wire_model = _codex_wire_model(agent, model_provider)
+    reasoning_effort = _codex_turn_effort(agent, wire_model)
     service_tier = getattr(agent, "service_tier", None)
     if service_tier == "priority":
         # Hermes uses the OpenAI API name; Codex app-server calls this tier fast.
@@ -710,8 +724,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         _start_codex_thread(agent)
         turn = agent._codex_session.run_turn(
             user_input=user_message,
-            model=_codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None)),
-            reasoning_effort=reasoning_effort, service_tier=service_tier)
+            model=wire_model, reasoning_effort=reasoning_effort, service_tier=service_tier)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

@@ -88,13 +88,6 @@ _ANY_LIVE_PATHS_SQL = (
 )
 
 
-def _row_path(row) -> str:
-    try:
-        return row["workspace_path"] or ""
-    except (KeyError, IndexError, TypeError):
-        return row[0] or ""
-
-
 def _conn_uses_path(
     conn: sqlite3.Connection, task_id: str, key: str, *, exclude_task_id: bool = True
 ) -> bool:
@@ -103,7 +96,7 @@ def _conn_uses_path(
     else:
         rows = conn.execute(_ANY_LIVE_PATHS_SQL).fetchall()
     for row in rows:
-        other = _row_path(row)
+        other = row["workspace_path"]
         if not other:
             continue
         try:
@@ -367,11 +360,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         wp = Path(path)
-        if _defer_shared_workspace_cleanup(conn, task_id, path):
-            _cleanup_worker_tmux(conn, task_id)
-            _try_cleanup_parent_workspaces(conn, task_id)
-            return
-        if wp.is_dir():
+        if wp.is_dir() and not _defer_shared_workspace_cleanup(conn, task_id, path):
             # Containment guard: a board's ``default_workdir`` can pair
             # ``workspace_kind='scratch'`` with a user path pointing at a real
             # source tree; without this, completion would rmtree the user's data.

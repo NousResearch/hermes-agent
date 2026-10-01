@@ -273,9 +273,17 @@ class SessionAuthority:
                             raise RuntimeStoreError('invalid_params')
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
+                live = self.sessions.get(sid)
+                if live is None:
+                    live = self.sessions[sid] = LiveSession(source, route)
+                current = list_session_admissions(self.db, session_id=sid)
+                if any(row['status'] == 'unknown' for row in current):
                     raise RuntimeStoreError('unknown_execution')
+                if (any(row['status'] == 'started' for row in current)
+                        or live.task is not None and not live.task.done()):
+                    results[sid] = 'active'
+                    continue
+                live.source, live.route = source, route
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:

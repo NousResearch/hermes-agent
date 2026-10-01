@@ -233,19 +233,14 @@ def _defer_shared_worktree_cleanup(
     """Defer removing a linked worktree another live task may still use.
 
     Only a real linked worktree is ever removed, so the sharing scan runs just
-    for those; one ``rev-parse`` call answers git-dir and common-dir together.
+    for those.
     """
     wt = Path(path).expanduser()
-    if not wt.is_dir():
-        return False
-    out = _kb._git_out(
-        wt, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"
+    return (
+        wt.is_dir()
+        and _is_linked_worktree_checkout(wt)
+        and _defer_shared_workspace_cleanup(conn, task_id, path)
     )
-    lines = out.splitlines() if out else []
-    linked = len(lines) == 2 and (
-        Path(lines[0]).resolve(strict=False) != Path(lines[1]).resolve(strict=False)
-    )
-    return linked and _defer_shared_workspace_cleanup(conn, task_id, path)
 
 
 def _lexical_path(path: Path | str) -> Path:
@@ -644,18 +639,22 @@ def _git_common_dir(path: Path) -> Optional[Path]:
     return _git_abs_path(path, "--git-common-dir")
 
 
-def _git_dir(path: Path) -> Optional[Path]:
-    return _git_abs_path(path, "--git-dir")
-
-
 def _git_current_branch(path: Path) -> Optional[str]:
     return _kb._git_out(path, "branch", "--show-current")
 
 
 def _is_linked_worktree_checkout(path: Path) -> bool:
-    git_dir = _git_dir(path)
-    common_dir = _git_common_dir(path)
-    return git_dir is not None and common_dir is not None and git_dir != common_dir
+    """True when *path* is a linked worktree (git-dir differs from common-dir).
+
+    One ``rev-parse`` call answers both directories.
+    """
+    out = _kb._git_out(
+        path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"
+    )
+    lines = out.splitlines() if out else []
+    return len(lines) == 2 and (
+        Path(lines[0]).resolve(strict=False) != Path(lines[1]).resolve(strict=False)
+    )
 
 
 def _nearest_existing_path(path: Path) -> Path:

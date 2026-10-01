@@ -102,8 +102,6 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   // its own sourceRowId. Message-level matching alone misses that shared
   // final row and appends the fold next to the settled live bubble, so the
   // same reply renders twice (#123801).
-  // ponytail: fold-level dedup — a fold carrying unheld rows alongside the
-  // shared one is dropped whole; merge at part granularity if that loss matters.
   const existingPartRowIndices = new Map<number, number>()
 
   existing.forEach((message, index) => {
@@ -128,20 +126,23 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   let pending: ChatMessage[] = []
   let lastAnchor = -1
 
+  const heldRowAnchor = (row: number) => existingRowIndices.get(row) ?? existingPartRowIndices.get(row)
+
+  // A fetched fold is only a duplicate when EVERY row it carries is already
+  // held; one unheld row (narration beside a tool call) means dropping it
+  // would lose that content, so it is appended as before.
   const partRowAnchor = (message: ChatMessage): number | undefined => {
-    for (const part of message.parts) {
-      if (part.type !== 'text' || part.sourceRowId === undefined) {
-        continue
-      }
+    const rows = message.parts.flatMap(part =>
+      part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []
+    )
 
-      const anchor = existingRowIndices.get(part.sourceRowId) ?? existingPartRowIndices.get(part.sourceRowId)
-
-      if (anchor !== undefined) {
-        return anchor
-      }
+    if (message.rowId !== undefined) {
+      rows.push(message.rowId)
     }
 
-    return undefined
+    const anchors = rows.map(heldRowAnchor)
+
+    return anchors.length > 0 && anchors.every(anchor => anchor !== undefined) ? anchors[anchors.length - 1] : undefined
   }
 
   for (const message of olderPage) {

@@ -166,43 +166,29 @@ describe('mergeOlderTranscriptPage', () => {
     expect(mergeOlderTranscriptPage(existing, [chat('a', 1)])).toBe(existing)
   })
 
-  it('drops a backfilled fold whose final-reply part row is already held live (#123801)', () => {
-    // In-memory store after completion: the user prompt plus the settled
-    // live bubble for gateway row 52203 (one stored row, one completion).
-    const live: ChatMessage = {
-      id: 'assistant-stream-1',
-      role: 'assistant',
-      parts: [{ type: 'text', text: 'the answer', sourceRowId: 52203 }],
-      rowId: 52203
-    }
+  // Hydration folds a turn into one bubble addressed by its FIRST source row,
+  // with the final reply (52203) riding inside as a text part. A drifting
+  // older-page fetch that overlaps the just-persisted turn must not paint that
+  // reply twice, but must not drop rows the store does not hold either.
+  const narration = { type: 'text', text: 'earlier tool narration', sourceRowId: 52201 } as const
+  const answer = { type: 'text', text: 'the answer', sourceRowId: 52203 } as const
+  const toolCall = { type: 'tool-call', toolCallId: 't1', toolName: 'read_file', args: {} } as unknown as ChatMessage['parts'][number]
+
+  it.each([
+    { name: 'drops a fold whose every row is already held live', liveParts: [narration, answer], foldParts: [narration, answer], kept: false },
+    { name: 'keeps a fold carrying a tool call and unheld narration', liveParts: [answer], foldParts: [toolCall, narration, answer], kept: true }
+  ])('$name (#123801)', ({ liveParts, foldParts, kept }) => {
+    const live: ChatMessage = { id: 'assistant-stream-1', role: 'assistant', parts: [...liveParts], rowId: 52203 }
     const existing: ChatMessage[] = [chat('prompt', 52200), live]
+    const fold: ChatMessage = { id: '1770000000000-4-assistant', role: 'assistant', parts: [...foldParts], rowId: 52201 }
 
-    // A drifting older-page fetch overlaps the just-persisted turn. Hydration
-    // folded the turn into one bubble addressed by its FIRST source row
-    // (52201); the final reply (52203) rides inside as a text part. Matching
-    // only message-level row ids appends the fold next to the settled live
-    // bubble, so the same reply renders twice.
-    const fold: ChatMessage = {
-      id: '1770000000000-4-assistant',
-      role: 'assistant',
-      parts: [
-        { type: 'text', text: 'earlier tool narration', sourceRowId: 52201 },
-        { type: 'text', text: 'the answer', sourceRowId: 52203 }
-      ],
-      rowId: 52201
+    const merged = mergeOlderTranscriptPage(existing, [chat('prompt-refetch', 52200), fold])
+
+    if (kept) {
+      expect(merged.flatMap(message => message.parts)).toEqual(expect.arrayContaining([toolCall, narration]))
+    } else {
+      expect(merged).toBe(existing)
     }
-    const older: ChatMessage[] = [chat('prompt-refetch', 52200), fold]
-
-    const merged = mergeOlderTranscriptPage(existing, older)
-
-    const finalRowOwners = merged.filter(
-      message =>
-        message.rowId === 52203 ||
-        message.parts.some(part => part.type === 'text' && part.sourceRowId === 52203)
-    )
-
-    expect(finalRowOwners).toHaveLength(1)
-    expect(merged).toBe(existing)
   })
 })
 

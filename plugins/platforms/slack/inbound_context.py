@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.event import MessageEvent, MessageType
+
+if TYPE_CHECKING:
+    from plugins.platforms.slack.adapter import SlackAdapter
 
 logger = logging.getLogger("plugins.platforms.slack.adapter")
 
@@ -70,7 +73,7 @@ class SlackInboundContextMixin:
             logger.debug("Slack: appended %d link unfurl(s) to message text", len(att_parts))
         return text
 
-    async def _handle_slack_message_impl(self, event: dict, payload: Optional[dict] = None) -> None:
+    async def _handle_slack_message_impl(self: SlackAdapter, event: dict, payload: Optional[dict] = None) -> None:
         """Handle an incoming Slack message event."""
         from plugins.platforms.slack.adapter import (
             _rewrite_known_bang_command,

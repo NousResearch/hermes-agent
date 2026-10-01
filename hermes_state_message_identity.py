@@ -31,10 +31,12 @@ class SessionMessageIdentityMixin:
             (session_id, platform_message_id)) is not None
 
     def find_user_message_by_client_message_id(self, session_id: str, client_message_id: str) -> Optional[Dict[str, Any]]:
-        """Return the first durable user row carrying ``client_message_id`` across the resume lineage.
+        """Return the user row the transcript currently shows for ``client_message_id`` across the resume
+        lineage (active or compaction-archived, newest first), or None.
 
-        Inactive rows are intentional: queued prompts are written at acceptance and later re-placed at
-        the transcript tail, while the original acknowledgment remains bound to the first row.
+        The row is the acknowledgment a retry after a restart receives. An accept-time row that
+        ``reopen_session`` retired (#125577) is a prompt that never ran, so it is no acknowledgment and
+        the retry must run; after a drain the live replacement row is the acknowledgment.
         """
         session_ids = self._resume_lineage_ids(session_id)
         if not session_ids or not client_message_id:
@@ -42,8 +44,9 @@ class SessionMessageIdentityMixin:
         row = self._read_one(
             f"SELECT id, timestamp, display_metadata FROM messages "
             f"WHERE session_id IN ({_placeholders(session_ids)}) AND role = 'user' "
+            "AND (active = 1 OR compacted = 1) "
             f"AND {_sql_json_extract('display_metadata', '$.client_message_id')} = ? "
-            "ORDER BY id LIMIT 1",
+            "ORDER BY id DESC LIMIT 1",
             (*session_ids, client_message_id),
         )
         if row is None:

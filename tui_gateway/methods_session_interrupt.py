@@ -6,6 +6,14 @@ bodies close over server.py globals through ``method_ctx.bind_module`` exactly a
 from the parent's ``register()`` via ``HandlerRegistry``.
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .compute_host_bridge import _get_compute_host_supervisor, _session_uses_compute_host
+    from .server import _clear_pending, _ok, _sess_building, logger
+    from .session_history import _clear_inflight_turn
+    from .session_lifecycle import _owns_turn_claim
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()

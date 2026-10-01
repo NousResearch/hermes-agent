@@ -2337,6 +2337,8 @@ Notes:
 
 When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
+Replies delivered before a queued follow-up also include their own footer. If that reply was already streamed, its footer is sent separately before the follow-up starts. Fields without a value for that reply are omitted.
+
 ```yaml
 display:
   runtime_footer:

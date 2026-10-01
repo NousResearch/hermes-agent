@@ -128,6 +128,18 @@ class MatrixTurnContext:
                                 and snapshot.reply.reply_to_message_id == event.reply_to_message_id), None)
         )
 
+    def pending_state(self) -> dict[str, Any]:
+        logical = self.logical_reply
+        return {
+            "room_id": self.room_id,
+            "reply_event_id": self.reply.reply_to_message_id,
+            "logical_reply": (
+                {"excerpt": logical.excerpt, "delivery": logical.delivery.to_json()}
+                if logical is not None
+                else None
+            ),
+        }
+
     def use_turn_context(self, update: TurnContextUpdate | None) -> None:
         self.turn_context = update
 

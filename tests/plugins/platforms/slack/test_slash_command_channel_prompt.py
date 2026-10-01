@@ -4,7 +4,8 @@ A ``/hermes <question>`` turn is a human turn, so the gateway re-pins ``channel_
 session-context key from it. Built without ``channel_prompt``, ``chat_name`` and ``user_name``, it
 ran without the configured channel prompt, and where it shared a session with messages it flipped
 both pins until the next message flipped them back. Without ``auto_skill``, a session opened by
-``/hermes <question>`` never loaded the channel's bound skill. These tests check what the adapter
+``/hermes <question>`` never loaded the channel's bound skill, and neither did the turn a
+``/goal <text>`` kickoff queues. These tests check what the adapter
 hands the gateway (event fields, handoff order, lookups), not the agent or provider cache behind it.
 """
 
@@ -37,20 +38,35 @@ def _adapter(channel_id: str) -> SlackAdapter:
     return a
 
 
+def _agent_turn(event):
+    """The turn the agent runs for *event*: for ``/goal <text>`` that is the kickoff the gateway
+    queues, not the command itself."""
+    if event.get_command() != "goal":
+        return event
+    from gateway.slash_commands_goals import GatewayGoalCommandsMixin
+    runner, queued = object.__new__(GatewayGoalCommandsMixin), []
+    runner._adapter_and_key_for = lambda _event: (object(), "sk")
+    runner._enqueue_fifo = lambda _key, turn, _adapter: queued.append(turn)
+    runner._enqueue_goal_turn(event, event.get_command_args(), label="kickoff", kickoff=True)
+    return queued[0]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id, channel_type, chat_name, texts, cancel_first", [
     ("C_OPS", "channel", "ops", ("what broke?", "and why?"), False),
     ("D_ALICE", "im", "Alice", ("what broke?", "and why?"), False),
     ("C_OPS", "channel", "ops", ("queue what broke?", "queue and why?"), False),
     ("C_OPS", "channel", "ops", ("queue what broke?", "queue and why?"), True),
-], ids=["channel", "dm", "queue-command", "queue-first-cancelled"])
+    ("C_OPS", "channel", "ops", ("goal fix what broke", "queue and why?"), False),
+], ids=["channel", "dm", "queue-command", "queue-first-cancelled", "goal-kickoff"])
 async def test_slash_turns_reach_the_gateway_in_order_with_message_inputs(
         channel_id, channel_type, chat_name, texts, cancel_first):
     """Two slash turns of one session, the first held on a cold ``users.info``: both are handed
     over in arrival order (the gateway's /queue FIFO keeps the order it is given), each with the
     inputs a message turn carries. ``queue-command``: a registered command that starts a turn is a
     human turn like the free-form question. ``queue-first-cancelled``: a slash cancelled during its
-    lookup does not strand the one behind it."""
+    lookup does not strand the one behind it. ``goal-kickoff``: the turn ``/goal <text>`` queues
+    carries them too."""
     adapter = _adapter(channel_id)
     held, release = asyncio.Event(), asyncio.Event()
 
@@ -82,10 +98,11 @@ async def test_slash_turns_reach_the_gateway_in_order_with_message_inputs(
         {"team_id": "T1"})
     *slashes, message = (c.args[0] for c in adapter.handle_message.await_args_list)
     handed = texts[1:] if cancel_first else texts
-    assert [s.text for s in slashes] == ["/" + t if t.startswith("queue ") else t for t in handed]
+    assert [s.text for s in slashes] == [
+        "/" + t if t.split()[0] in ("queue", "goal") else t for t in handed]
     assert message.channel_prompt and "Answer in haiku." in message.channel_prompt
     assert (message.source.chat_name, message.source.user_name) == (chat_name, "Alice")
-    for turn in slashes:
+    for turn in map(_agent_turn, slashes):
         assert turn.channel_prompt == message.channel_prompt
         assert turn.auto_skill == message.auto_skill == ["triage"]
         assert (turn.source.chat_name, turn.source.user_name) == (

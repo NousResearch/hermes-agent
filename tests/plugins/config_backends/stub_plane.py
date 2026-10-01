@@ -4,6 +4,10 @@ OAuth2 client-credentials token endpoint, for driving the remote backend without
 Levels are collapsed to one ``upper`` document (everything above the profile) plus per-profile
 ``values``; locks are ``upper_locks``. Effective = deep_merge(upper, profile) — enough for the
 agent, which never resolves the chain itself (design §2.3).
+
+It is a test double, not server-conformance evidence: the write check and the secret check reuse
+the agent's own helpers, so it cannot catch a rule both sides got wrong. The vendored gg fixtures
+(test_remote_conformance.py) and the real gg E2E (card INT) are that evidence.
 """
 from __future__ import annotations
 
@@ -27,11 +31,14 @@ INSTANCE = "inst-0001"
 
 
 def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+    """contract.md §6.2: lists replace, ``null`` over a mapping is ignored, ``null`` over anything
+    else sets ``null``."""
     out = copy.deepcopy(base)
     for k, v in over.items():
-        if isinstance(out.get(k), dict) and isinstance(v, dict):
+        over_obj = isinstance(out.get(k), dict)
+        if over_obj and isinstance(v, dict):
             out[k] = deep_merge(out[k], v)
-        else:
+        elif not (over_obj and v is None):
             out[k] = copy.deepcopy(v)
     return out
 

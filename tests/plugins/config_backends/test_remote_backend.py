@@ -461,3 +461,212 @@ def test_general_plugin_manager_never_loads_config_backends(plane, monkeypatch):
     mgr = PluginManager()
     mgr.discover_and_load()
     assert not any("config_backends" in key or key == "remote" for key in mgr._plugins)
+
+
+# --- review round 1 regressions -----------------------------------------------------------
+
+_BACKEND_FLIP_SOURCE = {"command": {"enabled": True, "override_existing": True,
+                                    "command": "printf 'HERMES_CONFIG_BACKEND=file\\n'"}}
+
+
+def test_secret_source_cannot_switch_remote_mode_off_at_boot(plane, monkeypatch):
+    """D32 through the REAL startup path and a real command source: a source that writes
+    HERMES_CONFIG_BACKEND=file must not disarm remote mode (and with it the protected-name check)
+    and let the next read fall back to the local config.yaml."""
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    (plane.home / "config.yaml").write_text(json.dumps({"display": {"personality": "local"}}))
+    plane.upper = {"display": {"personality": "remote"}, "secrets": _BACKEND_FLIP_SOURCE}
+
+    with pytest.raises(ConfigBackendUnavailable, match="HERMES_CONFIG_BACKEND"):
+        env_loader.load_hermes_dotenv(hermes_home=plane.home)
+
+    import os
+    assert os.environ["HERMES_CONFIG_BACKEND"] == "remote"  # the source's write was reverted
+    assert get_config_backend().name == "remote"
+
+
+def test_file_mode_ignores_a_source_that_selects_the_backend(monkeypatch, capsys):
+    """The selector is never a source's to change under the file backend either: reverted, dropped
+    from the report (so no later snapshot re-applies it), and startup continues."""
+    import os
+    from types import SimpleNamespace
+
+    from hermes_cli.config_backend import get_config_backend as gcb
+    from hermes_cli.env_loader import _refuse_protected_env_from_sources
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
+    before = dict(os.environ)
+    file_backend = gcb()
+    src = SimpleNamespace(applied=["HERMES_CONFIG_BACKEND", "OPENROUTER_API_KEY"], skipped_existing=[])
+    report = SimpleNamespace(provenance={"HERMES_CONFIG_BACKEND": object(), "OPENROUTER_API_KEY": object()},
+                             sources=[src])
+    monkeypatch.setenv("HERMES_CONFIG_BACKEND", "remote")  # what the source wrote
+
+    _refuse_protected_env_from_sources(report, file_backend, before)
+
+    assert "HERMES_CONFIG_BACKEND" not in os.environ
+    assert set(report.provenance) == {"OPENROUTER_API_KEY"} and src.applied == ["OPENROUTER_API_KEY"]
+    assert "ignored HERMES_CONFIG_BACKEND" in capsys.readouterr().err
+
+
+def _hold_gets(monkeypatch):
+    """Pause the FIRST GET after its response arrived and before the backend installs it, until
+    ``release`` is set; every later request passes straight through."""
+    import threading
+
+    from plugins.config_backends.remote import client
+    fetched, release = threading.Event(), threading.Event()
+    original = client.request
+
+    def held(method, *args, **kwargs):
+        resp = original(method, *args, **kwargs)
+        if method == "GET" and not fetched.is_set():
+            fetched.set()
+            assert release.wait(10)
+        return resp
+
+    monkeypatch.setattr(client, "request", held)
+    return fetched, release
+
+
+def test_poll_in_flight_does_not_overwrite_an_acknowledged_write(plane, monkeypatch):
+    import threading
+    plane.upper = {"display": {"personality": "old"}}
+    backend = get_config_backend()
+    st = backend._state(plane.home)
+    plane.upper["display"]["personality"] = "upper-change"
+    fetched, release = _hold_gets(monkeypatch)
+
+    poll = threading.Thread(target=backend.poll_one, args=(st,))
+    poll.start()
+    assert fetched.wait(10)  # the poll's GET (profile v0) has its response, not yet installed
+    write_config_key(plane.home / "config.yaml", "display.personality", "my-write")
+    assert (st.profile_version, st.doc["display"]["personality"]) == (1, "my-write")
+    release.set()
+    poll.join(10)
+    assert not poll.is_alive()
+
+    assert (st.profile_version, st.doc["display"]["personality"]) == (1, "my-write")
+    assert plane.profile("default")["values"] == {"display": {"personality": "my-write"}}
+
+
+def test_stale_fetch_with_same_profile_version_is_dropped(plane, monkeypatch):
+    """Only an upper level changed, so both responses carry profileVersion 0: the guard must be
+    'which fetch was installed last', not a profileVersion comparison."""
+    import threading
+    plane.upper = {"display": {"personality": "old"}}
+    backend = get_config_backend()
+    st = backend._state(plane.home)
+    plane.upper["display"]["personality"] = "v1"
+    fetched, release = _hold_gets(monkeypatch)
+
+    slow = threading.Thread(target=backend.poll_one, args=(st,))
+    slow.start()
+    assert fetched.wait(10)  # holds an upper=v1 response
+    plane.upper["display"]["personality"] = "v2"
+    assert backend.poll_one(st) is True  # a newer fetch, started later, lands first
+    assert st.doc["display"]["personality"] == "v2"
+    release.set()
+    slow.join(10)
+    assert not slow.is_alive()
+
+    assert st.profile_version == 0
+    assert st.doc["display"]["personality"] == "v2"
+
+
+def _old_compression_profile(plane):
+    from hermes_cli.config import read_raw_config
+    assert backend_mod._latest_config_version() > 46
+    plane.upper = {"compression": {"threshold_tokens": 256000}}  # the old default the 46->47 step removes
+    plane.profile("default")["writer"] = 46
+    doc = read_raw_config()
+    assert "threshold_tokens" not in (doc.get("compression") or {}), "precondition: migrated in memory"
+
+
+def test_migration_is_not_sent_by_an_unrelated_write(plane):
+    from hermes_cli.config import set_config_value
+    _old_compression_profile(plane)
+
+    set_config_value("display.personality", "pirate")
+
+    (patch,) = plane.patches()
+    assert patch["body"]["set"] == {"display": {"personality": "pirate"}}
+    assert "unset" not in patch["body"]  # D12: the migration's removal is never written back
+
+
+def test_migration_is_not_sent_after_a_cas_reread(plane):
+    from hermes_cli.config import set_config_value
+    _old_compression_profile(plane)
+    plane.profile("default")["version"] = 3  # another writer moved the profile level: first PATCH 409s
+
+    set_config_value("display.personality", "pirate")
+
+    patches = plane.patches()
+    assert [p["body"]["expectedVersion"] for p in patches] == [0, 3]
+    for p in patches:
+        assert p["body"]["set"] == {"display": {"personality": "pirate"}}
+        assert "unset" not in p["body"]
+
+
+def test_bulk_save_after_migration_sends_only_the_edit(plane):
+    from hermes_cli.config import read_raw_config, save_config
+    _old_compression_profile(plane)
+    doc = read_raw_config()
+    doc.setdefault("display", {})["personality"] = "pirate"
+
+    save_config(doc)
+
+    for p in plane.patches():
+        assert "unset" not in p["body"]
+        assert "compression" not in json.dumps(p["body"])
+
+
+def _dashboard_put(config):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from hermes_cli.web_routers.config_env import ConfigUpdate, update_config
+    try:
+        asyncio.run(update_config(ConfigUpdate(config=config)))
+    except HTTPException as exc:
+        return exc.status_code, exc.detail
+    return 200, None
+
+
+def test_dashboard_save_of_a_newly_locked_key_returns_the_lock_message(plane):
+    """The lock arrived on the plane after the last poll, so only the server refuses (403)."""
+    from hermes_cli.config import read_raw_config
+    plane.upper = {"display": {"personality": "old"}}
+    read_raw_config()
+    plane.upper_locks = [{"path": "display.personality", "level": "tenant"}]
+
+    status, detail = _dashboard_put({"display": {"personality": "new"}})
+
+    assert status == 403
+    assert "display.personality" in detail and "tenant" in detail
+    assert plane.profile("default")["values"] == {}
+
+
+def test_dashboard_save_secret_literal_is_a_400(plane):
+    status, detail = _dashboard_put({"model": {"api_key": "sk-live-not-a-ref-1234567890"}})
+    assert status == 400
+    assert "secret-shaped" in detail and "sk-live" not in detail
+    assert plane.patches() == []
+
+
+def test_dashboard_unexpected_config_failure_stays_opaque(plane):
+    from hermes_cli.config import read_raw_config
+    read_raw_config()
+    plane.fail_status = 500  # the write reaches the plane, which fails: not an expected refusal
+    status, detail = _dashboard_put({"display": {"personality": "new"}})
+    assert (status, detail) == (500, "Internal server error")
+
+
+def test_stub_plane_deep_merge_follows_contract_6_2():
+    """The test double resolves like the plane: null over a mapping is ignored (contract §6.2)."""
+    from .stub_plane import deep_merge
+    upper = {"display": {"personality": "concise"}, "model": "a", "tags": [1, 2]}
+    assert deep_merge(upper, {"display": None}) == upper
+    assert deep_merge(upper, {"model": None})["model"] is None
+    assert deep_merge(upper, {"tags": [3]})["tags"] == [3]

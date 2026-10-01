@@ -4589,6 +4589,8 @@ class TestMatrixReactions:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("thread_id", ["$root", ""])
+    @pytest.mark.parametrize("interleaved", [False, True])
     @pytest.mark.parametrize(("card", "reactor", "key", "expired", "outcome"), [
         pytest.param("approval", "@owner:example.org", "\U0001f44d", False, None, id="approval-invalid-key"),
         pytest.param("approval", "@stranger:example.org", "✅", False, None, id="approval-unauthorized"),
@@ -4599,7 +4601,7 @@ class TestMatrixReactions:
                      id="choice-picker-failed"),
     ])
     async def test_feedback_on_a_threaded_card_stays_in_its_thread(
-            self, monkeypatch, card, reactor, key, expired, outcome):
+            self, monkeypatch, tmp_path, thread_id, interleaved, card, reactor, key, expired, outcome):
         monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
         adapter = self.adapter
         adapter._allowed_user_ids = {"@owner:example.org", "@other:example.org"}
@@ -4620,7 +4622,16 @@ class TestMatrixReactions:
                 raise outcome
             return outcome
 
-        metadata = {"thread_id": "$root", "requester_user_id": "@owner:example.org"}
+        from plugins.platforms.matrix.followup_mixin import _MatrixFollowupChoice
+        from plugins.platforms.matrix.reaction_followups import PendingFollowupReaction, PendingFollowupReactions
+
+        action = _MatrixFollowupChoice(
+            "turn", (), "!room:example.org", "@owner:example.org", thread_id, "", "s",
+            pending=PendingFollowupReactions(clock=lambda: 0),
+        )
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_followup_actions = {"s": action}
+        metadata = {"thread_id": thread_id, "requester_user_id": "@owner:example.org"}
         entry = None
         if card == "approval":
             from tools import approval
@@ -4643,14 +4654,31 @@ class TestMatrixReactions:
         if expired:
             registry["$event-1"].expires_at = 0
 
+        if interleaved:
+            await adapter.send("!room:example.org", "Later output", metadata={"thread_id": thread_id})
+        feedback_start = len(sent)
+
         await adapter._on_reaction(types.SimpleNamespace(
             sender=reactor, event_id="$reaction", room_id="!room:example.org",
             content={"m.relates_to": {"event_id": "$event-1", "key": key}}))
 
         relations = [
             {field: value for field, value in content["m.relates_to"].items() if field != "is_falling_back"}
-            for content in sent[1:]]
-        assert relations == [{"rel_type": "m.thread", "event_id": "$root", "m.in_reply_to": {"event_id": "$event-1"}}]
+            for content in sent[feedback_start:]]
+        expected_relation = {"m.in_reply_to": {"event_id": "$event-1"}}
+        if thread_id:
+            expected_relation.update(rel_type="m.thread", event_id=thread_id)
+        assert (relations, action.pending.events) == ([expected_relation], {})
+
+        await adapter._on_reaction(types.SimpleNamespace(
+            sender="@owner:example.org", event_id="$ordinary-reaction", room_id="!room:example.org",
+            content={"m.relates_to": {"event_id": "$ordinary", "key": "👍"}},
+        ))
+        assert action.pending.events == {
+            "$ordinary-reaction": PendingFollowupReaction(
+                "$ordinary", "👍", "@owner:example.org", "$ordinary-reaction", 10,
+            ),
+        }
         if entry is not None:
             approval._gateway_queues.pop("s", None)
 

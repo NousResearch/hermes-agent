@@ -11,7 +11,8 @@ from hermes_state_input_custody import copy_is_held, seal_copy
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _DIGEST = re.compile(r'[0-9a-f]{64}')
-_CURSORS = {'v3': 'gateway.input-reclamation.v3.copy-cursor'}
+_CURSORS = {'v3': 'gateway.input-reclamation.v3.copy-cursor',
+            'native': 'gateway.input-reclamation.v3.native-cursor'}
 
 
 def owned_home(db):
@@ -24,9 +25,10 @@ def owned_home(db):
 
 
 def copy_path(db, copy):
-    if copy['namespace'] != 'v3' or not _DIGEST.fullmatch(copy['digest']):
+    if copy['namespace'] not in {'v3', 'native'} or not _DIGEST.fullmatch(copy['digest']):
         raise RuntimeStoreError('storage_unavailable')
-    root = default_attachment_root(db.db_path) / 'working-documents-v3'
+    root = _media_root() if copy['namespace'] == 'native' else (
+        default_attachment_root(db.db_path) / 'working-documents-v3')
     name = copy['name']
     if not name or Path(name).name != name or name in {'.', '..'}:
         raise RuntimeStoreError('storage_unavailable')
@@ -145,3 +147,13 @@ def _collect(db, *, epoch, limit, namespace):
 def collect_working_copies(db, *, epoch, limit=64):
     """Online owner opportunity: private document copies, never native images."""
     return _collect(db, epoch=epoch, limit=limit, namespace='v3')
+
+
+def collect_native_inputs(db, *, epoch, limit=64):
+    """Parent calls ONLY before the owner accepts input, never from housekeeping.
+
+    Native image targets can be reused by a capture that is not yet admitted.
+    Profile ownership/epoch is necessary, not proof of no in-flight captures;
+    the startup caller owns that pre-ingress contract.
+    """
+    return _collect(db, epoch=epoch, limit=limit, namespace='native')

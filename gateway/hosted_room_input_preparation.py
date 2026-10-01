@@ -1,7 +1,10 @@
 """Authorized hosted inputs: leased private preparation or read-only accepted replay."""
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 import tempfile
+import time
+import uuid
 import hashlib
 import json
 from pathlib import Path
@@ -244,10 +247,88 @@ def prepare_verified_documents(authority, *, principal_id, session_id, request_i
             paths.append({'path': str(path), 'sha256': copy['digest'], 'size': copy['size']})
         return paths
     paths = db._execute_write(materialize)
-    payload = json.loads(_json(build_payload(tuple(paths))))
+    with native_preparation_capture(authority, handle):
+        payload = json.loads(_json(build_payload(tuple(paths))))
     digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': 'queue'})
     db._execute_write(lambda conn: finish_preparation(conn, epoch=epoch, handle=handle, payload_digest=digest))
     return PreparedHostedInput(payload, handle)
+
+
+@contextmanager
+def native_preparation_capture(authority, handle):
+    """Reserve canonical native image targets before publication, under the document lease.
+
+    The capture callback is synchronous and scoped to this context/thread. Neither
+    a rollback nor a callback exception can roll back the committed capture intent.
+    Collection of native targets remains exclusive/pre-ingress, never online.
+    """
+    from gateway.session_ingress_media import _preparation_capture
+    from hermes_state_input_custody import PreparedInputHandle, copy_is_held
+    if handle is None:
+        yield
+        return
+    if not isinstance(handle, PreparedInputHandle):
+        raise RuntimeStoreError('invalid_params')
+    db, epoch = authority.db, authority.epoch
+    owned_home(db)
+
+    def capture(staged, references, publish):
+        def plan(conn):
+            preparation(conn, epoch=epoch, handle=handle)
+            planned = []
+            for reference in references:
+                path = Path(reference['path'])
+                identity = (verified_identity(path, reference['sha256'], reference['size'])
+                    if path.exists() or path.is_symlink() else None)
+                row = conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native' AND digest=? AND name=?",
+                    (reference['sha256'], path.name)).fetchone()
+                state = 'ready' if identity is not None else 'preparing'
+                if row is None:
+                    copy_id, generation = uuid.uuid4().hex, 1
+                    conn.execute('INSERT INTO input_custody_copies VALUES(?,?,?,?,?,?,?,?,?)',
+                        (copy_id, 'native', path.name, reference['sha256'], reference['size'], generation,
+                         state, *(identity or (None, None))))
+                else:
+                    copy_id, generation = row['copy_id'], row['generation']
+                    if row['state'] not in {'preparing', 'ready', 'removed'} or row['size'] != reference['size']:
+                        raise RuntimeStoreError('input_preparation_busy')
+                    if row['state'] == 'preparing' and (row['device'], row['inode']) != (None, None):
+                        raise RuntimeStoreError('input_preparation_busy')
+                    if row['state'] == 'ready' and identity is not None and (row['device'], row['inode']) != identity:
+                        # An existing replacement is not a new publication generation.
+                        raise RuntimeStoreError('input_preparation_busy')
+                    if row['state'] == 'removed' or (row['state'] == 'ready' and identity is None):
+                        if copy_is_held(conn, row, time.time()):
+                            raise RuntimeStoreError('input_preparation_busy')
+                        generation += 1
+                        conn.execute('UPDATE input_custody_copies SET generation=?,state=?,device=?,inode=? WHERE copy_id=?',
+                            (generation, state, *(identity or (None, None)), copy_id))
+                conn.execute('INSERT OR IGNORE INTO input_custody_native_items VALUES(?,?,?)',
+                    (handle.preparation_id, copy_id, generation))
+                planned.append((copy_id, generation, reference))
+            return planned
+        # An absent target is a provisional path reservation, NEVER a staging inode.
+        # Rollback after publication leaves this committed unbound intent collectible.
+        planned = db._execute_write(plan)
+        def materialize(conn):
+            preparation(conn, epoch=epoch, handle=handle)
+            publish()
+            for copy_id, generation, reference in planned:
+                row = conn.execute('SELECT * FROM input_custody_copies WHERE copy_id=?', (copy_id,)).fetchone()
+                if row is None or row['generation'] != generation or row['state'] not in {'preparing', 'ready'}:
+                    raise RuntimeStoreError('input_preparation_busy')
+                identity = verified_identity(Path(reference['path']), reference['sha256'], reference['size'])
+                if row['state'] == 'preparing' and (row['device'], row['inode']) == (None, None):
+                    conn.execute("UPDATE input_custody_copies SET state='ready',device=?,inode=? WHERE copy_id=?",
+                        (*identity, copy_id))
+                elif row['state'] != 'ready' or (row['device'], row['inode']) != identity:
+                    raise RuntimeStoreError('input_preparation_busy')
+        db._execute_write(materialize)
+    token = _preparation_capture.set(capture)
+    try:
+        yield
+    finally:
+        _preparation_capture.reset(token)
 
 
 def prepare_hosted_input(rpc, *, request_id, prompt, attachments=None, ttl=300):

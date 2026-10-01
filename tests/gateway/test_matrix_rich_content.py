@@ -246,9 +246,9 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
     event = call.args[0]
     text = _body(kind)
     if scenario in {"oversize", "download-oversize"}:
-        text += "\n[matrix sticker attachment too large]"
+        text += "\n[matrix sticker attachment too large: Friendly fox.png]"
     if scenario in {"download-failure", "missing-media-key"}:
-        text += "\n[matrix sticker image unavailable]"
+        text += "\n[matrix sticker attachment could not be downloaded: Friendly fox.png]"
     assert {
         "text": event.text,
         "type": event.message_type,
@@ -259,7 +259,7 @@ async def test_native_content_reaches_model_with_actor_description_and_pixels(
     } == {
         "text": text,
         "type": MessageType.TEXT
-        if kind == "emote" or scenario in {"oversize", "download-oversize"}
+        if kind == "emote" or scenario in {"oversize", "download-oversize", "download-failure", "missing-media-key"}
         else MessageType.PHOTO,
         "actor": SENDER,
         "room": ROOM,

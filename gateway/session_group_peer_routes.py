@@ -73,6 +73,8 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
         bind_store(service.db_path)
     renewal = expected_grant is not None
     with service.peer_route_lock:
+        if callable(getattr(service, 'is_retiring', None)) and service.is_retiring(room_id):
+            raise RuntimeStoreError('room_retiring')
         previous = links.load_room_link(service.db_path, room_id=room_id, member_id=member_id)
         if renewal and (previous is None or previous.grant != expected_grant):
             raise RuntimeStoreError('peer_target_mismatch')
@@ -86,6 +88,8 @@ def publish_route(service, *, room_id, member_id, route, client, target_url, cat
             if replaced is not None:
                 cleanup.retain(service.db_path, previous, conn=conn)
             cleanup.release(conn, route.grant)
+            if expected_grant is not None:
+                cleanup.release_issuances(conn, expected_grant)
         service._save_link(
             room_id=room_id, member_id=member_id, target_url=target_url, target_profile=route.target_profile,
             grant=route.grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
@@ -188,6 +192,8 @@ class CanonicalPeerClient:
 
     def _new_work(self, name, call, kwargs):
         with before_sending(name):
+            if callable(getattr(self._service, 'is_retiring', None)) and self._service.is_retiring(self._key[0]):
+                raise RuntimeStoreError('room_retiring')
             grant = self._grant if kwargs.get('grant') == self._route.grant else kwargs.get('grant')
             grant = self._refresh_if_due(name, grant, kwargs)
             with self._service._policy_lock:
@@ -238,18 +244,55 @@ class CanonicalPeerClient:
         else:
             checked = HostedMemberDispatch.from_mapping(kwargs['dispatch'])
             digests, extra = (checked.capability_digest, checked.execution_policy_digest), {}
+        pending = []
+        from gateway.hosted_room_proof import issuance_request_id
+        import json
+        request_body = json.dumps({'ttl_seconds': extra.get('ttl_seconds', 24 * 60 * 60)}, separators=(',', ':')).encode()
+        issuance_id = issuance_request_id(grant, request_body)
+        with self._service.peer_route_lock:
+            if self._stored_link is None:
+                raise RuntimeStoreError('peer_target_mismatch')
+            issuance = cleanup.retain(self._service.db_path, replace(self._stored_link, grant=grant),
+                                       mode='issuance', issuance_id=issuance_id)
+            if not hasattr(self._service, '_peer_cleanup_inflight'):
+                self._service._peer_cleanup_inflight = set()
+            self._service._peer_cleanup_inflight.add(issuance)
+            pending.append(issuance)
+        def retain_returned(replacement):
+            with self._service.peer_route_lock:
+                if self._stored_link is None:
+                    raise RuntimeStoreError('peer_target_mismatch')
+                key = cleanup.retain(self._service.db_path, replace(self._stored_link, grant=replacement))
+                inflight = getattr(self._service, '_peer_cleanup_inflight', None)
+                if inflight is None:
+                    inflight = self._service._peer_cleanup_inflight = set()
+                inflight.add(key)
+                pending.append(key)
+        extra['on_issued'] = retain_returned
         try:
-            refreshed = refresh(grant=grant, capability_digest=digests[0], execution_policy_digest=digests[1],
-                                **extra)
-        except Exception as exc:
-            if (getattr(exc, 'needs_reauthorization', False)
-                    or room_grant_needs_dispatch_refresh(grant, leeway_seconds=0)):
-                self._status('needs_reauthorization', grant)
-                raise
-            return grant  # still valid for now; a later attempt renews it
-        return self._publish_renewal(grant, refreshed)
+            try:
+                refreshed = refresh(grant=grant, capability_digest=digests[0], execution_policy_digest=digests[1],
+                                    **extra)
+            except Exception as exc:
+                if (getattr(exc, 'needs_reauthorization', False)
+                        or room_grant_needs_dispatch_refresh(grant, leeway_seconds=0)):
+                    self._status('needs_reauthorization', grant)
+                    raise
+                return grant  # still valid for now; a later attempt renews it
+            return self._publish_renewal(grant, refreshed)
+        finally:
+            with self._service.peer_route_lock:
+                for key in pending:
+                    self._service._peer_cleanup_inflight.discard(key)
+
 
     def _publish_renewal(self, grant, refreshed):
+        # Cleanup and publication share this lock: no worker may retire our provisional
+        # grant between retaining it and atomically making it the current route.
+        with self._service.peer_route_lock:
+            return self._publish_renewal_locked(grant, refreshed)
+
+    def _publish_renewal_locked(self, grant, refreshed):
         """Make a renewal current, or retire it: a renewal is never left both live and unpublished."""
         replacement = str(refreshed.get('grant') or '')
         if not replacement:

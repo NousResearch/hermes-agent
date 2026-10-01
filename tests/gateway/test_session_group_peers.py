@@ -54,7 +54,8 @@ async def serve(gateway, monkeypatch):
     app = web.Application()
     for method, path, handler in api_server_room_grants._http_routes(gateway.adapter):
         app.router.add_route(method, path, handler)
-    app.router.add_post('/v1/runs', gateway.adapter._handle_runs)
+    from gateway.platforms.api_server_room_proof import wrap
+    app.router.add_post('/v1/runs', wrap(gateway.adapter, gateway.adapter._handle_runs))
     server = TestServer(app)
     await server.start_server()
     url = str(server.make_url('')).rstrip('/')

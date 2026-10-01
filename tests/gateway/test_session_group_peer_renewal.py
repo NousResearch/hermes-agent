@@ -37,6 +37,12 @@ _HANDLERS = {
 }
 
 
+class Request(dict):
+    def __init__(self, *, headers):
+        super().__init__()
+        self.headers = headers
+
+
 class Member(PeerRunsHTTPClient):
     """The member's gateway: the real room-member handlers, called in process."""
 
@@ -59,7 +65,7 @@ class Member(PeerRunsHTTPClient):
 
         async def call():
             self.adapter._read_json_body = AsyncMock(return_value=(body or {}, None))
-            request = SimpleNamespace(headers={'Authorization': f'HermesRoom {room_grant}'})
+            request = Request(headers={'Authorization': f'HermesRoom {room_grant}'})
             return await getattr(api_server_room_grants, _HANDLERS[path])(
                 self.adapter, request, _openai_error=api_server._openai_error,
                 _api_request_profile=api_server._api_request_profile)
@@ -431,7 +437,7 @@ async def test_a_refresh_racing_a_revocation_never_returns_a_live_grant(renewal,
     monkeypatch.setattr(hosted_room_peer, 'issue_room_grant', revoke_then_issue)
     r.adapter._read_json_body = AsyncMock(return_value=({'ttl_seconds': 3600}, None))
     response = await api_server_room_grants._handle_room_member_grant_refresh(
-        r.adapter, SimpleNamespace(headers={'Authorization': f'HermesRoom {r.old}'}),
+        r.adapter, Request(headers={'Authorization': f'HermesRoom {r.old}'}),
         _openai_error=api_server._openai_error, _api_request_profile=api_server._api_request_profile)
     assert response.status == 403
     assert 'grant' not in json.loads(response.text)

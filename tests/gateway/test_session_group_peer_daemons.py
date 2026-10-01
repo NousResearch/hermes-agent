@@ -275,7 +275,7 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
             model.server_close()
 
 
-async def _join_pair(home_ws, target_ws):
+async def _join_pair(home_ws, target_ws, *, peer_first=False):
     async with asyncio.timeout(30):
         while not (link := (await rpc(target_ws, 'groups.capabilities'))['result']['room_link'])['enabled']:
             await asyncio.sleep(.1)
@@ -284,7 +284,8 @@ async def _join_pair(home_ws, target_ws):
               'profile': 'default', 'capability_digest': catalog['catalog_digest']}
     members = [{'member_id': 'host', 'profile': 'default', 'handle': 'host'},
                {'member_id': 'reviewer', 'profile': 'default', 'handle': 'reviewer', 'target': pinned}]
-    room = (await rpc(home_ws, 'groups.create', room_id='linked', name='Linked', members=members))['result']['room']
+    room = (await rpc(home_ws, 'groups.create', room_id='linked', name='Linked',
+                      members=members[::-1] if peer_first else members))['result']['room']
     invited = (await rpc(target_ws, 'groups.peer.invite', room_id='linked', member_id='reviewer',
         home_install_id=room['authority_gateway_id'], authority_gateway_id=room['authority_gateway_id'],
         authority_epoch=room['authority_epoch']))['result']
@@ -323,18 +324,127 @@ def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
             assert action['kind'] == 'approval' and action['request_id'], action
             assert action['approval']['choices'] == ['once', 'deny']
             assert marker.is_dir()
+            denied = await rpc(home_ws, 'groups.approve', room_id='linked', member_id='reviewer',
+                task_id=action['task_id'], execution_generation=action['execution_generation'],
+                request_id=action['request_id'], choice='deny')
+            assert 'result' in denied, denied
+            await _events(home_ws, 'message.member', timeout=30)
+            assert marker.is_dir()
+            await _send(home_ws, 'approval-stop-again', '@reviewer APPROVAL_WAIT')
+            async with asyncio.timeout(30):
+                while not (actions := (await rpc(home_ws, 'groups.state', room_id='linked'))[
+                        'result']['driver_status']['pending_actions']):
+                    await asyncio.sleep(.1)
+            assert actions[0]['request_id'] != action['request_id']
             assert (await rpc(home_ws, 'groups.stop', room_id='linked'))['result']['cancelled'] == 1
             await _events(home_ws, 'turn.cancelled', timeout=10)
             assert marker.is_dir()
             # A repeated settled Stop leaves a successor usable.
             assert (await rpc(home_ws, 'groups.stop', room_id='linked'))['result']['cancelled'] == 0
             await _send(home_ws, 'after-stop', '@reviewer NEXT_AFTER_APPROVAL')
-            await _events(home_ws, 'message.member', timeout=30)
+            await _events(home_ws, 'message.member', count=2, timeout=30)
             assert marker.is_dir()
     try:
         with daemon(root, target, target_env, barrier=False) as (_, td):
             with daemon(root, home, home_env, barrier=False) as (_, hd):
                 asyncio.run(exercise(hd, td))
+    finally:
+        for model in (home_model, target_model):
+            model.shutdown()
+            model.server_close()
+
+
+def test_disband_offline_target_cleanup_survives_both_gateway_restarts(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=port)
+    grants = []
+    async def retire(hd, td, target_proc, home_proc):
+        async with websocket(home, hd) as hw, websocket(target, td) as tw:
+            _, invitation = await _join_pair(hw, tw)
+            grants.append(invitation['grant'])
+            await _send(hw, 'before-offline', '@reviewer BEFORE_OFFLINE')
+            await _events(hw, 'message.member')
+            target_proc.kill()
+            await asyncio.to_thread(target_proc.wait, 10)
+            retired = await rpc(hw, 'groups.disband', room_id='linked')
+            assert 'tombstone' in retired['result'], retired
+            state = (await rpc(hw, 'groups.state', room_id='linked', include_disbanded=True))['result']
+            assert state['room']['disbanded_at'] is not None
+            assert state['driver_status']['peer_cleanup'][0]['status'] == 'pending'
+            home_proc.kill()
+            await asyncio.to_thread(home_proc.wait, 10)
+    async def reconciled(hd):
+        async with websocket(home, hd) as hw:
+            async with asyncio.timeout(30):
+                while (state := (await rpc(hw, 'groups.state', room_id='linked', include_disbanded=True))[
+                        'result'])['driver_status']['peer_cleanup']:
+                    await asyncio.sleep(.1)
+            assert state['room']['disbanded_at'] is not None
+            code, body = await asyncio.to_thread(_grant_status, f'http://127.0.0.1:{port}', grants[0])
+            assert (code, body['error']['code']) == (403, 'room_reauthorization_required')
+    try:
+        with daemon(root, target, target_env, barrier=False) as (tp, td):
+            with daemon(root, home, home_env, barrier=False) as (hp, hd):
+                asyncio.run(retire(hd, td, tp, hp))
+        with daemon(root, target, target_env, barrier=False):
+            with daemon(root, home, home_env, barrier=False) as (_, hd):
+                asyncio.run(reconciled(hd))
+    finally:
+        for model in (home_model, target_model):
+            model.shutdown()
+            model.server_close()
+
+
+def test_proven_nonadmission_discard_and_retry_allow_healthy_member_progress(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    home, home_env = _gateway(tmp_path, 'home', home_model, root)
+    target, target_env = _gateway(tmp_path, 'target', target_model, root, api_port=port)
+    selected = []
+    async def deferred_action(ws, kind):
+        async with asyncio.timeout(30):
+            while True:
+                actions = (await rpc(ws, 'groups.state', room_id='linked'))['result']['driver_status']['pending_actions']
+                if found := next((a for a in actions if a['kind'] == kind and a['member_id'] == 'reviewer'), None):
+                    return {k: found[k] for k in ('member_id', 'task_id', 'execution_generation')}
+                await asyncio.sleep(.1)
+    async def offline(hd, td, tp):
+        async with websocket(home, hd) as hw, websocket(target, td) as tw:
+            await _join_pair(hw, tw, peer_first=True)
+            tp.kill()
+            await asyncio.to_thread(tp.wait, 10)
+            await _send(hw, 'discard-unreceived', '@reviewer NEVER_RECEIVED')
+            discard = await deferred_action(hw, 'discard')
+            discarded = await rpc(hw, 'groups.discard', room_id='linked', **discard)
+            assert discarded['result']['task']['status'] == 'cancelled', discarded
+            assert not target_model.requests
+            await _send(hw, 'healthy-progress', 'Review this plan together')
+            retry = await deferred_action(hw, 'retry')
+            replies = await _events(hw, 'message.member')
+            assert [reply['payload']['member_id'] for reply in replies] == ['host']
+            assert len(home_model.requests) == 1 and not target_model.requests
+            selected.append(retry)
+    async def retry(hd):
+        async with websocket(home, hd) as hw:
+            retried = await rpc(hw, 'groups.retry', room_id='linked', **selected[0])
+            assert retried['result']['retried'], retried
+            replies = await _events(hw, 'message.member', count=2)
+            assert [reply['payload']['member_id'] for reply in replies] == ['host', 'reviewer']
+            assert len(home_model.requests) == len(target_model.requests) == 1
+    try:
+        with daemon(root, home, home_env, barrier=False) as (_, hd):
+            with daemon(root, target, target_env, barrier=False) as (tp, td):
+                asyncio.run(offline(hd, td, tp))
+            with daemon(root, target, target_env, barrier=False):
+                asyncio.run(retry(hd))
     finally:
         for model in (home_model, target_model):
             model.shutdown()

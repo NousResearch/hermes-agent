@@ -163,15 +163,17 @@ _SCHEMA_DDL += ("""CREATE TABLE IF NOT EXISTS hosted_room_peer_cleanup (
 )""", """CREATE TABLE IF NOT EXISTS hosted_room_grant_refresh_receipts (
     request_key TEXT PRIMARY KEY,
     fingerprint TEXT NOT NULL,
+    request_body TEXT,
     issued_at REAL NOT NULL,
     expires_at REAL NOT NULL,
     status INTEGER,
+    retired_at REAL,
     body BLOB
 )""",)
 
 _REQUIRED_COLUMNS = tuple(
     (re.search(r"EXISTS (\w+)", ddl).group(1),
-     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.M))) for ddl in _SCHEMA_DDL)
+     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL|BLOB)\b", ddl.split("(", 1)[1], re.M))) for ddl in _SCHEMA_DDL)
 _REMOTE_RUN_SCHEMA_COLUMNS = _REQUIRED_COLUMNS[4][1]
 
 # --- SQL fragments (statement text must stay byte-stable after whitespace normalisation) ---

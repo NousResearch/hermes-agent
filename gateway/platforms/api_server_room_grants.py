@@ -71,13 +71,14 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
-    from gateway.platforms.api_server_room_proof import wrap
+    from gateway.platforms.api_server_room_proof import wrap, cleanup_issuance
     return [(method, path, wrap(self, handler)) for method, path, handler in [
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
         ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
-        ("POST", "/v1/room-members/grants/revoke-exact", self._handle_room_member_grant_revoke_exact)]]
+        ("POST", "/v1/room-members/grants/revoke-exact", self._handle_room_member_grant_revoke_exact),
+        ("POST", "/v1/room-members/grants/cleanup-issuance", lambda request: cleanup_issuance(self, request))]]
 
 
 def _room_grant_token(request: "web.Request") -> str:

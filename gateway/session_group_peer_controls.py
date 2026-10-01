@@ -2,9 +2,9 @@
 
 Retry requeues a deferred peer turn only when the driver proved its gateway never received it
 (``hosted_room_driver.is_proven_nonadmission``) and the room's owner, roster and route are still
-the ones that attempt was bound to before it was sent. Discard cancels an unknown peer attempt
-only after the member's gateway confirms its exact run has ended. Neither acts on a missing
-receipt, and the member's gateway is called without holding the policy lock.
+the ones that attempt was bound to before it was sent. Discard consumes that same durable
+nonadmission proof. Accepted or uncertain work uses exact Stop and terminal reconciliation;
+a missing receipt never authorizes Discard.
 """
 import hashlib
 import json
@@ -15,8 +15,6 @@ from gateway import hosted_room_driver as tasks, hosted_room_links as links, hos
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _OWNER = 'gateway.hosted.owner.v1:'
-_ENDED = frozenset({'completed', 'failed', 'interrupted', 'cancelled'})
-_DISCARD_WAIT_SECONDS = 5.0
 
 
 def _digest(value):
@@ -189,54 +187,33 @@ def _receipt(service, binding, task):
 
 
 def discard_available(service, task, binding):
-    """Read-only: an unknown peer attempt can be discarded only through its durable receipt."""
-    try:
-        with service._policy_lock:
-            _require_owner(service, service.authority, service.runtime)
-            return task['status'] == 'indeterminate' and _receipt(service, binding, task)[2] is not None
-    except (RuntimeStoreError, ValueError):
-        return False
+    """Only durable proven nonadmission can be discarded without remote Stop."""
+    return retry_available(service, task, binding)
 
 
 def discard_peer(service, task, binding):
-    """Cancel one unknown peer attempt once its gateway confirms the exact run has ended."""
+    """Consume one exact nonadmission proof; accepted/unknown work uses Stop."""
     cancel_id = f"discard:{task['execution_generation']}"
     with service._policy_lock:
         authority, runtime = service.authority, service.runtime
         _require_owner(service, authority, runtime)
         if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
             return task
-        if task['status'] != 'indeterminate':
+        if task['status'] == 'indeterminate':
+            raise RuntimeStoreError('peer_stop_required' if _receipt(service, binding, task)[2] else 'unknown_execution')
+        if task['status'] != 'deferred':
             raise RuntimeStoreError('stale_generation')
-        route, scope, receipt = _receipt(service, binding, task)
-        client = service.peer_clients.get((binding.room_id, _member_id(task)))
-        if receipt is None or client is None:
-            raise RuntimeStoreError('unknown_execution')
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-    client.bind_room_scope(**scope)
-    deadline = time.monotonic() + _DISCARD_WAIT_SECONDS
-    while True:
-        try:
-            stopped = client.stop_receipt(task_id=task['identity'].task_id,
-                                          execution_generation=task['execution_generation'], grant=route.grant)
-        except PeerRunsHTTPError as exc:
-            raise RuntimeStoreError('peer_unreachable') from exc
-        if stopped is None:
-            raise RuntimeStoreError('unknown_execution')
-        if stopped.get('status') in _ENDED:
-            break
-        if time.monotonic() >= deadline:
-            # Stop was requested; the run is still ending. The turn stays unknown until it has.
-            raise RuntimeStoreError('session_busy')
-        time.sleep(0.25)
-    with service._policy_lock:
-        _require_owner(service, authority, runtime)
-        lease = runtime._ensure_lease(binding)
-        # Fenced on the attempt whose run was confirmed ended, never on whatever is current.
-        result = runtime._fenced(tasks.resolve_indeterminate_cancellation, binding, task, lease,
-                                 cancel_id=cancel_id, publish=False)
+        def authorize(conn):
+            _require_owner(service, authority, runtime)
+            current = tasks._task_from_row(tasks._load_task(conn, task['identity']))
+            if current['execution_generation'] != task['execution_generation'] or current['status'] != 'deferred':
+                raise RuntimeStoreError('stale_generation')
+            _validate(service, conn, current, binding)
+        result = tasks.cancel_task(service.db_path, task['identity'], cancel_id=cancel_id,
+            expected_cancel_generation=task['cancel_generation'], clock=runtime.clock, authorize=authorize)
         runtime._set_blocked(binding.room_id, False)
     service.publish_terminal(binding, result)
+    runtime.wakeup()
     return result
 
 
@@ -244,7 +221,5 @@ def peer_action(service, task, binding):
     """The control a peer turn offers now: ``retry``, ``discard`` or ``None``."""
     if task['status'] == 'deferred':
         return 'retry' if retry_available(service, task, binding) else None
-    if task['status'] == 'indeterminate':
-        return 'discard' if discard_available(service, task, binding) else None
     return None
 

@@ -44,7 +44,8 @@ def room_link(authority):
         return {'enabled': False, 'reason': 'execution_policy_unsupported'}
     if not catalog['endpoint'].get('available'):
         return {'enabled': False, 'reason': 'endpoint_required'}
-    return {'enabled': True, 'profile': 'default', 'catalog': catalog, 'endpoint': catalog['endpoint']}
+    return {'enabled': True, 'profile': 'default', 'catalog': catalog, 'endpoint': catalog['endpoint'],
+            'authentication': 'proof-v1'}
 
 
 def dispatch_target(authority, method, params):
@@ -139,25 +140,30 @@ def register(service, params):
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id='cancel-' + room_id,
         trace_id='trace-' + hashlib.sha256(seed).hexdigest()[:32], grant=grant)
+    from gateway import hosted_room_links as links
+    from gateway import session_group_peer_cleanup as cleanup
+    cleanup_key = None
     with service.peer_route_lock:
-        from gateway import hosted_room_links as links
-        from gateway import session_group_peer_cleanup as cleanup
         previous = links.load_room_link(service.db_path, room_id=room_id, member_id=member_id)
         if previous is None or previous.grant != grant:
-            # If setup fails or the process dies, the returned invitation remains an exact
-            # cleanup obligation. Successful route publication removes it atomically.
-            cleanup.retain(service.db_path, links.make_stored_link(
+            cleanup_key = cleanup.retain(service.db_path, links.make_stored_link(
                 room_id=room_id, member_id=member_id, target_url=target_url, target_profile=profile,
                 grant=grant, catalog=catalog, cancellation_scope_id=route.cancellation_scope_id,
                 trace_id=route.trace_id))
+            service._peer_cleanup_inflight.add(cleanup_key)
+    try:
+        # The network probe holds neither publication nor policy lock: Stop/Disband can proceed.
         probe_route(client, grant, catalog, {
             'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
             'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile})
-        # The probe took time: publish only while the room is still the one it was checked against.
-        if service._owned_authority(room_id) != (gateway_id, epoch):
-            raise RuntimeStoreError('peer_target_mismatch')
-        service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
-                                    target_url=target_url, catalog=catalog)
+        with service.peer_route_lock:
+            if service._owned_authority(room_id) != (gateway_id, epoch):
+                raise RuntimeStoreError('peer_target_mismatch')
+            service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
+                                        target_url=target_url, catalog=catalog)
+    finally:
+        with service.peer_route_lock:
+            service._peer_cleanup_inflight.discard(cleanup_key)
     return {'registered': True, 'mode': 'direct', 'transport_security': security,
             'target_install_id': catalog.installation_id, 'target_profile': profile}
 

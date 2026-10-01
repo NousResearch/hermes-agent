@@ -65,3 +65,28 @@ def test_save_transcript_holds_display_history(tmp_path, monkeypatch, save):
     finally:
         db.close()
     assert [f"answer {i}" in text for i in range(1, 7)] == [True] * 6
+
+
+@pytest.mark.parametrize("save", [_cli_save, _gateway_save], ids=["cli", "gateway"])
+def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch, save):
+    """/save json is the snapshot the dashboard import restores: the turns compaction archived come back
+    in the display history, and stay out of the live context."""
+    import json
+
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = _compacted_store(tmp_path / "state.db")
+    shape = lambda store, **flags: [(m["role"], m["content"]) for m in store.get_messages("s1", **flags)]  # noqa: E731
+    try:
+        shown, live = shape(db, include_compacted=True), shape(db)
+        snapshot = json.loads(save(db, "json", tmp_path / "saved.json"))
+    finally:
+        db.close()
+    restored = SessionDB(db_path=tmp_path / "restored.db")
+    try:
+        assert restored.import_sessions([snapshot])["ok"]
+        assert shape(restored, include_compacted=True) == shown
+        assert shape(restored) == live
+    finally:
+        restored.close()

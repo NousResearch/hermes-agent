@@ -4845,7 +4845,22 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> Tuple[Optional[
         def is_anthropic_vertex_model(_m: str) -> bool:
             return False
 
-    if model and is_anthropic_vertex_model(model):
+    # ``is_anthropic_vertex_model`` intentionally requires the fully-
+    # qualified ``anthropic/<model>`` form so mistakes in main-agent
+    # config surface as a loud Vertex 404 (see the classifier's
+    # docstring for why). Auxiliary callers see the model AFTER
+    # ``normalize_model_for_provider`` has stripped the prefix —
+    # set_runtime_main then stores the bare form (``claude-opus-4-8``)
+    # as the "runtime main model", and vision / compression / title
+    # generation read that bare form via ``_read_main_model()``. Widen
+    # detection here to also match bare ``claude-*`` (case-insensitive)
+    # so aux dispatch stays correct across both forms, without touching
+    # the strict classifier the main-agent path relies on. Mirrors
+    # bedrock's dual accept of ``anthropic.claude-*`` and bare ``claude-*``.
+    _model_lc = (model or "").strip().lower()
+    _is_anthropic = is_anthropic_vertex_model(model) or _model_lc.startswith("claude-")
+
+    if _is_anthropic:
         # Claude on Vertex → AnthropicVertex SDK (Anthropic Messages wire).
         # Same shape as _build_bedrock_client's Anthropic path — build a real
         # Anthropic client, wrap it in the OpenAI-compatible shim.

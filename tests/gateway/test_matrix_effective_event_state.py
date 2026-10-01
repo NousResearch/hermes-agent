@@ -187,7 +187,7 @@ async def test_encrypted_replacement_uses_owning_crypto_and_reports_missing_edit
             }),
         ),
     )
-    mautrix = SimpleNamespace(types=SimpleNamespace(Event=SimpleNamespace(deserialize=lambda raw: raw)))
+    mautrix = SimpleNamespace(types=SimpleNamespace(EncryptedEvent=SimpleNamespace(deserialize=lambda raw: raw), JSON=lambda raw: raw))
     with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix.types}):
         visible = await read_matrix_context(_adapter(client), "event", ROOM, "$child", 5, requester=SENDER)
         missing = await read_matrix_context(_adapter(client), "event", ROOM, "$child", 5, requester=SENDER)
@@ -368,7 +368,7 @@ async def test_encrypted_edit_is_visible_in_room_catch_up():
         }),
     )
     client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)), crypto=crypto)
-    mautrix = SimpleNamespace(types=SimpleNamespace(Event=SimpleNamespace(deserialize=lambda event: event)))
+    mautrix = SimpleNamespace(types=SimpleNamespace(EncryptedEvent=SimpleNamespace(deserialize=lambda event: event), JSON=lambda event: event))
     with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix.types}):
         entries = await fetch_room_entries(client, MatrixEventContextCache(), ROOM, "$current", limit=1)
 

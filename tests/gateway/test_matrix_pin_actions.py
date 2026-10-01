@@ -38,6 +38,8 @@ def _adapter(pins, send, *, power=_ALICE_CAN_PIN, room_version="10", create=None
 
     adapter = object.__new__(MatrixAdapter)
     vars(adapter).update(
+        _room_identities={}, _room_identity_cached_at={},
+        _dm_rooms={}, _room_identity_ttl_seconds=60.0,
         _pin_state_lock=asyncio.Lock(),
         _client=SimpleNamespace(api=SimpleNamespace(request=request), send_state_event=send),
         _joined_rooms={"!room:server"}, _allowed_room_ids=set(), _user_id="@bot:server",

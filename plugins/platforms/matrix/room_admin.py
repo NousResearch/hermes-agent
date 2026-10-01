@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
 from gateway.config import Platform
 from gateway.session_context import get_session_env
 from gateway.session_identity import RoutingIdentity
-from hermes_cli.config_effective import load_user_config_effective
-from hermes_cli.tools_config import _get_platform_tools
+from plugins.platforms.matrix.admin_selection import MatrixAdminSelection
 from plugins.platforms.matrix.client_events import Method, raw_event
 from plugins.platforms.matrix.room_inspection import (
-    _is_missing_state, _permission_levels, _RoomCreate, _state_path, change_matrix_pin,
+    _InspectionRejected, _InspectionRoomScope, _is_missing_state, _permission_levels,
+    _RoomCreate, _state_path, change_matrix_pin,
 )
 from tools.matrix_tool_runtime import MatrixOwner
 
@@ -29,15 +29,6 @@ UNKNOWN_OUTCOME_STEPS = {
     "forget": "Forget changes only the bot's account, so retrying it is harmless",
     "redact": "Read the event with matrix_read kind=event before retrying",
 }
-
-
-def _enabled(home: Path) -> bool:
-    from gateway.run import _profile_runtime_scope
-
-    with _profile_runtime_scope(home, hydrate_secrets=False):
-        return "matrix_admin" in _get_platform_tools(
-            load_user_config_effective(fail_closed=True), "matrix", include_default_mcp_servers=False,
-        )
 
 
 @dataclass(frozen=True)
@@ -104,13 +95,12 @@ class _AdminContext:
             raise ValueError("Matrix requester is not authorized for this room")
         return identity
 
-    async def require_selection(self, chat_type: str, *, joined: bool = True) -> None:
+    async def require_selection(self, chat_type: str, *, joined: bool = True) -> MatrixAdminSelection:
         identity = self.check(chat_type, joined=joined)
         homes = tuple(dict.fromkeys((identity.runtime_home, identity.authorization_home)))
-        selected = await asyncio.to_thread(lambda: all(_enabled(home) for home in homes))
+        selection = await asyncio.to_thread(MatrixAdminSelection.capture, homes)
         self.check(chat_type, joined=joined)
-        if not selected:
-            raise ValueError("Enable matrix_admin for Matrix in both the runtime and transport profiles in hermes tools")
+        return selection
 
     async def access(self, chat_type: str | None = None, *, joined: bool = True) -> str:
         expected = chat_type or get_session_env("HERMES_SESSION_CHAT_TYPE") or "group"
@@ -144,10 +134,22 @@ async def _member(context: _AdminContext, user: str) -> str | None:
     return (await _state(context, "m.room.member", user) or {}).get("membership")
 
 
-async def _permissions(context: _AdminContext) -> dict[str, Any]:
-    power = await _state(context, "m.room.power_levels")
+async def _permissions(
+    context: _AdminContext, chat_type: str, *, joined: bool,
+) -> dict[str, Any]:
     encryption = await _state(context, "m.room.encryption") or {}
     create = _RoomCreate.parse(await _get(context, _state_path(context.room, "m.room.create"), {"format": "event"}))
+    access_started = time.monotonic()
+    await context.access(chat_type, joined=joined)
+    room_scope = _InspectionRoomScope.capture(
+        context.adapter, context.room, refreshed_since=access_started,
+    )
+    power = await _state(context, "m.room.power_levels")
+    context.check(chat_type, joined=joined)
+    try:
+        room_scope.check(context.adapter, context.room)
+    except _InspectionRejected as exc:
+        raise ValueError("Matrix room is not allowed") from exc
     return _permission_levels(context.actor, context.bot, power, encryption, create)
 
 
@@ -191,7 +193,7 @@ _REQUIREMENTS = {
 async def _refusal(
     context: _AdminContext, requirement: str, chat_type: str, *, joined: bool,
 ) -> dict[str, Any] | None:
-    permissions = await _permissions(context)
+    permissions = await _permissions(context, chat_type, joined=joined)
     context.check(chat_type, joined=joined)
     requester = permissions["requester"]
     purpose, keys = _REQUIREMENTS[requirement]
@@ -212,9 +214,13 @@ async def administer_matrix_room(
     adapter: Any, args: dict[str, Any], *, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
 ) -> dict[str, Any]:
     sent = False
+    selection: MatrixAdminSelection | None = None
 
     def send() -> None:
         nonlocal sent
+        context.check(chat_type, joined=action != "forget")
+        assert selection is not None
+        selection.require_current()
         before_write()
         sent = True
 
@@ -261,7 +267,16 @@ async def administer_matrix_room(
         )) is not None:
             return refusal
         await context.access(chat_type, joined=action != "forget")
-        await context.require_selection(chat_type, joined=action != "forget")
+        for _attempt in range(2):
+            selection = await context.require_selection(chat_type, joined=action != "forget")
+            await context.access(chat_type, joined=action != "forget")
+            if requirement is not None and (refusal := await _refusal(
+                context, requirement, chat_type, joined=action != "forget",
+            )) is not None:
+                return refusal
+            if selection.current():
+                break
+        selection.require_current()
         result = await _MUTATIONS[action](context, args, send)
         try:
             context.check(chat_type, joined=action not in {"leave", "forget"})
@@ -363,13 +378,13 @@ async def administer_matrix_pin(
     except ValueError as exc:
         return {"error": str(exc)}
 
-    async def recheck_before_write() -> None:
+    async def recheck_before_write() -> MatrixAdminSelection:
         await context.access(chat_type)
         if await _member(context, context.actor) != "join":
             raise ValueError("Matrix requester is not a joined room member")
         context.check(chat_type)
         await context.access(chat_type)
-        await context.require_selection(chat_type)
+        return await context.require_selection(chat_type)
 
     try:
         if room_id != context.room or requester != context.actor:

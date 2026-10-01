@@ -593,6 +593,12 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from hermes_state import SessionDB
+
+    def _plain_text(content: Any) -> bool:
+        # A str still carrying the persistence sentinel after the decode pre-pass is corrupt
+        # multimodal content; welding text onto it would only bury the base64 deeper (#125299).
+        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
 
     repairs = 0
     merged: List[Dict] = []
@@ -607,8 +613,8 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
+            # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
+            and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (
@@ -663,36 +669,20 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
-# Mirrors ``SessionDB._CONTENT_JSON_PREFIX``: the NUL-prefixed sentinel marking structured
-# (multimodal list/dict) content that was serialized to a scalar for persistence. Kept as a literal so
-# the pre-call repair layer need not import the persistence class; the NUL byte cannot occur in real text.
-_JSON_CONTENT_SENTINEL = "\x00json:"
-
-
-def _decode_sentinel_content(content: Any) -> Any:
-    """Reverse the persistence sentinel for an in-memory row. A multimodal turn (text + image) can
-    re-enter the working set as its encoded ``\\x00json:[…]`` string — e.g. after a proactive prune
-    re-inserts history (#124102) — and the alternation repair would then glue the base64 image onto a
-    neighbouring text turn as plain text (#125299). Decoding restores the structured content so the
-    repair treats it as multimodal. A body that no longer parses (already merged, corrupted) is left
-    untouched."""
-    if isinstance(content, str) and content.startswith(_JSON_CONTENT_SENTINEL):
-        try:
-            return json.loads(content[len(_JSON_CONTENT_SENTINEL):])
-        except (ValueError, TypeError):
-            return content
-    return content
-
-
 def _normalize_sentinel_encoded_content(messages: List[Dict]) -> int:
     """Decode any sentinel-encoded row content in place before the alternation passes run, so an
-    image-bearing turn is never merged as text. Returns the number of rows restored."""
+    image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
+    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
+    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it.
+    Returns the number of rows restored."""
+    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
+
     restored = 0
     for msg in messages:
         if not isinstance(msg, dict):
             continue
         content = msg.get("content")
-        decoded = _decode_sentinel_content(content)
+        decoded = SessionDB._decode_content(content)
         if decoded is not content:
             msg["content"] = decoded
             # Deliberately keep any `_db_persisted` marker: this decode is representation-only.

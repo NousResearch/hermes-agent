@@ -1587,14 +1587,14 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
     text turn as a giant base64 blob (#125299)."""
-    import json
-    from agent.agent_runtime_helpers import repair_message_sequence, _JSON_CONTENT_SENTINEL
+    from hermes_state import SessionDB
+    from agent.agent_runtime_helpers import repair_message_sequence
 
     parts = [
         {"type": "text", "text": "look at this"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
     ]
-    encoded = _JSON_CONTENT_SENTINEL + json.dumps(parts)
+    encoded = SessionDB._encode_content(parts)
     messages = [
         {"role": "user", "content": encoded},
         {"role": "user", "content": "any follow-up thoughts?"},
@@ -1613,9 +1613,10 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
 def test_repair_leaves_corrupted_sentinel_content_untouched():
     """A sentinel body that no longer parses (already merged / truncated) is left as-is rather
     than crashing the pre-call repair (#125299)."""
-    from agent.agent_runtime_helpers import repair_message_sequence, _JSON_CONTENT_SENTINEL
+    from hermes_state import SessionDB
+    from agent.agent_runtime_helpers import repair_message_sequence
 
-    corrupt = _JSON_CONTENT_SENTINEL + '[{"type": "text"} EXTRA garbage'
+    corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
     messages = [{"role": "user", "content": corrupt}]
 
     repair_message_sequence(_bare_agent(), messages)
@@ -1632,13 +1633,9 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     transcript. This drives the real repair + ``_persist_session`` flush and asserts the stored row
     count and role order do not change — a regression the content-only repair tests cannot catch."""
     import os
-    import json
     from unittest.mock import patch
     from hermes_state import SessionDB
-    from agent.agent_runtime_helpers import (
-        repair_message_sequence_with_cursor,
-        _JSON_CONTENT_SENTINEL,
-    )
+    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     parts = [
@@ -1647,7 +1644,7 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     ]
     # The stored durable scalar is exactly what _encode_content(parts) produces; a resumed row re-enters
     # the working set as this same string (e.g. after a proactive prune re-inserts history, #124102).
-    encoded = _JSON_CONTENT_SENTINEL + json.dumps(parts)
+    encoded = SessionDB._encode_content(parts)
 
     db = SessionDB(db_path=tmp_path / "t.db")
     sid = "20260928_000000_dup"

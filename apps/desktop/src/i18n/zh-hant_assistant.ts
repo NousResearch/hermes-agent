@@ -44,8 +44,6 @@ export const zhHantAssistant = {
       turnStatsHit: n => `命中 ${n}`,
       turnStatsTime: '耗時',
       turnStatsCalls: '呼叫',
-      turnStatsCost: '費用',
-      turnStatsEstimate: '估算',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '複製',

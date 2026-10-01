@@ -5088,8 +5088,6 @@ export const en: Translations = {
       turnStatsHit: n => `${n} hit`,
       turnStatsTime: 'Time',
       turnStatsCalls: 'Calls',
-      turnStatsCost: 'Cost',
-      turnStatsEstimate: 'est.',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',

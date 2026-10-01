@@ -3820,8 +3820,6 @@ export const ja = defineLocale({
       turnStatsHit: n => `ヒット ${n}`,
       turnStatsTime: '時間',
       turnStatsCalls: '呼び出し',
-      turnStatsCost: 'コスト',
-      turnStatsEstimate: '推定',
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',

@@ -4017,8 +4017,6 @@ export const ru = defineLocale({
       turnStatsHit: n => `${n} попаданий`,
       turnStatsTime: 'Время',
       turnStatsCalls: 'Вызовы',
-      turnStatsCost: 'Стоимость',
-      turnStatsEstimate: 'оцен.',
       today: time => `Сегодня, ${time}`,
       yesterday: time => `Вчера, ${time}`,
       copy: 'Копировать',

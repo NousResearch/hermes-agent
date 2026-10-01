@@ -1240,7 +1240,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number; turnStats?:
   )
 }
 
-/** One label/value row; `hint` is the muted qualifier in front of the value (`92% hit`, `est.`). */
+/** One label/value row; `hint` is the muted qualifier in front of the value (`92% hit`). */
 const TurnStatsRow: FC<{ hint?: string; indent?: boolean; label: string; value: string }> = ({
   hint,
   indent,
@@ -1270,12 +1270,9 @@ const TurnStatsCard: FC<{ durationS?: number; turnStats?: TurnStats }> = ({ dura
   const hitPct = cached > 0 && prompt > 0 ? Math.round((cacheRead / prompt) * 100) : undefined
   // A single call is the common case and says nothing; only multi-call turns get the row.
   const calls = stats.calls !== undefined && stats.calls > 1 ? stats.calls : undefined
-  // A zero delta is dropped rather than rendered as `$0.0000`: free routes and
-  // providers that report no price both land there, and neither is worth a row.
-  const costUsd = stats.costUsd || undefined
 
   const hasTokens = stats.input !== undefined || cached > 0 || stats.output !== undefined
-  const hasRun = elapsed !== undefined || calls !== undefined || costUsd !== undefined
+  const hasRun = elapsed !== undefined || calls !== undefined
 
   return (
     <div
@@ -1302,14 +1299,6 @@ const TurnStatsCard: FC<{ durationS?: number; turnStats?: TurnStats }> = ({ dura
       {hasTokens && hasRun && <div className="col-span-2 my-1 border-t border-(--ui-stroke-secondary)" role="none" />}
       {elapsed !== undefined && <TurnStatsRow label={copy.turnStatsTime} value={formatElapsed(elapsed)} />}
       {calls !== undefined && <TurnStatsRow label={copy.turnStatsCalls} value={calls.toLocaleString()} />}
-      {costUsd !== undefined && (
-        <TurnStatsRow hint={copy.turnStatsEstimate} label={copy.turnStatsCost} value={formatTurnCost(costUsd)} />
-      )}
     </div>
   )
-}
-
-/** Turn cost, four decimals below a dollar so sub-cent turns stay readable, two above. */
-function formatTurnCost(costUsd: number): string {
-  return `$${costUsd.toFixed(costUsd < 1 ? 4 : 2)}`
 }

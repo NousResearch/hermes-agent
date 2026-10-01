@@ -4322,8 +4322,6 @@ export interface Translations {
       turnStatsHit: (n: string) => string
       turnStatsTime: string
       turnStatsCalls: string
-      turnStatsCost: string
-      turnStatsEstimate: string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

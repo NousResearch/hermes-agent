@@ -276,6 +276,22 @@ _CRON_HINT = (
     "context for this run, not as a request to schedule another job.]\n\n"
 )
 
+_AGENT_SCHEDULING_HINT = (
+    "If the task below tells you to book this job's next run, do it: "
+    "that is the task itself, not recurring language.\n\n"
+)
+
+
+def _cron_hint() -> str:
+    """Add the self-scheduling clarification only when agent scheduling is enabled."""
+    from cron import scheduler as _scheduler
+
+    config = _scheduler.load_config() or {}
+    cron_config = config.get("cron") if isinstance(config, dict) else None
+    if isinstance(cron_config, dict) and cron_config.get("allow_agent_scheduling"):
+        return _CRON_HINT + _AGENT_SCHEDULING_HINT
+    return _CRON_HINT
+
 
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
@@ -330,7 +346,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _cron_hint() + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

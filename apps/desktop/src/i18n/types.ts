@@ -4110,6 +4110,8 @@ export interface Translations {
     loading: string
     unavailable: string
     missingTarget: string
+    missingTitle: string
+    missingBody: (label: string) => string
     opening: string
     hide: string
     openPreview: string

@@ -5,7 +5,7 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
-import { readDesktopFileText } from '@/lib/desktop-fs'
+import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
 
 /**
@@ -405,7 +405,12 @@ function InlineHtmlFrame({
           return
         }
 
-        if (!result || result.binary || !result.text) {
+        if (!result || isReadFileErrorResult(result)) {
+          setFailed(true)
+          return
+        }
+
+        if (result.binary || !result.text) {
           setFailed(true)
         } else {
           setDoc(result.text)

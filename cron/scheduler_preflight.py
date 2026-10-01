@@ -233,6 +233,23 @@ class SharedRouteAdapters:
         return default
 
 
+def cron_delivery_adapters(
+    profile: Optional[str], primary_adapters: Optional[dict], *,
+    profile_adapters: Optional[dict] = None, primary_profile: Optional[str] = None,
+) -> dict | SharedRouteAdapters | None:
+    """Select cron delivery adapters inside the job profile's runtime scope.
+
+    Shared routes are read from the current home and grant access only to
+    their exact targets. A profile with live adapters uses its own map.
+    """
+    if profile is None or profile == primary_profile:
+        return primary_adapters
+    adapters = (profile_adapters or {}).get(profile) or {}
+    if adapters or not primary_adapters:
+        return adapters
+    return SharedRouteAdapters(primary_adapters, _primary_profile_routes_for_current_home())
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks

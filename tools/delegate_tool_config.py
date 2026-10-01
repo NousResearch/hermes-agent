@@ -435,10 +435,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     return _runtime_provider_credentials(values, explicit_request_overrides)
 
 def _load_config() -> dict:
-    """The ``delegation`` config section (read-only — do NOT mutate). Prefers the shared ``load_config_readonly()``
-    (follows HERMES_HOME/profile; no deepcopy, since this runs on every get_definitions() rebuild) over the legacy
-    ``cli.CLI_CONFIG``, which can hide user-set keys — except that ``HERMES_IGNORE_USER_CONFIG=1`` is only honored
-    by the legacy loader, so it stays authoritative when that flag is set."""
+    """Read delegation settings from the active profile, or CLI defaults when user config is ignored."""
     if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1":
         try:
             from hermes_cli.config import load_config_readonly
@@ -448,8 +445,9 @@ def _load_config() -> dict:
         except Exception:
             pass
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation") or {}
+        from hermes_cli.cli_config_load import _cli_config_defaults
+        from hermes_cli.managed_scope import apply_managed_overlay
+        cfg = apply_managed_overlay(_cli_config_defaults()).get("delegation") or {}
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}

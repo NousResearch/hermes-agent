@@ -1451,6 +1451,10 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+    try:
+        agent._redirect_restart_limit = max(int(_agent_section.get("redirect_restart_limit", 10)), 1)
+    except (TypeError, ValueError):
+        agent._redirect_restart_limit = 10
     # Bounded post-exhaustion auto-recovery cycles once retries AND the fallback chain are spent
     # on a transient outage (agent/turn_recovery_autorecover.py). 0 disables the ladder.
     try:

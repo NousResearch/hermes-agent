@@ -1517,7 +1517,8 @@ export const esOverrides = {
       fileReadMaxChars: 'Máximo de caracteres que Hermes puede leer en una solicitud de archivo.',
       approvals: {
         mode: 'Cómo maneja Hermes los comandos que necesitan aprobación explícita.',
-        timeout: 'Cuánto esperan los prompts de aprobación en plataformas de mensajería antes de vencer. La app y la terminal esperan hasta que respondas.'
+        timeout:
+          'Cuánto esperan los prompts de aprobación en plataformas de mensajería antes de vencer. La app y la terminal esperan hasta que respondas.'
       },
       security: {
         redactSecrets: 'Oculta secretos detectados del contenido visible para el modelo cuando sea posible.'

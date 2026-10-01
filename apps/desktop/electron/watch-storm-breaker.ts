@@ -117,7 +117,12 @@ export function guardedWatch(options: GuardedWatchOptions): GuardedWatch {
       count += 1
 
       if (count > maxEvents) {
+        // Trip first so the baseline snapshot is taken before the consumer
+        // reacts, then forward this event: it may be the one change the
+        // consumer cares about (a target-file write after 1000 sibling
+        // events), and the poll baseline already includes it.
         trip()
+        options.onEvent(eventType, filename)
 
         return
       }

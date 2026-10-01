@@ -103,12 +103,17 @@ describe('guardedWatch', () => {
   test('a win32 storm closes the watcher, drops further events, and polls', () => {
     const { fw, guard, onEvent, onPollChange, onTrip, setSnap } = setup('win32')
 
-    fw.emit(WATCH_STORM_MAX_EVENTS + 50_000)
+    fw.emit(WATCH_STORM_MAX_EVENTS)
+    fw.emit(1, 'target.md')
+    fw.emit(50_000)
 
     expect(fw.close).toHaveBeenCalledTimes(1)
     expect(guard.mode()).toBe('poll')
     expect(onTrip).toHaveBeenCalledTimes(1)
-    expect(onEvent).toHaveBeenCalledTimes(WATCH_STORM_MAX_EVENTS)
+    // The event that crosses the threshold is still forwarded; only the
+    // events queued behind it are dropped.
+    expect(onEvent).toHaveBeenCalledTimes(WATCH_STORM_MAX_EVENTS + 1)
+    expect(onEvent).toHaveBeenLastCalledWith('rename', 'target.md')
 
     // Unchanged snapshot: no change reported.
     vi.advanceTimersByTime(WATCH_STORM_POLL_MS * 3)

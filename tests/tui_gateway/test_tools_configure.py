@@ -36,7 +36,7 @@ def test_tools_configure_rejects_toolsets_that_cli_does_not_allow(action):
 @pytest.mark.parametrize("action", ["enable", "disable"])
 def test_tools_configure_classifies_targets_from_one_catalogue(monkeypatch, action):
     from hermes_cli import tools_config
-    from hermes_cli.config import save_config
+    from hermes_cli.config import load_config, save_config
     from tui_gateway.server import _methods
 
     reads = 0
@@ -50,6 +50,10 @@ def test_tools_configure_classifies_targets_from_one_catalogue(monkeypatch, acti
     save_config({"platform_toolsets": {"cli": ["file"]}})
     response = _methods["tools.configure"]("catalogue", {"action": action, "names": ["late_plugin"]})
     result = response["result"]
-    assert {key: result[key] for key in ("changed", "unknown", "rejected")} == {
-        "changed": [], "unknown": ["late_plugin"], "rejected": {},
+    assert {"result": result, "saved_selection": load_config()["platform_toolsets"]["cli"]} == {
+        "result": {
+            "changed": [], "enabled_toolsets": ["file", "late_plugin"], "info": None,
+            "missing_servers": [], "rejected": {}, "reset": False, "unknown": ["late_plugin"],
+        },
+        "saved_selection": ["file"],
     }

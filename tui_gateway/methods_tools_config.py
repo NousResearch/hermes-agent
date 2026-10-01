@@ -53,6 +53,8 @@ def _mcp_excluded_tools(config: dict) -> dict[str, frozenset[str]]:
 
 
 def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
+    from hermes_cli.tools_config_mcp import toolset_rejections
+
     action = str(params.get("action", "") or "").strip().lower()
     targets = [str(name).strip() for name in params.get("names", []) or [] if str(name).strip()]
     if action not in {"disable", "enable"}:
@@ -65,7 +67,7 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     excluded_before = _mcp_excluded_tools(cfg)
     valid_toolsets = {ts_key for ts_key, _, _ in tc.CONFIGURABLE_TOOLSETS} | tc._get_plugin_toolset_keys()
     mcp_targets = [name for name in targets if ":" in name]
-    rejections = _tools_mod("hermes_cli.tools_config_mcp").toolset_rejections(
+    rejections = toolset_rejections(
         [name for name in targets if ":" not in name], "cli", valid_toolsets=valid_toolsets)
     unknown = [name for name in targets if ":" not in name and name not in valid_toolsets]
     rejected = {name: message for name, message in rejections.items() if name in valid_toolsets}

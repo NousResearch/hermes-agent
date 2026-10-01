@@ -4,4 +4,7 @@ description: "Token-efficient read-only retrieval against the configured Obsidia
 author: "tech-cto, software-eng"
 hooks:
   - pre_tool_call
-kind: general
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+kind: standalone

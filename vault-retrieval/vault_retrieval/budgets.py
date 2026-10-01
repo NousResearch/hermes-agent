@@ -1,8 +1,19 @@
 """Per-turn budget accounting and large-file refusal.
 
-The hook injects an unadvertised internal turn key into the tool arguments
-so multiple calls in one turn share one 24,000-character ceiling. Turn
-counters are scoped by ``turn_id`` and expire at turn completion.
+The runtime forwards the actual Hermes ``turn_id`` to the tool handler as
+a dispatch kwarg (alongside ``task_id``/``session_id``/``user_task``),
+and the handler keys the per-turn counter on it. Multiple calls in one
+turn share one 24,000-character ceiling via the per-turn registry.
+
+Counters are reset/expired at:
+
+  - explicit reset_turn(turn_id) — the plugin hooks on_session_end /
+    on_session_reset to call this for the matching session, and
+    on_session_finalize to drop anything left over;
+  - bounded TTL — ``expire_older_than(seconds)`` is called by
+    process-wide lazy cleanup paths (start of each handle) so a stale
+    counter from a crashed/abandoned session cannot leak past the
+    bounded TTL even if the lifecycle hooks never fired.
 
 Acceptance contract:
   - Default request ≤ 12,000 evidence chars; exactly 12,000 accepted.
@@ -16,8 +27,9 @@ Acceptance contract:
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 DEFAULT_BUDGET = 12_000
@@ -26,6 +38,12 @@ DEFAULT_LARGE_FILE_CHARS = 20_000
 LARGE_FILE_RANGES_MAX = 2
 LARGE_FILE_LINES_MAX = 120
 LARGE_FILE_CHARS_MAX = 8_000
+
+# Bounded TTL for turn counters in seconds. A real Hermes session turn
+# finishes in seconds; 1 hour is a safety net so a crashed/abandoned
+# session cannot leak process-global state indefinitely. Lower bound:
+# roughly an order of magnitude above any plausible live turn duration.
+DEFAULT_TURN_TTL_SECONDS = 3600
 
 
 @dataclass
@@ -57,6 +75,7 @@ class TurnBudgets:
     cfg: BudgetConfig
     used_chars: int = 0
     expansion_used: bool = False
+    last_used_at: float = field(default_factory=time.monotonic)
 
     @property
     def remaining_chars(self) -> int:
@@ -64,7 +83,10 @@ class TurnBudgets:
 
 
 # Process-wide turn registry so two calls in one turn share a counter.
-# Cleaned up on explicit reset_turn() or by TTL if needed.
+# Cleaned up by:
+#   - explicit reset_turn(turn_id) (called from session-end hooks)
+#   - bounded TTL via expire_older_than(DEFAULT_TURN_TTL_SECONDS)
+# Tests clear this via ``_turn_registry.clear()`` between cases.
 _turn_registry: Dict[str, TurnBudgets] = {}
 _turn_lock = threading.Lock()
 
@@ -75,13 +97,68 @@ def get_or_create_turn(turn_id: str, cfg: BudgetConfig) -> TurnBudgets:
         if tb is None:
             tb = TurnBudgets(turn_id=turn_id, cfg=cfg)
             _turn_registry[turn_id] = tb
+        else:
+            # Touch the timestamp so an active turn never expires under
+            # us, even if the TTL is short.
+            tb.last_used_at = time.monotonic()
         return tb
 
 
 def reset_turn(turn_id: str) -> None:
-    """Called at turn completion / session TTL."""
+    """Called at turn completion / session end."""
     with _turn_lock:
         _turn_registry.pop(turn_id, None)
+
+
+def reset_session_turns(prefix: str) -> int:
+    """Drop every counter whose key starts with ``prefix``.
+
+    Used by ``on_session_end`` to evict counters keyed on ``runtime:<task>:<session>``
+    when a session ends; also by tests to assert cross-session isolation.
+    Returns the count of dropped counters.
+    """
+    if not prefix:
+        return 0
+    dropped = 0
+    with _turn_lock:
+        keys = [k for k in list(_turn_registry) if k.startswith(prefix)]
+        for k in keys:
+            _turn_registry.pop(k, None)
+            dropped += 1
+    return dropped
+
+
+def expire_older_than(seconds: float) -> int:
+    """Drop every counter last touched more than ``seconds`` ago.
+
+    Called by the lazy cleanup path at the start of each handle and by
+    test fixtures; bounded TTL guarantees a stale counter from a crashed
+    session cannot leak forever even if the lifecycle hooks never fire.
+    """
+    if seconds <= 0:
+        return 0
+    now = time.monotonic()
+    cutoff = now - seconds
+    dropped = 0
+    with _turn_lock:
+        keys = [k for k, tb in list(_turn_registry.items())
+                if tb.last_used_at < cutoff]
+        for k in keys:
+            _turn_registry.pop(k, None)
+            dropped += 1
+    return dropped
+
+
+def _registry_snapshot() -> Dict[str, TurnBudgets]:
+    """Snapshot of the current registry. Test-only helper."""
+    with _turn_lock:
+        return dict(_turn_registry)
+
+
+def _registry_keys_for_test() -> Tuple[str, ...]:
+    """Snapshot the registry keys for assertions. Test-only helper."""
+    with _turn_lock:
+        return tuple(_turn_registry.keys())
 
 
 def decide_budget(

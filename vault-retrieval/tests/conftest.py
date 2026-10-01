@@ -67,14 +67,9 @@ def frontmatter_note(vault_root: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _reset_turn_registry():
-    """Reset the process-wide per-turn registry between tests.
+    """Reset the active process-wide per-turn registry between tests."""
+    from importlib import import_module
 
-    Without this, the registry leaks across tests in the same pytest
-    process and a test that expects a fresh default-budget turn sees the
-    cumulative char count from earlier tests. Per-turn counters are owned
-    by the runtime, so resetting in tests is safe and explicit.
-    """
-    from vault_retrieval.budgets import _turn_registry
-    _turn_registry.clear()
+    import_module("vault_retrieval.budgets")._turn_registry.clear()
     yield
-    _turn_registry.clear()
+    import_module("vault_retrieval.budgets")._turn_registry.clear()

@@ -196,9 +196,43 @@ class TestAcceptance9HookModes:
         v = self._vault(tmp_path)
         ctx = FakePluginContext({"vault_root": str(v), "mode": "enforce"})
         hook = make_pre_tool_call_hook(ctx)
-        result = hook(tool_name="search_files", args={"pattern": "**/*.md"})
+        # A ``search_files`` call that anchors the search root inside the
+        # Vault IS a Vault-targeted read — block it and point the agent at
+        # ``vault_context``. ``search_files`` calls without an anchored
+        # ``path`` (pure glob) are NOT classified as Vault hits; see
+        # ``test_outside_vault_search_files_passes_through``.
+        result = hook(tool_name="search_files", args={"pattern": "**/*.md", "path": str(v)})
         assert result is not None
         assert result["action"] == "block"
+
+    def test_outside_vault_search_files_passes_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Regression for the previous candidate's over-blocking bug:
+
+        ``search_files(pattern='**/*.md')`` with no ``path`` argument must
+        not be classified as a Vault hit even when ``mode='enforce'``.
+        Blocking every glob would break unrelated repository searches.
+        """
+        v = self._vault(tmp_path)
+        ctx = FakePluginContext({"vault_root": str(v), "mode": "enforce"})
+        hook = make_pre_tool_call_hook(ctx)
+        result = hook(tool_name="search_files", args={"pattern": "**/*.md"})
+        assert result is None
+
+    def test_outside_vault_search_files_with_anchor_passes_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Regression: ``search_files`` anchored OUTSIDE the Vault stays
+        unchanged even in enforce mode.
+        """
+        v = self._vault(tmp_path)
+        outside = tmp_path / "src"
+        outside.mkdir()
+        ctx = FakePluginContext({"vault_root": str(v), "mode": "enforce"})
+        hook = make_pre_tool_call_hook(ctx)
+        result = hook(tool_name="search_files", args={"pattern": "**/*.py", "path": str(outside)})
+        assert result is None
 
     def test_non_protected_tools_ignored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -280,6 +314,9 @@ class TestRegistrationShape:
         # Tool
         assert TOOL_NAME in ctx.tools
         assert ctx.tools[TOOL_NAME].payload["toolset"] == TOOLSET
+        # The advertised schema must NOT include ``turn_id`` (internal only).
+        schema_props = ctx.tools[TOOL_NAME].payload["schema"]["parameters"]["properties"]
+        assert "turn_id" not in schema_props
         # Hook
         assert "pre_tool_call" in ctx.hooks
         # Prompt section
@@ -347,11 +384,26 @@ class TestResolveTargetInVault:
         out = _resolve_target_in_vault({"path": "/etc/passwd"}, v)
         assert out is None
 
-    def test_search_pattern_returns_sentinel(self, tmp_path):
+    def test_search_pattern_without_path_passes_through(self, tmp_path):
+        """``search_files`` with only a glob ``pattern`` and no ``path``
+        must NOT be classified as a Vault hit. The plugin would otherwise
+        over-block unrelated repository searches.
+        """
         v = tmp_path / "vault"
         v.mkdir()
         out = _resolve_target_in_vault({"pattern": "**/*.md"}, v)
-        assert out == v.resolve()
+        assert out is None
+        out = _resolve_target_in_vault({"pattern": "**/*.md", "path": "/somewhere/else"}, v)
+        assert out is None
+
+    def test_search_files_with_vault_path_is_blocked(self, tmp_path):
+        """``search_files`` with a ``path`` argument that resolves inside
+        the Vault IS a Vault hit.
+        """
+        v = tmp_path / "vault"
+        v.mkdir()
+        out = _resolve_target_in_vault({"pattern": "**/*.md", "path": str(v)}, v)
+        assert out is not None
 
     def test_empty_args(self, tmp_path):
         v = tmp_path / "vault"

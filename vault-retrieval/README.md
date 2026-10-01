@@ -67,18 +67,73 @@ overridden.
 
 ## Install
 
+The plugin is a profile-scoped user plugin. Each Hermes profile owns
+its own `plugins/` directory under `get_hermes_home()`, so installs
+must target the correct profile home — there is no single global
+"home" because the active profile can vary (`hermes -p <name>`).
+
+Resolve the active profile's home with the supported profile command
+(installed CLI): either run the slash command interactively, or invoke
+the same handler directly:
+
 ```bash
-# Copy the versioned plugin into the active profile
-cp -r vault-retrieval/ "$(hermes --print-home)/plugins/vault-retrieval/"
+# Active profile (the one the current shell is using):
+python -m hermes_cli.main profile
+# Prints e.g.  Active profile: software-eng
+#               Path:           /root/.hermes/profiles/software-eng
 
-# Verify discovery
-hermes plugins list | grep vault-retrieval
-
-# Roll out
-# 1. Canary profile: set mode: audit for 48 hours; observe would-block events.
-# 2. Switch to enforce.
-# 3. Copy to every participating profile's ~/.hermes/plugins/.
+# A specific profile:
+python -m hermes_cli.main -p default profile
+# Prints e.g.  Active profile: default
+#               Path:           /root/.hermes
 ```
+
+Copy the versioned plugin into the chosen profile's `plugins/`
+directory:
+
+```bash
+# Replace <profile_home> with the path printed by the profile command above.
+PROFILE_HOME="$(python -m hermes_cli.main profile | awk '/Path:/ {print $2}')"
+cp -r vault-retrieval/ "${PROFILE_HOME}/plugins/vault-retrieval/"
+
+# Verify the active profile's config enables it (this is the supported,
+# profile-scoped allow-list):
+python -m hermes_cli.main plugins list | grep vault-retrieval
+```
+
+If `hermes` is on the executable PATH in this environment, the same
+discovery commands work without the `python -m` prefix:
+
+```bash
+hermes profile
+hermes plugins list | grep vault-retrieval
+```
+
+Do NOT use `hermes --print-home` — that flag does not exist in the
+installed CLI; the previous version of this README did and the
+adoption-gate review (2026-10-01 23:16 +07) blocked on it.
+
+Then enable the plugin in the profile's `config.yaml` so the loader's
+opt-in allow-list picks it up:
+
+```yaml
+plugins:
+  enabled:
+    - vault-retrieval
+  entries:
+    vault-retrieval:
+      enabled: true
+      settings:
+        vault_root: "/root/Documents/Obsidian Vault"
+        mode: enforce          # enforce | audit | off
+        # ...other defaults match the locked contract...
+```
+
+Roll out:
+1. Canary profile: set `mode: audit` for 48 hours; observe would-block events.
+2. Switch to `enforce`.
+3. Copy to every participating profile's `plugins/` directory and verify
+   discovery per profile.
 
 ## Rollback
 

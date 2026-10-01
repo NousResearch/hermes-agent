@@ -32,6 +32,7 @@ from .paths import (
     resolve_vault_root,
     validate_config,
 )
+from .budgets import reset_turn, reset_session_turns
 from .tool import (
     TOOL_NAME,
     TOOLSET,
@@ -131,32 +132,56 @@ def _resolve_target_in_vault(
     """Best-effort: does this tool call resolve to a path under vault_root?
 
     Returns the absolute target path if so, else ``None``.
-    ``search_files`` is allowed to pass when its pattern targets the Vault
-    broadly (we cannot prove containment from a glob) — we always treat
-    it as a Vault hit when the pattern is non-empty.
+
+    Reads inside the Vault (block): a tool call whose ``path`` (or
+    equivalent key) resolves to a real file under ``vault_root``, or a
+    ``search_files`` call whose ``path`` is the search root and resolves
+    inside the Vault.
+
+    Outside the Vault (pass through): any call where no resolvable ``path``
+    points under ``vault_root``, including ``search_files`` calls that
+    only pass a glob ``pattern`` (a glob without a ``path`` anchor is
+    ambiguous; we deliberately do NOT block it because blocking every
+    arbitrary pattern would over-block unrelated repository searches and
+    break legitimate workflows outside the Vault).
     """
     if not isinstance(args, dict):
         return None
-    # read_file: ``path`` arg is the file path.
+    # read_file / search_files: ``path`` arg is the (or) file or search
+    # root. If it resolves under vault_root, return the absolute path;
+    # the hook treats that as a Vault hit.
     target = args.get("path") or args.get("file_path") or args.get("file")
     if isinstance(target, str) and target:
         try:
             abs_target = Path(target).expanduser().resolve()
-            abs_target.relative_to(vault_root.resolve())
-            return abs_target
+            try:
+                abs_target.relative_to(vault_root.resolve())
+                return abs_target
+            except ValueError:
+                return None  # explicit path, outside the root
         except (ValueError, OSError):
             return None
-    # search_files: ``pattern`` is a glob; treat any non-empty glob as
-    # potentially hitting the Vault. Be conservative — block in enforce
-    # mode when the pattern is non-empty.
-    pattern = args.get("pattern") or args.get("query") or ""
-    if isinstance(pattern, str) and pattern.strip():
-        return vault_root  # sentinel: "yes, this hits the Vault"
+    # No path`` argument. If ``pattern`` is a literal glob that names the
+    # Vault root (rare; treat as out-of-scope), we would block; otherwise
+    # we pass through. Glob patterns without an anchored path are
+    # deliberately NOT blocked here — over-blocking random globs would
+    # disrupt unrelated repository searches. Searches that genuinely
+    # target the Vault must pass ``path=vault_root`` (or a directory
+    # inside it) and are caught there.
     return None
 
 
 def make_pre_tool_call_hook(ctx):
-    """Build the ``pre_tool_call`` hook closure."""
+    """Build the ``pre_tool_call`` hook closure.
+
+    The hook accepts the full dispatch kwargs (``task_id``, ``session_id``,
+    ``tool_call_id``, ``turn_id``, ``api_request_id``, ``middleware_trace``,
+    ``user_task``) that :func:`hermes_cli.plugins._dispatch_pre_tool_call_hooks`
+    forwards from :func:`model_tools.handle_function_call`; we keep the
+    wider signature so the hook does not silently lose any new runtime
+    fields the agent loop adds later. ``**kwargs`` makes the closure
+    forward-compatible with whatever the registry sends.
+    """
     state: Dict[str, Any] = {"resolved": None}
 
     def _ensure():
@@ -213,15 +238,57 @@ def _build_tool_handler(resolved: _ResolvedConfig):
     """Build the registered tool's handler closure.
 
     We construct the ``VaultContextHandler`` once and let the closure
-    delegate each call into ``handler.handle()``. The handler owns its
-    own per-turn counter state.
+    delegate each call into ``handler.handle_runtime()``.
+
+    The closure signature is ``(args, **kwargs)`` because
+    :meth:`tools.registry.dispatch` invokes the handler as
+    ``handler(args, **kwargs)``; the kwargs are the dispatch metadata
+    (e.g. ``task_id``, ``session_id``, ``user_task``,
+    ``turn_id``/``turn_key``, ``enabled_tools``) that
+    ``model_tools._execute_tool`` forwards from the agent loop. Accepting
+    the runtime kwargs makes the handler compatible with the real
+    registry dispatch contract; rejecting them was the type-error that
+    blocked the previous candidate.
     """
     handler = VaultContextHandler(cfg=resolved.cfg)
 
-    def _tool_handler(args: Optional[Dict[str, Any]] = None) -> str:
-        return handler.handle(args or {})
+    def _tool_handler(args: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
+        return handler.handle_runtime(args or {}, **kwargs)
 
     return _tool_handler
+
+
+def make_session_lifecycle_hooks():
+    """Build the ``on_session_end`` and ``on_session_finalize`` closures.
+
+    These reset the process-global ``vault-retrieval`` per-turn budget
+    counters when a session finishes, so the next session starts from
+    zero. Hermes forwards ``session_id`` to ``on_session_end`` and
+    ``on_session_finalize``; we use it to drop the matching
+    ``runtime:<task>:<session>`` counters. We also accept ``turn_id``
+    and drop that key directly if the runtime supplies one.
+    """
+    def on_session_end(*, session_id: str = "", task_id: str = "",
+                       turn_id: str = "", **_: Any) -> None:
+        # Drop the matching runtime counter(s).
+        prefix = f"runtime:{task_id or ''}:{session_id or ''}"
+        reset_session_turns(prefix)
+        if turn_id:
+            reset_turn(turn_id)
+
+    def on_session_finalize(*, session_id: str = "", task_id: str = "",
+                            **_: Any) -> None:
+        prefix = f"runtime:{task_id or ''}:{session_id or ''}"
+        reset_session_turns(prefix)
+
+    def on_session_reset(*, session_id: str = "", task_id: str = "",
+                          **_: Any) -> None:
+        # ``on_session_reset`` runs before the next session begins — drop
+        # any leftover counter to bound the process-global state.
+        prefix = f"runtime:{task_id or ''}:{session_id or ''}"
+        reset_session_turns(prefix)
+
+    return on_session_end, on_session_finalize, on_session_reset
 
 
 def register(ctx) -> None:
@@ -268,6 +335,15 @@ def register(ctx) -> None:
 
     # 4. Register the pre_tool_call hook (enforce/audit/off via config).
     ctx.register_hook("pre_tool_call", make_pre_tool_call_hook(ctx))
+
+    # 5. Register lifecycle hooks so per-turn budget counters are
+    #    released at session boundaries. Without these, counters
+    #    accumulate across sessions and a 12k-default session would see
+    #    a previous session's residual budget eaten.
+    on_end, on_finalize, on_reset = make_session_lifecycle_hooks()
+    ctx.register_hook("on_session_end", on_end)
+    ctx.register_hook("on_session_finalize", on_finalize)
+    ctx.register_hook("on_session_reset", on_reset)
 
     logger.info(
         "vault-retrieval registered: mode=%s vault_root=%s",

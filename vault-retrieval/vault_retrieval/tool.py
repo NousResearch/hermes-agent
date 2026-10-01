@@ -39,8 +39,8 @@ Decision order (matches the architecture memo):
 """
 from __future__ import annotations
 
+import importlib
 import json
-import os
 import re
 import secrets as _secrets
 from dataclasses import dataclass, field
@@ -51,11 +51,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from .budgets import (
     BudgetConfig,
     BudgetDecision,
+    DEFAULT_TURN_TTL_SECONDS,
     TurnBudgets,
     check_large_file,
     decide_budget,
-    get_or_create_turn,
-    reset_turn,
 )
 from .query_log import QueryLogEntry, QueryLogWriteError, QueryLogger
 from .paths import (
@@ -75,12 +74,60 @@ from .retrieval import (
 )
 
 
+def _resolve_runtime_turn_id(**kwargs: Any) -> Optional[str]:
+    """Resolve the actual Hermes ``turn_id`` for this call.
+
+    The runtime injects turn identity through three independent surfaces so
+    any one being unavailable still leaves a usable key:
+
+      1. ``kwargs["turn_id"]`` — when ``registry.dispatch`` forwards it
+         (the agent loop passes ``turn_id`` through ``handle_function_call``
+         into ``_CallIds``; ``_execute_tool`` builds ``dispatch_kwargs`` from
+         ``task_id``/``session_id`` only — see ``model_tools.py:754-774``).
+      3. ``tools.approval_context._approval_turn_id`` — set by
+         ``_approval_observability`` immediately before ``registry.dispatch``
+         runs the handler; this is the actual internal Hermes turn ID
+         even when ``model_tools._execute_tool`` does not forward it as a
+         kwarg. We import it lazily so bare tool-only unit tests do not
+         pay the cost.
+
+    Returns ``None`` only when the agent loop never supplied one. The
+    dataclass default key (``"default"``) is reserved for unit tests that
+    invoke ``handle(args)`` directly.
+    """
+    direct = kwargs.get("turn_id") or kwargs.get("turn-key")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    # Lazy import — approval_context transitively imports the plugin
+    # system; bypassing it in unit tests keeps the public surface pure.
+    try:
+        from tools.approval_context import _approval_turn_id
+    except Exception:
+        return None
+    try:
+        candidate = _approval_turn_id.get()
+    except Exception:
+        return None
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
 TOOL_NAME = "vault_context"
 TOOLSET = "vault_retrieval"
 
 
 def vault_context_tool_schema() -> Dict[str, Any]:
-    """The JSON schema exposed to the model — read-only."""
+    """The JSON schema exposed to the model — read-only.
+
+    Per the locked contract, turn identity is internal-only: the per-turn
+    character budget is keyed on the actual Hermes ``turn_id`` that the
+    runtime passes through ``registry.dispatch`` kwargs (alongside
+    ``task_id``, ``session_id``, and ``user_task``). The model NEVER sees
+    ``turn_id`` and cannot influence it; ``turn_id`` is removed from the
+    advertised schema so the model has no way to override its own budget
+    counter.
+    """
     return {
         "name": TOOL_NAME,
         "description": (
@@ -127,12 +174,9 @@ def vault_context_tool_schema() -> Dict[str, Any]:
                     "type": "string",
                     "description": "Required when allow_bounded_expansion=true; non-empty.",
                 },
-                "turn_id": {
-                    "type": "string",
-                    "description": "Internal turn key injected by the plugin hook (not advertised).",
-                },
             },
             "required": ["query"],
+            "additionalProperties": False,
         },
     }
 
@@ -195,7 +239,15 @@ def _extract_to_dict(ex: Extract) -> Dict[str, Any]:
 
 @dataclass
 class VaultContextHandler:
-    """Tool handler. One instance per turn (or one per profile per turn)."""
+    """Tool handler. One instance per turn (or one per profile per turn).
+
+    The handler is constructed once at registration; per-call turn identity
+    is resolved from the runtime kwargs that ``model_tools._execute_tool``
+    forwards through ``registry.dispatch``: ``turn_id`` (preferred) and a
+    fallback ``task_id:session_id`` pair. The process-global ``default``
+    key is only used when no runtime identity is supplied (e.g. legacy
+    direct ``handle(args)`` invocations from unit tests).
+    """
 
     cfg: Dict[str, Any]
     turn_id: str = "default"
@@ -234,7 +286,32 @@ class VaultContextHandler:
             self._logger = None  # log unavailable — fail-closed at handle time
 
     def handle(self, args: Dict[str, Any]) -> str:
-        """The tool handler entrypoint — return a JSON string."""
+        """Back-compat direct call (unit tests, scripts).
+
+        Real Hermes runtime calls :meth:`handle_runtime` instead — that is
+        the path ``model_tools._execute_tool -> registry.dispatch`` uses and
+        it forwards the per-call identity (``turn_id``, ``task_id``,
+        ``session_id``, ``user_task``, ``enabled_tools``) that the
+        contract requires.
+        """
+        return self.handle_runtime(args)
+
+    def handle_runtime(self, args: Dict[str, Any], **kwargs: Any) -> str:
+        """The tool handler entrypoint used by the Hermes runtime.
+
+        ``kwargs`` are the dispatch metadata that
+        :func:`model_tools._execute_tool` forwards to
+        :meth:`tools.registry.dispatch`, which calls the registered handler
+        as ``handler(args, **kwargs)``. Real Hermes passes
+        ``task_id``/``session_id``/``user_task`` (and optionally
+        ``turn_id``) for every tool call.
+
+        The runtime per-turn budget counter is keyed on the actual ``turn_id``
+        supplied by the agent loop. When the agent loop does not supply one,
+        we derive a stable key from ``task_id:session_id`` so concurrent
+        sessions do not collide, and we fall back to the dataclass default
+        only when nothing else is present (legacy tests).
+        """
         if not isinstance(args, dict):
             return json.dumps(self._fail("malformed_args", "args must be a dict"))
         query = args.get("query", "")
@@ -244,7 +321,33 @@ class VaultContextHandler:
         if not isinstance(selectors, list):
             return json.dumps(self._fail("malformed_selectors", "selectors must be a list"))
 
-        turn_id = args.get("turn_id") or self.turn_id or "default"
+        # Resolve turn identity from runtime kwargs — NOT from args (the
+        # model cannot influence it because the parameter is not in the
+        # advertised schema).
+        runtime_turn_id = _resolve_runtime_turn_id(**kwargs)
+        if isinstance(runtime_turn_id, str) and runtime_turn_id:
+            turn_id = runtime_turn_id
+        else:
+            task_id = kwargs.get("task_id") or ""
+            session_id = kwargs.get("session_id") or ""
+            if task_id or session_id:
+                turn_id = f"runtime:{task_id}:{session_id}"
+            else:
+                # Last-resort fallback: dataclass default key. Unit tests
+                # that call ``handle({...})`` directly land here, with
+                # ``turn_id`` overridden explicitly per call.
+                turn_id = self.turn_id or "default"
+
+        # Bounded-TTL safety net: drop counters that have been idle for
+        # longer than the TTL. Real sessions turn over in seconds; the
+        # TTL keeps a crashed/abandoned session from leaking
+        # process-global state indefinitely if the session-end hooks
+        # never fired.
+        budgets = importlib.import_module(".budgets", package=__package__)
+        try:
+            budgets.expire_older_than(DEFAULT_TURN_TTL_SECONDS)
+        except Exception:
+            pass
         allow_expansion = bool(args.get("allow_bounded_expansion", False))
         expansion_reason = args.get("expansion_reason", "") or ""
 
@@ -336,7 +439,7 @@ class VaultContextHandler:
             # No explicit budget hint — charge actual extracted chars.
             # Discovery-only calls (no extracts) consume zero evidence.
             request_chars = total_chars
-        tb = get_or_create_turn(turn_id, self._budget_cfg)
+        tb = budgets.get_or_create_turn(turn_id, self._budget_cfg)
         decision = decide_budget(
             tb,
             request_chars=request_chars,

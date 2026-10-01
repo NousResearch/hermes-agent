@@ -1,0 +1,33 @@
+# Community catalog entry — hermes-worker-monitor
+#
+# Owner-submitted: the fork is maintained by djmango, and the entry is opened by
+# its owner. Worker-only fork of mr-3mm3/hermes-monitor v0.2.2 (MIT).
+#
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as a
+# static `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+#
+# Disclosure — the fork removes upstream's provider quota item and everything
+# that supported it (the credential-pool fan-out, the DEEPSEEK_API_KEY lookup in
+# the environment and in .env files, the DeepSeek balance call, the Anthropic
+# OAuth refresh path that can rewrite auth.json, and the clone of a private
+# Hermes fetcher). This entry therefore has no network egress and reads no
+# credential: it opens HERMES_HOME/kanban.db and each profile's state.db
+# read-only for worker activity, with a fallback to the root HERMES_HOME/state.db
+# for a default-profile card that has no profile directory. No writes anywhere.
+name: hermes-worker-monitor
+repo: https://github.com/djmango/hermes-worker-monitor
+sha: "5f688561f1a327931f7e50714d838080d330fc04"   # tag v0.1.1-fork
+version: "0.1.1"
+description: "Kanban worker health in the Desktop status bar: live activity per running card with stall and loop detection, and a Kanban link. Worker-only fork of hermes-monitor — no credentials are read and there is no network egress; it opens kanban.db and each profile's state.db read-only and returns activity metadata with hashed tool arguments. Zero model tokens."
+maintainer: djmango
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+platforms: [linux, macos]
+docs_url: https://github.com/djmango/hermes-worker-monitor
+screenshots: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -3,9 +3,12 @@
 CI logs are the only record of a remote failure, so CI (``CI`` /
 ``GITHUB_ACTIONS``) or ``HERMES_VERBOSE=1`` streams child output unchanged.
 Everywhere else a child collapses into one status line: on a terminal it is
-rewritten in place with the child's latest line, off a terminal only the
-start and finish are printed. A failure always prints the captured tail, so
-containment never hides an error. ``HERMES_VERBOSE=0`` forces containment.
+rewritten in place with the child's latest line, off a terminal the start and
+finish are printed and a short progress line is written on a steady interval
+while the child is still running. That interval stays inside the Windows
+desktop updater's 10-minute idle kill, which treats an unchanged update.log
+as a stalled step. A failure always prints the captured tail, so containment
+never hides an error. ``HERMES_VERBOSE=0`` forces containment.
 
 Stdlib-only: the bootstrap runner imports this from a pre-3.11 system Python.
 """
@@ -29,6 +32,10 @@ _FALSE = {"0", "false", "no", "off"}
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # A redraw per child line would dominate a fast install's runtime on slow terminals.
 _REDRAW_INTERVAL = 0.05
+# scripts/desktop-update/windows.ps1 cancels a step whose update.log is
+# unchanged for 600s. A contained build has to surface a line well inside
+# that window; the full child log stays withheld.
+_HEARTBEAT_SECONDS = 30.0
 
 
 class TextSink(Protocol):
@@ -63,16 +70,19 @@ class LiveTail:
     """
 
     def __init__(self, label: Optional[str], stream: Optional[IO[str]] = None, *,
-                 hide: Optional[Callable[[str], bool]] = None, indent: str = "") -> None:
+                 hide: Optional[Callable[[str], bool]] = None, indent: str = "",
+                 heartbeat_seconds: float = _HEARTBEAT_SECONDS) -> None:
         self.label = label
         self.stream = sys.stdout if stream is None else stream
         self.hide = hide
         self.indent = indent
+        self.heartbeat_seconds = heartbeat_seconds
         self.live = label is not None and _is_terminal(self.stream)
         self.tail: deque[str] = deque(maxlen=TAIL_LINES)
         self._partial = ""
         self._drawn = 0
         self._last_draw = 0.0
+        self._last_heartbeat = time.monotonic()
         if label is not None:
             if self.live:
                 self._draw(f"{indent}→ {label}…")
@@ -113,9 +123,18 @@ class LiveTail:
         if not line.strip():
             return
         self.tail.append(line)
-        if not self.live or (self.hide is not None and self.hide(line)):
+        if self.hide is not None and self.hide(line):
             return
         now = time.monotonic()
+        if not self.live:
+            # Off a terminal the child used to be fully buffered until exit, so
+            # update.log stopped at the start line and the Windows hand-off
+            # killed a healthy desktop rebuild at 600s.
+            if self.label is not None and now - self._last_heartbeat >= self.heartbeat_seconds:
+                self._last_heartbeat = now
+                snippet = line.strip()[:160]
+                self._emit(f"{self.indent}→ {self.label}… {snippet}\n")
+            return
         if now - self._last_draw < _REDRAW_INTERVAL:
             return
         self._last_draw = now
@@ -135,6 +154,7 @@ class LiveTail:
 
 def run_contained(command: Sequence[str], label: str, *, stream: Optional[IO[str]] = None,
                   hide: Optional[Callable[[str], bool]] = None, indent: str = "",
+                  heartbeat_seconds: float = _HEARTBEAT_SECONDS,
                   **kwargs) -> subprocess.CompletedProcess:
     """``subprocess.run(check=True)`` under the output policy."""
     if verbose_output():
@@ -142,21 +162,12 @@ def run_contained(command: Sequence[str], label: str, *, stream: Optional[IO[str
         out.write(f"{indent}→ {label}…\n")
         out.flush()
         return subprocess.run(command, check=True, **kwargs)
-    tail = LiveTail(label, stream, hide=hide, indent=indent)
+    tail = LiveTail(label, stream, hide=hide, indent=indent, heartbeat_seconds=heartbeat_seconds)
     captured = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     encoding="utf-8", errors="replace")
-    if not tail.live:
-        try:
-            result = subprocess.run(command, check=True, **captured, **kwargs)
-        except subprocess.CalledProcessError as exc:
-            tail.write(exc.output or "")
-            tail.close(False)
-            raise
-        except BaseException:
-            tail.close(False)
-            raise
-        tail.close(True)
-        return result
+    # Stream even off a terminal. Buffering until exit leaves update.log
+    # unchanged for the whole desktop rebuild, and the Windows hand-off then
+    # cancels it.
     try:
         with subprocess.Popen(command, **captured, **kwargs) as proc:
             assert proc.stdout is not None  # stdout=PIPE above.

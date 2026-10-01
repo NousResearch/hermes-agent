@@ -7,6 +7,8 @@ import json
 import os
 import urllib.request
 
+from hermes_cli.debug_redaction import redact_debug_support_error, redact_debug_support_text
+
 # Overridable via env so the feature can be pointed at staging / a local dev NAS instance.
 NAS_BASE = os.environ.get("HERMES_DIAGNOSTICS_BASE_URL", "https://portal.nousresearch.com")
 _REQUEST_TIMEOUT = 30
@@ -38,9 +40,11 @@ def request_upload_url(content_type: str = "application/gzip", size_bytes: int |
     try:
         result = json.loads(body)
     except (ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"diagnostics upload-url returned non-JSON response: {body[:200]}") from exc
+        safe_body = redact_debug_support_text(body, max_chars=200)
+        raise RuntimeError(f"diagnostics upload-url returned non-JSON response: {safe_body}") from exc
     if not isinstance(result, dict) or not result.get("uploadUrl"):
-        raise RuntimeError(f"diagnostics upload-url response missing 'uploadUrl': {body[:200]}")
+        safe_body = redact_debug_support_text(body, max_chars=200)
+        raise RuntimeError(f"diagnostics upload-url response missing 'uploadUrl': {safe_body}")
     return result
 
 
@@ -53,6 +57,9 @@ def put_bundle(upload_url: str, data: bytes, content_type: str = "application/gz
 
 def share_to_nous(report_bundle: bytes) -> dict:
     """Mint a presigned PUT URL (with the exact ``sizeBytes`` NAS signs), then PUT *report_bundle*."""
-    info = request_upload_url(content_type="application/gzip", size_bytes=len(report_bundle))
-    put_bundle(info["uploadUrl"], report_bundle, content_type="application/gzip")
-    return info
+    try:
+        info = request_upload_url(content_type="application/gzip", size_bytes=len(report_bundle))
+        put_bundle(info["uploadUrl"], report_bundle, content_type="application/gzip")
+        return info
+    except Exception as exc:
+        raise RuntimeError(redact_debug_support_error(exc)) from exc

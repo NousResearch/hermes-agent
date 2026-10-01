@@ -97,6 +97,67 @@ def test_share_nous_client_text_gets_upload_safe_log_redaction(captured_upload):
     assert secret not in files["client/desktop.log"]
 
 
+def test_redacted_support_egress_scrubs_structured_values_and_errors(
+    captured_upload, monkeypatch
+):
+    from hermes_constants import get_hermes_home
+
+    canaries = {
+        "url": "r36_REDACTED_url_canary_0123456789",
+        "header": "r36_REDACTED_header_canary_0123456789",
+        "env": "r36_REDACTED_env_canary_0123456789",
+        "argv": "r36_REDACTED_argv_canary_0123456789",
+        "bearer": "r36_REDACTED_bearer_canary_0123456789",
+        "error": "r36_REDACTED_error_canary_0123456789",
+    }
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: custom\n"
+        "    model: support-fixture\n"
+        "    base_url: 'https://outer.invalid/?next=https://inner.invalid/"
+        f"?accessToken={canaries['url']}'\n"
+        "    extra_headers:\n"
+        f"      X-API-Key: {canaries['header']}\n"
+        "    env:\n"
+        f"      AWS_SECRET_ACCESS_KEY: {canaries['env']}\n"
+        f"    args: ['--api-key', '{canaries['argv']}']\n",
+        encoding="utf-8",
+    )
+    structured = (
+        f"headers={{'Proxy-Authorization': 'Basic {canaries['header']}'}} "
+        f"Command ['provider', '--api-key', '{canaries['argv']}'] "
+        f"Bearer {canaries['bearer']}"
+    )
+
+    result = _handler()(
+        "rid-structured",
+        {"error_context": structured, "extra_files": {"desktop.log": structured}},
+    )
+
+    assert result["result"]["ok"] is True
+    envelope = _envelope(captured_upload["blob"])
+    assert envelope["redacted"] is True
+    rendered = json.dumps(envelope, sort_keys=True)
+    assert "support-fixture" in rendered
+    assert not [canary for canary in canaries.values() if canary in rendered]
+
+    import hermes_cli.diagnostics_upload as du
+
+    def _fail(_blob: bytes) -> dict:
+        raise RuntimeError(
+            "PUT https://upload.invalid/?X-Amz-Security-Token="
+            f"{canaries['error']} headers={{'X-API-Key': '{canaries['header']}'}}"
+        )
+
+    monkeypatch.setattr(du, "share_to_nous", _fail)
+    failure = _handler()("rid-structured-error", {})["result"]
+    assert failure["ok"] is False
+    assert canaries["error"] not in failure["error"]
+    assert canaries["header"] not in failure["error"]
+
+
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):
     """ok:true with neither view_url nor id would strand the user with an
     unreferencable upload — surface it as a structured failure instead."""

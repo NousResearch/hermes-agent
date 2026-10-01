@@ -34,9 +34,13 @@ def test_docker_recovery_marks_pending_and_finalizer_warns(monkeypatch):
     env._container_id = "old"
     env._labels = {}
     env._image = ""
+    env._network = True
+    env._runtime_fp = "current"
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_container_image", lambda self, cid: None)
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_refresh_runtime_fingerprint", lambda self: None)
     monkeypatch.setattr(
         docker_env.DockerEnvironment, "_find_reusable_container",
-        lambda self, *a: ("newcid", "running"))
+        lambda self, *a: ("newcid", "running", "current"))
     monkeypatch.setattr(docker_env.DockerEnvironment, "init_session", lambda self: None)
     assert env._recreate_container() is True
     assert getattr(env, "_recreated_notice_pending", False) is True

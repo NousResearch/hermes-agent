@@ -123,8 +123,8 @@ def _reuse_guard_harness(
 def test_reuse_rejects_networked_container_when_lockdown_requested(monkeypatch):
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=False)
 
-    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), (
-        "bridge-networked container must be removed when docker_network=false"
+    assert any(cmd[1] == "rm" and "-f" not in cmd for cmd in commands), (
+        "removal must let the daemon preserve an active sibling when docker_network=false"
     )
     run_cmd = next(cmd for cmd in commands if len(cmd) > 2 and cmd[1:3] == ["run", "-d"])
     assert "--network=none" in run_cmd
@@ -153,7 +153,7 @@ def test_reuse_recreates_container_built_from_another_image_when_pinned(monkeypa
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
                                     existing_image="old/image:1", image_pinned=True)
 
-    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "container from another image must be removed"
+    assert any(cmd[1] == "rm" and "-f" not in cmd for cmd in commands), "never force-remove an active sandbox"
     assert any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands)
 
 
@@ -164,7 +164,7 @@ def test_reuse_pulls_the_replacement_before_removing_the_old_container(monkeypat
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
                                     existing_image="old/image:1", image_pinned=True)
     kinds = [tuple(c[1:3]) for c in commands]
-    assert kinds.index(("pull", "python:3.11")) < kinds.index(("rm", "-f"))
+    assert kinds.index(("pull", "python:3.11")) < kinds.index(("rm", "existing-container-id"))
 
 
 def test_reuse_keeps_the_old_container_when_the_replacement_cannot_be_pulled(monkeypatch, caplog):

@@ -1,31 +1,23 @@
-"""Shared session activity observation contract (#72016 / #72039).
-
-Observation-only: timestamp + bounded description/provenance.
-Notification, timeout, kill, and retry policy stay in their own components.
-Consumers distinguish work (API / tool / compacting / stalled) from the
-description text itself — there is no separate phase enum.
-
-Provenance is a small closed enum of *noun* sources (where the stamp came
-from). The default agent activity clock (``_touch_activity``) stamps
-``unknown`` unless a caller passes an explicit ``provenance=``; named
-values are for special writers.
-"""
+"""Shared session activity observation contract: timestamp + bounded description/provenance, observation
+only (notification, timeout, kill and retry policy live elsewhere). Provenance is a small closed enum of
+*noun* sources; the default agent clock stamps ``unknown`` unless a writer passes ``provenance=``."""
 
 from __future__ import annotations
 
+import sys
+import time
+from contextlib import suppress
 from enum import Enum
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 ACTIVITY_DESCRIPTION_MAX = 120
 
-# Durable SessionDB activity heartbeat cadence (seconds between writes per
-# session). Contract: MUST stay >= 30s — the SessionDB write path is
-# contended (deadline/patience retry, compression-lock patience), and the
-# heartbeat is an observation-only projection that never justifies extra
-# write pressure. This cadence is deliberately a code constant, independent
-# of any compression.* or agent.* config, so no configuration can turn the
-# heartbeat into a high-frequency writer. Matches the kanban auto-heartbeat
-# cadence. force_persist (terminal stamps) is the only bypass.
+# Durable SessionDB heartbeat cadence. Contract: MUST stay >= 30s — the SessionDB write path is contended and
+# this observation-only projection never justifies extra write pressure. A code constant on purpose (no config
+# can make it a high-frequency writer); matches the kanban auto-heartbeat. force_persist and terminal
+# compression stamps (see TERMINAL_COMPRESSION_PROVENANCES) are the only bypasses.
 SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 
 
@@ -33,46 +25,73 @@ class ActivityProvenance(str, Enum):
     """Where a durable/in-memory activity stamp came from."""
 
     UNKNOWN = "unknown"
-    # Compression writers (#72424 / activity contract): heartbeat, host timeout, cooldown.
+    # Compression writers: heartbeat, host timeout, cooldown, turn hold.
+    # See #72424.
     AGENT_COMPRESSION = "agent.compression"
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
     AGENT_COMPRESSION_TURNHOLD = "agent.compression_turnhold"
 
 
+# Provenances that END the user-visible "compressing" phase: the host's progress timeout, a cooldown/
+# backoff block, and the gateway's hygiene turn-hold. Each is written once, at a terminal edge, and must
+# reach the durable projection IMMEDIATELY — the heartbeat above wrote "context compression in progress"
+# moments earlier, so a rate-limited terminal stamp leaves `sessions.last_activity_description` advertising
+# a compression that has already stopped, with no later writer to correct it (the agent may be idle, the
+# process gone). That is the permanently "stuck / compressing" chat users see.
+#
+# Distinct from ``conversation_compression._TERMINAL_COMPRESSION_PROVENANCES``, which answers a different
+# question — "may a detached heartbeat still overwrite this stamp?" — and deliberately excludes TURNHOLD,
+# because after a turn-hold the worker may still be alive and adoptable.
+TERMINAL_COMPRESSION_PROVENANCES = frozenset(
+    {
+        ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+        ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
+        ActivityProvenance.AGENT_COMPRESSION_TURNHOLD,
+    }
+)
+
+
+def is_terminal_compression_provenance(provenance: Optional[ActivityProvenance | str]) -> bool:
+    """True when this stamp ends a compression phase and must bypass the persist rate limit."""
+    return normalize_activity_provenance(provenance) in TERMINAL_COMPRESSION_PROVENANCES
+
+
 def bound_activity_description(description: Optional[str]) -> str:
     """Clamp free-form activity text to the shared description budget."""
     text = (description or "").strip()
-    if len(text) <= ACTIVITY_DESCRIPTION_MAX:
-        return text
-    return text[: ACTIVITY_DESCRIPTION_MAX - 1] + "…"
+    return text if len(text) <= ACTIVITY_DESCRIPTION_MAX else text[: ACTIVITY_DESCRIPTION_MAX - 1] + "…"
 
 
-def normalize_activity_provenance(
-    provenance: Optional[ActivityProvenance | str],
-) -> ActivityProvenance:
+def normalize_activity_provenance(provenance: Optional[ActivityProvenance | str]) -> ActivityProvenance:
     """Return a known provenance, or ``UNKNOWN`` when unset/unrecognized."""
     if isinstance(provenance, ActivityProvenance):
         return provenance
-    value = (provenance or "").strip()
     try:
-        return ActivityProvenance(value)
+        return ActivityProvenance((provenance or "").strip())
     except ValueError:
         return ActivityProvenance.UNKNOWN
 
 
-def reset_session_activity_persist_window(agent: Any) -> None:
-    """Clear the agent's durable SessionDB activity persist rate-limit window.
+def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
+    """``iteration N/M`` for user-facing status lines, or ``iteration N`` when the cap is unbounded.
 
-    The next ``_touch_activity`` / ``_persist_session_activity_if_due`` will
-    write through even if a stamp landed within the last 60s. Used for
-    terminal compression labels that must not stay stuck on mid-compress
-    text (e.g. "context compression in progress" after /compress).
+    ``AIAgent.max_iterations`` defaults to ``sys.maxsize`` (unlimited), so printing the pair verbatim
+    shows ``iteration 3/9223372036854775807`` in busy acks, heartbeats and timeout diagnostics (#102806).
     """
     try:
+        cap = int(max_iterations)
+    except (TypeError, ValueError):
+        cap = sys.maxsize
+    if cap >= sys.maxsize:
+        return t("display.iteration_progress.unbounded", n=api_call_count)
+    return t("display.iteration_progress.bounded", n=api_call_count, max=cap)
+
+
+def reset_session_activity_persist_window(agent: Any) -> None:
+    """Clear the persist rate-limit so the next stamp writes through (terminal compression labels must not stick on mid-compress text)."""
+    with suppress(Exception):
         agent._session_activity_last_persist_mono = 0.0
-    except Exception:
-        pass
 
 
 def build_activity_snapshot(
@@ -84,24 +103,16 @@ def build_activity_snapshot(
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build the shared activity snapshot (plus optional caller extras)."""
-    import time as _time
-
     when = float(last_activity_at) if last_activity_at is not None else None
-    clock = float(now if now is not None else _time.time())
+    clock = float(now if now is not None else time.time())
     desc = bound_activity_description(last_activity_description)
-    prov = normalize_activity_provenance(last_activity_provenance)
-    elapsed = round(clock - when, 1) if when is not None else None
-    snap: dict[str, Any] = {
+    prov = normalize_activity_provenance(last_activity_provenance).value
+    return {
         "last_activity_at": when,
         "last_activity_description": desc,
-        "last_activity_provenance": prov.value,
-        "seconds_since_activity": elapsed,
+        "last_activity_provenance": prov,
+        "seconds_since_activity": round(clock - when, 1) if when is not None else None,
         # Short aliases used by existing gateway/delegate readers.
-        "last_activity_ts": when,
-        "last_activity_desc": desc,
-        "description": desc,
-        "provenance": prov.value,
+        "last_activity_ts": when, "last_activity_desc": desc, "description": desc, "provenance": prov,
+        **(extra or {}),
     }
-    if extra:
-        snap.update(dict(extra))
-    return snap

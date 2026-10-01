@@ -35,10 +35,16 @@ import type { MutableRefObject } from 'react'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
-import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
+import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  $focusedStoredSessionId,
+  runtimeSessionOwner,
+  sessionTileOwnerRoute,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
@@ -74,6 +80,14 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     })
 
     let owner: SessionOwnerScope = resolveSessionRpcOwner({
+      // An owner an inbound runtime event already proved for THIS session (#97511):
+      // the exact (connectionId, profile) of the socket that delivered its
+      // events. It outranks the connection-blind row/rung profile — the rung
+      // that makes two connections sharing a profile name collapse onto the
+      // primary socket (another machine) instead of the session's own.
+      eventOwner: storedSessionId =>
+        runtimeSessionOwner(storedSessionId) ??
+        (paramSessionId && paramSessionId !== storedSessionId ? runtimeSessionOwner(paramSessionId) : undefined),
       routingSessionId,
       sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
       sessionRowOwner: storedSessionId => knownSessionOwner(ownerLookupSessionRows(), storedSessionId),
@@ -97,6 +111,28 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     // backend "session not found" on a backend that never held the runtime.
     assertSessionOwnerResolved(owner, { method, sessionId: paramSessionId ? routingSessionId : null })
 
-    return requestForSessionProfile<T>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
+    try {
+      return await requestForSessionProfile<T>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
+    } catch (error) {
+      // A missed session.reclaimed leaves later RPCs answering 4001 against a
+      // still-resumable stored row. Prompt actions already retry their own
+      // calls; this seam covers the other session-scoped callers and wakes
+      // route-resume for the visible main session only. Do not retry the
+      // failing RPC — it may be destructive, and a fresh binding is async.
+      // A session the user just deleted is filtered by requestSessionResume,
+      // which drops resume requests for a removal-pending id.
+      if (
+        method !== 'session.resume' &&
+        method !== 'session.activate' &&
+        paramSessionId &&
+        routingSessionId &&
+        routingSessionId === selectedStoredSessionIdRef.current &&
+        isSessionGoneForBackgroundPolling(error)
+      ) {
+        requestSessionResume(routingSessionId, typeof owner === 'object' && owner ? owner : undefined)
+      }
+
+      throw error
+    }
   }
 }

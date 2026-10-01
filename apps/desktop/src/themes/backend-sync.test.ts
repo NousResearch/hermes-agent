@@ -1,14 +1,27 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import {
+  $backendCustomCSS,
+  $backendThemes,
+  $pendingSkinApply,
+  __resetBackendSkinSync,
+  ingestBackendSkin
+} from './backend-sync'
+import * as contextModule from './context'
+import * as userThemesModule from './user-themes'
 
 const skin = (name: string) => ({
   name,
   colors: { background: '#101020', ui_accent: '#ff33aa', banner_text: '#eeeeee' }
 })
 
+const skinWithCSS = (name: string, customCSS: string) => ({ ...skin(name), customCSS })
+
 describe('ingestBackendSkin', () => {
-  beforeEach(() => __resetBackendSkinSync())
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
 
   it('registers a converted skin without applying when apply=false', () => {
     ingestBackendSkin(skin('neon'), { apply: false })
@@ -21,22 +34,6 @@ describe('ingestBackendSkin', () => {
     ingestBackendSkin(skin('neon'), { apply: true })
 
     expect($pendingSkinApply.get()).toBe('neon')
-  })
-
-  it('does not re-apply the same skin name', () => {
-    ingestBackendSkin(skin('neon'), { apply: true })
-    $pendingSkinApply.set(null)
-    ingestBackendSkin(skin('neon'), { apply: true })
-
-    expect($pendingSkinApply.get()).toBeNull()
-  })
-
-  it('applies again when the skin name changes', () => {
-    ingestBackendSkin(skin('neon'), { apply: true })
-    $pendingSkinApply.set(null)
-    ingestBackendSkin(skin('forest'), { apply: true })
-
-    expect($pendingSkinApply.get()).toBe('forest')
   })
 
   it('seed does not paint, but a later same-name skin.changed applies (missed-activation recovery)', () => {
@@ -74,19 +71,53 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBeNull()
   })
 
-  it('never registers default in the backend store (desktop keeps its own palette)', () => {
-    ingestBackendSkin(skin('default'), { apply: true })
+  it('registers the classic default skin so Appearance can select gold/navy (#76579)', () => {
+    ingestBackendSkin(
+      {
+        name: 'default',
+        description: 'Classic Hermes — gold and kawaii',
+        colors: { background: '#1a1a2e', ui_accent: '#FFBF00', banner_text: '#FFF8DC' }
+      },
+      { apply: true }
+    )
 
-    expect($backendThemes.get().default).toBeUndefined()
+    const registered = $backendThemes.get().default
+    expect(registered?.name).toBe('default')
+    expect(registered?.label).toBe('Classic Hermes')
+    expect(registered?.description).toContain('gold')
+    expect($pendingSkinApply.get()).toBe('default')
+  })
+
+  it('lets the provider resolve and keep default (not retired → nous)', () => {
+    // skinPref / normalizeSkin must accept `default` once the backend registers
+    // it; RETIRED_SKINS no longer includes default (#76743 review). Static
+    // imports — the dynamic ones deadlocked under vitest's module runner.
+    const { skinPref } = contextModule
+    const { resolveTheme } = userThemesModule
+
+    ingestBackendSkin(
+      {
+        name: 'default',
+        description: 'Classic Hermes — gold and kawaii',
+        colors: { background: '#1a1a2e', ui_accent: '#FFBF00', banner_text: '#FFF8DC' }
+      },
+      { apply: false }
+    )
+
+    expect(resolveTheme('default')?.name).toBe('default')
+    skinPref.assign('work', 'default')
+    expect(skinPref.resolve('work')).toBe('default')
   })
 
   it('does not apply default on the connect-time seed', () => {
     ingestBackendSkin(skin('default'), { apply: false })
 
     expect($pendingSkinApply.get()).toBeNull()
+    // Seed still registers the palette so the theme grid can show it.
+    expect($backendThemes.get().default?.name).toBe('default')
   })
 
-  it('applies a runtime switch back to default (repaints the desktop to its own default)', () => {
+  it('applies a runtime switch back to default (classic gold palette)', () => {
     ingestBackendSkin(skin('neon'), { apply: false }) // gateway.ready seed on some skin
     ingestBackendSkin(skin('default'), { apply: true }) // Hermes switched back to default
 
@@ -100,10 +131,77 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBe('mono')
   })
 
+  it('carries customCSS for a built-in-named user skin without shadowing the palette', () => {
+    ingestBackendSkin(skinWithCSS('mono', '.chat-input { font-size: 16px; }'), { apply: true })
+
+    expect($backendThemes.get().mono).toBeUndefined() // palette policy preserved
+    expect($pendingSkinApply.get()).toBe('mono')
+    expect($backendCustomCSS.get().mono).toBe('.chat-input { font-size: 16px; }')
+  })
+
+  it('keys default-named skin CSS under the resolved desktop default', () => {
+    ingestBackendSkin(skinWithCSS('default', 'body { background: red; }'), { apply: true })
+
+    // Since #76579 the classic `default` skin registers as its own palette
+    // (label "Classic Hermes"), and the converted theme carries the customCSS
+    // itself — the separate CSS store stays for built-in-named skins only.
+    expect($backendThemes.get().default?.label).toBe('Classic Hermes')
+    expect($backendThemes.get().default?.customCSS).toBe('body { background: red; }')
+    expect($backendCustomCSS.get().nous).toBeUndefined()
+  })
+
+  it('clears customCSS when a built-in-named skin drops the field', () => {
+    ingestBackendSkin(skinWithCSS('mono', 'a { color: red; }'), { apply: true })
+    expect($backendCustomCSS.get().mono).toBe('a { color: red; }')
+
+    // Same skin, CSS removed from the YAML — the entry must go so stale rules
+    // don't linger after the next apply.
+    ingestBackendSkin(skin('mono'), { apply: true })
+
+    expect($backendCustomCSS.get().mono).toBeUndefined()
+  })
+
+  it('does not populate the CSS store for non-built-in skins (converter carries it)', () => {
+    ingestBackendSkin(skinWithCSS('neon', 'a { color: red; }'), { apply: true })
+
+    expect($backendCustomCSS.get()).toEqual({})
+    expect($backendThemes.get().neon?.customCSS).toBe('a { color: red; }')
+  })
+
+  it('reset clears the custom CSS store', () => {
+    ingestBackendSkin(skinWithCSS('mono', 'a {}'), { apply: false })
+    expect($backendCustomCSS.get().mono).toBe('a {}')
+
+    __resetBackendSkinSync()
+
+    expect($backendCustomCSS.get()).toEqual({})
+  })
+
   it('ignores empty payloads', () => {
     ingestBackendSkin(undefined, { apply: true })
     ingestBackendSkin({ name: '' }, { apply: true })
 
     expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('hydrates the registry from storage on load, so a persisted pick resolves before the gateway connects', async () => {
+    ingestBackendSkin(skin('neon'), { apply: false })
+    expect(JSON.parse(window.localStorage.getItem('hermes-desktop-backend-themes-v1') ?? '{}').neon?.name).toBe('neon')
+
+    // Relaunch: a fresh module instance with the same storage.
+    vi.resetModules()
+    const fresh = await import('./backend-sync')
+
+    expect(fresh.$backendThemes.get().neon?.name).toBe('neon')
+  })
+
+  it('drops junk and built-in names from the cached registry', async () => {
+    const mono = { name: 'mono', label: 'x', colors: { background: '#000', foreground: '#fff', primary: '#f0f' } }
+    window.localStorage.setItem('hermes-desktop-backend-themes-v1', JSON.stringify({ mono, bad: { name: 'bad' } }))
+
+    vi.resetModules()
+    const fresh = await import('./backend-sync')
+
+    expect(fresh.$backendThemes.get()).toEqual({})
   })
 })

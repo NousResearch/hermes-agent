@@ -645,6 +645,12 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    # Whether the forced skill RESOLVES for the assignee profile is covered by
+    # test_kanban_review_forced_skill.py; this test is about composition, so pin
+    # the probe to "resolvable" and let the spawn through.
+    monkeypatch.setattr(
+        kbd, "_unresolvable_worker_skills", lambda _task, board=None: set()
+    )
     captured: list[list[str]] = []
 
     def spawn(task, workspace):

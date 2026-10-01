@@ -1050,6 +1050,19 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     missing_display,
                     ", ".join(loaded_skills),
                 )
+            elif os.environ.get("HERMES_KANBAN_TASK"):
+                # A Kanban worker must never die at CLI init over a skill. The
+                # dispatcher force-loads reviewer skills (`--skills sdlc-review`)
+                # and a card may pin its own, so a name that is missing or
+                # operator-disabled used to abort the worker before its first
+                # turn: no terminal board call, no exit trailer, and the card
+                # was re-claimed into the same lane until the protocol-violation
+                # budget auto-blocked it. Warn and run without the skill.
+                logger.warning(
+                    "Unknown skill(s) requested for a Kanban worker, skipping: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                )
             else:
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:

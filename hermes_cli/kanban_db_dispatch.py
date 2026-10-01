@@ -261,6 +261,25 @@ _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
 
+# Run boundary written by ``_open_worker_log`` before the child starts. The log
+# is append-mode across re-runs, so every read that means "what THIS run wrote"
+# must scope itself to the last boundary: a worker that dies during CLI init
+# leaves no trailer of its own, and without the boundary it inherited the
+# PREVIOUS run's ``rc=0`` trailer — booking a dead run as a clean exit and
+# quoting a successful run's words as its last output.
+_RUN_START_MARKER = "[kanban-worker-start] run="
+_RUN_START_RE = re.compile(r"^" + re.escape(_RUN_START_MARKER) + r"(\d+)\s*$", re.MULTILINE)
+
+
+def _current_run_log(task_id: str, board: Optional[str] = None) -> Optional[str]:
+    """Worker-log text written by the CURRENT run: everything after the last
+    start boundary. Logs written before the boundary existed read whole."""
+    raw = _kb.read_worker_log(task_id, board=board)
+    if not raw:
+        return raw
+    starts = list(_RUN_START_RE.finditer(raw))
+    return raw[starts[-1].end():] if starts else raw
+
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
@@ -268,10 +287,10 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
     or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    wins WITHIN one run, never across re-runs (``_current_run_log``).
     """
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _current_run_log(task_id, board=board)
     except Exception:
         return None
     matches = _EXIT_TRAILER_RE.findall(raw or "")
@@ -986,7 +1005,7 @@ def _exit_summary_marker() -> str:
 
 def _log_noise_prefixes() -> tuple[str, ...]:
     from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
+    return ("session_id:", "Query:", t("cli.chat.initializing_agent"), _RUN_START_MARKER)
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
@@ -1005,7 +1024,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     "current", so the log would silently not be found.
     """
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _current_run_log(task_id, board=board)
     except Exception:
         return ""
     if not raw:
@@ -2022,6 +2041,40 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _unresolvable_worker_skills(task: Task, board: Optional[str] = None) -> set:
+    """Names in ``task.skills`` that will NOT load for the assignee's profile.
+
+    The worker CLI resolves ``--skills`` against the PROFILE-scoped skills tree
+    and raises when EVERY requested skill is missing or operator-disabled
+    (``cli.finalize_preloaded_skills``), aborting the worker before its first
+    turn. A lane that force-loads a skill must catch that here instead of
+    spawning a worker that can only die. Best-effort by construction: any
+    failure of the probe itself returns an empty set, so a broken probe can
+    never invent a block.
+    """
+    requested = [s for s in (task.skills or ()) if s]
+    if not requested:
+        return set()
+    profile_home: Optional[str] = None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        if task.assignee:
+            profile_home = resolve_profile_env(normalize_profile_name(task.assignee))
+    except Exception:
+        profile_home = None
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(profile_home) if profile_home else None
+    try:
+        from agent.skill_commands import build_preloaded_skills_prompt
+        _prompt, _loaded, missing = build_preloaded_skills_prompt(requested)
+        return {str(name) for name in missing if name}
+    except Exception:
+        return set()
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2120,6 +2173,26 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # A forced skill the assignee's profile cannot load kills the worker at
+        # CLI init — no terminal call, no exit trailer, re-claimed forever. A
+        # reviewer that never loads the review skill is not a review, and an
+        # unplaceable spawn is host infrastructure, not the card's failure.
+        missing_skills = _unresolvable_worker_skills(claimed, board=board)
+        if missing_skills:
+            reason = (
+                "review lane cannot load " + ", ".join(sorted(missing_skills))
+                + f" for profile {claimed.assignee or '<none>'}: missing or "
+                "operator-disabled (skills.disabled). Enable it for that profile, "
+                "or reassign the card to a reviewer profile that can load it."
+            )
+            _kb._log.warning("kanban dispatcher: %s", reason)
+            if _record_task_failure(
+                conn, claimed.id, reason, outcome="spawn_failed",
+                failure_limit=failure_limit, release_claim=True, end_run=True,
+                infrastructure=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2787,7 +2860,16 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    handle = open(log_path, "ab")
+    # Run boundary (see _RUN_START_MARKER): written before the child starts so a
+    # later sweep can tell this run's bytes from the previous run's.
+    if task.current_run_id is not None:
+        try:
+            handle.write(f"{_RUN_START_MARKER}{int(task.current_run_id)}\n".encode())
+            handle.flush()
+        except OSError:
+            pass
+    return handle
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

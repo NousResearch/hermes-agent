@@ -81,3 +81,34 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
+
+
+def test_kanban_worker_survives_unknown_preloaded_skill(monkeypatch):
+    """A Kanban worker must never die at CLI init over a skill.
+
+    The dispatcher force-loads the reviewer skill and a card may pin its own, so
+    a missing or operator-disabled name used to abort the worker before its
+    first turn: no terminal board call, no exit trailer, and the card was
+    re-claimed into the same lane until the violation budget auto-blocked it.
+    """
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None, excluded_loaded_names=None: ("", [], ["sdlc-review"]),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_bf0b7d80")
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skills="sdlc-review", list_tools=True)
+
+    # No raise: the worker starts without the skill it cannot load.
+    _real_finalize(created["cli"])

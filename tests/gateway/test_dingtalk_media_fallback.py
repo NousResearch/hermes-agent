@@ -40,12 +40,19 @@ async def test_rich_media_first_success_reaches_extraction(monkeypatch, caplog, 
     adapter._sdk_call = sdk_call
     item = {"type": "picture", "downloadCode": "standard",
             "pictureDownloadCode": "picture", "download_code": "snake"}
-    message = SimpleNamespace(message_type="richText", rich_text_content=SimpleNamespace(
+    message = SimpleNamespace(message_type="richText", message_id="fixture-message",
+        conversation_id="fixture-chat", sender_id="fixture-sender", rich_text_content=SimpleNamespace(
         rich_text_list=[{"text": "Please explain this image"}, item]))
     if legacy:
         message.rich_text = message.rich_text_content.rich_text_list
         del message.rich_text_content
-    await adapter._resolve_media_codes(message)
+    adapter.handle_message = AsyncMock()
+    await adapter._on_message(message)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "Please explain this image"
+    assert event.media_urls == (["https://fixture.invalid/image.png"] if winner else [])
+    assert event.raw_message is message
     _, urls, _ = adapter._extract_media(message)
     assert urls == (["https://fixture.invalid/image.png"] if winner else [])
     expected = ["standard", "picture", "snake"]

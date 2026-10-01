@@ -118,13 +118,15 @@ class TestStripMention:
 
     def test_other_bot_mentions_preserved(self):
         result = self.adapter._strip_mention(
-            "@hermes @hermes-kelly @hermes+kelly @hermes/kelly "
+            "@hermes #@hermes #@hermes:example.org #chat@hermes:example.org #(@hermes:example.org "
+            "@hermes-kelly @hermes+kelly @hermes/kelly "
             "@hermes..kelly:example.org @hermes.+kelly:example.org "
             "@hermes.:example.org @hermes:[2001:db8::1] "
             "@hermes:[2001:db8::1]:8448 @hermes:other.org "
             "@hermes:EXAMPLE.ORG @hermes:example.org.evil"
         )
         assert result == (
+            "#@hermes #@hermes:example.org #chat@hermes:example.org #(@hermes:example.org "
             "@hermes-kelly @hermes+kelly @hermes/kelly "
             "@hermes..kelly:example.org @hermes.+kelly:example.org "
             "@hermes.:example.org @hermes:[2001:db8::1] "
@@ -301,6 +303,16 @@ async def test_localpart_mentions_respect_identifier_boundaries(localpart, menti
         (f"ping @kelly:{localpart}", None),
         (f"join #{localpart}", None),
         (f"join #{localpart}:example.org", None),
+        (f"join #@{localpart}", None),
+        (f"join #@{localpart}:example.org", None),
+        (f"join #chat@{localpart}:example.org", None),
+        (f"join #(@{localpart}:example.org", None),
+        (f"join #/@{localpart}:example.org", None),
+        (f"https://matrix.to/#/#chat@{localpart}:example.org", None),
+        (f"# @{localpart} please help", "# please help"),
+        (f"#{localpart}:example.org @{localpart} please help",
+         f"#{localpart}:example.org please help"),
+        (f"https://matrix.to/#/@{localpart}:example.org", "https://matrix.to/#/"),
         (f"@{localpart} please help", "please help"),
         (f"Question:@{localpart}, please help", "Question:, please help"),
         (f"@{localpart}:example.org. please help", ". please help"),

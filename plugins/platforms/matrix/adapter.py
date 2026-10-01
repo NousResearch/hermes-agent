@@ -82,6 +82,8 @@ from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
+_MATRIX_ROOM_ALIAS_TOKEN = re.compile(
+    r"((?<!https://matrix\.to/)(?<!http://matrix\.to/)#[^\s:\x00]+:[^\s\x00]+)")
 _MATRIX_MENTION_FULL_ID_END = r"(?![A-Za-z0-9-]|\.[A-Za-z0-9-]|:\S)"
 _MATRIX_MENTION_LOCALPART_START = r"(?<![@\w.=+/-])"
 _MATRIX_MENTION_LOCALPART_END = r"(?![\w=+/-]|\.+[\w=+/:-]|:\S)"
@@ -2937,13 +2939,14 @@ class MatrixAdapter(BasePlatformAdapter):
     def _body_mentions_bot(self, body: str, *, bare_localpart: bool) -> bool:
         if not body:
             return False
-        if self._user_id and re.search(re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END, body):
+        body = _MATRIX_ROOM_ALIAS_TOKEN.sub(" ", body)
+        if self._user_id and re.search(r"(?<!#)" + re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END, body):
             return True
         localpart = self._user_localpart()
         if not localpart:
             return False
         mention_end = re.escape(localpart) + _MATRIX_MENTION_LOCALPART_END
-        local_mention = _MATRIX_MENTION_LOCALPART_START + r"@" + mention_end
+        local_mention = _MATRIX_MENTION_LOCALPART_START + r"(?<!#)@" + mention_end
         if re.search(local_mention, body, re.IGNORECASE):
             return True
         if not bare_localpart:
@@ -2992,14 +2995,17 @@ class MatrixAdapter(BasePlatformAdapter):
         words, or "Hermes Agent" would become "Agent"."""
         if not body:
             return ""
-        if self._user_id:
-            full_id = re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END
-            body = re.sub(full_id, "", body)
+        parts = _MATRIX_ROOM_ALIAS_TOKEN.split(body)
         localpart = self._user_localpart()
-        if localpart:
-            local_mention = (_MATRIX_MENTION_LOCALPART_START + r"@" + re.escape(localpart)
-                             + _MATRIX_MENTION_LOCALPART_END)
-            body = re.sub(local_mention, "", body, flags=re.IGNORECASE)
+        for index in range(0, len(parts), 2):
+            if self._user_id:
+                full_id = r"(?<!#)" + re.escape(self._user_id) + _MATRIX_MENTION_FULL_ID_END
+                parts[index] = re.sub(full_id, "", parts[index])
+            if localpart:
+                local_mention = (_MATRIX_MENTION_LOCALPART_START + r"(?<!#)@" + re.escape(localpart)
+                                 + _MATRIX_MENTION_LOCALPART_END)
+                parts[index] = re.sub(local_mention, "", parts[index], flags=re.IGNORECASE)
+        body = "".join(parts)
         # Normalize spacing after mention removal.
         body = re.sub(r'[ \t]{2,}', ' ', body)
         body = re.sub(r'\s+([,.;:!?])', r'\1', body)

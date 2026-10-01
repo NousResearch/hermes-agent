@@ -120,7 +120,7 @@ test('self-managed installs retain summary and uninstall IPC behavior under Elec
     expect(ipc.probeSummary).toHaveBeenCalledOnce()
     expect(ipc.localSummary).not.toHaveBeenCalled()
 
-    ipc.probeSummary.mockResolvedValue({ ...fallbackSummary, code_removal_allowed: false })
+    ipc.probeSummary.mockResolvedValue({ ...fallbackSummary, code_removal_allowed: false, native_removal_instructions: null })
     expect(await ipc.invoke('hermes:uninstall:summary')).toMatchObject({
       probe: 'fallback',
       code_removal_allowed: true

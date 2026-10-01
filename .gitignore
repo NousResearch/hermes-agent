@@ -87,6 +87,8 @@ environments/benchmarks/evals/
 
 # Web UI build output
 hermes_cli/web_dist/
+# Web UI build temp dir (swapped into web_dist/; can linger when cleanup races a lock on Windows)
+hermes_cli/.web_dist-build-*/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
 apps/desktop/build/

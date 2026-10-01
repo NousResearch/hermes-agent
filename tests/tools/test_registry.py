@@ -9,6 +9,7 @@ import pytest
 
 from tools.registry import (
     ToolRegistry,
+    _IMPORT_MAX_ATTEMPTS,
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
     discover_builtin_tools,
@@ -18,6 +19,50 @@ from tools.registry import (
 
 def _dummy_handler(args, **kwargs):
     return json.dumps({"ok": True})
+
+
+class TestDiscoverBuiltinToolsImportRetry:
+    """A tool module that fails to import is absent from the registry for the whole
+    process — discovery never runs twice. Most failures there are transient startup
+    races (CPython raises ``_DeadlockError`` when the tools scan interleaves with
+    another import thread), so a retry must recover them."""
+
+    @staticmethod
+    def _patch_import(monkeypatch, failing_name, failures, exc):
+        """Make *failing_name* raise *exc* for *failures* attempts, then import normally."""
+        from tools import registry as reg
+        real = reg.importlib.import_module
+        state = {"calls": 0}
+
+        def flaky(name, *a, **k):
+            if name == failing_name and state["calls"] < failures:
+                state["calls"] += 1
+                raise exc
+            return real(name, *a, **k)
+
+        monkeypatch.setattr(reg.importlib, "import_module", flaky)
+        monkeypatch.setattr("tools.registry.time.sleep", lambda *_: None)
+        return state
+
+    def test_transient_import_failure_is_retried_and_recovered(self, monkeypatch):
+        state = self._patch_import(
+            monkeypatch, "tools.cronjob_tools", _IMPORT_MAX_ATTEMPTS - 1,
+            ImportError("deadlock detected by _ModuleLock('cron.scheduler') at 1"))
+        imported = discover_builtin_tools()
+        assert state["calls"] == _IMPORT_MAX_ATTEMPTS - 1
+        assert "tools.cronjob_tools" in imported
+
+    def test_persistent_import_failure_is_dropped_after_the_attempt_cap(self, monkeypatch, caplog):
+        state = self._patch_import(
+            monkeypatch, "tools.cronjob_tools", _IMPORT_MAX_ATTEMPTS,
+            ImportError("still broken"))
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            imported = discover_builtin_tools()
+        assert state["calls"] == _IMPORT_MAX_ATTEMPTS
+        assert "tools.cronjob_tools" not in imported
+        assert any("Could not import tool module tools.cronjob_tools" in r.message
+                   for r in caplog.records)
+
 
 
 def _make_schema(name="test_tool"):

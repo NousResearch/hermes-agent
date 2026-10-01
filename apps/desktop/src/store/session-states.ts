@@ -2499,6 +2499,53 @@ export function openSessionTile(
   }
 }
 
+/**
+ * Persist a tile into an explicit profile namespace without disturbing the
+ * profile currently on screen. Returns true when that namespace is active, in
+ * which case the regular open path also publishes the tile for immediate pane
+ * adoption. An inactive profile receives only durable placement; its runtime is
+ * re-resumed when the user returns to it.
+ */
+export function openSessionTileForProfile(
+  storedSessionId: string,
+  profile: string,
+  dir: TileDock = 'right',
+  anchor?: string,
+  before?: null | string,
+  ownerRoute?: SessionOwnerRoute
+): boolean {
+  const targetProfile = normalizeProfileKey(profile)
+
+  if (targetProfile === profileKey()) {
+    openSessionTile(storedSessionId, dir, anchor, before)
+
+    if (ownerRoute) {
+      patchSessionTile(storedSessionId, { ownerRoute })
+    }
+
+    return true
+  }
+
+  const stored = tilesByProfile[targetProfile] ?? []
+
+  const existing = stored.find(tile => tile.storedSessionId === storedSessionId)
+
+  if (!existing) {
+    tilesByProfile[targetProfile] = [
+      ...stored,
+      { anchor, before: before ?? undefined, dir, ownerRoute, storedSessionId }
+    ]
+    persistTiles()
+  } else if (ownerRoute) {
+    tilesByProfile[targetProfile] = stored.map(tile =>
+      tile.storedSessionId === storedSessionId ? { ...tile, ownerRoute } : tile
+    )
+    persistTiles()
+  }
+
+  return false
+}
+
 /** ⌘W on the MAIN tab: the next session tab stacked WITH the workspace, to
  *  shift into main. Walks the workspace group's strip from the workspace tab
  *  outward (the tab after it first, then wrapping to the ones before), and
@@ -3023,11 +3070,16 @@ export function reopenLastClosedTile(): void {
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, {
+        ownerRoute: tile.ownerRoute,
         workspaceMode: tile.workspaceMode ?? 'sessions',
         workspaceOwnerKey: tile.workspaceOwnerKey,
-        workspaceTabTitle: tile.workspaceTabTitle,
-        ownerRoute: tile.ownerRoute
+        workspaceTabTitle: tile.workspaceTabTitle
       })
+
+      if (tile.ownerRoute) {
+        patchSessionTile(storedSessionId, { ownerRoute: tile.ownerRoute })
+      }
+
       focusOpenSession(storedSessionId)
       recordDislike('undo', 'closed_tab')
 

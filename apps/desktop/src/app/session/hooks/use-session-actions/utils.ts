@@ -1791,6 +1791,14 @@ export function selectBranchMessages(
   return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
 }
 
+interface OptimisticSessionContext {
+  connectionId?: string
+  cwd?: null | string
+  mode?: 'local' | 'remote'
+  profile?: null | string
+  targetProfile?: string
+}
+
 export function upsertOptimisticSession(
   created: SessionCreateResponse,
   id: string,
@@ -1798,12 +1806,20 @@ export function upsertOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  owner?: null | SessionProfileRoute
+  context?: null | OptimisticSessionContext
 ) {
-  const session = buildOptimisticSession(created, id, title, preview, parentSessionId, lastActive, owner)
+  const session = buildOptimisticSession(created, id, title, preview, parentSessionId, lastActive, context)
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
+  // A context carrying a connection AND a profile is an exact create route,
+  // not just placement — record it as the row's owner so every later
+  // session-scoped RPC resolves this id against the backend that made it.
+  if (context?.connectionId && context.profile) {
+    setSessionOwnerHint(id, {
+      connectionId: context.connectionId,
+      profile: context.profile,
+      ...(context.mode ? { mode: context.mode } : {}),
+      ...(context.targetProfile ? { targetProfile: context.targetProfile } : {})
+    })
   }
 
   // A real row supersedes any unlisted-draft stub for the same id (first send
@@ -1845,27 +1861,23 @@ function buildOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  owner?: null | SessionProfileRoute
+  context?: null | OptimisticSessionContext
 ): SessionInfo {
   const now = lastActive ?? Date.now() / 1000
-  // Stamp the profile the session was just created on so the scoped sidebar
-  // shows the new row immediately instead of filtering it out as "default"
-  // until the aggregator re-fetches. An explicitly routed create ($newChatRoute
-  // / a tile's route) names its EXACT owner: the backend profile that route
-  // serves, on that route's connection. The live gateway's profile is only the
-  // owner for an unrouted create — in All-profiles / Bot routing the ambient
-  // profile stays on `default` while the session lives on another backend (and
-  // a concurrent source switch can move the active gateway before this row is
-  // inserted), so a row stamped `default` then misroutes every session-scoped
-  // RPC that resolves its owner off the row ("session not found" on turn two).
-  const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
-  const connectionId = owner?.connectionId.trim() || ''
+  // Preserve an exact create route when one is available, while allowing
+  // branch callers to add cwd/profile placement before they have a connection
+  // route. A bare profile is placement metadata, not an exact owner hint.
+  const profileKey = normalizeProfileKey(context?.targetProfile || context?.profile || $activeGatewayProfile.get())
+  const connectionId = context?.connectionId?.trim() || ''
+  const fallbackCwd = Object.hasOwn(context ?? {}, 'cwd')
+    ? context?.cwd?.trim() || null
+    : $currentCwd.get().trim() || null
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
     // lane immediately (the overlay groups by path); fall back to the workspace
     // the session was just started in when the create response omits it.
-    cwd: created.info?.cwd ?? ($currentCwd.get().trim() || null),
+    cwd: created.info?.cwd ?? fallbackCwd,
     ended_at: null,
     id,
     input_tokens: 0,
@@ -2275,21 +2287,23 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-interface ApplyRuntimeInfoOptions {
-  /**
-   * Whether this runtime belongs to the session the MAIN pane is showing.
-   * Foreground (the default) mirrors into the composer atoms every main-pane
-   * surface reads.
-   *
-   * A tile or a background branch must pass `false`: it owns a different
-   * worktree, and writing its cwd into `$currentCwd` re-pointed the main
-   * composer's coding rail (and the persisted workspace cwd) at the tile's
-   * repo — the main rail painted a branch from a tree its session was never
-   * in. The returned patch still carries every field, so the caller's own
-   * per-session state is unaffected.
-   */
-  foreground?: boolean
-}
+/**
+ * Foreground (the default) mirrors runtime metadata into the composer atoms.
+ * A tile or background branch must declare both `foreground: false` and its
+ * immutable owner profile so delayed metadata cannot bleed into the profile
+ * that happens to be active when the response arrives.
+ */
+type ApplyRuntimeInfoOptions =
+  | {
+      foreground?: true
+      profile?: null | string
+    }
+  | {
+      foreground: false
+      // Optional: a background runtime with no explicit owner keeps the
+      // ambient profile for approval reconciliation (historic behavior).
+      profile?: null | string
+    }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
  *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
@@ -2346,8 +2360,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  options: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
+  const { foreground = true } = options
+
   if (!info) {
     return null
   }
@@ -2357,7 +2373,11 @@ export function applyRuntimeInfo(
   reportBackendContract(info.desktop_contract)
 
   if (info.approval_mode !== undefined) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
+    const approvalProfile = Object.hasOwn(options, 'profile')
+      ? normalizeProfileKey(options.profile)
+      : normalizeProfileKey($activeGatewayProfile.get())
+
+    reconcileApprovalModeForProfile(approvalProfile, info.approval_mode)
   }
 
   requestDesktopOnboardingForCredentialWarning(info.credential_warning)

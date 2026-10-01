@@ -61,9 +61,12 @@ function Harness({ onReady }: { onReady: (handle: Handle) => void }) {
   const actions = useSessionActions({
     activeSessionId: null,
     activeSessionIdRef: ref<string | null>(null),
+    bindGatewayRequest: vi.fn() as never,
+    bindGatewayRequestForOwner: vi.fn() as never,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
+    gatewayRef: ref(null),
     getRouteToken: () => 'token',
     getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,

@@ -10,27 +10,37 @@ import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { group } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  focusedSessionTabAnchor,
+  noteActiveTreeGroup,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
 import {
   deleteSession,
   getAllSessionMessages,
   getLatestSessionMessages,
   getSession,
+  type HermesGateway,
   type ProfileScope,
   type SessionInfo,
   type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $approvalModes, approvalModeForProfile, reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import {
   activeGatewayConnectionId,
+  type GatewayRequestLease,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $notifications } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $newChatConnectionId,
@@ -52,6 +62,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $freshDraftKey,
+  $freshDraftReady,
   $messages,
   $messagingSessions,
   $newChatWorkspaceTarget,
@@ -77,6 +88,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setFreshDraftReady,
   setMessages,
   setMessagingSessions,
   setNewChatWorkspaceTarget,
@@ -93,9 +105,12 @@ import { requestForSessionProfile, type SessionProfileRoute } from '@/store/sess
 import {
   $sessionTiles,
   clearAllSessionStates,
+  closeSessionTile,
   dropSessionState,
   knownOwnerForSession,
+  openSessionTileForProfile,
   publishSessionState,
+  reopenLastClosedTile,
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
@@ -152,11 +167,28 @@ vi.mock('@/store/gateway', async importOriginal => {
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  focusedSessionTabAnchor: vi.fn(() => 'workspace'),
   noteActiveTreeGroup: vi.fn(),
   revealTreePane: vi.fn()
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+
+function gatewayWithRequest(
+  request: (method: string, params?: Record<string, unknown>) => Promise<unknown>
+): HermesGateway {
+  return { request } as unknown as HermesGateway
+}
+
+function directGatewayLease(gateway: HermesGateway): GatewayRequestLease {
+  return {
+    request: <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) =>
+      timeoutMs !== undefined || signal !== undefined
+        ? gateway.request<T>(method, params, timeoutMs, signal)
+        : gateway.request<T>(method, params),
+    release: vi.fn()
+  }
+}
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
@@ -223,9 +255,12 @@ function Harness({
   const actions = useSessionActions({
     activeSessionId,
     activeSessionIdRef: activeSessionIdRefOverride ?? ref(activeSessionId),
+    bindGatewayRequest: directGatewayLease,
+    bindGatewayRequestForOwner: vi.fn() as never,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
+    gatewayRef: ref(gatewayWithRequest(requestGateway)),
     getRouteToken: getRouteTokenOverride ?? (() => 'token'),
     getRoutedStoredSessionId,
     navigate: navigate as never,
@@ -569,9 +604,12 @@ function StoredIdRotationHarness({
   useSessionActions({
     activeSessionId: activeSessionIdRef.current,
     activeSessionIdRef,
+    bindGatewayRequest: directGatewayLease,
+    bindGatewayRequestForOwner: vi.fn() as never,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
+    gatewayRef: ref(gatewayWithRequest(async () => ({}) as never)),
     getRouteToken: () => 'token',
     getRoutedStoredSessionId,
     navigate: navigate as never,
@@ -1534,6 +1572,8 @@ function ResumeHarness({
   const actions = useSessionActions({
     activeSessionId: null,
     activeSessionIdRef: ref<string | null>(null),
+    bindGatewayRequest: directGatewayLease,
+    bindGatewayRequestForOwner: vi.fn() as never,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -1608,9 +1648,12 @@ function ResumeTimerHarness({
   const actions = useSessionActions({
     activeSessionId,
     activeSessionIdRef: cache.activeSessionIdRef,
+    bindGatewayRequest: directGatewayLease,
+    bindGatewayRequestForOwner: vi.fn() as never,
     busyRef,
     creatingSessionRef: useRef(false),
     ensureSessionState: cache.ensureSessionState,
+    gatewayRef: useRef(gatewayWithRequest(requestGateway)),
     getRouteToken: () => 'timer-contract',
     navigate: vi.fn() as never,
     requestGateway,
@@ -2881,6 +2924,10 @@ describe('resumeSession warm switch away from a streaming session (#89696)', () 
 
 function BranchHarness({
   activeSessionId = null,
+  bindGatewayRequest = directGatewayLease,
+  bindGatewayRequestForOwner,
+  busy = false,
+  gatewayRef,
   navigate = vi.fn(),
   onCurrentReady,
   onLoadedReady,
@@ -2888,11 +2935,16 @@ function BranchHarness({
   onStateUpdate,
   onRefs,
   requestGateway,
-  selectedStoredSessionId = null
+  selectedStoredSessionId = null,
+  sessionStateByRuntimeIdRef
 }: {
   activeSessionId?: string | null
+  bindGatewayRequest?: (gateway: HermesGateway, profile: string) => GatewayRequestLease
+  bindGatewayRequestForOwner?: (connectionId: string, profile: string) => GatewayRequestLease
+  busy?: boolean
+  gatewayRef?: MutableRefObject<HermesGateway | null>
   navigate?: ReturnType<typeof vi.fn>
-  onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
+  onCurrentReady?: (branchCurrentSession: (messageId?: string, targetSessionId?: string) => Promise<boolean>) => void
   onLoadedReady?: (branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
@@ -2902,19 +2954,35 @@ function BranchHarness({
   }) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionId?: string | null
+  sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
   const activeSessionIdRef = ref<string | null>(activeSessionId)
   const selectedStoredSessionIdRef = ref<string | null>(selectedStoredSessionId)
+  const sessionStates = sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>())
 
   onRefs?.({ activeSessionIdRef, selectedStoredSessionIdRef })
 
   const actions = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
-    busyRef: ref(false),
+    bindGatewayRequest,
+    bindGatewayRequestForOwner:
+      bindGatewayRequestForOwner ?? (() => directGatewayLease(gatewayWithRequest(requestGateway))),
+    busyRef: ref(busy),
     creatingSessionRef: ref(false),
-    ensureSessionState: () => ({}) as ClientSessionState,
+    ensureSessionState: (sessionId, storedSessionId) => {
+      const existing = sessionStates.current.get(sessionId)
+
+      const state = existing
+        ? { ...existing, ...(storedSessionId !== undefined ? { storedSessionId } : {}) }
+        : createClientSessionState(storedSessionId ?? null)
+
+      sessionStates.current.set(sessionId, state)
+
+      return state
+    },
+    gatewayRef: gatewayRef ?? ref(gatewayWithRequest(requestGateway)),
     getRouteToken: () => 'token',
     getRoutedStoredSessionId: () => null,
     navigate: navigate as never,
@@ -2924,10 +2992,18 @@ function BranchHarness({
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: sessionStates,
     syncSessionStateToView: vi.fn(),
-    updateSessionState: (sessionId, updater) => {
-      const next = updater(createClientSessionState(null))
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      const current = sessionStates.current.get(sessionId) ?? createClientSessionState(storedSessionId ?? null)
+
+      const next = updater(
+        storedSessionId !== undefined && current.storedSessionId !== storedSessionId
+          ? { ...current, storedSessionId }
+          : current
+      )
+
+      sessionStates.current.set(sessionId, next)
       onStateUpdate?.(sessionId, next)
 
       return next
@@ -2953,9 +3029,13 @@ function BranchHarness({
 describe('branchStoredSession desktop source tagging', () => {
   afterEach(() => {
     cleanup()
+    $approvalModes.set({})
+    $activeGatewayProfile.set('default')
+    setFreshDraftReady(false)
     setSessions([])
     $sessionTiles.set([])
     setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     vi.restoreAllMocks()
   })
 
@@ -2998,6 +3078,10 @@ describe('branchStoredSession desktop source tagging', () => {
       />
     )
     await waitFor(() => expect(branchStoredSession).not.toBeNull())
+    // Both capture and completion normalize the absent tree anchor to undefined.
+    // A stable no-anchor branch must still reveal its child pane.
+    vi.mocked(focusedSessionTabAnchor).mockReturnValue(null)
+    vi.mocked(revealTreePane).mockClear()
 
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
@@ -3060,6 +3144,7 @@ describe('branchStoredSession desktop source tagging', () => {
     expect($selectedStoredSessionId.get()).toBe('stored-other')
     expect(navigate).not.toHaveBeenCalled()
     // The branch instead opens as its own tile.
+    expect(revealTreePane).toHaveBeenCalledWith('session-tile:branch-stored')
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
   })
 
@@ -3256,7 +3341,7 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 
-  it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
+  it('branches an open live chat via session.branch with a trimmed message count and preserves its backend target', async () => {
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -3273,6 +3358,17 @@ describe('branchStoredSession desktop source tagging', () => {
         } as never
       }
 
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'branch-stored',
+          session_id: 'branch-runtime',
+          session_key: 'branch-stored'
+        } as never
+      }
+
       return {} as never
     })
 
@@ -3282,19 +3378,40 @@ describe('branchStoredSession desktop source tagging', () => {
       { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }] },
       { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }] }
     ])
+    setSessions([storedSession({ id: 'stored-parent', profile: 'backend-default' })])
+    setSelectedStoredSessionId('stored-parent')
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'question one', role: 'user', timestamp: 1 },
+        { content: 'answer one', role: 'assistant', timestamp: 2 },
+        { content: 'question two', role: 'user', timestamp: 3 },
+        { content: 'answer two', role: 'assistant', timestamp: 4 }
+      ],
+      session_id: 'stored-parent'
+    } as never)
 
     let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    const leasedOwnerRoute: SessionProfileRoute = { connectionId: 'source-a', profile: 'default' }
+
+    const completeOwnerRoute: SessionProfileRoute = {
+      connectionId: 'source-a',
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+
     render(
       <BranchHarness
         activeSessionId="live-parent"
+        bindGatewayRequest={gateway => ({ ...directGatewayLease(gateway), ownerRoute: leasedOwnerRoute })}
         onCurrentReady={branch => (branchCurrentSession = branch)}
         onReady={() => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
       />
     )
     await waitFor(() => expect(branchCurrentSession).not.toBeNull())
 
-    // Branch from the FIRST assistant reply ("a1"), not the last message �
+    // Branch from the FIRST assistant reply ("a1"), not the last message —
     // this is exactly the scenario that used to drop the question (bug #1):
     // only the clicked message survived instead of everything up to it.
     await expect(branchCurrentSession!('a1')).resolves.toBe(true)
@@ -3304,9 +3421,696 @@ describe('branchStoredSession desktop source tagging', () => {
       count: 2
     })
     expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    expect($sessions.get().find(session => session.id === 'branch-stored')).toMatchObject({
+      connection_id: 'source-a',
+      profile: 'backend-default'
+    })
+    expect(getSessionOwnerHint('branch-stored')).toEqual(completeOwnerRoute)
+
+    // Persisting/reopening the child tile must retain the complete display-to-
+    // backend route, and every later session read must use the physical display
+    // profile while rewriting an explicit backend profile parameter.
+    setSelectedStoredSessionId(null)
+    openSessionTileForProfile('branch-stored', 'default', 'center', undefined, undefined, completeOwnerRoute)
+    closeSessionTile('branch-stored')
+    reopenLastClosedTile()
+    expect(sessionTileOwnerRoute('branch-stored')).toEqual(completeOwnerRoute)
+
+    vi.mocked(requestGatewayForAgent).mockClear()
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({} as never)
+
+    for (const method of ['session.get', 'session.messages', 'session.read']) {
+      await requestForSessionProfile(knownSessionOwner($sessions.get(), 'branch-stored'), requestGateway, method, {
+        profile: 'default',
+        session_id: 'branch-stored'
+      })
+    }
+
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(1, 'source-a', 'default', 'session.get', {
+      profile: 'backend-default',
+      session_id: 'branch-stored'
+    })
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(2, 'source-a', 'default', 'session.messages', {
+      profile: 'backend-default',
+      session_id: 'branch-stored'
+    })
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(3, 'source-a', 'default', 'session.read', {
+      profile: 'backend-default',
+      session_id: 'branch-stored'
+    })
+  })
+
+  it('keeps a branch-from-branched tile on the exact owner when connections share a profile', async () => {
+    vi.mocked(ensureGatewayProfile).mockClear()
+    $activeGatewayProfile.set('default')
+    setCurrentCwd('/foreground/workspace')
+    setCurrentFastMode(false)
+    setCurrentModel('foreground-model')
+    setCurrentProvider('foreground-provider')
+    setFreshDraftReady(true)
+
+    const foregroundMessages: ClientSessionState['messages'] = [
+      { id: 'foreground-q', role: 'user', parts: [{ type: 'text', text: 'foreground question' }] }
+    ]
+
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] },
+      { id: 'tile-a', role: 'assistant', parts: [{ type: 'text', text: 'tile answer' }] }
+    ]
+
+    const tileState = {
+      ...createClientSessionState('tile-stored', tileMessages),
+      cwd: '/tile/workspace'
+    }
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([['tile-runtime', tileState]])
+    }
+
+    setMessages(foregroundMessages)
+    setSessions([
+      storedSession({ id: 'foreground-stored', profile: 'default' }),
+      storedSession({ id: 'tile-stored', profile: 'default' })
+    ])
+    $sessionTiles.set([
+      { storedSessionId: 'tile-stored', ownerRoute: { connectionId: 'source-b', profile: 'default' } }
+    ])
+
+    let branchNumber = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.branch') {
+        branchNumber += 1
+
+        return {
+          session_id: `branch-runtime-${branchNumber}`,
+          stored_session_id: `branch-stored-${branchNumber}`,
+          title: 'Branch',
+          message_count: 2,
+          messages: [],
+          info: {
+            cwd: '/tile/workspace',
+            fast: true,
+            model: 'tile-model',
+            provider: 'tile-provider'
+          }
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const activeOwnerBinder = vi.fn(directGatewayLease)
+    const tileOwnerBinder = vi.fn(() => directGatewayLease(gatewayWithRequest(requestGateway)))
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequest={activeOwnerBinder}
+        bindGatewayRequestForOwner={tileOwnerBinder}
+        busy
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="foreground-stored"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!(undefined, 'tile-runtime')).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
+      session_id: 'tile-runtime',
+      count: 2
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'session.branch',
+      expect.objectContaining({ session_id: 'foreground-runtime' })
+    )
+    expect(tileOwnerBinder).toHaveBeenCalledWith('source-b', 'default')
+    expect(activeOwnerBinder).not.toHaveBeenCalled()
+    // session.branch is runtime-scoped: switching to the stored row's profile
+    // before the RPC would move requestGateway to another socket where this
+    // runtime does not exist.
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
+
+    // The child opens in its own tile, so its runtime metadata must stay in its
+    // isolated state/optimistic row instead of repainting the primary chat.
+    expect($currentCwd.get()).toBe('/foreground/workspace')
+    expect($currentFastMode.get()).toBe(false)
+    expect($currentModel.get()).toBe('foreground-model')
+    expect($currentProvider.get()).toBe('foreground-provider')
+    expect($freshDraftReady.get()).toBe(true)
+    expect($sessions.get().find(session => session.id === 'branch-stored-1')).toMatchObject({
+      connection_id: 'source-b',
+      cwd: '/tile/workspace',
+      parent_session_id: 'tile-stored',
+      profile: 'default'
+    })
+    expect(getSessionOwnerHint('branch-stored-1')).toEqual({ connectionId: 'source-b', profile: 'default' })
+    expect(sessionStateByRuntimeIdRef.current.get('branch-runtime-1')).toMatchObject({
+      cwd: '/tile/workspace',
+      fast: true,
+      messages: tileMessages,
+      model: 'tile-model',
+      provider: 'tile-provider',
+      storedSessionId: 'branch-stored-1'
+    })
+    expect(sessionTileOwnerRoute('branch-stored-1')).toEqual({ connectionId: 'source-b', profile: 'default' })
+
+    closeSessionTile('branch-stored-1')
+    expect(sessionTileOwnerRoute('branch-stored-1')).toBeUndefined()
+    expect(knownSessionOwner($sessions.get(), 'branch-stored-1')).toEqual({
+      connectionId: 'source-b',
+      profile: 'default'
+    })
+    reopenLastClosedTile()
+    expect(sessionTileOwnerRoute('branch-stored-1')).toEqual({ connectionId: 'source-b', profile: 'default' })
+
+    await expect(branchCurrentSession!(undefined, 'branch-runtime-1')).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
+      session_id: 'branch-runtime-1',
+      count: 2
+    })
+    expect(tileOwnerBinder).toHaveBeenNthCalledWith(2, 'source-b', 'default')
+    expect($sessions.get().find(session => session.id === 'branch-stored-2')).toMatchObject({
+      parent_session_id: 'branch-stored-1',
+      profile: 'default'
+    })
+    expect(sessionTileOwnerRoute('branch-stored-2')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  it('fails closed when an explicit tile has no exact connection owner', async () => {
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] }
+    ]
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([
+        ['tile-runtime', { ...createClientSessionState('tile-stored', tileMessages), cwd: '/tile/workspace' }]
+      ])
+    }
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const bindGatewayRequestForOwner = vi.fn()
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequestForOwner={bindGatewayRequestForOwner as never}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!(undefined, 'tile-runtime')).resolves.toBe(false)
+    expect(bindGatewayRequestForOwner).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when an explicit offscreen target vanished from the runtime cache, never branching the foreground', async () => {
+    // /branch from a tile arrives with the tile's runtime id. If that runtime
+    // disappeared from the session-state cache (reconnect, orphan-reap,
+    // eviction) mid-dispatch, the explicit target must fail closed with a
+    // warning — falling through to the foreground's transcript would branch
+    // an unrelated conversation (the cross-session branch bug).
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const bindGatewayRequestForOwner = vi.fn()
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequestForOwner={bindGatewayRequestForOwner as never}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="foreground-stored"
+        sessionStateByRuntimeIdRef={{ current: new Map<string, ClientSessionState>() }}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    const notificationsBefore = $notifications.get().length
+
+    await expect(branchCurrentSession!(undefined, 'vanished-tile-runtime')).resolves.toBe(false)
+    // Fail closed: no RPC at all, and nothing that could have read the
+    // foreground transcript or minted a branch from it.
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(bindGatewayRequestForOwner).not.toHaveBeenCalled()
+    // Only the notice THIS call added (notices prepend) — earlier tests in
+    // the file leave their own notices in the store.
+    const added = $notifications.get()
+    expect(added.slice(0, added.length - notificationsBefore)).toEqual([
+      expect.objectContaining({ kind: 'warning', title: 'Nothing to branch' })
+    ])
+  })
+
+  it('refuses to branch a busy tile from the tile runtime busy state, not the foreground busy flag', async () => {
+    // /branch from a live tile must consult the tile's OWN busy state: an
+    // in-flight tile turn branches stale history otherwise. The foreground
+    // busy flag is deliberately the opposite, so a foreground-keyed gate
+    // would have let the branch through.
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] }
+    ]
+
+    const busyTileState = {
+      ...createClientSessionState('tile-stored', tileMessages),
+      busy: true,
+      cwd: '/tile/workspace'
+    }
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([['tile-runtime', busyTileState]])
+    }
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const bindGatewayRequestForOwner = vi.fn()
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequestForOwner={bindGatewayRequestForOwner as never}
+        busy={false}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    const notificationsBefore = $notifications.get().length
+
+    await expect(branchCurrentSession!(undefined, 'tile-runtime')).resolves.toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(bindGatewayRequestForOwner).not.toHaveBeenCalled()
+    // Only the notice THIS call added (notices prepend) — earlier tests in
+    // the file leave their own notices in the store.
+    const added = $notifications.get()
+    expect(added.slice(0, added.length - notificationsBefore)).toEqual([
+      expect.objectContaining({ kind: 'warning', title: 'Session busy' })
+    ])
+  })
+
+  it.each(['removed', 'rebound'] as const)(
+    'fails closed when an offscreen target is %s while its source reconnects',
+    async mutation => {
+      const recovery = deferred<void>()
+
+      const tileMessages: ClientSessionState['messages'] = [
+        { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] }
+      ]
+
+      const tileState = {
+        ...createClientSessionState('tile-stored', tileMessages),
+        cwd: '/tile/workspace'
+      }
+
+      const sessionStateByRuntimeIdRef = {
+        current: new Map<string, ClientSessionState>([['tile-runtime', tileState]])
+      }
+
+      const dispatched = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
+
+      const release = vi.fn()
+
+      const bindGatewayRequestForOwner = vi.fn((): GatewayRequestLease => ({
+        request: (async (
+          method: string,
+          params?: Record<string, unknown>,
+          _timeoutMs?: number,
+          _signal?: AbortSignal,
+          isStillValid?: () => boolean
+        ) => {
+          await recovery.promise
+
+          if (isStillValid && !isStillValid()) {
+            throw new Error('Hermes source session unavailable')
+          }
+
+          return dispatched(method, params)
+        }) as GatewayRequestLease['request'],
+        release
+      }))
+
+      $sessionTiles.set([
+        {
+          ownerRoute: { connectionId: 'source-a', profile: 'work' },
+          runtimeId: 'tile-runtime',
+          storedSessionId: 'tile-stored'
+        }
+      ])
+
+      let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+      render(
+        <BranchHarness
+          activeSessionId="foreground-runtime"
+          bindGatewayRequestForOwner={bindGatewayRequestForOwner}
+          onCurrentReady={branch => (branchCurrentSession = branch)}
+          onReady={() => undefined}
+          requestGateway={vi.fn(async () => ({}) as never)}
+          sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+        />
+      )
+      await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+      const result = branchCurrentSession!(undefined, 'tile-runtime')
+      await waitFor(() => expect(bindGatewayRequestForOwner).toHaveBeenCalledWith('source-a', 'work'))
+
+      if (mutation === 'removed') {
+        sessionStateByRuntimeIdRef.current.delete('tile-runtime')
+        $sessionTiles.set([])
+      } else {
+        sessionStateByRuntimeIdRef.current.set('tile-runtime', {
+          ...createClientSessionState('other-stored', tileMessages),
+          cwd: '/other/workspace'
+        })
+        $sessionTiles.set([
+          {
+            ownerRoute: { connectionId: 'source-b', profile: 'work' },
+            runtimeId: 'tile-runtime',
+            storedSessionId: 'other-stored'
+          }
+        ])
+      }
+
+      recovery.resolve()
+
+      await expect(result).resolves.toBe(false)
+      expect(dispatched).not.toHaveBeenCalled()
+      expect(release).toHaveBeenCalledOnce()
+    }
+  )
+
+  it('uses the leased source requester and applies a delayed runtime response only to its owner profile', async () => {
+    const branchRpc = deferred<{
+      info: { approval_mode: 'off'; cwd: string }
+      message_count: number
+      messages: never[]
+      session_id: string
+      stored_session_id: string
+      title: string
+    }>()
+
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] },
+      { id: 'tile-a', role: 'assistant', parts: [{ type: 'text', text: 'tile answer' }] }
+    ]
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([
+        [
+          'tile-runtime',
+          {
+            ...createClientSessionState('tile-stored', tileMessages),
+            cwd: '/tile/workspace'
+          }
+        ]
+      ])
+    }
+
+    $activeGatewayProfile.set('work')
+    reconcileApprovalModeForProfile('other', 'manual')
+    setSessions([storedSession({ id: 'foreground-stored', profile: 'work' })])
+    $sessionTiles.set([{ storedSessionId: 'tile-stored', ownerRoute: { connectionId: 'source-a', profile: 'work' } }])
+
+    const branchResponse = {
+      session_id: 'branch-runtime-race',
+      stored_session_id: 'branch-stored-race',
+      title: 'Branch',
+      message_count: 2,
+      messages: [],
+      info: { approval_mode: 'off' as const, cwd: '/tile/workspace' }
+    }
+
+    const rawSourceGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => {
+      throw new Error('raw source request bypassed lease recovery')
+    })
+
+    const leasedSourceRequest = vi.fn(async () => branchRpc.promise)
+    const release = vi.fn()
+
+    const bindGatewayRequestForOwner = vi.fn((): GatewayRequestLease => ({
+      request: leasedSourceRequest as GatewayRequestLease['request'],
+      release
+    }))
+
+    const switchedGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => branchResponse)
+
+    let activeGatewayRequest: (method: string, params?: Record<string, unknown>) => Promise<unknown> =
+      rawSourceGatewayRequest
+
+    const sourceGatewayRef: MutableRefObject<HermesGateway | null> = {
+      current: gatewayWithRequest(rawSourceGatewayRequest)
+    }
+
+    const requestGateway = async <T,>(method: string, params?: Record<string, unknown>) =>
+      activeGatewayRequest(method, params) as Promise<T>
+
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequestForOwner={bindGatewayRequestForOwner}
+        gatewayRef={sourceGatewayRef}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="foreground-stored"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    const result = branchCurrentSession!(undefined, 'tile-runtime')
+
+    expect(bindGatewayRequestForOwner).toHaveBeenCalledWith('source-a', 'work')
+    await waitFor(() =>
+      expect(leasedSourceRequest).toHaveBeenCalledWith(
+        'session.branch',
+        {
+          session_id: 'tile-runtime',
+          count: 2
+        },
+        undefined,
+        undefined,
+        expect.any(Function)
+      )
+    )
+
+    activeGatewayRequest = switchedGatewayRequest
+    sourceGatewayRef.current = gatewayWithRequest(switchedGatewayRequest)
+    $activeGatewayProfile.set('other')
+    branchRpc.resolve(branchResponse)
+
+    await expect(result).resolves.toBe(true)
+
+    for (const profile of ['other', 'default']) {
+      $activeGatewayProfile.set(profile)
+      closeSessionTile('branch-stored-race')
+    }
+
+    expect(rawSourceGatewayRequest).not.toHaveBeenCalled()
+    expect(switchedGatewayRequest).not.toHaveBeenCalled()
+    expect(approvalModeForProfile('work')).toBe('off')
+    expect(approvalModeForProfile('other')).toBe('manual')
+    expect(release).toHaveBeenCalledOnce()
+
+    const persistedTiles = JSON.parse(window.localStorage.getItem('hermes.desktop.sessionTiles.v2') ?? '{}') as Record<
+      string,
+      Array<{ ownerRoute?: SessionProfileRoute; storedSessionId: string }>
+    >
+
+    expect(persistedTiles.work).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ownerRoute: { connectionId: 'source-a', profile: 'work' },
+          storedSessionId: 'branch-stored-race'
+        })
+      ])
+    )
+
+    $activeGatewayProfile.set('work')
+    expect(sessionTileOwnerRoute('branch-stored-race')).toEqual({ connectionId: 'source-a', profile: 'work' })
+  })
+
+  it('releases the source lease after a terminal branch failure', async () => {
+    $activeGatewayProfile.set('work')
+
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] }
+    ]
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([
+        [
+          'tile-runtime',
+          {
+            ...createClientSessionState('tile-stored', tileMessages),
+            cwd: '/tile/workspace'
+          }
+        ]
+      ])
+    }
+
+    const rawSourceGatewayRequest = vi.fn(async () => ({ unexpected: true }))
+    const terminal = new Error('branch rejected')
+
+    const leasedSourceRequest = vi.fn(async () => {
+      throw terminal
+    })
+
+    const release = vi.fn()
+
+    const bindGatewayRequestForOwner = vi.fn((): GatewayRequestLease => ({
+      request: leasedSourceRequest as GatewayRequestLease['request'],
+      release
+    }))
+
+    setSessions([storedSession({ id: 'tile-stored', profile: 'work' })])
+    $sessionTiles.set([{ storedSessionId: 'tile-stored', ownerRoute: { connectionId: 'source-a', profile: 'work' } }])
+
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequestForOwner={bindGatewayRequestForOwner}
+        gatewayRef={{ current: gatewayWithRequest(rawSourceGatewayRequest) }}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={vi.fn(async () => ({}) as never)}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!(undefined, 'tile-runtime')).resolves.toBe(false)
+    expect(leasedSourceRequest).toHaveBeenCalledOnce()
+    expect(rawSourceGatewayRequest).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('does not reveal a completed tile branch after focus moves to another tile', async () => {
+    const branchRpc = deferred<{
+      info: { cwd: string; fast: boolean; model: string; provider: string }
+      message_count: number
+      messages: never[]
+      session_id: string
+      stored_session_id: string
+      title: string
+    }>()
+
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] },
+      { id: 'tile-a', role: 'assistant', parts: [{ type: 'text', text: 'tile answer' }] }
+    ]
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([
+        [
+          'tile-runtime',
+          {
+            ...createClientSessionState('tile-stored', tileMessages),
+            cwd: '/tile/workspace'
+          }
+        ]
+      ])
+    }
+
+    $activeGatewayProfile.set('default')
+    setCurrentCwd('/foreground/workspace')
+    setCurrentFastMode(false)
+    setCurrentModel('foreground-model')
+    setCurrentProvider('foreground-provider')
+    setFreshDraftReady(true)
+    setSessions([
+      storedSession({ id: 'foreground-stored', profile: 'default' }),
+      storedSession({ id: 'tile-stored', profile: 'work' })
+    ])
+    $sessionTiles.set([{ storedSessionId: 'tile-stored', ownerRoute: { connectionId: 'source-a', profile: 'work' } }])
+    vi.mocked(focusedSessionTabAnchor).mockReturnValue('session-tile:tile-stored')
+    vi.mocked(revealTreePane).mockClear()
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.branch') {
+        return branchRpc.promise as never
+      }
+
+      return {} as never
+    })
+
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="foreground-stored"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    const result = branchCurrentSession!(undefined, 'tile-runtime')
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.branch', expect.any(Object)))
+    vi.mocked(focusedSessionTabAnchor).mockReturnValue('session-tile:other-existing')
+    $sessionTiles.set([{ storedSessionId: 'other-existing' }])
+    const tilesBeforeCompletion = $sessionTiles.get()
+
+    branchRpc.resolve({
+      session_id: 'branch-runtime-stale',
+      stored_session_id: 'branch-stored-stale',
+      title: 'Branch',
+      message_count: 2,
+      messages: [],
+      info: {
+        cwd: '/tile/workspace',
+        fast: true,
+        model: 'tile-model',
+        provider: 'tile-provider'
+      }
+    })
+
+    await expect(result).resolves.toBe(true)
+
+    const tilesAfterCompletion = $sessionTiles.get()
+    const revealedAfterCompletion = vi.mocked(revealTreePane).mock.calls
+
+    const childPersistedForInvocationProfile = $sessionTiles
+      .get()
+      .some(tile => tile.storedSessionId === 'branch-stored-stale')
+
+    closeSessionTile('branch-stored-stale')
+
+    expect(tilesAfterCompletion).toEqual([
+      ...tilesBeforeCompletion,
+      expect.objectContaining({ storedSessionId: 'branch-stored-stale' })
+    ])
+    expect(revealedAfterCompletion).toEqual([])
+    expect(childPersistedForInvocationProfile).toBe(true)
+    expect($currentCwd.get()).toBe('/foreground/workspace')
+    expect($currentFastMode.get()).toBe(false)
+    expect($currentModel.get()).toBe('foreground-model')
+    expect($currentProvider.get()).toBe('foreground-provider')
+    expect($freshDraftReady.get()).toBe(true)
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
+    // Earlier tests in this describe exercise the message-level hydration
+    // path; a whole-chat branch must not add any call of its own.
+    vi.mocked(getAllSessionMessages).mockClear()
     let branchParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {

@@ -132,7 +132,7 @@ describe('hermes-ws-recovery-v1 silent blackhole', () => {
     vi.useRealTimers()
   })
 
-  it('keeps a replacement socket open when a superseded connect times out', async () => {
+  it('keeps a replacement socket open after closing a superseded connect', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', { OPEN: LoopbackSocket.OPEN })
     const backend = new RecoveryBackend()
@@ -154,7 +154,9 @@ describe('hermes-ws-recovery-v1 silent blackhole', () => {
     client.onState(state => states.push(state))
 
     const staleConnect = client.connect('ws://gateway.test/a')
-    const staleRejection = expect(staleConnect).rejects.toThrow('WebSocket connection failed')
+    // close() now settles the superseded connect immediately; advancing the
+    // old timeout below must still leave the replacement generation untouched.
+    const staleRejection = expect(staleConnect).rejects.toThrow('WebSocket closed')
 
     client.close()
 

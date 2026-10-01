@@ -119,6 +119,7 @@ interface HarnessHandle {
 
 function Harness({
   activeSessionIdRef: activeSessionIdRefProp,
+  branchCurrentSession,
   busyRef,
   getRoutedStoredSessionId,
   getRuntimeIdForStoredSession,
@@ -140,6 +141,7 @@ function Harness({
   createBackendSessionForSend
 }: {
   activeSessionIdRef?: MutableRefObject<string | null>
+  branchCurrentSession?: (messageId?: string, sessionId?: string) => Promise<boolean>
   busyRef?: MutableRefObject<boolean>
   getRoutedStoredSessionId?: () => null | string
   getRuntimeIdForStoredSession?: (storedSessionId: string) => null | string
@@ -199,7 +201,7 @@ function Harness({
   const actions = usePromptActions({
     activeSessionId: activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId,
     activeSessionIdRef,
-    branchCurrentSession: async () => true,
+    branchCurrentSession: branchCurrentSession ?? (async () => true),
     busyRef: localBusyRef,
     createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
     getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),
@@ -1738,6 +1740,26 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     dropSessionState(RUNTIME_SESSION_ID)
     $queuedPromptsBySession.set({})
+  })
+
+  it('branches the tile runtime that invoked /branch, not the foreground session', async () => {
+    const branchCurrentSession = vi.fn(async (_messageId?: string, _sessionId?: string) => true)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="foreground-runtime"
+        branchCurrentSession={branchCurrentSession}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={vi.fn(async () => ({}) as never)}
+        storedSessionId="foreground-stored"
+      />
+    )
+
+    await handle!.submitText('/branch', { sessionId: 'tile-runtime' })
+
+    expect(branchCurrentSession).toHaveBeenCalledWith(undefined, 'tile-runtime')
   })
 
   it('binds slash output and the busy queue to the TARGET session, not the foreground selection', async () => {

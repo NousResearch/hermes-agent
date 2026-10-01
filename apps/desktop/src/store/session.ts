@@ -263,6 +263,17 @@ export function knownSessionOwner(sessions: readonly SessionInfo[], sessionId: n
   const hint = getSessionOwnerHint(sessionId)
 
   if (connectionId) {
+    const hintProfiles = new Set([hint?.profile.trim() || 'default', hint?.targetProfile?.trim() || 'default'])
+
+    // A connection-tagged row persists the backend profile for REST/list
+    // placement, while its exact owner hint retains the Desktop-facing profile
+    // that selects the physical gateway route. Prefer that complete route only
+    // when both the registry source and one of its profile names still agree;
+    // otherwise the row remains authoritative over a stale hint.
+    if (hint && hint.connectionId.trim() === connectionId && hintProfiles.has(profile || 'default')) {
+      return hint
+    }
+
     return { connectionId, profile: profile || 'default' }
   }
 

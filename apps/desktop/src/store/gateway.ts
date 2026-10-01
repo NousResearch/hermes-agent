@@ -29,6 +29,7 @@ import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -65,6 +66,21 @@ function dialProfile(
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
+
+export type GatewayRequester = <T>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+  isStillValid?: () => boolean
+) => Promise<T>
+
+export interface GatewayRequestLease {
+  /** Exact registry route of the pinned socket, when the registry names it. */
+  ownerRoute?: SessionOwnerRoute
+  request: GatewayRequester
+  release(): void
+}
 
 interface RegistryConfig {
   /** Electron's published descriptor is authoritative for a primary gateway's
@@ -856,7 +872,9 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       // turn that successful transport recovery into a reported dial failure.
     }
 
-    if (!entry.wantOpen) {
+    // Teardown or replacement can win while connect() itself is pending. Close
+    // the exact orphaned socket rather than publishing a removed registry entry.
+    if (!entry.wantOpen || g.secondaries.get(entry.scope) !== entry) {
       entry.gateway.close()
 
       return
@@ -2195,6 +2213,210 @@ function probeSecondaryLiveness(entry: Secondary): void {
       entry.gateway.close()
     }
   )
+}
+
+let primaryCommandReconnect: { gateway: HermesGateway; profile: string; promise: Promise<void> } | null = null
+
+/**
+ * Pin the concrete socket that owned a command at invocation time. Secondary
+ * leases reuse the registry's active-request hold, so pruning and connection
+ * edits cannot replace that socket while metadata lookup is pending.
+ */
+export function acquireGatewayRequestLease(gateway: HermesGateway, profile: string): GatewayRequestLease {
+  const key = normKey(profile)
+
+  const secondary =
+    [...g.secondaries.values()].find(entry => entry.gateway === gateway && normKey(entry.profile) === key) ?? null
+
+  // Shared-primary commands may bind a logical profile that differs from the
+  // primary's physical route. Snapshot the physical owner so a later re-home
+  // cannot let this lease reconnect or retry on the wrong backend.
+
+  const primaryOwnerProfile = g.primaryProfile
+  const primaryOwnerConnectionId = g.primaryConnectionId
+  const ownsPrimary = !secondary && g.primaryGateway === gateway
+
+  if (!secondary && !ownsPrimary) {
+    throw new Error('Hermes source gateway unavailable')
+  }
+
+  if (secondary) {
+    secondary.activeRequests += 1
+  }
+
+  let released = false
+
+  const stillRegistered = () =>
+    !released &&
+    (secondary
+      ? secondary.wantOpen && g.secondaries.get(secondary.scope) === secondary && secondary.gateway === gateway
+      : g.primaryGateway === gateway &&
+        g.primaryProfile === primaryOwnerProfile &&
+        g.primaryConnectionId === primaryOwnerConnectionId)
+
+  const recover = async (): Promise<boolean> => {
+    if (!stillRegistered()) {
+      return false
+    }
+
+    if (secondary) {
+      clearTimer(secondary)
+      secondary.reconnectAttempt = 0
+      await openSecondary(secondary)
+
+      return stillRegistered() && isOpen(gateway)
+    }
+
+    const current = primaryCommandReconnect
+
+    if (current?.gateway === gateway && current.profile === key) {
+      await current.promise
+
+      return stillRegistered() && isOpen(gateway)
+    }
+
+    const attempt = (async () => {
+      const desktop = window.hermesDesktop
+
+      if (!desktop || !stillRegistered()) {
+        return
+      }
+
+      const connection = await withTimeout(
+        desktop.getConnection(key),
+        RECONNECT_ATTEMPT_TIMEOUT_MS,
+        'Timed out reconnecting to Hermes backend'
+      )
+
+      const wsUrl = await withTimeout(
+        resolveGatewayWsUrl(desktop, connection),
+        RECONNECT_ATTEMPT_TIMEOUT_MS,
+        'Timed out re-minting the gateway WebSocket URL'
+      )
+
+      if (stillRegistered()) {
+        await gateway.connect(wsUrl)
+      }
+    })()
+
+    const reconnect = { gateway, profile: key, promise: attempt }
+    primaryCommandReconnect = reconnect
+
+    try {
+      await attempt
+    } finally {
+      if (primaryCommandReconnect === reconnect) {
+        primaryCommandReconnect = null
+      }
+    }
+
+    return stillRegistered() && isOpen(gateway)
+  }
+
+  const ownerConnectionId = secondary?.connectionId ?? primaryOwnerConnectionId
+
+  return {
+    ...(ownerConnectionId ? { ownerRoute: { connectionId: ownerConnectionId, profile: key } } : {}),
+    request: async <T>(
+      method: string,
+      params = {},
+      timeoutMs?: number,
+      signal?: AbortSignal,
+      isStillValid?: () => boolean
+    ): Promise<T> => {
+      if (!stillRegistered() || (isStillValid && !isStillValid())) {
+        throw new Error('Hermes source gateway unavailable')
+      }
+
+      // Recover only before handing the command to request(). Once request()
+      // has been entered, a later close is outcome-unknown: WebSocket.send may
+      // already have delivered a non-idempotent mutation (session.branch) even
+      // though the reply was lost. Blindly replaying that command can create a
+      // second branch. A socket observed closed here is provably pre-send.
+      if (!isOpen(gateway)) {
+        try {
+          if (!(await recover())) {
+            throw new Error('Hermes source gateway unavailable')
+          }
+        } catch (reconnectError) {
+          if (isGatewayReauthRequired(reconnectError)) {
+            throw reconnectError
+          }
+
+          throw reconnectError
+        }
+      }
+
+      // Recovery can yield for an IPC descriptor lookup and a fresh OAuth
+      // ticket. The command owner may disappear or rebind during either await;
+      // validate at the last pre-send boundary so a non-idempotent mutation is
+      // never dispatched for a stale runtime.
+      if (!stillRegistered() || (isStillValid && !isStillValid())) {
+        throw new Error('Hermes source gateway unavailable')
+      }
+
+      return timeoutMs !== undefined || signal !== undefined
+        ? gateway.request<T>(method, params, timeoutMs, signal)
+        : gateway.request<T>(method, params)
+    },
+    release: () => {
+      if (released) {
+        return
+      }
+
+      released = true
+
+      if (secondary) {
+        secondary.activeRequests = Math.max(0, secondary.activeRequests - 1)
+
+        if (
+          !drainPendingConnectionRedial(secondary) &&
+          secondary.activeRequests === 0 &&
+          !secondary.retained &&
+          !relayRetained(secondary) &&
+          !foregroundPinned(secondary) &&
+          g.activeKey !== secondary.scope
+        ) {
+          disposeSecondary(secondary)
+
+          if (g.secondaries.get(secondary.scope) === secondary) {
+            g.secondaries.delete(secondary.scope)
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Lease the exact registry route that owns a runtime. Unlike the profile-only
+ * binder, this lookup cannot confuse two connections exposing the same Desktop
+ * profile name. Foreground tiles keep their owner registered; if it is gone,
+ * fail closed instead of borrowing whichever same-named route is active.
+ */
+export function acquireGatewayRequestLeaseForAgent(connectionId: string, profile: string): GatewayRequestLease {
+  const ownerConnectionId = connectionId.trim()
+  const key = normKey(profile)
+
+  if (!ownerConnectionId) {
+    throw new Error('Hermes source gateway owner is missing connectionId')
+  }
+
+  if (isPrimaryRegistryRoute(ownerConnectionId, key)) {
+    if (!g.primaryGateway) {
+      throw new Error('Hermes source gateway unavailable')
+    }
+
+    return acquireGatewayRequestLease(g.primaryGateway, key)
+  }
+
+  const entry = g.secondaries.get(registryBackendScopeKey(ownerConnectionId, key))
+
+  if (!entry?.wantOpen) {
+    throw new Error('Hermes source gateway unavailable')
+  }
+
+  return acquireGatewayRequestLease(entry.gateway, key)
 }
 
 // Recovery signal: nudge every live secondary back open. Power-resume/network

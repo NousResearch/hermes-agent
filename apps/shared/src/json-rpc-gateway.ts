@@ -123,6 +123,9 @@ interface SessionReplay {
 }
 
 export class JsonRpcGatewayClient {
+  // Settles the in-flight connect() promise when close() invalidates its
+  // attempt, so a superseded connect cannot hang until its own timeout.
+  private cancelConnect: ((error: Error) => void) | null = null
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
   private readonly channel: JsonRpcRequestChannel
@@ -241,6 +244,7 @@ export class JsonRpcGatewayClient {
     await new Promise<void>((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
+      let cancelConnect: (error: Error) => void = () => undefined
 
       const cleanup = () => {
         if (timer !== undefined) {
@@ -250,7 +254,29 @@ export class JsonRpcGatewayClient {
         socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
         socket.removeEventListener('close', onClose)
+
+        if (this.cancelConnect === cancelConnect) {
+          this.cancelConnect = null
+        }
       }
+
+      const rejectConnect = (error: Error, state?: ConnectionState) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+
+        if (state) {
+          this.setState(state)
+        }
+
+        reject(error)
+      }
+
+      cancelConnect = error => rejectConnect(error)
+      this.cancelConnect = cancelConnect
 
       const onOpen = () => {
         if (settled || this.socket !== socket) {
@@ -319,23 +345,23 @@ export class JsonRpcGatewayClient {
             return
           }
 
-          settled = true
-          cleanup()
+          if (this.socket !== socket) {
+            rejectConnect(new Error(this.options.closedErrorMessage))
+            return
+          }
 
-          // Drop the half-open socket so the next connect() starts clean
-          // instead of short-circuiting on a zombie 'connecting' state.
-          if (this.socket === socket) {
-            try {
-              socket.close()
-            } catch {
-              // ignore
-            }
+          // Invalidate the attempt before closing: a synchronous close event
+          // must not race this timeout into a second state transition.
+          this.socket = null
 
-            this.socket = null
-            this.setState('error')
+          try {
+            socket.close()
+          } catch {
+            // ignore
           }
 
           reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
+          this.setState('error')
         }, this.options.connectTimeoutMs)
       }
     })
@@ -346,6 +372,13 @@ export class JsonRpcGatewayClient {
   }
 
   close(): void {
+    // Settle the in-flight connect() first: a superseded attempt's timeout
+    // must never overwrite a newer socket's state when the client is reused
+    // after a soft switch (see the url-guard regression test).
+    const cancel = this.cancelConnect
+    this.cancelConnect = null
+    cancel?.(new Error(this.options.closedErrorMessage))
+
     this.invalidate()
   }
 

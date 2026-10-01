@@ -506,9 +506,10 @@ interface GroupRowProps {
   /** Opens the New section dialog; the group is filed into it on create. */
   onNewSection: (group: string) => void
   onOpen: (group: string) => void
+  onSettings: (room: { members: GroupMember[]; name: string }) => void
 }
 
-export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, onNewSection }: GroupRowProps) {
+export function GroupRow({ active, group, members, needsYou, onOpen, onSettings, onDisband, onNewSection }: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
@@ -624,6 +625,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onSettings({ members, name: group })}>{b.group.settingsTitle}</ContextMenuItem>
         <ContextMenuSeparator />
         {/* Same affordance as a bot row's pin; pinned rooms lead the roster
             band, and the flag lives on the room record. */}

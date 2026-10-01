@@ -245,6 +245,7 @@ export function BotsPane() {
   // it is not part of the shared RosterRow model, so it rides as an extra here.
   const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
   const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
+  const [editingGroup, setEditingGroup] = useState<null | string>(null)
   const userSections = useValue($botSections)
   const dragging = useValue($draggingBot)
   useEscapeCancelsBotDrag()
@@ -448,6 +449,7 @@ export function BotsPane() {
       onDisband={setDeletingGroup}
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
       onOpen={openGroupChat}
+      onSettings={row => setEditingGroup(row.name)}
       sortedGroupRows={sortedGroupRows}
     />
   )
@@ -523,6 +525,8 @@ export function BotsPane() {
         renderHiddenGatewaySection
       })}
       {renderRosterDialogs({
+        editingGroup,
+        setEditingGroup,
         b,
         t,
         createOpen,

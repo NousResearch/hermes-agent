@@ -83,8 +83,17 @@ describe('messagesIfTranscriptBehind', () => {
 
   it('is current when folding the same durable rows produces different message counts', () => {
     const localMessages: ChatMessage[] = [
-      { id: 'assistant', parts: [{ type: 'text', text: 'answer', sourceRowId: 2 }], role: 'assistant', rowId: 2 }
+      {
+        id: 'assistant',
+        parts: [
+          { type: 'text', text: 'checking', sourceRowId: 1 },
+          { type: 'text', text: 'answer', sourceRowId: 2 }
+        ],
+        role: 'assistant',
+        rowId: 2
+      }
     ]
+
     const refreshedMessages: ChatMessage[] = [
       { id: 'tool', parts: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'shell' }], role: 'tool', rowId: 1 },
       { id: 'assistant', parts: [{ type: 'text', text: 'answer', sourceRowId: 2 }], role: 'assistant', rowId: 2 }

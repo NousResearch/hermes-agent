@@ -1,0 +1,21 @@
+name: markdown-new
+repo: https://github.com/nosliwhtes/hermes-markdown-new
+sha: dab049e0fd338ab8f7159c120fe55490410d0a6e
+subdir: plugin/markdown-new
+description: "Search the public web, read pages as Markdown, crawl sites, and convert documents in Hermes. No API key required."
+maintainer: nosliwhtes
+tier: community
+category: web
+docs_url: https://github.com/nosliwhtes/hermes-markdown-new/blob/dab049e0fd338ab8f7159c120fe55490410d0a6e/plugin/markdown-new/README.md
+version: "1.0.0"
+readme: true
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - markdown_new
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -1,5 +1,7 @@
 """Voice transcription and pending transcript delivery for GatewayRunner."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -11,6 +13,7 @@ from gateway.platforms.base_pending import pending_dispatch_revision, pending_di
 
 if TYPE_CHECKING:
     from gateway.run import GatewayRunner
+    from gateway.platforms.event import MessageEvent
 
 logger = logging.getLogger("gateway.run")
 
@@ -22,12 +25,29 @@ class VoiceClipTranscript:
 
 
 @dataclass(frozen=True)
+class VoiceTranscriptPart:
+    text: str
+    clip: VoiceClipTranscript | None = None
+
+
+@dataclass(frozen=True)
 class VoiceTranscription:
     text: str
     clips: tuple[VoiceClipTranscript, ...] = ()
+    parts: tuple[VoiceTranscriptPart, ...] = ()
 
     def transcripts(self) -> List[str]:
         return [clip.text for clip in self.clips]
+
+    def authored_text(self, user_text: str) -> str:
+        return "\n\n".join(text for text in (user_text, *(clip.text for clip in self.clips)) if text).strip()
+
+    def render(self, user_text: str) -> str:
+        notes = "\n\n".join(
+            f'"{part.clip.text}"' if part.clip is not None else part.text
+            for part in self.parts
+        )
+        return GatewayInboundVoiceMixin._prepend_media_prefix(notes, user_text) if notes else user_text
 
 
 class GatewayInboundVoiceMixin:
@@ -82,9 +102,11 @@ class GatewayInboundVoiceMixin:
         return transcript, f'"{transcript}"'
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: List[str]
+        self, user_text: str, audio_paths: List[str], *, event: MessageEvent | None = None,
     ) -> tuple[str, List[str]]:
         result = await self._transcribe_voice_clips(user_text, audio_paths)
+        if event is not None:
+            setattr(event, "_gateway_pending_stt_input", result)
         return result.text, result.transcripts()
 
     async def _transcribe_voice_clips(
@@ -99,7 +121,10 @@ class GatewayInboundVoiceMixin:
                 duration_str = await _probe_audio_duration(abs_path)
                 suffix = f" (duration: {duration_str})" if duration_str else ""
                 notes.append(f"[The user sent a voice message: {abs_path}{suffix}]")
-            return VoiceTranscription(self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text)
+            return VoiceTranscription(
+                self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text,
+                parts=tuple(VoiceTranscriptPart(note) for note in notes),
+            )
 
         try:
             from tools.transcription_tools import (
@@ -107,26 +132,31 @@ class GatewayInboundVoiceMixin:
             )
         except ModuleNotFoundError as e:
             logger.error("Transcription module unavailable: %s", e)
-            return VoiceTranscription(self._prepend_media_prefix("[voice message could not be transcribed]", user_text))
+            note = "[voice message could not be transcribed]"
+            return VoiceTranscription(self._prepend_media_prefix(note, user_text), parts=(VoiceTranscriptPart(note),))
 
         enriched_parts = []
         clips: List[VoiceClipTranscript] = []
+        parts: List[VoiceTranscriptPart] = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 transcript, note = await self._transcribe_one_clip(
                     path, transcribe_audio, transcribe_audio_local_fallback,
                 )
-                if transcript is not None:
-                    clips.append(VoiceClipTranscript(path, transcript))
+                clip = VoiceClipTranscript(path, transcript) if transcript is not None else None
+                if clip is not None:
+                    clips.append(clip)
+                parts.append(VoiceTranscriptPart(note, clip))
                 enriched_parts.append(note)
             except Exception as e:
                 logger.error("Transcription error: %s", e)
-                enriched_parts.append(self._untranscribed_audio_note(path))
+                note = self._untranscribed_audio_note(path)
+                parts.append(VoiceTranscriptPart(note))
+                enriched_parts.append(note)
 
-        if enriched_parts:
-            user_text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text)
-        return VoiceTranscription(user_text, tuple(clips))
+        text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text) if enriched_parts else user_text
+        return VoiceTranscription(text, tuple(clips), tuple(parts))
 
     def _pending_event_audio_paths(self, event) -> List[str]:
         """Return STT-eligible paths from a pending voice message."""
@@ -162,6 +192,7 @@ class GatewayInboundVoiceMixin:
         event._gateway_pending_stt_text = result.text
         event._gateway_pending_stt_transcripts = result.transcripts()
         event._gateway_pending_stt_clips = result.clips
+        setattr(event, "_gateway_pending_stt_input", result)
         return result.text, result.transcripts()
 
     async def _echo_pending_stt_transcripts_once(

@@ -52,8 +52,9 @@ def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
             for part, merge in event._merged_parts
         ]
     clips = getattr(event, "_gateway_pending_stt_clips", ())
+    transcription = getattr(event, "_gateway_pending_stt_input", None)
     echoed = set(getattr(event, "_gateway_pending_stt_echoed_paths", ()))
-    if clips or echoed:
+    if clips or echoed or transcription is not None:
         recorded["voice"] = {
             "text": getattr(event, "_gateway_pending_stt_text", None),
             "clips": [{"path": clip.path, "text": clip.text, "digest": _file_digest(clip.path)}
@@ -61,6 +62,11 @@ def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
             "echoed_paths": sorted(echoed.intersection(event.media_urls)),
             "attachments": [{"path": path, "digest": _file_digest(path)} for path in event.media_urls],
         }
+        if transcription is not None:
+            recorded["voice"]["parts"] = [
+                {"text": part.text, "clip_path": part.clip.path if part.clip is not None else None}
+                for part in transcription.parts
+            ]
     return recorded
 
 
@@ -134,7 +140,7 @@ def decode_pending_event(record: dict[str, Any], *, adapter: Any = None) -> Mess
 
 
 def _restore_voice(event: MessageEvent, voice: dict[str, Any]) -> None:
-    from gateway.run_inbound_voice import VoiceClipTranscript
+    from gateway.run_inbound_voice import VoiceClipTranscript, VoiceTranscription, VoiceTranscriptPart
 
     if not isinstance(voice, dict) or not isinstance(voice.get("clips"), list):
         raise ValueError("pending voice receipts must be an object with clips")
@@ -168,3 +174,19 @@ def _restore_voice(event: MessageEvent, voice: dict[str, Any]) -> None:
         setattr(event, "_gateway_pending_stt_text", text)
         setattr(event, "_gateway_pending_stt_clips", tuple(clips))
         setattr(event, "_gateway_pending_stt_transcripts", [clip.text for clip in clips])
+        records = voice.get("parts")
+        if records is None:
+            return
+        if not isinstance(records, list):
+            raise ValueError("pending voice parts must be a list")
+        by_path = {clip.path: clip for clip in clips}
+        parts = []
+        for record in records:
+            if (not isinstance(record, dict) or not isinstance(record.get("text"), str)
+                    or record.get("clip_path") is not None and not isinstance(record["clip_path"], str)):
+                raise ValueError("pending voice part receipt is invalid")
+            path = record.get("clip_path")
+            if path is not None and path not in by_path:
+                raise ValueError("pending voice part has no successful clip receipt")
+            parts.append(VoiceTranscriptPart(record["text"], by_path.get(path)))
+        setattr(event, "_gateway_pending_stt_input", VoiceTranscription(text, tuple(clips), tuple(parts)))

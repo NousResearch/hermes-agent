@@ -3054,6 +3054,7 @@ describe('usePromptActions restoreToMessage', () => {
     $messages.set(initialMessages as never)
 
     let submitAttempts = 0
+
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
         submitAttempts += 1

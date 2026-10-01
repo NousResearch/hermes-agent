@@ -5758,7 +5758,6 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
   }
 }
 
-
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
     throw new Error('Missing URL')

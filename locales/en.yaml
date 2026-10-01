@@ -174,8 +174,8 @@ gateway:
     denied_reason_plural: "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
   fast:
     not_supported: "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status: "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
-    unknown_arg: "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
+    status: "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|ultrafast|status>`"
+    unknown_arg: "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, ultrafast, status"
     saved: "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only: "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast: "FAST"
@@ -187,6 +187,8 @@ gateway:
     choice_normal: "normal — standard processing"
     choice_auto: "auto — fast for the first seconds of every turn"
     choice_cold: "cold — fast for the first turn of a session only"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6x price)"
+    ultrafast_not_supported: "⚡ Ultrafast is only available for GPT-6 Astra (current model: `{model}`)."
   footer:
     status: "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
     usage: "Usage: `/footer [on|off|status]`"
@@ -660,6 +662,7 @@ gateway:
     cancelled: "↩️ Clarification cancelled — your message will be handled as a follow-up."
     expired: "⏳ This prompt expired — please send a new request."
     native_stream_placeholder: "💬 Waiting for your choice..."
+    skip_hint: 'Reply "skip" to skip this question.'
 
   errors:
     rate_limited: "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
@@ -1668,7 +1671,7 @@ slash:
   reasoning:
     description: "Manage reasoning effort and display"
   fast:
-    description: "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Show or change the display skin/theme"
   indicator:
@@ -2128,7 +2131,6 @@ cli:
     clarify_other_type_below: "Other (type below)"
     clarify_other_type_answer: "Other (type your answer)"
     clarify_guidance: "Type your answer in the prompt below, then press Enter."
-    clarify_question_truncated: "… (question truncated)"
     picker_title_provider: "⚙ Model Picker — Select Provider"
     picker_provider_row_one: "{name} ({count} model)"
     picker_provider_row_other: "{name} ({count} models)"
@@ -2173,7 +2175,6 @@ cli:
     hint_vault_username: "shown as you type · Enter to continue"
     hint_clarify_freetext: "type your answer and press Enter"
     hint_clarify_batch: "↑/↓ to select, Enter to lock, Tab next question"
-    hint_clarify_choice: "↑/↓ to select, Enter to confirm"
     hint_input_disabled: "input temporarily disabled"
     hint_input_queues: "input stays active; Enter queues"
     hint_command_running: "{frame} command in progress · {detail}"
@@ -2360,7 +2361,6 @@ cli:
   clarify:
     bell_context: "clarify"
     label: "Clarify"
-    timed_out_agent_decides: "(clarify timed out after {timeout}s — agent will decide)"
     timed_out_locked_answers: "(clarify timed out after {timeout}s — locked answers returned)"
   connect:
     bell_context: "connection setup"
@@ -2753,7 +2753,9 @@ cli:
       feature_generic: "Fast mode"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Usage: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast is only available for GPT-6 Astra (current model: {model})."
+      usage: "Usage: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} set to {value} {scope}"
     hatch:

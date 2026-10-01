@@ -67,6 +67,19 @@ describe('session focus while interacting with the sidebar', () => {
     expect($focusedStoredSessionId.get()).toBe('main')
   })
 
+  it('keeps the remembered chat while Files or Terminal own focus', () => {
+    const tree = $layoutTree.get()!
+    $layoutTree.set(
+      split('row', [tree, group(['files', 'terminal'], { active: 'files', id: 'tools' })])
+    )
+    const tools = target('tools')
+
+    target('split').focus()
+    tools.focus()
+    expect($activeTreeGroup.get()).toBe('tools')
+    expect($focusedStoredSessionId.get()).toBe('split')
+  })
+
   it('uses the visible main tab on restore and after the remembered split closes', () => {
     const sidebar = target('sidebar')
     sidebar.focus()

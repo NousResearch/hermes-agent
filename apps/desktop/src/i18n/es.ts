@@ -1134,6 +1134,9 @@ export const esOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Tamaño del texto del chat',
+      chatTextScaleDesc:
+        'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',
       title: 'Apariencia',
       intro: 'Solo escritorio. El modo es el brillo; el tema es la paleta y el marco del chat.',
       colorMode: 'Modo de color',
@@ -5033,6 +5036,10 @@ export const esOverrides = {
       editModels: 'Editar modelos…',
       followDefault: 'Usar el predeterminado de Ajustes',
       refreshModels: 'Actualizar modelos',
+      favorites: 'Favoritos',
+      addFavorite: 'Añadir a favoritos',
+      removeFavorite: 'Quitar de favoritos',
+      favoriteShortcut: '⇧ Clic',
       fast: 'Rápido',
       free: 'gratis',
       cacheRead: 'lectura en caché',
@@ -5520,6 +5527,10 @@ export const esOverrides = {
           body: (provider: string) =>
             `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
         },
+        no_reply: {
+          title: 'La respuesta no terminó',
+          body: 'Hermes terminó este turno sin respuesta. Reinténtalo para enviarla de nuevo.'
+        },
         stream_drop: {
           title: 'La respuesta se cortó',
           body: 'La conexión se cortó antes de que terminara la respuesta. Reinténtalo para enviarla de nuevo.'
@@ -5702,14 +5713,9 @@ export const esOverrides = {
       placeholder: 'Escribe tu respuesta…',
       skip: 'Omitir',
       skipped: 'Omitido',
-      continueLabel: 'Continuar',
+      noAnswer: 'Sin respuesta',
       confirmAndContinueLabel: 'Confirmar y continuar',
-      answeredBadge: 'Respondido',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
-      lateAnswer: (question, choice) => `Con respecto a “${question}”: mi respuesta es ${choice}`,
-      lateAnswerTip: 'Redactar esta respuesta como mensaje de seguimiento',
-      lateAnswerHint:
-        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.',
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },

@@ -95,6 +95,14 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
+      // main relays opaque payloads to the other Hermes renderer windows;
+      // renderer code keeps the destination exact and rejects anything not
+      // addressed to its window.
+      windowRelay?: {
+        send: (payload: unknown) => void
+        onMessage: (callback: (payload: unknown) => void) => () => void
+      }
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
@@ -911,6 +919,8 @@ export interface DesktopPluginProfileRoute {
   // across sources.
   connectionId: string
   mode: 'local' | 'remote'
+  // Electron's authoritative registry primary. Absent on older shells.
+  primary?: true
   profile: string
   targetProfile: string
 }
@@ -1480,7 +1490,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

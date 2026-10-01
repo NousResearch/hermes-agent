@@ -5,7 +5,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
@@ -23,9 +23,9 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
-  compacting: boolean
   clearDraft: () => void
   disabled: boolean
+  draftScopeRef: RefObject<string | null>
   draftRef: RefObject<string>
   drainNextQueued: () => Promise<boolean>
   editorRef: RefObject<HTMLDivElement | null>
@@ -59,9 +59,9 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
-  compacting,
   clearDraft,
   disabled,
+  draftScopeRef,
   draftRef,
   drainNextQueued,
   editorRef,
@@ -85,18 +85,35 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
-  // === false) or throws, re-load + re-stash the draft so the words survive.
+  // === false) or throws, re-stash the draft so the words survive. Repaint it
+  // only while the same session still owns the visible composer; a late reject
+  // must not publish an old session's text into the newly focused one.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
-    const submittedScope = activeQueueSessionKeyRef.current
+    // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
+    // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
+    // null: the create handoff below and the composer drift prong both key off
+    // it, and draftKey(null) resolves to that same fresh bucket.
+    const submittedScope = isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current
+    let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
+    // Only this operation's explicit session.create handoff may re-home a
+    // pre-session submit. A null → stored render can also be user navigation.
+    const assignment =
+      submittedScope === null
+        ? {
+            onComposerScopeAssigned: (scope: string) => {
+              restoreScope = scope
+            }
+          }
+        : {}
+
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      // Use the scope captured at dispatch, not whatever session is focused
-      // now — the gateway can reject well after the user has switched away,
-      // and re-stashing into the currently-focused session would overwrite
-      // its draft with the rejected text from a different session (#54527).
-      stashAt(submittedScope, text, submittedAttachments)
+      stashAt(restoreScope, text, submittedAttachments)
+
+      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
+        loadIntoComposer(text, submittedAttachments)
+      }
     }
 
     // A hidden submit is machine text (a setup note, never something the user
@@ -105,8 +122,13 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(text, {
+            attachments,
+            composerScope: submittedScope,
+            ...assignment,
+            ...(displayKind ? { displayKind } : {})
+          })
+        : onSubmit(text, { composerScope: submittedScope, ...assignment, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
       .catch(rejected)
@@ -123,8 +145,8 @@ export function useComposerSubmit({
   // if the turn has already ended, or a steer is not possible, queue it so it
   // runs next. This holds for hidden setup notes and for visible messages a
   // button sends on the user's behalf alike.
-  const externalSubmitRef = useRef({ busy, compacting, dispatchSubmit, onSteer, onSteerHidden })
-  externalSubmitRef.current = { busy, compacting, dispatchSubmit, onSteer, onSteerHidden }
+  const externalSubmitRef = useRef({ busy, dispatchSubmit, onSteer, onSteerHidden })
+  externalSubmitRef.current = { busy, dispatchSubmit, onSteer, onSteerHidden }
 
   useLayoutEffect(
     () =>
@@ -170,7 +192,6 @@ export function useComposerSubmit({
 
           if (
             current.onSteer &&
-            !current.compacting &&
             !hasBlockingPromptRequest(sessionId) &&
             text.trim() &&
             !SLASH_COMMAND_RE.test(text.trim())
@@ -269,10 +290,12 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
+      } else if (!blockingPrompt && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.
+        // Compaction is the gateway's call: it answers `queued` under the
+        // compression lock. The client flag can outlive an aborted compaction.
         steerDraft()
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —

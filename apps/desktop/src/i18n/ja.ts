@@ -688,6 +688,9 @@ export const ja = defineLocale({
       system: { label: 'システム', description: 'OS の外観に合わせる' }
     },
     appearance: {
+      chatTextScaleTitle: 'チャットの文字サイズ',
+      chatTextScaleDesc:
+        'UI スケールを基準に、会話とメッセージ入力欄の文字を拡大縮小します。サイドバーや操作ボタンのサイズは変わりません。',
       title: '外観',
       intro:
         'デスクトップ専用の表示設定です。モードは明るさ、テーマはアクセントカラーとチャット面のスタイルを制御します。',
@@ -3030,6 +3033,7 @@ export const ja = defineLocale({
       scopeUncommitted: '未コミット',
       scopeBranch: 'ブランチ',
       scopeLastTurn: '前のターン',
+      readOnlyScope: '読み取り専用ビュー — ステージ・復元・コミットは「未コミット」のみ対象です',
       commit: 'コミット',
       commitAndPush: 'コミットしてプッシュ',
       commitPlaceholder: shortcut => `メッセージ（${shortcut} でコミット）`,
@@ -3386,6 +3390,10 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       followDefault: '設定のデフォルトを使用',
       refreshModels: 'モデルを更新',
+      favorites: 'お気に入り',
+      addFavorite: 'お気に入りに追加',
+      removeFavorite: 'お気に入りから削除',
+      favoriteShortcut: '⇧ クリック',
       fast: '高速',
       free: '無料',
       cacheRead: 'キャッシュ読み取り',
@@ -3520,6 +3528,10 @@ export const ja = defineLocale({
   },
 
   rightSidebar: {
+    terminalReadOnly: '読み取り専用の出力',
+    terminalReadOnlyHelp:
+      'プロンプトに応答するには、バックグラウンドのコマンドを停止し、新しいターミナルで実行してください。新しいターミナルは別のシェルを開き、このプロセスには接続しません。',
+    terminalOpenInteractive: '新しいターミナルを開く',
     aria: '右サイドバー',
     panelsAria: '右サイドバーパネル',
     files: 'ファイルシステム',
@@ -3929,14 +3941,9 @@ export const ja = defineLocale({
       placeholder: '回答を入力…',
       skip: 'スキップ',
       skipped: 'スキップ済み',
-      continueLabel: '続行',
+      noAnswer: '回答なし',
       confirmAndContinueLabel: '確定して続行',
-      answeredBadge: '回答済み',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
-      lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
-      lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint:
-        'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
     },

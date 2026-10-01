@@ -273,6 +273,83 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     vi.restoreAllMocks()
   })
 
+  it('re-hydrates the tile transcript and retries once when restore hits a stale durable target', async () => {
+    // #107593 (tile surface): the tile's cached rowIds go stale after resume
+    // drift or a session.branch remap; Restore must recover like Edit does —
+    // refresh the stored transcript, recompute the plan, retry once — instead
+    // of rolling back and rethrowing as a 4018 dead-end.
+    let submitAttempts = 0
+    const submitCalls: { params?: Record<string, unknown> }[] = []
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+        submitCalls.push({ params })
+
+        if (submitAttempts === 1) {
+          throw new Error('target user message is no longer in session history')
+        }
+
+        return {}
+      }
+
+      return {}
+    })
+
+    const resumeTile = vi.fn(async () => {
+      // The refreshed transcript: same shapes, fresh row ids after the remap.
+      publishSessionState(
+        RUNTIME_SESSION_ID,
+        createClientSessionState(
+          STORED_SESSION_ID,
+          [
+            { id: 'u1-fresh', parts: [textPart('first')], role: 'user' as const, rowId: 501, timestamp: 0 },
+            { id: 'a1-fresh', parts: [textPart('reply')], role: 'assistant' as const, rowId: 502, timestamp: 1 },
+            { id: 'u2-fresh', parts: [textPart('later')], role: 'user' as const, rowId: 503, timestamp: 2 }
+          ] as never
+        )
+      )
+
+      return RUNTIME_SESSION_ID
+    })
+
+    // Re-wire the delegate so resumeTile is the transcript refresher.
+    setSessionTileDelegate({
+      archiveSession: vi.fn(async () => undefined),
+      branchSession: vi.fn(async () => undefined),
+      deleteSession: vi.fn(async () => undefined),
+      executeSlash: vi.fn(async () => undefined),
+      interruptSession: vi.fn(async () => undefined),
+      resumeTile,
+      submitToSession: vi.fn(async () => undefined),
+      updateSession: vi.fn((_runtimeId, updater) => {
+        const current = $sessionStates.get()[RUNTIME_SESSION_ID]
+
+        if (!current) {
+          return undefined
+        }
+
+        const next = updater(current)
+
+        publishSessionState(RUNTIME_SESSION_ID, next)
+
+        return next
+      })
+    })
+
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await result.current.restoreToMessage('u1')
+    })
+
+    expect(resumeTile).toHaveBeenCalledWith(STORED_SESSION_ID, { refreshTranscript: true })
+    expect(submitAttempts).toBe(2)
+    expect(submitCalls[1]?.params).toMatchObject({
+      truncate_before_row_id: 501
+    })
+  })
+
   it('restores the full tile transcript when regenerate is rejected', async () => {
     requestGatewayMock.mockImplementation(async (method: string) => {
       if (method === 'prompt.submit') {

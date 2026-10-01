@@ -427,6 +427,12 @@ class GatewayGoalsMixin:
         mgr = LoopManager(session_id=sid)
         if not mgr.is_due(now):
             return
+        from agent.estop import check_paused
+
+        # Loop wakeups are injected as internal events, which bypass the inbound estop gate; without
+        # this a `hermes pause` would still start agent turns. Not claiming the tick keeps it due.
+        if check_paused("loop", logger):
+            return
         # fire_tick()/complete_tick() are writes (BEGIN IMMEDIATE) taking the SessionDB writer lock; a slow
         # writer elsewhere holding it while the loop thread blocked froze the gateway until the watchdog
         # fired. The context-preserving executor keeps the profile HERMES_HOME override under multiplex.

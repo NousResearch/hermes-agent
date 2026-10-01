@@ -1,6 +1,7 @@
 import { atom, Button, gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
+import { groupCreationSource } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
@@ -39,6 +40,8 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -46,15 +49,21 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
     let cancelled = false
     setRooms([])
     setError('')
+
+    if (gateway !== 'open') {return}
+
+    const isCurrent = groupCreationSource({ connectionId: connectionId ?? '', profile }, activationEpoch)
     void (async () => {
       const route = captureCanonicalGroupRoute()
-      const result = await discoverCanonicalGroups(route, gatewayActivationEpoch(), refresh > 0)
+      // Socket readiness does not advance the route epoch. Refresh the
+      // capability after startup/reconnect instead of reusing a closed read.
+      const result = await discoverCanonicalGroups(route, activationEpoch, true)
 
-      if (!cancelled) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
-    })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+      if (!cancelled && isCurrent()) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
+    })().catch(e => { if (!cancelled && isCurrent()) {setError(e instanceof Error ? e.message : String(e))} })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, refresh])
+  }, [connectionId, profile, gateway, activationEpoch, refresh])
 
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>

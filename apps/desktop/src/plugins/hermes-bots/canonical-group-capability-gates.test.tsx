@@ -179,9 +179,11 @@ it('keeps a standalone classic composer through transient failures without retar
     fireEvent.change(composer, { target: { value: 'Keep this draft' } })
     await act(async () => { render(<GroupChatWorkspace group="Second standalone" members={roster} />) })
     await act(async () => { render(<CanonicalGroupList onOpen={vi.fn()} />) })
-    expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(1)
-    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.refreshGroups })[0]) })
+    // Each discovery mount reads the current socket's surface; classic
+    // workspace gates still share the latest capability classification.
     expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(2)
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: CANONICAL_GROUP_LOCALES.en.refreshGroups })[0]) })
+    expect(request.mock.calls.filter(call => call[1].startsWith('groups.'))).toHaveLength(3)
     request.mockImplementation(async () => { throw new Error('timeout') })
     await act(async () => { state.gateway.set('closed') })
     expect(screen.getAllByRole('textbox')).toContain(composer)

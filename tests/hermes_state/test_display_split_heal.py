@@ -101,3 +101,23 @@ class TestSplitDisplayGenerationProjectsOnce:
             ("chat", db._encode_content("same reply")))
 
         assert len(orders) == 1
+
+
+def test_display_projection_places_unindexed_rows_after_indexed_rows(tmp_path):
+    from pathlib import Path
+
+    db = SessionDB(Path(tmp_path) / "state.db")
+    db.create_session("chat", source="desktop")
+    db.append_message("chat", "user", "first")
+    newest_id = db.append_message("chat", "assistant", "second")
+
+    def clear_display_order(conn):
+        conn.execute("UPDATE messages SET display_order = NULL WHERE id = ?", (newest_id,))
+
+    db._execute_write(clear_display_order)
+    rows = db._read_retrying_ioerr(
+        lambda conn: db._display_rows_from_conn(conn, "chat")
+    )
+
+    assert [row["id"] for row in rows] == sorted(row["id"] for row in rows)
+    assert rows[-1]["id"] == newest_id

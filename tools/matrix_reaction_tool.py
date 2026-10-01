@@ -42,7 +42,7 @@ async def _matrix_reaction(args: dict[str, Any]) -> str:
         get_session_env("HERMES_SESSION_PLATFORM") != "matrix"
         or not room_id
         or not requester
-        or adapter is None
+        or not callable(getattr(adapter, "check_session_access", None))
     ):
         return json.dumps({"error": "Matrix reactions require a live Matrix session"})
 

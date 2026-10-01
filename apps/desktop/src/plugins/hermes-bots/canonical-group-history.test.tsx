@@ -76,7 +76,7 @@ it('blocks Send during a chosen file upload, keeps Stop available, and recovers 
   const heldUpload = new Promise((resolve, reject) => { releaseUpload = resolve; rejectUpload = reject })
   let uploadResult: Promise<unknown> = heldUpload
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Autumn launch' }, driver_status: {} }}
+    if (method === 'groups.state') {return { room: { name: 'Autumn launch' }, driver_status: { working: true } }}
 
     if (method === 'groups.log') {return { events: [] }}
 

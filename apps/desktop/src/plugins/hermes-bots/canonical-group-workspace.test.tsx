@@ -18,7 +18,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
-import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, $canonicalGroupNames, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { GroupChatWorkspace } from './group-chat-view'
@@ -49,6 +49,7 @@ it('restores a frozen send after remount and retires only its acknowledged exact
   const first = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Original'))
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false)
   expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await screen.findByText('lost ACK')
@@ -197,7 +198,7 @@ it('keeps Stop available while a Send is pending and reports a request without c
   const stops: Record<string, unknown>[] = []
   let stopResult: () => Promise<unknown> = async () => ({ cancelled: 0 })
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { running: true, working: true } }}
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { running: true, working: false } }}
 
     if (method === 'groups.log') {return { events: [] }}
 
@@ -213,6 +214,7 @@ it('keeps Stop available while a Send is pending and reports a request without c
   })
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'stop-room' }} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Long task' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
@@ -226,6 +228,78 @@ it('keeps Stop available while a Send is pending and reports a request without c
   fireEvent.click(stop)
   expect((await screen.findByRole('alert')).textContent).toContain(labels.pendingActionUnconfirmed)
   expect(screen.getByText('stop refused').closest('details')?.open).toBe(false)
+})
+
+it('keeps an idle chat quiet while its gateway is alive, even with a draft and file upload', async () => {
+  let releaseUpload!: (value: unknown) => void
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Autumn launch' }, driver_status: { running: true, working: false, counts: { completed: 2 } } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.attachment.upload') {return new Promise(resolve => { releaseUpload = resolve })}
+
+    return {}
+  })
+  const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'idle-owner', profile: 'team', roomId: 'idle' }} />)
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.disabled).toBe(false))
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  fireEvent.change(input, { target: { value: 'Review this file' } })
+  fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [new File(['A'], 'notes.txt', { type: 'text/plain' })] } })
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.attachment.upload')).toBe(true))
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
+  await act(async () => releaseUpload({ attachment_id: 'uploaded', kind: 'file', name: 'notes.txt', mime: 'text/plain' }))
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false))
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+})
+
+it.each([
+  ['queued work', { working: false, counts: { queued: 1 } }],
+  ['stopping work', { working: false, counts: { stopping: 1 } }],
+  ['unresolved reply', { working: false, pending_actions: [{ kind: 'discard', member_id: 'worker', task_id: 'pending', execution_generation: 1 }] }]
+])('offers Stop for %s from the current driver receipt', async (_description, driver_status) => {
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Autumn launch' }, driver_status } : method === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'active-owner', profile: 'team', roomId: _description }} />)
+  const stop = await screen.findByRole('button', { name: 'Stop' }) as HTMLButtonElement
+  expect(stop.disabled).toBe(false)
+  fireEvent.click(stop)
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.stop')).toBe(true))
+})
+
+it('keeps Stop usable for an unresolved frozen Send even when driver status is unavailable', async () => {
+  const binding = { connectionId: 'unconfirmed-owner', profile: 'team', roomId: 'unconfirmed' }
+  await prepareCanonicalGroupSend(binding, { text: 'Please review the launch' })
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Autumn launch' } } : method === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const stop = await screen.findByRole('button', { name: 'Stop' }) as HTMLButtonElement
+  expect(stop.disabled).toBe(false)
+  fireEvent.click(stop)
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.stop')).toBe(true))
+  expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+})
+
+it('shows every current participant without a network action and closes the popover when hidden', async () => {
+  const members = Array.from({ length: 4 }, (_, index) => ({ member_id: `member-${index}`, profile: `profile-${index}`,
+    handle: `handle-${index}`, display_name: index % 2 ? 'Mira Bot' : 'Atlas Bot' }))
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Autumn launch', members }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  const binding = { connectionId: 'participant-owner', profile: 'team', roomId: 'participants' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  const trigger = await screen.findByRole('button', { name: `${labels.members}: ${labels.memberCount.replace('{count}', '4')}` })
+  const reads = request.mock.calls.length
+  fireEvent.click(trigger)
+  const list = within(await screen.findByRole('list', { name: labels.members }))
+  expect(list.getAllByText('Atlas Bot')).toHaveLength(2)
+  expect(list.getAllByText('Mira Bot')).toHaveLength(2)
+  expect(list.queryByText('handle-3')).toBeNull()
+  expect(request.mock.calls).toHaveLength(reads)
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
+  expect(screen.queryByRole('list', { name: labels.members })).toBeNull()
 })
 
 it('lists an unresolved member beside live work without disabling Stop or polling', async () => {
@@ -362,6 +436,7 @@ it('renames a gateway room with one event id across retries', async () => {
   renameOutcome = async () => ({ room: { room_id: 'named', name: 'New name' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   await screen.findByRole('heading', { name: 'New name' })
+  expect($canonicalGroupNames.get()[group]).toBe('New name')
   const renames = request.mock.calls.filter(call => call[1] === 'groups.rename').map(call => call[2])
   expect(renames).toEqual([
     { room_id: 'named', event_id: expect.any(String), name: 'New name', profile: 'team' },

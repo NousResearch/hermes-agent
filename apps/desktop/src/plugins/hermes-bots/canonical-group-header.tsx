@@ -1,6 +1,6 @@
 import { Button, Codicon, ConfirmDialog, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-  gatewayActivationEpoch, Input, StatusDot, Tip } from '@hermes/plugin-sdk'
+  gatewayActivationEpoch, Input, Popover, PopoverContent, PopoverTrigger, StatusDot, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
@@ -10,9 +10,9 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { canonicalGroupRequest, readGroupExecutionMode } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
-export function CanonicalGroupHeader({ name, members, status, working, attention, onBack, children }: {
+export function CanonicalGroupHeader({ name, members, status, working, attention, visible = true, onBack, children }: {
   name: string; members: CanonicalRoomMember[]; status?: string; working?: boolean; attention?: boolean
-  onBack?: () => void; children?: ReactNode
+  visible?: boolean; onBack?: () => void; children?: ReactNode
 }) {
   const labels = useCanonicalGroupLabels()
 
@@ -26,7 +26,20 @@ export function CanonicalGroupHeader({ name, members, status, working, attention
     <div className="min-w-0 flex-1">
       <h2 className="truncate text-sm font-medium text-(--ui-text-primary)"><bdi>{name}</bdi></h2>
       <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {!!members.length && <span>{labels.memberCount.replace('{count}', String(members.length))}</span>}
+        {!!members.length && (visible ? <Popover>
+          <PopoverTrigger asChild><Button aria-label={`${labels.members}: ${labels.memberCount.replace('{count}', String(members.length))}`} size="inline" variant="text">
+            {labels.memberCount.replace('{count}', String(members.length))}
+          </Button></PopoverTrigger>
+          <PopoverContent align="start" className="max-h-72 w-64 overflow-y-auto" variant="menu">
+            <p className="mb-3 text-xs font-medium text-(--ui-text-secondary)">{labels.members}</p>
+            <ul aria-label={labels.members} className="grid gap-3">
+              {members.map(member => <li className="flex min-w-0 items-center gap-2" key={member.member_id}>
+                <CanonicalMemberFace member={member} name={canonicalMemberName(member, labels.unknownBot)} />
+                <span className="min-w-0 truncate text-xs"><bdi>{canonicalMemberName(member, labels.unknownBot)}</bdi></span>
+              </li>)}
+            </ul>
+          </PopoverContent>
+        </Popover> : <span>{labels.memberCount.replace('{count}', String(members.length))}</span>)}
         {status && <span aria-live="polite" className="flex min-w-0 items-center gap-1.5"><StatusDot tone={attention ? 'warn' : working ? 'good' : 'muted'} /><span className="truncate">{status}</span></span>}
       </div>
     </div>

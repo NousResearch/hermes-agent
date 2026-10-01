@@ -271,6 +271,11 @@ which may sit past the dialog's edges.
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
   `Input` / `Textarea` / `SelectTrigger`. New text-entry controls compose it.
+- **`Textarea`** uses the shared form-control chrome by default. Its `plain`
+  variant is for an editor embedded inside an existing surface, such as the chat
+  composer: the enclosing surface owns its frame and spacing. It omits
+  `desktop-input-chrome` so form-control backgrounds and inset shadows do not
+  paint a second frame.
 - **`SearchField`** — borderless, underline-on-focus, auto-width. The only
   search input. Don't build boxed search bars; don't wrap it in a bordered tile.
   `variant="box"` is the one bordered form: a full-width rounded field for

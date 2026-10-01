@@ -126,7 +126,7 @@ class GatewayQueuedFollowupMixin:
                 )
                 if next_message is None:
                     return result
-                from gateway.run_inbound import strip_inbound_source_note
+                from gateway.run_inbound_context import strip_inbound_source_note
                 next_persist_message = strip_inbound_source_note(pending_event, next_message)
                 next_message_id = self._reply_anchor_for_event(pending_event)
                 next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None

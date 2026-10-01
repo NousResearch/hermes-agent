@@ -238,6 +238,42 @@ export function setProfileColor(name: string, color: null | string): void {
   $profileColors.set(next)
 }
 
+// Carry the rail preferences keyed by profile name across a rename. The stored
+// order is what ⌘N resolves against, so a name that stops matching drops the
+// profile into the alphabetical tail and silently reassigns every slot below it
+// (#130397) — rewrite the entry in place so the position, and the shortcut, hold.
+// A new name that already holds a slot absorbs the old one instead of duplicating it.
+export function renameProfileInRailPrefs(from: string, to: string): void {
+  if (from === to) {
+    return
+  }
+
+  const order = $profileOrder.get()
+  const at = order.indexOf(from)
+
+  if (at >= 0) {
+    setProfileOrder(
+      order.includes(to) ? order.filter(name => name !== from) : [...order.slice(0, at), to, ...order.slice(at + 1)]
+    )
+  }
+
+  const colors = $profileColors.get()
+  const color = colors[normalizeProfileKey(from)]
+
+  if (color !== undefined) {
+    const next = { ...colors }
+
+    delete next[normalizeProfileKey(from)]
+
+    // The surviving name is the surviving identity, so a colour it already carries wins.
+    if (next[normalizeProfileKey(to)] === undefined) {
+      next[normalizeProfileKey(to)] = color
+    }
+
+    $profileColors.set(next)
+  }
+}
+
 interface ActiveProfileResponse {
   active: string
   current: string

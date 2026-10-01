@@ -88,7 +88,22 @@ def _preflight_request_tokens(
     return estimate_request_tokens_rough(
         estimate_messages, system_prompt=system_prompt or "", tools=tools,
         charge_stale_thinking=charge_stale_thinking,
+        charge_echo_reasoning=_agent_reasoning_details_on_wire(agent),
     )
+
+
+def _agent_reasoning_details_on_wire(agent: Any) -> bool:
+    """True when this route replays the stored ``reasoning_details`` array on the wire, so
+    the compaction TRIGGER charges it like the transport sends it (Nous Portal / OpenRouter,
+    #70233 class). Defaults False on missing route facts: unlike stale thinking text, the
+    array is host-scoped, and charging a field a strict route strips would re-create the
+    phantom-charge side of #84371."""
+    try:
+        from agent.message_sanitization import reasoning_details_reaches_wire
+
+        return reasoning_details_reaches_wire(_str_attr(agent, "api_mode"), _str_attr(agent, "base_url"))
+    except Exception:
+        return False
 
 
 def _agent_stale_thinking_on_wire(agent: Any) -> bool:

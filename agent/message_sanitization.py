@@ -732,6 +732,26 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
     return projected, tuple(replayed_thinking)
 
 
+def reasoning_details_reaches_wire(api_mode: Any, base_url: Any) -> bool:
+    """True when the route replays the stored ``reasoning_details`` array on the wire.
+
+    The companion of ``stale_thinking_reaches_wire`` for the unified OpenRouter-style
+    reasoning array. ``transports.chat_completions._route_replays_reasoning_details``
+    (the sanitizer that decides keep-vs-drop) delegates here, and the token estimator
+    charges the field when this says True — the two must share ONE predicate, or the
+    pre-compression estimate goes byte-blind to payload that actually ships (2026-10-01
+    Nous Portal wedge: 151 messages / 25K visible chars read as ~46K wire tokens; the
+    real request carried ~350K, and 413/400 recovery armed too late).
+    ``codex_responses`` never replays the array (continuity rides encrypted items);
+    strict chat-completions endpoints get it stripped before send (#70233).
+    """
+    if (api_mode or "") == "codex_responses":
+        return False
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+
+
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:
     """Copy provider-facing reasoning fields onto an API replay message (mutates ``api_msg``).
     ``needs_thinking_pad`` is the require-side flag (``needs_reasoning_echo``)."""

@@ -3524,8 +3524,11 @@ def _finish_compaction_boundary(
 
     # Diagnostics only, not provider usage: schema-heavy rough estimates can stay
     # above threshold even after the next real request fits.
+    from agent.turn_context import _agent_reasoning_details_on_wire
+
     _compressed_est = estimate_request_tokens_rough(
-        compressed, system_prompt=new_system_prompt or "", tools=agent.tools or None
+        compressed, system_prompt=new_system_prompt or "", tools=agent.tools or None,
+        charge_echo_reasoning=_agent_reasoning_details_on_wire(agent),
     )
     compressor.last_compression_rough_tokens = _compressed_est
     compressor.last_prompt_tokens = -1

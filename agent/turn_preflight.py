@@ -19,7 +19,7 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
-from agent.turn_context import _review_fork_first_request_pending
+from agent.turn_context import _agent_reasoning_details_on_wire, _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
     _reanchor, _reset_retry_state_after_compaction,
@@ -291,7 +291,10 @@ def compress_after_tool_results(
     else:
         _real_tokens = _midturn_request_pressure_tokens(
             agent, messages, active_system_prompt or "",
-            estimate_request_tokens_rough(messages, tools=agent.tools or None),
+            estimate_request_tokens_rough(
+                messages, tools=agent.tools or None,
+                charge_echo_reasoning=_agent_reasoning_details_on_wire(agent),
+            ),
         )
 
     if agent.compression_enabled and compression_attempts < max_compression_attempts:

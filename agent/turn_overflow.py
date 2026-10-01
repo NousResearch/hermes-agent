@@ -219,8 +219,12 @@ class _Recovery(OverflowVerdict):
         """Overhead-aware request size (msgs + tools + system) so LCM forced-overflow
         recovery arms on the TRUE request, not the tool-blind message count."""
         from agent.model_metadata import estimate_request_tokens_rough
+        from agent.turn_context import _agent_reasoning_details_on_wire
 
-        return estimate_request_tokens_rough(self.api_messages, tools=self.agent.tools or None)
+        return estimate_request_tokens_rough(
+            self.api_messages, tools=self.agent.tools or None,
+            charge_echo_reasoning=_agent_reasoning_details_on_wire(self.agent),
+        )
 
 
 def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> OverflowVerdict:

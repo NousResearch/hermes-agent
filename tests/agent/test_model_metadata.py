@@ -479,6 +479,17 @@ class TestCodexOAuthContextLength:
             for key in mm._codex_oauth_context_cache
         )
 
+    def test_expired_catalogue_entries_are_pruned_with_companion_cache(self, monkeypatch):
+        from agent import model_metadata as mm
+
+        mm._codex_oauth_context_cache = {"expired": ({"gpt-5.5": 272_000}, 0.0)}
+        mm._codex_oauth_max_context_cache = {"expired": {"gpt-5.5": 900_000}}
+        monkeypatch.setattr(mm.time, "time", lambda: mm._CODEX_OAUTH_CONTEXT_CACHE_TTL + 1)
+        with patch.object(mm, "_codex_catalog_probe_allowed", return_value=False):
+            assert mm._fetch_codex_oauth_context_lengths_with_source("token") == ({}, False)
+        assert "expired" not in mm._codex_oauth_context_cache
+        assert "expired" not in mm._codex_oauth_max_context_cache
+
     def test_probe_failure_falls_back_to_hardcoded(self):
         """If the probe fails (non-200 / network error), we still return
         the hardcoded 272k rather than leaking through to models.dev 1.05M."""

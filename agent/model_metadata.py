@@ -1778,6 +1778,7 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+_CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES = 128
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
 # returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
@@ -1846,14 +1847,31 @@ def _codex_oauth_token_fingerprint(access_token: str, base_url: str = "") -> str
     return hashlib.sha256(f"{access_token}\n{(base_url or '').strip().rstrip('/')}".encode("utf-8")).hexdigest()[:16]
 
 
+def _prune_codex_oauth_context_caches(now: float) -> None:
+    """Remove expired and oldest entries from the paired Codex OAuth caches."""
+    cutoff = now - _CODEX_OAUTH_CONTEXT_CACHE_TTL
+    expired = [key for key, (_, cached_at) in _codex_oauth_context_cache.items() if cached_at <= cutoff]
+    for key in expired:
+        _codex_oauth_context_cache.pop(key, None)
+        _codex_oauth_max_context_cache.pop(key, None)
+
+    overflow = len(_codex_oauth_context_cache) - _CODEX_OAUTH_CONTEXT_CACHE_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(_codex_oauth_context_cache, key=lambda key: _codex_oauth_context_cache[key][1])[:overflow]
+        for key in oldest:
+            _codex_oauth_context_cache.pop(key, None)
+            _codex_oauth_max_context_cache.pop(key, None)
+
+
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
     fingerprint (windows vary by entitlement); ``max_context_window`` lands in
     ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
     fresh provider confirmation, must not drive persistent writes."""
+    now = time.time()
+    _prune_codex_oauth_context_caches(now)
     if not _codex_catalog_probe_allowed(access_token, base_url):
         return {}, False
-    now = time.time()
     cache_key = _codex_oauth_token_fingerprint(access_token, base_url)
     cached = _codex_oauth_context_cache.get(cache_key)
     if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:

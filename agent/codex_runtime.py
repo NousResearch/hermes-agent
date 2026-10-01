@@ -534,12 +534,25 @@ def _start_codex_thread(agent) -> str:
         return agent._codex_session.ensure_started()
 
 
-def _codex_wire_model(agent) -> str | None:
-    """The slug codex should run: ``-900k`` picker variants are Hermes-side aliases the backend rejects
-    ("not supported when using Codex with a ChatGPT account"); codex already applies the catalog's
-    extended window to the base slug itself."""
+def _codex_model_provider(agent) -> str | None:
+    """codex's ``[model_providers.<id>]`` for a named custom provider; None means codex's own provider."""
+    if str(getattr(agent, "provider", "") or "").strip().lower() != "custom":
+        return None
+    from hermes_cli.runtime_provider_custom import codex_model_provider_id
+    return codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+
+
+def _codex_wire_model(agent, model_provider: str | None) -> str | None:
+    """The slug codex should run. ``-900k`` picker variants are Hermes-side aliases the backend rejects
+    ("not supported when using Codex with a ChatGPT account"); codex applies the catalog's extended window
+    to the base slug itself. On codex's own provider the slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``),
+    as for openai-codex; a named custom provider's model ids are its own and pass through."""
     from agent.model_metadata import strip_codex_context_variant_suffix
-    return strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
+    model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
+    if model and model_provider is None:
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        model = normalize_model_for_provider(model, "openai-codex")
+    return model
 
 
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
@@ -592,17 +605,14 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     # table: send the stable id and let codex resolve base_url/env_key itself, so Hermes' credential never
     # enters the JSON-RPC payload (#75186). The model always rides along: codex's home is shared, while the
     # Hermes model is per profile/session, so omitting it ran codex's own default instead of the selection.
-    model_provider = None
-    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
-        from hermes_cli.runtime_provider_custom import codex_model_provider_id
-        model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+    model_provider = _codex_model_provider(agent)
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
-        model=_codex_wire_model(agent), model_provider=model_provider,
+        model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
     )
 
@@ -679,7 +689,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     _ensure_codex_session(agent, messages)
     try:
         _start_codex_thread(agent)
-        turn = agent._codex_session.run_turn(user_input=user_message, model=_codex_wire_model(agent))
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            model=_codex_wire_model(agent, _codex_model_provider(agent)))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

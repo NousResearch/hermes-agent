@@ -225,8 +225,9 @@ class CodexAppServerSession:
         # A codex thread id persisted by an earlier process for this Hermes session: the first
         # ``ensure_started`` issues ``thread/resume`` for it instead of ``thread/start``.
         self._resume_thread_id = resume_thread_id
-        # ``thread/start.model`` / ``.modelProvider``: select a provider from codex's own
-        # ``[model_providers.<id>]`` table. Only the id travels; codex reads base_url/env_key itself.
+        # ``thread/start.model``: the Hermes-selected slug, for every provider. ``.modelProvider``: a named
+        # custom provider's id in codex's own ``[model_providers.<id>]`` table; only the id travels, codex
+        # reads base_url/env_key itself.
         self._model = (model or "").strip() or None
         self._model_provider = (model_provider or "").strip() or None
         # Hermes' composed system prompt (SOUL.md, memory, channel overrides). Sent ONCE per thread as

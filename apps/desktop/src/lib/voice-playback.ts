@@ -20,11 +20,19 @@ import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 // tick, so legitimately long speech is never cut off).
 const PLAYBACK_STALL_MS = 15_000
 
-// Device-level speech rate ($voicePlaybackSpeed). Every playback path starts
-// from it; the WS path re-reads it per chunk, so a mid-stream change takes
-// hold on the next chunk without restarting audio.
+// Speed is applied SYNTHESIS-SIDE (the speed store is sent to the backend and
+// honored by providers like Kokoro), so playback elements always run at rate 1 —
+// client-side playbackRate would double-apply or shift pitch. Keep the explicit
+// preservesPitch: Electron builds have shipped false despite the spec default,
+// and belt-and-suspenders costs nothing.
 function applyVoicePlaybackRate(audio: HTMLAudioElement): void {
-  audio.playbackRate = $voicePlaybackSpeed.get()
+  audio.playbackRate = 1
+  const el = audio as HTMLAudioElement & {
+    preservesPitch?: boolean
+    webkitPreservesPitch?: boolean
+  }
+  el.preservesPitch = true
+  el.webkitPreservesPitch = true
 }
 
 let currentAudio: HTMLAudioElement | null = null
@@ -430,6 +438,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     }
   })
 
+  liveSpeedSend = speed => send({ speed })
+
   const send = (frame: object) => {
     const data = JSON.stringify(frame)
 
@@ -451,10 +461,6 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     if (!context) {
       return
     }
-
-    // Re-read per chunk: a rate change made while a reply is speaking takes
-    // hold from the next chunk, without restarting audio.
-    const speed = $voicePlaybackSpeed.get()
 
     // Provider chunks are not sample-aligned — carry any odd byte over.
     let bytes = new Uint8Array(data)
@@ -478,6 +484,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     }
 
     const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, usable / 2)
+
+    // Speed is applied SYNTHESIS-SIDE: the client sends {"speed"} frames over
+    // this socket and the backend passes it into the provider (Kokoro --speed
+    // etc.), so the PCM arrives already at the requested rate — pitch-perfect.
+    // Client-side playbackRate/resampling would double-apply or shift pitch,
+    // so the source always plays at 1.
     const buffer = context.createBuffer(1, pcm.length, streamRate)
     const channel = buffer.getChannelData(0)
 
@@ -487,14 +499,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     const source = context.createBufferSource()
     source.buffer = buffer
-    // Rate ≥ 1 shortens the chunk; the timeline math below consumes the
-    // SHORTENED duration so back-to-back chunks never overlap or gap.
-    source.playbackRate.value = speed
+    source.playbackRate.value = 1
     source.connect(context.destination)
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)
-    nextStartAt = startAt + buffer.duration / speed
+    nextStartAt = startAt + buffer.duration
 
     if (!started) {
       started = true
@@ -503,6 +513,9 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   }
 
   ws.onopen = () => {
+    // Announce the session's synthesis speed before any text (server adopts it
+    // for every sentence; live changes ride dedicated speed frames).
+    ws.send(JSON.stringify({ speed: $voicePlaybackSpeed.get() }))
     pendingSends.splice(0).forEach(data => ws.send(data))
   }
 
@@ -648,7 +661,7 @@ async function playSpeechDataUrl(
   options: VoicePlaybackOptions,
   isCurrent: () => boolean
 ): Promise<boolean> {
-  const response = await speakText(speakableText, options)
+  const response = await speakText(speakableText, options, $voicePlaybackSpeed.get())
 
   if (!isCurrent()) {
     return false
@@ -842,18 +855,20 @@ export function isVoicePlaybackActive() {
   return $voicePlayback.get().status !== 'idle'
 }
 
-// Retune the reply that is already playing when the user changes the speed:
-// the in-flight data-URL audio element (the only playback not re-read per
-// chunk). rate < 0.0625 or > 16 is outside the HTMLMediaElement spec range;
-// the store clamps its window tighter (0.25–4), but never trust a live store
-// in a DOM property. The streaming path needs no element — its per-chunk
-// re-read picks the change up natively.
-$voicePlaybackSpeed.subscribe(speed => {
-  if (!currentAudio || currentAudio.paused) {
-    return
-  }
+// Forward live speed changes: a streaming session gets a speed frame
+// (sentence-granular adoption server-side); the data-URL element stays at
+// rate 1 because its synthesis already applied the speed.
+let liveSpeedSend: ((speed: number) => void) | null = null
 
-  currentAudio.playbackRate = Math.min(4, Math.max(0.0625, speed))
+$voicePlaybackSpeed.subscribe(speed => {
+  // Streaming session: tell the backend (sentence-granular adoption).
+  liveSpeedSend?.(Math.min(4, Math.max(0.25, speed)))
+
+  // Data-URL playback: synthesis already applied the speed at request time;
+  // keep the element at rate 1 (playbackRate would double-apply or shift pitch).
+  if (currentAudio && !currentAudio.paused) {
+    currentAudio.playbackRate = 1
+  }
 })
 
 // ---------------------------------------------------------------------------

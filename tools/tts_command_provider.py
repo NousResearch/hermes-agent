@@ -329,7 +329,10 @@ def _generate_command_tts(
             "input_path": str(text_path), "text_path": str(text_path), "output_path": str(output),
             "format": _get_command_tts_output_format(config, str(output)),
             "voice": str(config.get("voice", "")), "model": str(config.get("model", "")),
-            "speed": str(config.get("speed", tts_config.get("speed", ""))),
+            # Per-call speed (text_to_speech_tool(speed=...)) wins: it is an explicit
+            # runtime request; the provider-entry speed is a default. Inverting this
+            # let a config pin silently shadow per-call overrides.
+            "speed": str(tts_config.get("speed", config.get("speed", ""))),
         }
         command = render_command_template(command_template, placeholders)
         try:

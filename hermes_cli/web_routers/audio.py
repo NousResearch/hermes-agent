@@ -306,7 +306,10 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     with http_failure("Desktop voice TTS failed", 500, "Speech synthesis failed"):
         from tools.tts_tool import text_to_speech_tool
 
-        result_json = await _run_config_scoped(profile, lambda: text_to_speech_tool(text))
+        speed = payload.speed
+        speed = speed if speed is not None and 0.25 <= float(speed) <= 4.0 else None
+        result_json = await _run_config_scoped(
+            profile, lambda: text_to_speech_tool(text, speed=speed))
 
     try:
         result = json.loads(result_json) if isinstance(result_json, str) else result_json
@@ -396,24 +399,30 @@ class _SyncSentencePCMStreamer:
 
     sample_rate = 24000
     channels = 1
+    # Synthesis-side playback speed (provider-honored); set per WS session.
+    speed = None
 
     def stream(self, text: str):
-        pcm, rate = _sync_sentence_to_pcm(text)
+        pcm, rate = _sync_sentence_to_pcm(text, speed=self.speed)
         if rate:
             self.sample_rate = rate
         if pcm:
             yield pcm
 
 
-def _sync_sentence_to_pcm(text: str) -> tuple:
-    """Synthesize *text* with the configured sync provider and return PCM."""
+def _sync_sentence_to_pcm(text: str, speed=None) -> tuple:
+    """Synthesize *text* with the configured sync provider and return PCM.
+
+    ``speed`` is synthesis-side playback speed (provider-honored where
+    supported, e.g. Kokoro's --speed); None = provider default.
+    """
     from tools.tts_tool import text_to_speech_tool
 
     fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     extra = None
     try:
-        raw = text_to_speech_tool(text=text, output_path=tmp_path)
+        raw = text_to_speech_tool(text=text, output_path=tmp_path, speed=speed)
         try:
             payload = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, ValueError) as exc:
@@ -557,6 +566,12 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             cap = _resolve_max_text_length(_get_provider(cfg), cfg)
         return streamer, cap, cfg
 
+    # Synthesis-side playback speed (provider-honored, e.g. Kokoro --speed).
+    # Mutated live by client speed frames; sentence-granular adoption. Must
+    # exist before the fallback branch below reads it (non-chunked providers
+    # take that path on every session).
+    speed_holder: list = [None]
+
     try:
         streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
     except Exception:
@@ -567,6 +582,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         # documented per-sentence path. type=fallback here is what makes Desktop
         # wait for the whole reply and POST it to /api/audio/speak.
         streamer = _SyncSentencePCMStreamer()
+        streamer.speed = speed_holder[0]
 
     # The start frame is deferred until the first PCM chunk (or end-of-speech):
     # the OpenAI-compatible streamer only learns the endpoint's real rate from
@@ -587,6 +603,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     produced_audio = False
     synthesis_failed = False
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
+
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
     def _produce():
@@ -656,6 +673,14 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         try:
             while True:
                 frame = json.loads(await ws.receive_text())
+                if frame.get("speed") is not None:
+                    try:
+                        value = float(frame["speed"])
+                    except (TypeError, ValueError):
+                        value = None
+                    if value is not None and 0.25 <= value <= 4.0:
+                        speed_holder[0] = value
+                        streamer.speed = value
                 if frame.get("text"):
                     text_q.put(str(frame["text"]))
                 if frame.get("stop"):

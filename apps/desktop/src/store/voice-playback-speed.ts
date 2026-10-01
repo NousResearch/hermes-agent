@@ -3,10 +3,10 @@ import { persistentAtom } from '@/lib/persisted'
 // Device-level speech playback speed. Choosing a rate on any read-aloud or
 // voice-conversation playback persists it as the rate every later playback
 // starts from, so a listener who prefers 1.5x doesn't re-pick it per reply.
-// Applied client-side (audio element playbackRate / AudioBufferSource
-// playbackRate) rather than at synthesis: it works for every provider
-// including the ones that ignore `speed`, retunes the reply that is already
-// speaking, and never double-applies with a synthesis-side rate.
+// Applied at SYNTHESIS time: the store rides the speak-stream session (speed
+// frames) and the /api/audio/speak body, where speed-honoring providers
+// (Kokoro) render it pitch-perfect. Providers that ignore `speed` play at
+// their default rate rather than a detuned voice.
 
 const STORAGE_KEY = 'hermes.desktop.voicePlaybackSpeed'
 

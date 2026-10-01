@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setVoicePlaybackSpeed } from '@/store/voice-playback-speed'
+import { speakText } from '@/hermes'
 
 import { playSpeechText, stopVoicePlayback } from './voice-playback'
 
@@ -25,6 +26,7 @@ vi.mock('@/hermes', () => ({
 // 'ended' event is still pending, keyed in creation order.
 function installAudioStubs() {
   const created: FakeAudio[] = []
+    const createdBuffers: Array<{ length: number; duration: number }> = []
 
   class FakeAudio {
     playbackRate = 1
@@ -75,27 +77,33 @@ describe('voice playback speed reaches every playback rung', () => {
     Reflect.deleteProperty(window, 'Audio')
   })
 
-  it('starts data-URL playback at the chosen rate and retunes it live', async () => {
-    const created = installAudioStubs()
-    setVoicePlaybackSpeed(1.5)
+  it('starts data-URL playback at synthesis speed and keeps the element at rate 1', async () => {
+    vi.mocked(speakText).mockClear()
+    setVoicePlaybackSpeed(0.75)
 
+    const created = installAudioStubs()
     const pending = playSpeechText('hello there', { source: 'read-aloud' })
 
     await vi.waitFor(() => expect(created.length).toBeGreaterThan(0))
     const audio = created[0]
 
-    // Started at the preference, not 1x.
-    expect(audio.playbackRate).toBe(1.5)
+    // Synthesis-side speed: the POST carried the requested speed and the
+    // element plays at rate 1 (pitch-perfect; no playbackRate resampling).
+    expect(speakText).toHaveBeenCalledWith('hello there', expect.anything(), 0.75)
+    expect(audio.playbackRate).toBe(1)
 
-    // The user changes speed mid-reply — the live element is retuned.
-    setVoicePlaybackSpeed(0.75)
-    expect(audio.playbackRate).toBe(0.75)
+    // A live speed change re-synthesizes on the NEXT reply; the in-flight
+    // element is never retuned via playbackRate.
+    setVoicePlaybackSpeed(1.5)
+    expect(audio.playbackRate).toBe(1)
 
     audio.fire('ended')
     await expect(pending).resolves.toBe(true)
 
     setVoicePlaybackSpeed(1)
   })
+
+
 
   it('schedules stream chunks at the chosen rate without overlap', async () => {
     const created = installAudioStubs()
@@ -106,10 +114,16 @@ describe('voice playback speed reaches every playback rung', () => {
       static OPEN = 1
       static CONNECTING = 0
       binaryType = ''
-      readyState = 1
+      readyState = 0
 
       constructor() {
         onmessage = (event: { data: unknown }) => this.onmessage?.(event)
+        // Real sockets reach OPEN a tick later; queueMicrotask mimics that
+        // so the client's CONNECTING buffering + onopen announcement run.
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.()
+        })
       }
 
       onmessage: ((event: { data: unknown }) => void) | null = null
@@ -117,7 +131,11 @@ describe('voice playback speed reaches every playback rung', () => {
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
 
-      send() {}
+      static sentFrames: string[] = []
+
+      send(data: string) {
+        FakeWebSocket.sentFrames.push(data)
+      }
 
       close() {}
     }
@@ -138,6 +156,7 @@ describe('voice playback speed reaches every playback rung', () => {
       }
     }
 
+    const createdBuffers: Array<{ length: number; duration: number }> = []
     // context.currentTime advances 0 → 0.05 → 0.1 …; buffer duration 1s each.
     let currentTime = 0
 
@@ -146,8 +165,9 @@ describe('voice playback speed reaches every playback rung', () => {
         return currentTime
       },
 
-      createBuffer(_channels: number, length: number, _rate: number) {
-        return { duration: 1, getChannelData: () => new Float32Array(length) }
+      createBuffer(_channels: number, length: number, rate: number) {
+        createdBuffers.push({ length, duration: length / rate })
+        return { duration: length / rate, getChannelData: () => new Float32Array(length) }
       },
 
       createBufferSource() {
@@ -183,6 +203,7 @@ describe('voice playback speed reaches every playback rung', () => {
       }
     })
 
+    FakeWebSocket.sentFrames = []
     setVoicePlaybackSpeed(2)
 
     const pending = playSpeechText('hello there', { source: 'read-aloud' })
@@ -197,13 +218,26 @@ describe('voice playback speed reaches every playback rung', () => {
 
     await vi.waitFor(() => expect(scheduled.length).toBe(2))
 
-    expect(scheduled[0].playbackRate).toBe(2)
-    expect(scheduled[1].playbackRate).toBe(2)
-    // Chunk 1 ends at start(0.05) + duration/speed = 0.55; chunk 2 starts
+    // Speed is applied SYNTHESIS-SIDE: the client announces it on session
+    // open and sources always play at rate 1 (pitch-perfect; the PCM arrives
+    // already at the requested rate from providers honoring speed).
+    expect(scheduled[0].playbackRate).toBe(1)
+    expect(scheduled[1].playbackRate).toBe(1)
+    // Chunk 1 ends at start(0.05) + full duration 1.0 = 1.05; chunk 2 starts
     // exactly there — no overlap, no gap.
-    expect(scheduled[1].timeline).toBeCloseTo(0.55, 5)
+    expect(scheduled[1].timeline).toBeCloseTo(1.05, 5)
+
+    // The WS protocol carries the speed: the session opens with a speed
+    // announcement ahead of any text, and a live change rides a speed frame.
+    const frames = FakeWebSocket.sentFrames.map(data => JSON.parse(data))
+    expect(frames[0]).toEqual({ speed: 2 })
+    expect(frames[0]).toEqual(frames.find(f => typeof f.speed === 'number'))
 
     created.length = 0
+    setVoicePlaybackSpeed(0.75)
+    await vi.waitFor(() =>
+      FakeWebSocket.sentFrames.some(data => JSON.parse(data).speed === 0.75)
+    )
     await expect(pending).resolves.toBe(true)
     setVoicePlaybackSpeed(1)
   })

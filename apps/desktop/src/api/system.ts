@@ -205,12 +205,16 @@ export function transcribeAudio(
 
 // `owner` = the speaking session's (connection, profile) — a Bot's own TTS
 // voice on its own gateway; omitted halves → the active scope.
-export function speakText(text: string, owner?: OwnerScope): Promise<AudioSpeakResponse> {
+export function speakText(
+  text: string,
+  owner?: OwnerScope,
+  speed?: number
+): Promise<AudioSpeakResponse> {
   return hermesApi<AudioSpeakResponse>({
     ...ownerScoped(owner),
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text },
+    body: speed ? { text, speed } : { text },
     // TTS blocks until provider synthesis, file read, and base64 encoding
     // finish. Remote providers and large messages regularly exceed the
     // default 15s Electron backend timeout.

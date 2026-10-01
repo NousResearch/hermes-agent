@@ -17,6 +17,8 @@ const DESKTOP_HIDDEN_TOOLSETS = new Set([
   'matrix_read',
   'matrix_unread',
   'matrix_image_packs',
+  'matrix_reaction',
+  'matrix_followup',
   'yuanbao',
   // Internal plumbing, not a user capability toggle.
   'context_engine',

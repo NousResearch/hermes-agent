@@ -25,6 +25,8 @@ describe('Desktop toolset curation', () => {
       row('matrix_admin'),
       row('matrix_unread'),
       row('matrix_image_packs'),
+      row('matrix_reaction'),
+      row('matrix_followup'),
       extension
     ]
 

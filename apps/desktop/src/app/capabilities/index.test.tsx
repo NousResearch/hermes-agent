@@ -131,7 +131,7 @@ afterEach(() => {
 // all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
 describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
-  it.each(['matrix_read', 'matrix_unread', 'matrix_image_packs'])(
+  it.each(['matrix_read', 'matrix_unread', 'matrix_image_packs', 'matrix_reaction', 'matrix_followup'])(
     'excludes %s from Desktop rows and bulk writes',
     async name => {
       const matrix = toolset({ name, label: 'Matrix channel', tools: [name] })

@@ -330,7 +330,9 @@ export async function normalizeOrLocalPreviewTarget(
     // preview tab (#101683). Remote-backend paths, and a dev server without
     // the bridge, keep it.
     if (!isDesktopFsRemoteMode() && normalized === null) {
-      return null
+      // The IPC normalizer only accepts loopback URLs; public web URLs remain previewable.
+      const fallback = localPreviewTarget(rawTarget, cwd)
+      return fallback?.kind === 'url' ? enrichPreviewTarget(fallback) : null
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall

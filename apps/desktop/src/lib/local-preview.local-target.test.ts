@@ -69,6 +69,15 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
     await expect(normalizeOrLocalPreviewTarget('/work/nope.md')).resolves.toBeNull()
   })
 
+  it('keeps public web URLs previewable when the local-only IPC normalizer returns null', async () => {
+    stubNormalization(null)
+
+    await expect(normalizeOrLocalPreviewTarget('https://example.com')).resolves.toMatchObject({
+      kind: 'url',
+      url: 'https://example.com'
+    })
+  })
+
   it('keeps the gateway-backed fallback for remote-backend directories', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     stubNormalization({

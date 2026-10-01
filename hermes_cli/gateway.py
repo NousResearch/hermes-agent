@@ -5504,6 +5504,10 @@ def _cmd_restart(args):
     # `--all` targets the ONE host multiplexer and _restart_all does its own ownership check with
     # the right one-liner; running the generic named-profile guard first made that branch
     # unreachable for `-p X gateway restart --all` (it printed a bare `gateway restart` instead).
+    if not restart_all and not force and _served_by_another_host_gateway():
+        # A named satellite profile is served by the host gateway.
+        _restart_all(system)
+        return
     if not restart_all:
         _guard_named_profile_under_multiplexer(force=force)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):

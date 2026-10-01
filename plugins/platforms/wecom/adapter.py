@@ -461,6 +461,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         has_pending_batch = self._text_batch_key(event) in self._pending_text_batches
         is_attachment_only = bool(media_urls) and not (text or "").strip()
         if (message_type == MessageType.TEXT and (self._text_batch_delay_seconds > 0 or has_pending_batch)) or (is_attachment_only and self._attachment_text_merge_delay_seconds > 0):
+            key = self._text_batch_key(event)
+            existing = self._pending_text_batches.get(key)
+            if existing is not None and existing.reply_context_conflicts(event):
+                await self._flush_text_batch_now(key)
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
@@ -482,14 +486,11 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         return allowed
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer + reset the flush timer; real text joining a buffered attachment promotes it to TEXT and inherits the quote context."""
+        """Buffer an event; own text promotes a buffered attachment to TEXT."""
         existing = self._pending_text_batches.get(self._text_batch_key(event))
-        super()._enqueue_text_event(event)  # merge text/media + restart the flush timer
+        super()._enqueue_text_event(event)
         if existing is not None and event.text and event.text.strip():
             existing.message_type = MessageType.TEXT
-            if event.reply_to_text and not existing.reply_to_text:
-                existing.reply_to_text = event.reply_to_text
-                existing.reply_to_message_id = event.reply_to_message_id
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         if pending is not None and pending.media_urls and not (pending.text or "").strip():

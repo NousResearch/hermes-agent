@@ -1561,10 +1561,15 @@ export async function openFolderAsProject(dir?: string): Promise<void> {
   }
 
   if (isDesktopFsRemoteMode()) {
-    const readable = await readDesktopDir(target)
+    try {
+      const readable = await readDesktopDir(target)
 
-    if (readable.error) {
-      notify({ kind: 'warning', message: readable.error })
+      if (readable.error) {
+        notify({ kind: 'warning', message: readable.error })
+        return
+      }
+    } catch (err) {
+      notify({ kind: 'warning', message: err instanceof Error ? err.message : String(err) })
       return
     }
   }

@@ -117,3 +117,30 @@ def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(
     assert goals.load_goal(mgr.session_id).goal == 'drafting docs'
     assert calls == ['build it']
     assert prompts[-1] == 'drafting docs'
+
+
+def _dispatch(mgr, arg):
+    from hermes_cli.goal_command import dispatch_goal_command
+    return dispatch_goal_command(mgr, arg, authorize_gate=lambda: None)
+
+
+@pytest.mark.parametrize('command, paused', [
+    ('resume last goal', False), ('continue', True), ('pause for now', False), ('status please', False),
+])
+def test_control_verb_with_trailing_words_never_replaces_the_goal(command, paused):
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='verb-wins-' + command.replace(' ', '-'))
+    mgr.set('original objective')
+    if paused:
+        mgr.pause(reason='user-paused')
+    _dispatch(mgr, command)
+    assert goals.load_goal(mgr.session_id).goal == 'original objective'
+
+
+def test_double_dash_sets_control_word_goal_and_announces_the_replace():
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='verb-escape')
+    mgr.set('original objective')
+    result = _dispatch(mgr, '-- pause the nightly cron')
+    assert goals.load_goal(mgr.session_id).goal == 'pause the nightly cron'
+    assert 'was: original objective' in result.output

@@ -74,6 +74,11 @@ const RUNTIME_SESSION_ID = 'rt-abc123'
 // Every typed command also fires this (fire-and-forget); these tests assert the command's own traffic.
 const SLASH_METRIC = 'shared_metrics.slash_command'
 
+// tui_gateway/contracts/registry.py::validate_params prose for an unknown key, sent by rpc_dispatch as code 4000.
+const STRICT_CONTRACT_REJECTION =
+  'invalid params for prompt.submit: submitted_at: Extra inputs are not permitted — the client and the ' +
+  'Hermes backend are out of sync (different versions); run `hermes update` and restart both'
+
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
     ended_at: null,
@@ -2248,12 +2253,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         promptCalls.push(params ?? {})
 
         if ('submitted_at' in (params ?? {})) {
-          // tui_gateway/contracts/registry.py::validate_params, answered as 4000 by rpc_dispatch.
-          throw new JsonRpcGatewayError(
-            'invalid params for prompt.submit: submitted_at: Extra inputs are not permitted — the client and the ' +
-              'Hermes backend are out of sync (different versions); run `hermes update` and restart both',
-            { code: 4000 }
-          )
+          throw new JsonRpcGatewayError(STRICT_CONTRACT_REJECTION, { code: 4000 })
         }
       }
 
@@ -2277,7 +2277,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
   })
 
-  it('does not strip the envelope for an error that merely names an envelope field', async () => {
+  it('does not strip the envelope for a non-4000 error, even one carrying the contract-rejection prose', async () => {
     const promptCalls: Array<Record<string, unknown>> = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -2285,7 +2285,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         promptCalls.push(params ?? {})
         // Only the dispatcher's pre-handler 4000 proves nothing ran; a handler error
         // may follow an accepted turn, so an identity-less retry could duplicate it.
-        throw new JsonRpcGatewayError('could not persist submitted_at for this prompt', { code: 5071 })
+        throw new JsonRpcGatewayError(STRICT_CONTRACT_REJECTION, { code: 5071 })
       }
 
       return {} as never

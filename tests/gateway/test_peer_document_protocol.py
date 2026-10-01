@@ -47,6 +47,10 @@ async def test_older_peer_keeps_text_wire_and_never_receives_document_bytes(gate
             await asyncio.to_thread(client.recover_dispatch, dispatch=documents, grant=grant)
         assert recovery.value.ambiguous and not recovery.value.not_admitted
         count = len(bodies)
+        with pytest.raises(PeerRunsHTTPError) as delayed:
+            await asyncio.to_thread(client.recover_dispatch, dispatch=documents, grant=grant)
+        assert delayed.value.ambiguous and delayed.value.retryable
+        assert len(bodies) == count
         oversized = copy.deepcopy(documents)
         oversized['document_inputs'][0]['size'] = 5_000_001
         with pytest.raises(ValueError):

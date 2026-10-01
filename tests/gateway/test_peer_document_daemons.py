@@ -143,8 +143,17 @@ def test_document_versions_execute_from_receiving_custody_and_remain_downloadabl
             source_event_id = result['result']['event']['event_id']
         # Both viewers detach; only the canonical gateways own the work.
         async with websocket(home, hd) as hw:
+            approved = set()
             async with asyncio.timeout(40):
                 while True:
+                    state = (await rpc(hw, 'groups.state', room_id='linked'))['result']
+                    for action in state['driver_status']['pending_actions']:
+                        if action['kind'] == 'approval' and action['request_id'] not in approved:
+                            assert action['approval']['command'] == peer_model.approval_command
+                            result = await rpc(hw, 'groups.approve', room_id='linked', choice='once',
+                                **{k: action[k] for k in ('member_id', 'task_id', 'execution_generation', 'request_id')})
+                            assert result['result']['approved'], result
+                            approved.add(action['request_id'])
                     events = (await rpc(hw, 'groups.log', room_id='linked'))['result']['events']
                     failed = [e for e in events if e['kind'] == 'turn.failed']
                     assert not failed, failed
@@ -331,13 +340,15 @@ def test_receiver_crash_during_preparation_reuses_verified_copy_without_duplicat
 
     async def recovered(hd):
         async with websocket(home, hd) as hw:
+            # The real transport can spend 30s losing its reply, followed by the existing
+            # 60s indeterminate reprobe window and 5s publication poll. Never re-admit to hurry it.
             try:
-                reply, = await _events(hw, 'message.member', timeout=90)
+                reply, = await _events(hw, 'message.member', timeout=150)
             except TimeoutError:
                 with sqlite3.connect(peer / 'runs_idempotency.db') as records:
                     runs = records.execute('SELECT run_id,status_json,owner_pid,owner_started FROM run_idempotency').fetchall()
                 pytest.fail(str({'state': await rpc(hw, 'groups.state', room_id='linked'), 'events': await rpc(hw, 'groups.log', room_id='linked'),
-                                 'peer_log': (peer / 'restart.log').read_text()[-16000:], 'home_log': (home / 'first.log').read_text()[-12000:], 'runs': runs}))
+                                 'peer_log': (peer / 'restart.log').read_text()[-16000:], 'home_log': (home / 'restart.log').read_text()[-12000:], 'runs': runs}))
             assert reply['payload']['text'] == 'Recovered document'
             assert len(peer_model.requests) == 1
             with sqlite3.connect(f'file:{peer / "state.db"}?mode=ro', uri=True) as db:
@@ -348,7 +359,7 @@ def test_receiver_crash_during_preparation_reuses_verified_copy_without_duplicat
                 attempts = db.execute('SELECT execution_generation,status FROM hosted_room_driver_tasks').fetchall()
                 assert attempts == [(1, 'settled')], attempts
     try:
-        with daemon(root, home, home_env, barrier=True, fixture='peer_document_preparation_crash.py') as (_, hd):
+        with daemon(root, home, home_env, barrier=False) as (_, hd):
             with daemon(root, peer, peer_env, barrier=True, fixture='peer_document_preparation_crash.py') as (pp, pd):
                 asyncio.run(send(hd, pd, pp))
             with sqlite3.connect(peer / 'state.db') as db:

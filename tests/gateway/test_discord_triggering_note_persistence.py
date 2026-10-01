@@ -10,7 +10,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from gateway.run_inbound import discord_triggering_note
+from gateway.run_inbound_context import discord_triggering_note
 from gateway.session import SessionSource
 
 

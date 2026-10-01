@@ -4718,6 +4718,8 @@
     "updates.bundleOutOfSync",
     "updates.bundleOutOfSyncAction",
     "updates.bundleOutOfSyncDesc",
+    "updates.bundleOutOfSyncPendingAction",
+    "updates.bundleOutOfSyncPendingDesc",
     "updates.bundleSwapPending",
     "updates.bundleSwapPendingAction",
     "updates.bundleSwapPendingDesc",

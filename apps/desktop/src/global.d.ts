@@ -749,6 +749,10 @@ export interface DesktopVersionInfo {
   /** True when the bundle on disk is newer than the running process — a plain
    *  app restart (no rebuild, no installer) is enough to load it. */
   bundleSwapPending?: boolean
+  /** True when an updater skipped this app's install because the bundle was
+   *  running — a stage-and-swap is still pending in
+   *  `<HERMES_HOME>/pending_desktop_install.json` (#123737). */
+  desktopInstallPending?: boolean
 }
 
 /** Where an external build's backend came from. Mirrors the resolution ladder

@@ -404,6 +404,7 @@ import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
+import { readPendingDesktopInstall } from './pending-desktop-install'
 import { petOverlayClickThrough } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -18716,7 +18717,13 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
     // under a running `npm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
-    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))
+    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath)),
+    // An updater skipped this app's install because the bundle was running
+    // (#123737): a stage-and-swap is still waiting. Offered to the UI so the
+    // out-of-sync banner can complete it instead of sending a source-install
+    // user to a packaged-installer download. Fail-quiet: a torn or missing
+    // record reads as null and changes nothing.
+    desktopInstallPending: readPendingDesktopInstall(HERMES_HOME) !== null
   }
 })
 

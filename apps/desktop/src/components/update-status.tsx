@@ -193,7 +193,11 @@ export function VersionHero({
             <div className="min-w-0">
               <p className="font-medium">{version.bundleSwapPending ? u.bundleSwapPending : u.bundleOutOfSync}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {version.bundleSwapPending ? u.bundleSwapPendingDesc : u.bundleOutOfSyncDesc}
+                {version.bundleSwapPending
+                  ? u.bundleSwapPendingDesc
+                  : version.desktopInstallPending
+                    ? u.bundleOutOfSyncPendingDesc
+                    : u.bundleOutOfSyncDesc}
               </p>
               {version.bundleSwapPending ? (
                 <Button
@@ -204,6 +208,16 @@ export function VersionHero({
                 >
                   <RefreshCw className="size-3" />
                   {u.bundleSwapPendingAction}
+                </Button>
+              ) : version.desktopInstallPending ? (
+                // A recorded skip (#123737): the in-app update cycle is the
+                // completion path — it quits, the hand-off re-runs the update
+                // with the bundle no longer running (installing the staged
+                // build), and relaunches on the new bundle. The installer
+                // download would strand a source install on the packaged shell.
+                <Button className="mt-2" onClick={() => startActiveUpdate('client')} size="sm" variant="textStrong">
+                  <RefreshCw className="size-3" />
+                  {u.bundleOutOfSyncPendingAction}
                 </Button>
               ) : (
                 <Button asChild className="mt-2" size="sm" variant="textStrong">

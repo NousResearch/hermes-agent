@@ -4614,6 +4614,9 @@ export const esOverrides = {
     bundleOutOfSyncDesc:
       'El entorno de ejecución de Hermes se actualizó, pero la app de escritorio sigue siendo una compilación anterior: faltarán funciones nuevas de la interfaz (como el modo Bot) hasta que se actualice. Ejecuta la actualización de abajo para recompilar la app. Si eso no elimina este aviso, reinstala desde el instalador de escritorio más reciente.',
     bundleOutOfSyncAction: 'Obtener el instalador',
+    bundleOutOfSyncPendingDesc:
+      'La última actualización reconstruyó esta app pero no pudo instalarla mientras estaba en ejecución. Actualiza ahora para terminar la instalación y relanzar la nueva versión.',
+    bundleOutOfSyncPendingAction: 'Actualizar ahora',
     bundleSwapPending: 'Reinicia para terminar la actualización',
     bundleSwapPendingDesc:
       'La app actualizada ya está instalada; Hermes solo necesita reiniciarse para cargarla. Los chats y los ajustes no se tocan.',

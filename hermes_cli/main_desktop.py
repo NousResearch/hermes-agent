@@ -1068,6 +1068,114 @@ def _stage_macos_bundle_copy(src: Path, dst: Path) -> None:
     subprocess.run(["/usr/bin/ditto", str(src), str(dst)], check=True, capture_output=True)
 
 
+# --- Pending desktop install record (#123737) ------------------------------
+# A running bundle is never swapped under, but log-only is not enough: the record
+# below lets `hermes desktop finish-update` complete the staged install later, and a later
+# successful pass (or an already-current installed copy) clears it.
+
+PENDING_INSTALL_FILENAME = "pending_desktop_install.json"
+
+
+def pending_desktop_install_path() -> Path:
+    """<HERMES_HOME>/pending_desktop_install.json — the durable record of a skipped install."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / PENDING_INSTALL_FILENAME
+
+
+def record_pending_desktop_install(*, app: Path, rebuilt_app: Path, asar_hash: str) -> bool:
+    """Persist the skipped install so the finish-update command can complete it later.
+
+    Returns True when the record exists on disk after the call. Failure-contained
+    both ways: a read-only/full HERMES_HOME must not abort the install loop (the
+    next, installable bundle still refreshes), and when only the atomic replace
+    failed (a `.tmp` orphan is cleaned), the caller does NOT tell the user a
+    record exists that is not there.
+    """
+    record = {
+        "app": str(app),
+        "rebuilt_app": str(rebuilt_app),
+        "asar_hash": asar_hash,
+        "recorded_at": _time_mod.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    path = pending_desktop_install_path()
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        logger.warning(
+            "Desktop install skipped while %s was running, and the pending-install "
+            "record could not be written (%s); quit Hermes Desktop and run the "
+            "updater again to refresh it", app, exc,
+        )
+        return False
+    logger.warning(
+        "Desktop install skipped while %s was running; recorded it — quit Hermes Desktop "
+        "and run `%s` to complete it", app, "hermes desktop finish-update")
+    return True
+
+
+def read_pending_desktop_install() -> Optional[dict]:
+    """The pending-install record, or None when absent/unreadable."""
+    try:
+        return json.loads(pending_desktop_install_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+
+
+def clear_pending_desktop_install() -> None:
+    with contextlib.suppress(OSError):
+        pending_desktop_install_path().unlink()
+
+
+def cmd_desktop_finish_update(args: argparse.Namespace) -> None:
+    """Complete a desktop install a previous updater skipped (the app was running)."""
+    record = read_pending_desktop_install()
+    if record is None:
+        print("No pending desktop install is recorded — nothing to finish.")
+        return
+    rebuilt_app = Path(record["rebuilt_app"])
+    rebuilt_hash = _app_asar_hash(rebuilt_app)
+    if rebuilt_hash is None or rebuilt_hash != record.get("asar_hash"):
+        print(f"The staged bundle from the skipped install is gone or changed: {rebuilt_app}")
+        print("Run the updater again to rebuild and install it.")
+        clear_pending_desktop_install()
+        return
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths
+    recorded = Path(record["app"])
+    if not recorded.is_dir():
+        # The recorded installed bundle is GONE (uninstalled by hand): it can never
+        # match the staged hash and the candidate loop below skips it, which would
+        # fall through to "nothing to do" forever with the record still pinned.
+        # The staged bundle is still valid, so install it at the standard locations
+        # instead of waiting on a path that no longer exists.
+        candidates = [p for p in packaged_gui_app_paths() if p.is_dir()]
+        installed, _problems = ((
+            _install_rebuilt_macos_bundles(rebuilt_app, candidates, running=_running_macos_app_bundles())
+            if candidates else ([], [])
+        ))
+        for app in installed:
+            print(f"  Installed the rebuilt Desktop app at {app} — launch it to load the new build")
+        if not installed:
+            print(
+                f"The recorded Desktop app is no longer installed at {recorded}. "
+                "Run the updater again to reinstall it."
+            )
+        clear_pending_desktop_install()
+        return
+    candidates = [recorded] + [p for p in packaged_gui_app_paths() if p != recorded]
+    installed, problems = _install_rebuilt_macos_bundles(
+        rebuilt_app, candidates, running=_running_macos_app_bundles())
+    for app in installed:
+        print(f"  Installed the rebuilt Desktop app at {app} — launch it to load the new build")
+    for problem in problems:
+        print(f"  WARNING {problem}")
+    if not installed and not problems:
+        print("The installed Desktop app already matches the staged build; nothing to do.")
+
+
 def _install_rebuilt_desktop_app(desktop_dir: Path, candidates: list[Path]) -> tuple[list[Path], list[str]]:
     """Copy the rebuilt macOS bundle into every stale or missing installed ``Hermes.app`` in
     *candidates* (``_installed_desktop_apps()``) (#52339).
@@ -1214,6 +1322,9 @@ def _install_rebuilt_macos_bundles(
             problems.append(
                 f"{app} is running and was not refreshed; quit Hermes Desktop and run "
                 "`hermes update` again (or update from inside the app)")
+            # Log-only is not enough (#123737): persist the staged install so
+            # the finish-update command can complete it without a full re-run.
+            record_pending_desktop_install(app=app, rebuilt_app=rebuilt_app, asar_hash=rebuilt_hash)
             continue
         if codesign:
             installed_sig = _macos_signature_summary(codesign, app)
@@ -1235,7 +1346,27 @@ def _install_rebuilt_macos_bundles(
             problems.append(f"{app} could not be installed ({exc}){kept}")
             continue
         installed.append(app)
+    _maybe_clear_pending_install(installed)
     return installed, problems
+
+
+def _maybe_clear_pending_install(installed: list) -> None:
+    """Resolve the pending-install record against a finished install pass.
+
+    Cleared when the recorded bundle was installed by this pass, or when its installed
+    copy already matches the recorded hash (an earlier pass or manual completion healed
+    it). A record for a DIFFERENT, still-stale bundle survives: installing one candidate
+    says nothing about the one that was running.
+    """
+    record = read_pending_desktop_install()
+    if record is None:
+        return
+    if any(str(app) == record.get("app") for app in installed):
+        clear_pending_desktop_install()
+        return
+    asar_hash = _app_asar_hash(Path(record["app"]))
+    if asar_hash is not None and asar_hash == record.get("asar_hash"):
+        clear_pending_desktop_install()
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:

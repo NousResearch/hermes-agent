@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
-import type { UpdateApplyState } from '@/store/updates'
+import { startActiveUpdate, type UpdateApplyState } from '@/store/updates'
 
 import { deriveUpdateStatus, VersionHero } from './update-status'
 
@@ -188,6 +188,34 @@ describe('VersionHero bundle banners', () => {
     expect(screen.getByText(en.updates.bundleOutOfSync)).toBeTruthy()
     expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
     expect(screen.queryByRole('button', { name: en.updates.bundleSwapPendingAction })).toBeNull()
+  })
+
+  // FAIL-BEFORE (#123737): a recorded skip (updater skipped the install because
+  // the bundle was running) still showed the packaged-installer link, which
+  // cannot complete a source install — the banner must run the in-app update
+  // cycle instead.
+  it('out-of-sync with a recorded skip: update-now action, not the installer link', () => {
+    stubRelaunch()
+
+    render(<VersionHero version={version({ bundleOutOfSync: true, desktopInstallPending: true })} />)
+
+    expect(screen.getByText(en.updates.bundleOutOfSync)).toBeTruthy()
+    expect(screen.getByText(en.updates.bundleOutOfSyncPendingDesc)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleOutOfSyncAction)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: en.updates.bundleOutOfSyncPendingAction }))
+    // The overlay's apply flow is out of scope here; the click must route into
+    // the store (startActiveUpdate), not the installer URL.
+    expect(vi.mocked(startActiveUpdate)).toHaveBeenCalledWith('client')
+  })
+
+  it('out-of-sync with no recorded skip: installer link, no update-now action', () => {
+    stubRelaunch()
+
+    render(<VersionHero version={version({ bundleOutOfSync: true, desktopInstallPending: false })} />)
+
+    expect(screen.getByText(en.updates.bundleOutOfSyncDesc)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.updates.bundleOutOfSyncPendingAction })).toBeNull()
   })
 
   it('a pending swap wins over the out-of-sync banner — restart, not reinstall', () => {

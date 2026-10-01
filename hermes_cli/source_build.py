@@ -99,6 +99,33 @@ def source_frontends(project_root: Path) -> tuple[str, ...]:
     return tuple(name for name in ("ui-tui", "web") if (project_root / name / "package.json").is_file())
 
 
+def _warn_pending_desktop_install() -> None:
+    """Surface a desktop install this run skipped (the app bundle was running).
+
+    The skip itself is correct — a running bundle is never swapped under — but
+    the products stage must not end on plain success while the rebuilt app sits
+    staged and uninstalled (#123737): the completion stamp pins the new commit,
+    yet every launch keeps loading the stale bundle. The pending record makes
+    the skip durable; say so here, in the flow the bootstrap/repair/installer
+    stages all print, and mirror it into the update receipt.
+    """
+    from hermes_cli.main_desktop import read_pending_desktop_install
+
+    record = read_pending_desktop_install()
+    if record is None:
+        return
+    app = record.get("app")
+    print(f"  ⚠ {app} is still running and was not refreshed; the rebuilt app is staged. "
+          "Quit Hermes Desktop and run `hermes desktop finish-update` to complete the install.",
+          file=sys.stderr)
+    try:
+        from hermes_cli.update_receipt import record_fact
+
+        record_fact("pending_desktop_install", app)
+    except Exception:  # noqa: BLE001 — the receipt must never break an update
+        pass
+
+
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
@@ -143,6 +170,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         # A current release/ can still sit beside a stale installed copy (an earlier
         # update rebuilt but never installed); healing must not wait for the next build.
         _refresh_installed_desktop_apps(project_root / "apps/desktop")
+        _warn_pending_desktop_install()
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.

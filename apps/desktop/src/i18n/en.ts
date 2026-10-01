@@ -4328,6 +4328,9 @@ export const en: Translations = {
     bundleOutOfSyncDesc:
       'The Hermes runtime was updated, but the desktop app itself is still an older build. Update it to pick up the latest fixes.',
     bundleOutOfSyncAction: 'Get the installer',
+    bundleOutOfSyncPendingDesc:
+      'The last update rebuilt this app but could not install it while it was running. Update now to quit, finish the install, and relaunch on the new build.',
+    bundleOutOfSyncPendingAction: 'Update now',
     checkingShort: 'Checking…',
     releaseAvailable: tag => `Version ${tag} is available.`,
     versionDetailsTitle: 'Version details',

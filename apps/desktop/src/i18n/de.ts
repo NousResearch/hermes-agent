@@ -4622,6 +4622,9 @@ export const deOverrides = {
     bundleOutOfSyncDesc:
       'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
     bundleOutOfSyncAction: 'Installer herunterladen',
+    bundleOutOfSyncPendingDesc:
+      'Das letzte Update hat diese App neu gebaut, konnte sie aber nicht installieren, solange sie lief. Jetzt aktualisieren, um das Install abzuschließen und die neue Version zu starten.',
+    bundleOutOfSyncPendingAction: 'Jetzt aktualisieren',
     bundleSwapPending: 'Neustart zum Abschließen des Updates',
     bundleSwapPendingDesc:
       'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',

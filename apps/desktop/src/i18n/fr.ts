@@ -4636,6 +4636,9 @@ export const frOverrides = {
     bundleOutOfSyncDesc:
       "Le runtime Hermes a été mis à jour, mais l'application Desktop utilise encore une ancienne version. Les nouvelles fonctions de l'interface, comme le mode Bot, resteront absentes jusqu'à sa mise à jour. Lancez la mise à jour ci-dessous pour reconstruire l'application. Si cet avertissement persiste, réinstallez-la avec le dernier installateur Desktop.",
     bundleOutOfSyncAction: "Obtenir l'installateur",
+    bundleOutOfSyncPendingDesc:
+      "La dernière mise à jour a reconstruit cette app mais n'a pas pu l'installer pendant son exécution. Mettez à jour maintenant pour terminer l'installation et relancer la nouvelle version.",
+    bundleOutOfSyncPendingAction: 'Mettre à jour maintenant',
     bundleSwapPending: 'Redémarrez pour terminer la mise à jour',
     bundleSwapPendingDesc:
       "L'application mise à jour est déjà installée — Hermes doit seulement redémarrer pour la charger. Vos conversations et paramètres sont préservés.",

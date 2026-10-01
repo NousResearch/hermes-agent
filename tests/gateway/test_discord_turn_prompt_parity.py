@@ -5,6 +5,8 @@ input are human turns: each re-pins the session-context prompt and the channel p
 another chat label (DM: none; thread: without its parent channel), another topic or a bare user id,
 they re-rendered the pinned prompt, and the next typed message rendered it back: a prompt-cache miss
 each way. Built without ``auto_skill``, a session they opened never loaded the channel's bound skill.
+Voice rebuilds its source from a ``/voice join`` copy, so it must also see the parent's bindings from a
+thread and the channel's current name and topic.
 """
 
 from datetime import datetime, timezone
@@ -109,15 +111,22 @@ async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch):
+@pytest.mark.parametrize("case", ["channel", "thread-under-bound-parent", "renamed-after-join", "speaker-uncached"])
+async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch, case):
     parent = _parent()
+    channel = _Thread(800, parent) if case == "thread-under-bound-parent" else parent
     adapter = _adapter(monkeypatch, parent.id)
-    typed = await _typed(adapter, parent)
     join = adapter._build_slash_event(
-        SimpleNamespace(channel=parent, channel_id=parent.id, guild=parent.guild, guild_id=1, user=_USER),
+        SimpleNamespace(channel=channel, channel_id=channel.id, guild=parent.guild, guild_id=1, user=_USER),
         "/voice join")
-    adapter._voice_text_channels = {1: parent.id}
+    adapter._voice_text_channels = {1: channel.id}
     adapter._voice_sources = {1: join.source.to_dict()}
+    adapter._client.get_channel = {channel.id: channel}.get
+    if case == "renamed-after-join":
+        channel.name, channel.topic = "renamed", "New topic"
+    if case == "speaker-uncached":
+        adapter._client.get_guild = lambda _id: SimpleNamespace(get_member=lambda _uid: None)
+    typed = await _typed(adapter, channel)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {Platform.DISCORD: adapter}
     runner._voice_mode = {}
@@ -130,3 +139,6 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch):
     spoken = adapter.handle_message.await_args.args[0]
     assert spoken is not typed
     _assert_same_prompt_inputs(typed, spoken)
+    # The join-time name belongs to the joiner only; another uncached speaker never borrows it.
+    other = runner._voice_input_source(adapter, 1, 43, channel.id).user_name
+    assert other == ("43" if case == "speaker-uncached" else "Alice")

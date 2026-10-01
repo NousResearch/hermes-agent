@@ -746,6 +746,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     # completing a source update. Keep failures from blocking updates; callers
     # that need media support can still install it explicitly.
     optional = True
+    default = True
     gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:

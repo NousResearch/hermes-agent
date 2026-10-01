@@ -1292,32 +1292,65 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # The module's extraPythonPackages / extraDependencyGroups extend the
-        # selected package's own lists. The default package is `minimal` plus
-        # the provider groups (anthropic, ...); a replacing override silently
-        # rebuilt it as `minimal` the moment a plugin was added. Eval-only:
-        # the venv drvPath is the identity of the dependency set.
-        module-extras-extend-package = let
+        # Extras ADD to what a package ships, through both entry points:
+        # `pkgs.hermes-agent.override { ... }` (the documented overlay path)
+        # and the modules' extraPythonPackages / extraDependencyGroups.
+        # Replacing semantics rebuilt the default package as `minimal` and
+        # dropped every provider group. Each case asserts a positive effect
+        # AND a preserved one, so an implementation that ignored the extras
+        # fails too. Eval-only: a drvPath is the identity of what it builds.
+        extras-extend-package = let
           testPkg = pythonLock.interpreter.pkgs.pyfiglet;
-          venvOf = settings: builtins.unsafeDiscardStringContext
-            (evalHomeModule ({ enable = true; } // settings)).config.programs.hermes-agent.package.hermesVenv.drvPath;
-          defaultVenv = builtins.unsafeDiscardStringContext hermesVenv.drvPath;
-          withPlugin = venvOf { extraPythonPackages = [ testPkg ]; };
-          withGroup = venvOf { extraDependencyGroups = [ "anthropic" ]; };
-        in pkgs.runCommand "hermes-module-extras-extend-package" { } ''
-          set -e
-          echo "=== Checking module extras extend the package's own ==="
-          if [ "${withPlugin}" != "${defaultVenv}" ]; then
-            echo "FAIL: extraPythonPackages changed the sealed venv (default groups dropped)"
-            echo "  default: ${defaultVenv}"
-            echo "  module:  ${withPlugin}"
-            exit 1
-          fi
-          echo "PASS: extraPythonPackages keeps the default package's venv"
-          if [ "${withGroup}" != "${defaultVenv}" ]; then
-            echo "FAIL: a group already in the package rebuilt the venv"; exit 1
-          fi
-          echo "PASS: extraDependencyGroups merges with the package's groups"
+          # Not in the default package's groups, so adding it must show.
+          newGroup = "langfuse";
+          path = drv: builtins.unsafeDiscardStringContext drv.drvPath;
+          modulePackage = settings:
+            (evalHomeModule ({ enable = true; } // settings)).config.programs.hermes-agent.package;
+
+          viaModulePlugin = modulePackage { extraPythonPackages = [ testPkg ]; };
+          viaModuleGroup = modulePackage { extraDependencyGroups = [ newGroup ]; };
+          viaModuleShipped = modulePackage { extraDependencyGroups = [ "anthropic" ]; };
+          viaOverlayGroup = hermes-agent.override { extraDependencyGroups = [ newGroup ]; };
+          viaFunctionGroup = hermes-agent.override (prev: {
+            extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ [ newGroup ];
+          });
+          viaOverlayShipped = hermes-agent.override { extraDependencyGroups = [ "messaging" ]; };
+
+          cases = [
+            {
+              what = "module extraPythonPackages reaches the package (wrapper PYTHONPATH)";
+              ok = path viaModulePlugin != path hermes-agent;
+            }
+            {
+              what = "module extraPythonPackages keeps the default sealed venv";
+              ok = path viaModulePlugin.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "a new group changes the venv (not ignored)";
+              ok = path viaFunctionGroup.hermesVenv != path hermesVenv;
+            }
+            {
+              what = "module extraDependencyGroups == appending to the package's own";
+              ok = path viaModuleGroup.hermesVenv == path viaFunctionGroup.hermesVenv;
+            }
+            {
+              what = "overlay attrset override == appending (shipped groups survive)";
+              ok = path viaOverlayGroup.hermesVenv == path viaFunctionGroup.hermesVenv;
+            }
+            {
+              what = "module group the package already ships leaves the venv unchanged";
+              ok = path viaModuleShipped.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "overlay group the package already ships leaves the venv unchanged";
+              ok = path viaOverlayShipped.hermesVenv == path hermesVenv;
+            }
+          ];
+          report = lib.concatMapStrings (c: "${if c.ok then "PASS" else "FAIL"}: ${c.what}\n") cases;
+        in pkgs.runCommand "hermes-extras-extend-package" { inherit report; } ''
+          echo "=== Checking extras extend the package's own ==="
+          printf '%s' "$report"
+          if printf '%s' "$report" | grep -q '^FAIL'; then exit 1; fi
           mkdir -p $out
           echo "ok" > $out/result
         '';

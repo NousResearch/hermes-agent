@@ -45,9 +45,11 @@
           ;
       };
 
-      # All platform-portable optional integrations pre-built.
+      # All platform-portable optional integrations pre-built. These are the
+      # variant's own groups, not the user's extras, so an
+      # `.override { extraDependencyGroups = ...; }` adds to them.
       full = minimal.override {
-        extraDependencyGroups = [
+        defaultDependencyGroups = [
           "anthropic"
           "azure-identity"
           "bedrock"
@@ -86,7 +88,7 @@
         # `nix profile install .#messaging` connects to Discord/Telegram/Slack
         # on first run — lazy-install can't write to the read-only /nix/store.
         messaging = minimal.override {
-          extraDependencyGroups = [ "messaging" ];
+          defaultDependencyGroups = [ "messaging" ];
         };
 
         tui = full.hermesTui;

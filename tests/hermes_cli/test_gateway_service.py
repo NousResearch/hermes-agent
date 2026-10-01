@@ -363,6 +363,39 @@ class TestGeneratedSystemdUnits:
         monkeypatch.delenv("LD_LIBRARY_PATH")
         assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
 
+    def test_unit_is_current_when_only_the_invoking_shell_path_differs(self, monkeypatch, tmp_path):
+        """`hermes gateway status` compares the installed unit against a regenerated one. Generating
+        that comparison from the invoking shell's PATH made it depend on who ran the command: on WSL
+        the shell's Windows-interop entries differ from the service's, so a correct unit was reported
+        "outdated" on every run."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+
+        # The PATH the service runs with, as baked into its unit (install time).
+        monkeypatch.setenv("PATH", "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/usr/bin:/bin")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False))
+        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0" in unit_path.read_text()
+
+        # A later hand-shell carrying a different Windows PATH must not make it look stale.
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        assert gateway_cli.systemd_unit_is_current(system=False) is True
+
+    def test_regeneration_keeps_the_service_wsl_path(self, monkeypatch, tmp_path):
+        """Regenerating an installed unit must keep the PATH the service runs with. Reading the
+        invoking shell instead rewrote the interop entries out of the unit — dropping the
+        powershell.exe dir whenever a refresh was triggered from a shell without it."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+
+        monkeypatch.setenv("PATH", "/mnt/d/WindowsTools:/usr/bin:/bin")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False))
+        assert "/mnt/d/WindowsTools" in unit_path.read_text()
+
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        assert "/mnt/d/WindowsTools" in gateway_cli.generate_systemd_unit(system=False)
+
 
     def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
         """The generated plist must carry SoftResourceLimits/NumberOfFiles so a

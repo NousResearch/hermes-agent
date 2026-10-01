@@ -146,6 +146,12 @@ async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
         await ws.close(code=4401)
         return False
     if not _ws_request_is_allowed(ws):
+        # Refusals close before accept, so the client only sees an opaque
+        # 403; without this line the operator has nothing to grep for.
+        reason = (
+            _ws_host_origin_reason(ws) or _ws_client_reason(ws) or "request_not_allowed"
+        )
+        _log.warning("%s refused: %s", ws.url.path, reason)
         await ws.close(code=4403)
         return False
     return True

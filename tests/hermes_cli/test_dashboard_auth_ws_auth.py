@@ -497,6 +497,67 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
         assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
 
+    def test_loopback_http_origin_allowed_on_non_loopback_bind(self, insecure_explicit_host_app):
+        """A git-checkout desktop build serves its renderer over local HTTP, so
+        the WS handshake to a REMOTE gateway carries a loopback web origin
+        (#130535) that can never equal a non-loopback bound host.
+
+        Trust it like ``file://``: browsers cannot forge a loopback origin
+        cross-site (a rebinding page keeps the attacker's host as the
+        origin), the HTTP layer already CORS-allows loopback web origins, and
+        the credential remains the auth boundary.
+        """
+        ws = self._ws(origin="http://127.0.0.1:47891", host="100.64.0.10:9119")
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_web_origin_allowed_on_gated_public_bind(self, gated_app):
+        # Same desktop-renderer shape behind the OAuth gate: the single-use
+        # ticket is the auth, the loopback origin just must not 403 it.
+        ws = self._ws(origin="http://localhost:47891", host="fly-app.fly.dev")
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is True
+
+    def test_ipv6_loopback_web_origin_allowed(self, insecure_explicit_host_app):
+        ws = self._ws(origin="http://[::1]:47891", host="100.64.0.10:9119")
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is True
+
+    def test_lan_web_origin_still_rejected_on_non_loopback_bind(self, insecure_explicit_host_app):
+        # Fail-closed: a web origin that is neither loopback nor the bound
+        # host keeps the DNS-rebinding rejection.
+        ws = self._ws(origin="http://192.168.0.55:9119", host="100.64.0.10:9119")
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
+
+
+class TestSidecarRefusalLogged:
+    """A sidecar WS refusal must leave a server-side trace (#130535).
+
+    The pre-accept gates close before ``accept()``, so the client only ever
+    sees an opaque HTTP 403 — before the fix the operator had to packet-
+    capture to learn the upgrade was refused for ``origin_mismatch``.
+    """
+
+    def test_origin_refusal_logs_reason(self, insecure_explicit_host_app, caplog):
+        import asyncio
+        import logging
+
+        from hermes_cli.web_routers.chat_ws import _close_unless_sidecar_allowed
+
+        async def _close(**_kwargs):
+            pass
+
+        ws = _fake_ws(
+            query={"token": web_server._SESSION_TOKEN},
+            path="/api/ws",
+            client_host="192.168.0.55",
+        )
+        ws.headers = {"host": "100.64.0.10:9119", "origin": "http://192.168.0.55:9119"}
+        ws.close = _close
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            allowed = asyncio.run(_close_unless_sidecar_allowed(ws))
+        assert allowed is False
+        refused = [r for r in caplog.records if "refused" in r.getMessage()]
+        assert refused, f"no refusal line in caplog: {[r.getMessage() for r in caplog.records]}"
+        assert "origin_mismatch" in refused[0].getMessage()
+
 
 
 class TestSidecarUrl:

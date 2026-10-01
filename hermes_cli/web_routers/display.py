@@ -26,7 +26,9 @@ from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from hermes_cli.web_server_chat import _ws_request_is_allowed
+from hermes_cli.web_server_chat import (
+    _ws_client_reason, _ws_host_origin_reason, _ws_request_is_allowed,
+)
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -79,6 +81,13 @@ async def display_ws(ws: WebSocket) -> None:
     # accept surfaces in the browser as an opaque HTTP 403 and the renderer cannot tell "re-observe"
     # (4401) from "screen is gone" (4001).
     if not _ws_request_is_allowed(ws):
+        # Refusals close before accept, so the client only sees an opaque
+        # 403; log the reason so the operator has something to grep for.
+        _log.warning(
+            "%s refused: %s",
+            ws.url.path,
+            _ws_host_origin_reason(ws) or _ws_client_reason(ws) or "request_not_allowed",
+        )
         await ws.close(code=_CLOSE_NOT_ALLOWED)
         return
     await ws.accept()

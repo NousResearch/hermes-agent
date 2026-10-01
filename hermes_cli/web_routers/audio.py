@@ -19,7 +19,9 @@ import urllib.request
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
+from hermes_cli.web_server_chat import (
+    _ws_auth_ok, _ws_client_reason, _ws_host_origin_reason, _ws_request_is_allowed,
+)
 from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import (
@@ -537,6 +539,13 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         await ws.close(code=4401)
         return
     if not _ws_request_is_allowed(ws):
+        # Refusals close before accept, so the client only sees an opaque
+        # 403; log the reason so the operator has something to grep for.
+        _log.warning(
+            "%s refused: %s",
+            ws.url.path,
+            _ws_host_origin_reason(ws) or _ws_client_reason(ws) or "request_not_allowed",
+        )
         await ws.close(code=4403)
         return
     await ws.accept()

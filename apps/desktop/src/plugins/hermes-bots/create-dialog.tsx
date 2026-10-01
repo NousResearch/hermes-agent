@@ -47,11 +47,10 @@ import { groupCreationSource } from './canonical-group-capabilities'
 import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { canonicalGroupEligibility, canonicalPeerGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, createCanonicalPeerGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
-import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
+import { $botMeta, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { $groupChats, GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { GroupImageControls } from './group-chat-parts'
 import { setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
@@ -1155,13 +1154,17 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [setupStorageBlocked, setSetupStorageBlocked] = useState(false)
   const [recoveringSetup, setRecoveringSetup] = useState(false)
   const setupRecoveryEpoch = useRef(0)
+
   const recoverSetup = async () => {
     const native = window.hermesDesktop?.roomSetup
+
     if (!native) {return}
     const epoch = ++setupRecoveryEpoch.current
     setRecoveringSetup(true)
+
     try {
       const result = await native.recover()
+
       if (epoch === setupRecoveryEpoch.current) {
         setSetupCleanup(!result.ok || Boolean(result.pending))
         setSetupStorageBlocked(result.reason === 'setup_journal_unreadable')
@@ -1169,19 +1172,28 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     } catch {if (epoch === setupRecoveryEpoch.current) {setSetupCleanup(true)}}
     finally {if (epoch === setupRecoveryEpoch.current) {setRecoveringSetup(false)}}
   }
+
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const searchInput = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
-  const [image, setImage] = useState<null | string>(null)
-  const interaction = useRef(0)
-  const creating = useRef<null | number>(null)
+  const [createError, setCreateError] = useState('')
   const [createPending, setCreatePending] = useState(false)
+  const creating = useRef<null | number>(null)
+  const interaction = useRef(0)
 
   const retireInteraction = useCallback(() => {
-    interaction.current += 1
+    interaction.current++
     creating.current = null
   }, [])
+
+  const dismiss = () => {
+    retireInteraction()
+    setupRecoveryEpoch.current++
+    setCreatePending(false)
+    onClose()
+  }
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
@@ -1192,23 +1204,15 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setQuery('')
       setChecked({})
       setName('')
-      setImage(null)
+      setCreateError('')
       setCreateRefused(false)
       setSetupCleanup(false)
+      setSetupStorageBlocked(false)
       void recoverSetup()
     }
 
-    return () => {
-      retireInteraction()
-      setupRecoveryEpoch.current++
-    }
+    return () => {retireInteraction(); setupRecoveryEpoch.current++}
   }, [open, connectionId, profile, retireInteraction])
-
-  const dismiss = () => {
-    retireInteraction()
-    setCreatePending(false)
-    onClose()
-  }
 
   // An outage placeholder preserves one selected owner's identity in the
   // sidebar, but it is not a routable room member. Never offer it here.
@@ -1223,33 +1227,48 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) && !setupCleanup && !recoveringSetup
+  const canCreate = selected.length >= 2 && selected.length <= GROUP_CHAT_MAX_MEMBERS && !setupCleanup && !recoveringSetup && !createPending
 
   const create = async () => {
-    if (!open || creating.current !== null) {return}
-    const base = (name.trim() || placeholder).slice(0, 64)
-
-    if (selected.length < 2 || !base) {return}
-    const generation = interaction.current
+    if (!open || creating.current !== null || !canCreate) {return}
+    const generation = ++interaction.current
     creating.current = generation
     setCreatePending(true)
-    const route = captureCanonicalGroupRoute()
-    const sourceCurrent = groupCreationSource(route)
-    const ownsInteraction = () => interaction.current === generation && sourceCurrent()
+    setCreateError('')
+    let ownsInteraction = () => interaction.current === generation
 
     try {
+      const route = captureCanonicalGroupRoute()
+      const sourceCurrent = groupCreationSource(route)
+      ownsInteraction = () => interaction.current === generation && sourceCurrent()
+      const base = (name.trim() || placeholder).slice(0, 64)
+
+      if (selected.length < 2 || !base) {
+        return
+      }
+
       setCreateRefused(false)
-      const roomMembers = durableGroupChatMembers(selected)
+
+      const roomMembers = durableGroupChatMembers(selected).map((member, index) => ({
+        ...member,
+        display_name: displayName(selected[index], botRosterMeta(selected[index], allMeta))
+      }))
+
       const rosterEligibility = canonicalGroupEligibility(route, roomMembers)
+
       const { mode } = await readGroupExecutionMode(route)
 
       if (!ownsInteraction()) {return}
-      if (mode === 'unavailable') {throw new Error(b.canonical.driverUnavailable)}
+
+      if (mode === 'unavailable') {
+        throw new Error(b.canonical.driverUnavailable)
+      }
+
       if (mode === 'canonical' && (rosterEligibility.eligible || (window.hermesDesktop?.roomSetup && canonicalPeerGroupEligibility(route, roomMembers)))) {
         const created = rosterEligibility.eligible ? await createCanonicalGroup(route, base, roomMembers)
           : await createCanonicalPeerGroup(route, base, roomMembers)
 
-        // A committed room stays on its owner; a retired dialog never adopts it.
+        // Creation already succeeded; leave it on its owner without adopting a stale result.
         if (!ownsInteraction()) {return}
         const key = registerCanonicalGroup(route, created.room)
         onClose()
@@ -1257,6 +1276,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
         return
       }
+
       if (mode === 'canonical' && !rosterEligibility.eligible) {
         host.notify({ kind: 'info', message: b.canonical[rosterEligibility.reason] })
       }
@@ -1278,7 +1298,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       updateGroupChat(groupName, (room: GroupChatRoom) => {
         room.members = roomMembers
         room.roomId = roomId
-        if (image) {room.image = image}
 
         return room
       })
@@ -1298,7 +1317,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       if (!ownsInteraction()) {return}
       host.notify({
         kind: metadataSyncFailed ? 'warning' : 'info',
-        message: `“${groupName}” created with ${selected.length} bots${metadataSyncFailed ? '. Some member details could not sync.' : ''}`
+        message: (metadataSyncFailed ? b.canonical.createdGroupSyncFailed : b.canonical.createdGroup).replace('{name}', groupName)
       })
       onClose()
       if (ownsRoom() && ownsInteraction()) {onCreated?.(groupName)}
@@ -1307,11 +1326,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       const refused = isCanonicalGroupCreateRefusal(error)
       setCreateRefused(refused)
       const setupReason = (error as { roomSetupReason?: string })?.roomSetupReason
+
       if (setupReason) {void recoverSetup()}
+
       const setupMessage = setupReason === 'cleanup_pending' ? b.canonical.peerSetupCleanup
         : setupReason && ['secure_storage_required', 'setup_journal_unreadable', 'setup_journal_write_failed'].includes(setupReason)
           ? b.canonical.peerSetupStorage : setupReason ? b.canonical.peerSetupFailed : undefined
-      host.notify({ kind: 'error', message: setupMessage || (refused ? b.canonical.createRefused : error instanceof Error ? error.message : String(error)) })
+
+      setCreateError(setupMessage || (refused ? b.canonical.createRefused : error instanceof Error && error.message === b.canonical.driverUnavailable ? b.canonical.driverUnavailable : b.canonical.peerSetupFailed))
     } finally {
       if (creating.current === generation) {
         creating.current = null
@@ -1329,31 +1351,30 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       }}
       open={open}
     >
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md gap-5" onOpenAutoFocus={event => {event.preventDefault(); searchInput.current?.focus()}}>
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
-          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
+          <DialogDescription>{b.canonical.createDescription}</DialogDescription>
         </DialogHeader>
         {selected.length >= 2 && !eligibility.eligible && !peerEligible && <p role="status">{b.canonical[eligibility.reason]}</p>}
-        {peerEligible && <p role="status">{b.canonical.peerSetup}</p>}
-        {setupCleanup && <div role="alert">
-          <p>{setupStorageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup}</p>
-          <Button disabled={recoveringSetup} onClick={() => void recoverSetup()}>{b.roster.retryNow}</Button>
+        {(setupCleanup || createError) && <div className="grid gap-2 text-sm text-(--ui-text-secondary)" role="alert">
+          <p>{setupCleanup ? (setupStorageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup) : createError}</p>
+          {setupCleanup && <Button className="justify-self-start" disabled={recoveringSetup || createPending} onClick={() => void recoverSetup()} variant="secondary">{t.common.retry}</Button>}
+          {createRefused && <details>
+            <summary className="cursor-pointer">{b.canonical.setupDetails}</summary>
+            <a className="underline underline-offset-2" href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
+          </details>}
         </div>}
-        {createRefused && <p role="alert">{b.canonical.createRefused}{' '}
-          <a href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
-        </p>}
-        {/* TODO(bot-mode-types): this search box never takes focus when the dialog
-            opens — SearchField accepts no `autoFocus` prop and forwards no extra
-            props, so the `autoFocus` that used to sit here was inert. */}
         <SearchField
           aria-label={b.group.searchToAdd}
-          containerClassName="w-full"
+          containerClassName="w-full opacity-100"
           inputClassName="w-full"
+          inputRef={searchInput}
           onChange={setQuery}
           placeholder={b.group.searchToAddPlaceholder}
           value={query}
         />
+        <p className="text-xs text-(--ui-text-secondary)" role="status">{b.canonical.selectionCount.replace('{count}', String(selected.length))}</p>
         {selected.length ? (
           <div className="flex flex-wrap gap-1">
             {selected.map(bot => (
@@ -1364,6 +1385,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 variant="muted"
               >
                 <RowButton
+                  disabled={createPending}
                   onClick={() =>
                     setChecked(prev => ({
                       ...prev,
@@ -1386,13 +1408,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 const meta = botRosterMeta(bot, allMeta)
                 const { shape, color, image } = botAppearance(bot.name, meta)
                 const isChecked = Boolean(checked[botRosterKey(bot)])
-                const disabled = !isChecked && atCap
-                const currentGroups = botGroups(meta)
+                const disabled = createPending || (!isChecked && atCap)
 
                 return (
                   <label
                     className={cn(
-                      'flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
+                      'flex min-w-0 cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-(--chrome-action-hover)',
                       disabled && 'cursor-not-allowed opacity-50'
                     )}
                     key={botRosterKey(bot)}
@@ -1402,18 +1423,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                       image={image && !isBackfilledFacePng(image) ? image : null}
                       name={bot.name}
                       shape={shape}
-                      size={24}
+                      size={32}
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
-                      <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
-                        {[
-                          currentGroups.length
-                            ? `@${botHandle(bot.name, bot)} · in ${currentGroups.map(group => `“${group}”`).join(', ')}`
-                            : `@${botHandle(bot.name, bot)}`,
-                          bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''
-                        ].join('')}
-                      </div>
+                      <div className="truncate text-sm font-medium text-foreground">{displayName(bot, meta)}</div>
+                      {bot.connectionLabel && <div className="truncate text-xs text-(--ui-text-secondary)">{bot.connectionLabel}</div>}
                     </div>
                     <Checkbox
                       checked={isChecked}
@@ -1430,41 +1444,40 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
               })
             ) : (
               <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                {query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create one first.'}
+                {query.trim() ? b.canonical.noMatchingBots.replace('{query}', query.trim()) : b.canonical.noBots}
               </div>
             )}
           </div>
         </div>
         <div className="grid gap-2">
-          <GroupImageControls
-            image={image}
-            onImage={setImage}
-            seedMembers={selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta)))}
-            seedName={name.trim() || (selected.length ? placeholder : '')}
-          />
           <form
             onSubmit={event => {
               event.preventDefault()
-              create()
+              void create()
             }}
           >
+            <label className="grid gap-2 text-sm text-(--ui-text-secondary)">
+              {b.canonical.nameOptional}
             <Input
-              aria-label={b.group.nameLabel}
+              aria-label={b.canonical.nameOptional}
+              disabled={createPending}
               maxLength={64}
               onChange={event => setName(event.target.value)}
-              placeholder={placeholder}
+              placeholder={b.canonical.namePlaceholder}
               value={name}
             />
+            </label>
           </form>
         </div>
         <DialogFooter>
-          <Button onClick={dismiss} variant="secondary">
-            {t.common.cancel}
+          <Button onClick={dismiss} variant="ghost">
+            {createPending ? b.canonical.close : t.common.cancel}
           </Button>
           <Button
-            disabled={!canCreate || createPending}
-            onClick={create}
-          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+            aria-busy={createPending || undefined}
+            disabled={!canCreate}
+            onClick={() => void create()}
+          >{createPending ? <><span aria-hidden><GlyphSpinner /></span>{b.canonical.creatingGroup}</> : recoveringSetup ? b.canonical.setupChecking : b.canonical.createGroup}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

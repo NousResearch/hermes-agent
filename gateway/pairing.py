@@ -89,7 +89,10 @@ def _allowlist_env_for_platform(platform: str) -> Optional[str]:
 
 
 def _split_allowlist(raw: str) -> list:
-    return [uid.strip() for uid in raw.split(",") if uid.strip()]
+    from gateway.platforms._shared import decode_json_list_literal
+    value = decode_json_list_literal(raw)
+    values = value if isinstance(value, list) else raw.split(",")
+    return [str(uid).strip() for uid in values if str(uid).strip()]
 
 
 def _platform_uses_whatsapp_identity(platform: str) -> bool:
@@ -415,6 +418,23 @@ class PairingStore:
         self._save_json(self._approved_path(platform), approved)
         # Mirror the grant into the operator's allowlist when one is configured.
         _sync_allowlist_add(platform, normalized_user_id)
+
+    def approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
+        """Explicit administrator grant, using the same store as pairing approval."""
+        with self._lock:
+            self._approve_user(platform, user_id, user_name)
+
+    def decline_request(self, platform: str, request_id: str) -> bool:
+        """Decline one pending request without clearing other people's requests."""
+        with self._lock:
+            path = self._pending_path(platform)
+            pending = self._load_json(path)
+            entry = pending.pop(request_id, None)
+            if entry is None:
+                return False
+            self._save_json(path, pending)
+            self.record_decline(platform, str(entry.get("user_id", "")))
+            return True
 
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""

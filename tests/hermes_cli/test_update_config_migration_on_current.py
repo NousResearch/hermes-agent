@@ -74,7 +74,7 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
 
 
 @pytest.mark.parametrize('named', [False, True])
-def test_update_copies_bundled_skill_bytes_to_default_active_and_sibling(tmp_path, monkeypatch, named):
+def test_update_does_not_seed_skills_in_employee_profiles(tmp_path, monkeypatch, named):
     from pathlib import Path
     from hermes_cli import update_cmd_maint
 
@@ -90,4 +90,4 @@ def test_update_copies_bundled_skill_bytes_to_default_active_and_sibling(tmp_pat
     bundled = Path(__file__).resolve().parents[2] / 'skills'
     witness = next(bundled.rglob('SKILL.md'))
     for profile in homes:
-        assert (profile / 'skills' / witness.relative_to(bundled)).read_bytes() == witness.read_bytes()
+        assert not (profile / 'skills' / witness.relative_to(bundled)).exists()

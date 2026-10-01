@@ -120,9 +120,11 @@ def test_native_checkpoint_rearms_read_dedup(served, monkeypatch):
     """The response carrying a server checkpoint re-views the skill: the next request starts at the
     checkpoint, so that re-view must deliver the body, not a stub for a result the wire dropped."""
     from run_agent import AIAgent
+    from tools.tool_search import ToolSearchConfig
+    monkeypatch.setattr("tools.tool_search.load_config", lambda: ToolSearchConfig.from_raw(False))
     monkeypatch.setattr("agent.model_metadata._fetch_codex_oauth_context_lengths_with_source", lambda _t, **_kw: ({}, False))
     agent = AIAgent(model="gpt-5.6", base_url="https://chatgpt.com/backend-api/codex", api_key="codex-token",
-                    quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=4)
+                    quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=4, enabled_toolsets=["skills"])
     agent.codex_responses_native_compaction = True
     agent.runtime_capabilities = {"native_compaction": True}
     usage = SimpleNamespace(input_tokens=9, output_tokens=1, total_tokens=10)
@@ -142,3 +144,8 @@ def test_native_checkpoint_rearms_read_dedup(served, monkeypatch):
     re_view = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") == "call_view"]
     assert re_view and "Do the demo steps." in re_view[-1]["content"]
     assert _dedup_state()[1] is False  # the file read served before the checkpoint is off the wire too
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills, native_tool_surface):
+    """Exercise the retained native implementation, not employee surface policy."""

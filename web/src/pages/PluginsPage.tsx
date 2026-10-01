@@ -525,7 +525,7 @@ export default function PluginsPage() {
     }
   };
 
-  const rows = hub?.plugins ?? [];
+  const rows = (hub?.plugins ?? []).filter(plugin => plugin.name !== "kanban");
   const providers = hub?.providers;
 
   const catalogEntries = useMemo(() => {
@@ -598,9 +598,6 @@ export default function PluginsPage() {
                       value={memorySel}
                       onValueChange={setMemorySel}
                     >
-                      <SelectOption value={MEMORY_PROVIDER_BUILTIN}>
-                        {`(${t.pluginsPage.providerDefaults})`}
-                      </SelectOption>
 
                       {providers.memory_options.map((o) => (
                         <SelectOption key={o.name} value={o.name}>
@@ -974,7 +971,7 @@ export default function PluginsPage() {
 
             <ul className="flex flex-col gap-2 rounded border border-current/15 p-4">
 
-              {hub!.orphan_dashboard_plugins.map((m) => (
+              {hub!.orphan_dashboard_plugins.filter(m => m.name !== "kanban").map((m) => (
 
                 <li className="text-xs text-text-secondary" key={m.name}>
 

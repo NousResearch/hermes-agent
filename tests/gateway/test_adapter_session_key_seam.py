@@ -18,19 +18,19 @@ from gateway.platforms.yuanbao import DispatchMiddleware, InboundContext, Yuanba
 from gateway.profile_routing import parse_profile_routes
 
 
-def _yuanbao(owner):
+def _yuanbao(owner, per_user):
     adapter = YuanbaoAdapter(PlatformConfig(extra={
         "app_id": "k", "app_secret": "s", "ws_url": "wss://x", "api_domain": "https://x",
-        "group_sessions_per_user": True, "thread_sessions_per_user": False}))
+        "group_sessions_per_user": per_user, "thread_sessions_per_user": False}))
     adapter.set_owner_profile(owner)
     return adapter
 
 
-def _runner(adapter, owner):
+def _runner(adapter, owner, per_user):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.config = GatewayConfig(multiplex_profiles=True, group_sessions_per_user=per_user)
     runner.config.profile_routes = parse_profile_routes([])
     runner._primary_profile_name = "default"
     runner.adapters = {} if owner else {Platform.YUANBAO: adapter}
@@ -40,9 +40,10 @@ def _runner(adapter, owner):
 
 
 @pytest.mark.parametrize("owner", [None, "acme"])
-def test_adapter_batch_key_equals_runner_session_key(owner):
-    adapter = _yuanbao(owner)
-    runner = _runner(adapter, owner)
+@pytest.mark.parametrize("per_user", [False, True])
+def test_adapter_batch_key_equals_runner_session_key(owner, per_user):
+    adapter = _yuanbao(owner, per_user)
+    runner = _runner(adapter, owner, per_user)
     source = adapter.build_source(chat_id="grp-1", chat_type="group", user_id="u1")
     ctx = InboundContext(adapter=adapter, chat_type="group", chat_id="grp-1", raw_text="hi", msg_id="m1", source=source)
     seen = []

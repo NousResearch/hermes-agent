@@ -13,6 +13,7 @@ import pytest
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)
     home = tmp_path / ".hermes"
     (home / "skills").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

@@ -224,6 +224,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # client_max_size enforces the cap on every read path, including chunked bodies without
         # Content-Length that bypass the header check.
         app = web.Application(client_max_size=self._max_body_bytes)
+        from gateway.platforms.webhook_responsibilities import ResponsibilityIngress
+        self._responsibility_ingress = ResponsibilityIngress(self)
+        app.router.add_route("*", "/responsibilities/{token}", self._responsibility_ingress.handle)
+        app.router.add_route("*", "/p/{profile}/responsibilities/{token}", self._responsibility_ingress.handle)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # /p/<profile>/ routes the event to that profile (honored only under gateway.multiplex_profiles).
@@ -246,9 +250,13 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
+        self._responsibility_task = asyncio.create_task(self._responsibility_ingress.run())
         return True
 
     async def disconnect(self) -> None:
+        if getattr(self, "_responsibility_task", None):
+            self._responsibility_task.cancel()
+            await asyncio.gather(self._responsibility_task, return_exceptions=True)
         await self._coalescer.flush()  # buffered events are dispatched, not dropped, on shutdown/reconnect
         if self._runner:
             await self._runner.cleanup()
@@ -337,6 +345,8 @@ class WebhookAdapter(BasePlatformAdapter):
         if not user_id.startswith("webhook:"):
             return None
         route_config = self._routes.get(user_id[len("webhook:"):])
+        if user_id.startswith("webhook:responsibility-"):
+            route_config = self._delivery_info.get(source.chat_id)
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
         if not isinstance(toolsets, list):
             return None
@@ -485,6 +495,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
                     "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
                     "route": route_name,
+            "toolsets": route_config.get("toolsets"),
                     "mirror": route_config.get("mirror_to_session") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
@@ -649,13 +660,15 @@ class WebhookAdapter(BasePlatformAdapter):
                          route_name: str, profile, event_type: str) -> "asyncio.Task":
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_key = route_config.get("responsibility_stream") or delivery_id
+        session_chat_id = f"webhook:{route_name}:{session_key}"
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
+            "toolsets": route_config.get("toolsets"),
             "mirror": route_config.get("mirror_to_session") is True}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
@@ -677,6 +690,9 @@ class WebhookAdapter(BasePlatformAdapter):
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
         unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
         first-reason-wins."""
+        if str(event.source.user_id).startswith("webhook:responsibility-"):
+            self._responsibility_ingress.completed(event.source, outcome)
+            return
         await self._end_webhook_session(event, event.source.chat_id)
 
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:

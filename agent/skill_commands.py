@@ -164,6 +164,9 @@ def _resolve_skill_commands_project() -> Optional[str]:
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return None
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
         return None
@@ -396,6 +399,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
     global _skill_commands, _skill_commands_platform, _skill_commands_home, _skill_commands_project
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return {}
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
     project = _resolve_skill_commands_project()
@@ -452,6 +458,9 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     See #14536, #88023, #114359.
     """
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return {}
     current = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         commands = _skill_commands

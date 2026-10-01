@@ -113,7 +113,7 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     with ThreadPoolExecutor(max_workers=2) as pool:
         named, broad = list(pool.map(_names, [["kanban"], ["hermes-cli"]]))
     assert "kanban_create" in named
-    assert bool(broad) is legacy
+    assert not broad
     assert bool(_names(None)) is legacy
     assert bool(_names(["all"])) is legacy
     assert not _names(["kanban"], ["kanban"])
@@ -132,3 +132,8 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     with delegated_child_context():
         assert not _names(["kanban"])
     assert "kanban_complete" in _names(["file"])
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_tool_surface):
+    """Exercise the retained native implementation, not employee surface policy."""

@@ -467,6 +467,9 @@ def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[st
 
 def maybe_pull_skills() -> Optional[Dict[str, Any]]:
     """Best-effort pull (curator tick sites: gateway housekeeping + CLI startup). Never raises."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return None
     return _gate_and_swallow("maybe_pull_skills", lambda identity: pull_skills(identity=identity))
 
 

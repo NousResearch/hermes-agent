@@ -4,6 +4,9 @@ This directory records only long-lived differences that an upstream sync could
 accidentally erase. It is not architecture documentation, a changelog, or a
 conflict log.
 
+The [scope ledger](scope.md) lists the approved divergence areas, their owners,
+restored native areas and open decisions. Read it before changing this fork.
+
 ## Brevity is a contract
 
 - Keep each active entry under **150 words**, excluding metadata.
@@ -47,3 +50,18 @@ is removed or upstream satisfies it. Use this shape:
 ## Active entries
 
 - [Scoped agent guidance](divergences/scoped-agent-guidance.md) — route agent guidance instead of growing one root file.
+
+- [Employee runtime defaults](divergences/employee-runtime-defaults.md) — preserve native defaults and explicit local transcription.
+
+- [Employee runtime](divergences/employee-runtime.md) — preserve employee behavior on native runtime owners.
+- [Codex review](divergences/codex-review.md) — run read-only implementation review before landing.
+
+- [Employee surface exclusions](divergences/employee-surface.md) — preserve the model tool filter, disabled skills and client visibility only.
+
+- [Unified knowledge review](divergences/knowledge-review.md) — preserve source review scope and personal/shared memory tools.
+
+- [File keeping](divergences/file-keeping.md) — profile-local documents/repos and a source-derived filing guide.
+
+- [Connection guides](divergences/connection-guides.md) — native setup guidance and per-service operating manuals without skills.
+
+- [Hosted settings](divergences/hosted-settings.md) — focused configuration UI over native stores and auth, with private Hindsight updates.

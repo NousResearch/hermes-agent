@@ -472,3 +472,8 @@ class TestCronWithGatewayOrigin:
                 assert result.get("status") != "approval_required"
         finally:
             clear_session_vars(tokens)
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

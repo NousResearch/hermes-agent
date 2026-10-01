@@ -4,6 +4,13 @@ Status: display, approval and configuration-access decisions agreed. Other
 values below are inherited baseline defaults under the preservation policy;
 backend-specific compatibility is checked before implementation.
 
+Implemented: native Telegram streaming default off (other agreed display defaults
+already native), medium reasoning, compression at 0.85 with three tail user
+messages, approvals off, quiet restart/transcript notices and local STT selection.
+Explicit operator values remain supported. No custom Telegram renderer or config
+loader was added. Shared conversation defaults and product rules are implemented; deployment
+files are prepared. Live server validation remains pending.
+
 Use the employee runtime configuration as the comparison baseline, adapting it
 to native Hermes settings and the separately agreed providers. Do not copy the
 hosted runtime or custom display implementation. Fixed product behavior remains
@@ -47,28 +54,20 @@ parameters without checking the selected Codex model and backend support.
 
 Response mode must remain configurable per conversation location, not hardcoded
 to mentions-only for every group. Native Telegram supports a mention requirement
-with free-response exceptions for chats/topics. Use the native dashboard Config editor; no custom toggle or adapter is needed.
+with free-response exceptions for chats/topics. Use the [hosted settings UI](hosted-settings.md); native configuration remains authoritative.
 The settings are `telegram.require_mention`, `telegram.free_response_chats` and
 `telegram.free_response_topics`. Preserve native accepted formats, parsing and
 reload/restart behavior. Allowlisting a group and choosing when to respond are
 separate settings. Avoid competing environment overrides that hide saved edits.
 
-## Administration and fixed rules
+## Administration
 
-Reuse the native dashboard, including API-key management, Telegram setup and
-configuration editing. Do not port the hosted dashboard or build member accounts.
-Use native authentication; Railway access/auth topology is a deployment check.
+Use native dashboard, configuration, CLI commands, authentication and secret
+management. The hosted settings UI adds focused routes over these owners and
+shared-admin password rotation. There are no fork config/auth/guide write
+prohibitions. Selected native UI controls are hidden.
 
-The effective runtime enforces the fixed tool, knowledge and memory contracts
-even if configuration asks for incompatible values. Keep one native config
-resolution path with explicit product-policy enforcement, not per-consumer
-fallbacks or an unrelated second configuration stack. Unsupported overrides
-must be visible as fixed/ignored or rejected, not silently presented as applied.
-
-Model choice, employee name and custom instructions remain configurable. Prompt-
-affecting edits follow native cache-safe session boundaries; do not rewrite a
-warm conversation's prompt merely because a setting was saved. Credentials,
-channel access and service endpoints remain deployment/operational settings.
-The chosen provider defaults and required authentication routes are in
-[deployment](deployment.md). Never silently select Nous-managed services when
-one of those direct providers is unavailable.
+The model tool filter and disabled skill loading remain product differences.
+Memory/provider settings are native; Railway config selects Hindsight and
+Browser Use. Use native SOUL/personality for identity. Final prompt exceptions
+remain open. Prompt-affecting changes follow native cache-safe boundaries.

@@ -9,36 +9,10 @@ from typing import Dict, List, Any, Set, Optional, Tuple
 # in `desktop_ui`/`project`, enabled per desktop-sourced session by the GUI gateway
 # (tui_gateway/server.py::_load_enabled_toolsets). HA, kanban and computer_use
 # entries are further gated by their tools' check_fns.
-_HERMES_CORE_TOOLS = [
-    "web_search", "web_extract",
-    "terminal", "process_manage",
-    "read_file", "write_file", "patch", "search_files",
-    "vision_analyze", "image_generate",
-    "skills_list", "skill_view", "skill_manage",
-    "browser_navigate", "browser_snapshot", "browser_click",
-    "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
-    "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
-    "text_to_speech",
-    "todo_list", "memory",
-    "session_search",
-    "clarify",
-    "execute_code", "delegate_task",
-    "cronjob_manage",
-    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    "kanban_show", "kanban_list",
-    "kanban_complete", "kanban_block", "kanban_request_review",
-    "kanban_request_changes",
-    "kanban_heartbeat",
-    "kanban_comment", "kanban_create", "kanban_link",
-    "kanban_unblock",
-    "kanban_attach", "kanban_attach_url", "kanban_attachments",
-    "computer_use",
-    # Service-gated connector account status and authorization links.
-    "manage_connections",
-]
+from agent.employee_policy import TOOLS
+# Recall belongs to the memory provider; reserving its name here prevents native registration.
+_HERMES_CORE_TOOLS = sorted(TOOLS - {"recall"})
+
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
 _HERMES_WEBHOOK_SAFE_TOOLS = ["web_search", "web_extract", "vision_analyze", "clarify"]
@@ -157,6 +131,7 @@ TOOLSETS = {
         role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
+    "messaging": _ts("Send an additional message to a connected conversation", ["send_message"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
     "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),

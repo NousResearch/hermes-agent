@@ -27,16 +27,20 @@ def test_memory_alias_persists_with_content_precedence(tmp_path, monkeypatch):
     manager.add_provider(sink)
     agent = SimpleNamespace(_memory_store=store, _memory_manager=manager,
                             _build_memory_write_metadata=lambda **kwargs: kwargs)
+    from agent.people import bind_turn
+    agent.platform = "telegram"
+    agent.session_id = "test-session"
+    bind_turn(agent, {"id": "123", "name": "Alex"})
     ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
 
     def call(**args):
-        return json.loads(INLINE_TOOL_EXECUTORS["memory"](agent, args, ctx))
+        return json.loads(INLINE_TOOL_EXECUTORS["memory"](agent, {**args, "user": agent._current_person_label}, ctx))
 
     assert call(action="add", target="user", content="Household owns an estate.")["success"]
     result = call(action="replace", target="user", old_text="Household owns an estate.",
                   new_text="Household owns a saloon.")
     assert result["success"], result
-    path = tmp_path / "memories" / "USER.md"
+    path = tmp_path / "memory" / "people" / f"{agent._current_person}.md"
     assert "Household owns a saloon." in path.read_text(encoding="utf-8")
     assert sink.writes[-1] == ("replace", "user", "Household owns a saloon.")
     result = call(action="replace", target="user", old_text="Household owns a saloon.",

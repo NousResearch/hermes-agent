@@ -50,7 +50,7 @@ _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats so it
     # doesn't look like "typing..." for 30 minutes.
-    "telegram": {**_TIER_HIGH, "tool_progress": "off", "busy_ack_detail": False},
+    "telegram": {**_TIER_HIGH, "tool_progress": "off", "streaming": False, "busy_ack_detail": False},
     "discord": {**_TIER_HIGH, "reasoning_style": "subtext"},  # "-# " subtext reads as metadata
     # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
     "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},

@@ -6,6 +6,8 @@ Verifies the parser registers the flag and the value reaches
 dispatch path (mirrors ``test_skills_install_flags.py``).
 """
 
+import pytest
+
 import sys
 
 
@@ -47,3 +49,7 @@ def test_cli_skills_uninstall_no_flags_keeps_prompt(monkeypatch):
 
     assert captured["name"] == "test-skill"
     assert captured["skip_confirm"] is False
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

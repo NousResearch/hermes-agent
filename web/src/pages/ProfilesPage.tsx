@@ -1,3 +1,4 @@
+import { employeePolicy } from "@/lib/employee-policy";
 import {
   useCallback,
   useEffect,
@@ -189,7 +190,7 @@ function ProfileActionsMenu({
             {labels.editDescription}
           </button>
 
-          <button
+          {employeePolicy.soulEditor && <button
             type="button"
             role="menuitem"
             className={itemClass}
@@ -203,9 +204,9 @@ function ProfileActionsMenu({
               </span>
             )}
             {labels.editSoul}
-          </button>
+          </button>}
 
-          <button
+          {employeePolicy.skills && <button
             type="button"
             role="menuitem"
             className={itemClass}
@@ -213,7 +214,7 @@ function ProfileActionsMenu({
           >
             <Package className="h-4 w-4" />
             {labels.manageSkills}
-          </button>
+          </button>}
 
           <button
             type="button"
@@ -948,7 +949,7 @@ export default function ProfilesPage() {
                   </Label>
                 </div>
 
-                <div className="flex items-center gap-2.5">
+                {employeePolicy.skills && <div className="flex items-center gap-2.5">
                   <Checkbox
                     checked={noSkills}
                     id="no-skills"
@@ -965,7 +966,7 @@ export default function ProfilesPage() {
                   >
                     {L.noSkillsOption}
                   </Label>
-                </div>
+                </div>}
               </fieldset>
 
               <div className="flex justify-end">

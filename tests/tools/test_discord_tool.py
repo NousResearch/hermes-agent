@@ -716,3 +716,8 @@ class TestModelToolsIntegration:
         assert discord_admin_tool is not None, "discord_admin should be in the schema"
         actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_tool_surface):
+    """Exercise the retained native implementation, not employee surface policy."""

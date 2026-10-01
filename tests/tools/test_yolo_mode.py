@@ -202,3 +202,8 @@ class TestYoloMode:
         approval_module.clear_session("session-a")
 
         assert is_session_yolo_enabled("session-a") is False
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

@@ -3,6 +3,14 @@
 </p>
 
 # Hermes Agent ☤
+
+> **Fork scope:** This repository implements the [employee specification](docs/specs/employee.md)
+> on native Hermes. Use the [deployment instructions](deploy/railway/README.md) for this fork.
+> The employee runtime targets Linux (including WSL2) and macOS; native Windows is
+> unsupported because responsibility storage requires POSIX directory operations.
+> The remaining overview and installer links below are retained upstream reference,
+> not the employee fork's installation or feature contract.
+
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
 </p>
@@ -40,9 +48,9 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows (native, PowerShell)
+### Upstream reference: Windows (native, PowerShell)
 
-> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
+> **Upstream only; this employee fork requires WSL2 on Windows.** Native Windows runs upstream Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
 
 Run this in PowerShell:
 
@@ -58,7 +66,7 @@ for the separate MSIX/App Installer package and its update ownership.
 
 > **Android / Termux:** A signed APT repository is available for aarch64 devices, with a `stable` channel (tagged releases) and a prerelease `canary` channel. The package includes Python, Node.js, and the TUI. Use the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux), not the desktop/server installer script.
 >
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
+> **Upstream Windows:** Native Windows is fully supported by upstream Hermes — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
 After installation:
 

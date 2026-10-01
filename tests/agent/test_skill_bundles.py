@@ -267,3 +267,9 @@ class TestListBundles:
         info_list = list_bundles()
         slugs = [b["slug"] for b in info_list]
         assert slugs == sorted(slugs)
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # These tests exercise retained upstream code; employee tests enforce the gate.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

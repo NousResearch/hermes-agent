@@ -1013,3 +1013,8 @@ class TestConflictMarkerFlag:
         prose.write_text("print('<<<<<<< not a conflict')\n", encoding="utf-8")
         assert "conflict_blocks" not in json.loads(read_file_tool(str(prose)))
 
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

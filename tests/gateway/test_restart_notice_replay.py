@@ -99,7 +99,7 @@ async def test_planned_restart_notice_reaches_home_channel(boot_notice, live):
 async def test_partial_delivery_is_persisted_and_not_repeated(boot_notice):
     runner, marker = boot_notice
     telegram, discord = _adapter(), _adapter()
-    runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(
+    runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(gateway_restart_notification=True,
         enabled=True,
         home_channel=HomeChannel(platform=Platform.TELEGRAM, chat_id="other-home", thread_id="7", name="Other"),
     )

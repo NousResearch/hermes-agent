@@ -218,6 +218,12 @@ def _read_memory_provider_existing_values(name: str) -> Dict[str, Any]:
     if not isinstance(cfg, dict):
         cfg = {}
 
+    from plugins.memory.config_schema import get_provider_config_schema, STORAGE_CONFIG_YAML
+    schema = get_provider_config_schema(name)
+    if schema is not None and schema.storage == STORAGE_CONFIG_YAML:
+        settings = cfg.get(name)
+        return dict(settings) if isinstance(settings, dict) else {}
+
     memory_cfg = cfg.get("memory")
     if isinstance(memory_cfg, dict):
         provider_cfg = memory_cfg.get(name)

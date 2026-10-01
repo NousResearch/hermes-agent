@@ -1,0 +1,476 @@
+--- skills/productivity/google-workspace/SKILL.md
++++ guides/connections/google-workspace/guide.md
+@@ -3 +3,3 @@
+-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
++Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the helper uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
++
++Read `../guide.md` first for connection verification and documentation rules.
+@@ -8 +9,0 @@
+-- `references/daily-brief.md` — daily/morning brief procedure: schedule + conflicts + meeting prep + urgent mail from Gmail and Calendar. Load it when the user asks for a morning brief, meeting preparation, or "what's on my calendar and what email needs attention."
+@@ -28 +29 @@
+-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
++google_setup_script="$(python -c 'from pathlib import Path; import guides; print(Path(guides.__file__).parent / "connections/google-workspace/scripts/setup.py")')"
+@@ -34 +35 @@
+-$GSETUP --check
++python "$google_setup_script" --check
+@@ -39,29 +40,15 @@
+-### Step 1: Triage — ask the user what they need
+-
+-Before starting OAuth setup, ask the user TWO questions:
+-
+-**Question 1: "What Google services do you need? Just email, or also
+-Calendar/Drive/Sheets/Docs?"**
+-
+-- **Email only** → They don't need this skill at all. Use the `himalaya` skill
+-  instead — it works with a Gmail App Password (Settings → Security → App
+-  Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
+-  Load the himalaya skill and follow its setup instructions.
+-
+-- **Email + Calendar** → Continue with this skill, but use
+-  `--services email,calendar` during auth so the consent screen only asks for
+-  the scopes they actually need.
+-
+-- **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
+-  narrower `--services` set like `calendar,drive,sheets,docs`.
+-
+-- **Full Workspace access** → Continue with this skill and use the default
+-  `all` service set.
+-
+-**Question 2: "Does your Google account use Advanced Protection (hardware
+-security keys required to sign in)? If you're not sure, you probably don't
+-— it's something you would have explicitly enrolled in."**
+-
+-- **No / Not sure** → Normal setup. Continue below.
+-- **Yes** → Their Workspace admin must add the OAuth client ID to the org's
+-  allowed apps list before Step 4 will work. Let them know upfront.
++### Step 1: Choose the required access
++
++Use the services already requested; ask only when the intended work is unclear.
++For email-only access, `../email/guide.md` also covers Himalaya IMAP/SMTP where
++App Passwords are supported.
++
++The native Google helper requests its fixed Workspace scope set: Gmail read,
++send and modify; Calendar; Drive; Contacts read; Sheets; and Docs. It has no
++service-selection flag. Explain that consent scope before authorization; the
++user can deselect unneeded permissions. The helper preserves granted scopes,
++and subsequent service calls require the corresponding permissions. Do not
++claim a narrow consent request or expand access without the user's authority.
++
++If account or organization policy blocks the OAuth client, follow Google's
++reported policy requirements before retrying.
+@@ -96,7 +83,5 @@
+-$GSETUP --client-secret /path/to/client_secret.json
+-```
+-
+-If they paste the raw client ID / client secret values instead of a file path,
+-write a valid Desktop OAuth JSON file for them yourself, save it somewhere
+-explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
+-`--client-secret` against that file.
++python "$google_setup_script" --client-secret /path/to/client_secret.json
++```
++
++Have the user provision the downloaded credential file on the Hermes host;
++do not ask them to paste reusable client secrets into chat.
+@@ -106,10 +91,6 @@
+-Use the service set chosen in Step 1. Examples:
+-
+-```bash
+-$GSETUP --auth-url --services email,calendar --format json
+-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
+-$GSETUP --auth-url --services all --format json
+-```
+-
+-This returns JSON with an `auth_url` field and also saves the exact URL to
+-`~/.hermes/google_oauth_last_url.txt`.
++```bash
++python "$google_setup_script" --auth-url
++```
++
++The helper prints the authorization URL as plain text and saves the pending
++PKCE session locally. It does not return JSON or save a separate URL file.
+@@ -118 +99 @@
+-- Extract the `auth_url` field and send that exact URL to the user as a single line.
++- Send the exact printed authorization URL to the user as a single line.
+@@ -131,7 +112,7 @@
+-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+-```
+-
+-If `--auth-code` fails because the code expired, was already used, or came from
+-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
+-immediately send the new URL to the user and have them retry with the newest
+-browser redirect only.
++python "$google_setup_script" --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
++```
++
++If exchange fails because the code expired, was used, or belongs to an older
++session, run `python "$google_setup_script" --auth-url` again. Send that new URL
++and use only the newest browser redirect. No replacement URL is returned
++automatically by a failed exchange.
+@@ -142,4 +123,8 @@
+-$GSETUP --check
+-```
+-
+-Should print `AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
++python "$google_setup_script" --check
++```
++
++Should print `AUTHENTICATED`. Then perform a harmless read for the requested
++service and verify the account/resource. Record working usage in the connection
++manual following `../guide.md`. Tokens refresh automatically. This helper stores
++one Google account per Hermes home; do not overwrite an existing account to add
++another without resolving that choice with the user.
+@@ -149,4 +134,4 @@
+-- Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
+-- Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
+-- If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
+-- To revoke: `$GSETUP --revoke`
++- Token is stored at `$HERMES_HOME/google_token.json` and auto-refreshes.
++- Pending OAuth session state/verifier are stored temporarily at `$HERMES_HOME/google_oauth_pending.json` until exchange completes.
++- If `gws` is installed, `google_api.py` points it at the same `$HERMES_HOME/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
++- To revoke: `python "$google_setup_script" --revoke`
+@@ -156,4 +141,4 @@
+-All commands go through the API script. Set `GAPI` as a shorthand:
+-
+-```bash
+-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
++All commands go through the API script. Locate the shipped helper:
++
++```bash
++google_api_script="$(python -c 'from pathlib import Path; import guides; print(Path(guides.__file__).parent / "connections/google-workspace/scripts/google_api.py")')"
+@@ -166,3 +151,3 @@
+-$GAPI gmail search "is:unread" --max 10
+-$GAPI gmail search "from:boss@company.com newer_than:1d"
+-$GAPI gmail search "has:attachment filename:pdf newer_than:7d"
++python "$google_api_script" gmail search "is:unread" --max 10
++python "$google_api_script" gmail search "from:boss@company.com newer_than:1d"
++python "$google_api_script" gmail search "has:attachment filename:pdf newer_than:7d"
+@@ -171 +156 @@
+-$GAPI gmail get MESSAGE_ID
++python "$google_api_script" gmail get MESSAGE_ID
+@@ -174,3 +159,3 @@
+-$GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
+-$GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
+-$GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
++python "$google_api_script" gmail send --to user@example.com --subject "Hello" --body "Message text"
++python "$google_api_script" gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
++python "$google_api_script" gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
+@@ -179,2 +164,2 @@
+-$GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
+-$GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
++python "$google_api_script" gmail reply MESSAGE_ID --body "Thanks, that works for me."
++python "$google_api_script" gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
+@@ -183,3 +168,3 @@
+-$GAPI gmail labels
+-$GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID
+-$GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
++python "$google_api_script" gmail labels
++python "$google_api_script" gmail modify MESSAGE_ID --add-labels LABEL_ID
++python "$google_api_script" gmail modify MESSAGE_ID --remove-labels UNREAD
+@@ -192,2 +177,2 @@
+-$GAPI calendar list
+-$GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
++python "$google_api_script" calendar list
++python "$google_api_script" calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
+@@ -196,3 +181,3 @@
+-$GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
+-$GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
+-$GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
++python "$google_api_script" calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
++python "$google_api_script" calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
++python "$google_api_script" calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
+@@ -201 +186 @@
+-$GAPI calendar delete EVENT_ID
++python "$google_api_script" calendar delete EVENT_ID
+@@ -208,2 +193,2 @@
+-$GAPI drive search "quarterly report" --max 10
+-$GAPI drive search "mimeType='application/pdf'" --raw-query --max 5
++python "$google_api_script" drive search "quarterly report" --max 10
++python "$google_api_script" drive search "mimeType='application/pdf'" --raw-query --max 5
+@@ -212 +197 @@
+-$GAPI drive get FILE_ID
++python "$google_api_script" drive get FILE_ID
+@@ -215,2 +200,2 @@
+-$GAPI drive upload /path/to/report.pdf
+-$GAPI drive upload /path/to/image.png --name "Logo.png" --parent FOLDER_ID
++python "$google_api_script" drive upload /path/to/report.pdf
++python "$google_api_script" drive upload /path/to/image.png --name "Logo.png" --parent FOLDER_ID
+@@ -220,3 +205,3 @@
+-$GAPI drive download FILE_ID
+-$GAPI drive download DOC_ID --output ~/doc.pdf
+-$GAPI drive download DOC_ID --export-mime text/plain --output ~/doc.txt
++python "$google_api_script" drive download FILE_ID
++python "$google_api_script" drive download DOC_ID --output ~/doc.pdf
++python "$google_api_script" drive download DOC_ID --export-mime text/plain --output ~/doc.txt
+@@ -225,2 +210,2 @@
+-$GAPI drive create-folder "Reports"
+-$GAPI drive create-folder "Q4" --parent FOLDER_ID
++python "$google_api_script" drive create-folder "Reports"
++python "$google_api_script" drive create-folder "Q4" --parent FOLDER_ID
+@@ -229,4 +214,4 @@
+-$GAPI drive share FILE_ID --email alice@example.com --role reader
+-$GAPI drive share FILE_ID --email alice@example.com --role writer --notify
+-$GAPI drive share FILE_ID --type anyone --role reader        # anyone with link
+-$GAPI drive share FILE_ID --type domain --domain example.com --role reader
++python "$google_api_script" drive share FILE_ID --email alice@example.com --role reader
++python "$google_api_script" drive share FILE_ID --email alice@example.com --role writer --notify
++python "$google_api_script" drive share FILE_ID --type anyone --role reader        # anyone with link
++python "$google_api_script" drive share FILE_ID --type domain --domain example.com --role reader
+@@ -235,2 +220,2 @@
+-$GAPI drive delete FILE_ID
+-$GAPI drive delete FILE_ID --permanent
++python "$google_api_script" drive delete FILE_ID
++python "$google_api_script" drive delete FILE_ID --permanent
+@@ -242 +227 @@
+-$GAPI contacts list --max 20
++python "$google_api_script" contacts list --max 20
+@@ -249,2 +234,2 @@
+-$GAPI sheets create --title "Q4 Budget"
+-$GAPI sheets create --title "Inventory" --sheet-name "Stock"
++python "$google_api_script" sheets create --title "Q4 Budget"
++python "$google_api_script" sheets create --title "Inventory" --sheet-name "Stock"
+@@ -253 +238 @@
+-$GAPI sheets get SHEET_ID "Sheet1!A1:D10"
++python "$google_api_script" sheets get SHEET_ID "Sheet1!A1:D10"
+@@ -256 +241 @@
+-$GAPI sheets update SHEET_ID "Sheet1!A1:B2" --values '[["Name","Score"],["Alice","95"]]'
++python "$google_api_script" sheets update SHEET_ID "Sheet1!A1:B2" --values '[["Name","Score"],["Alice","95"]]'
+@@ -259 +244 @@
+-$GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
++python "$google_api_script" sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
+@@ -266,2 +251,2 @@
+-$GAPI docs get DOC_ID
+-$GAPI docs get DOC_ID --tab TAB_ID     # read one tab of a tabbed Doc
++python "$google_api_script" docs get DOC_ID
++python "$google_api_script" docs get DOC_ID --tab TAB_ID     # read one tab of a tabbed Doc
+@@ -270,2 +255,2 @@
+-$GAPI docs create --title "Meeting Notes"
+-$GAPI docs create --title "Draft" --body "First paragraph..."
++python "$google_api_script" docs create --title "Meeting Notes"
++python "$google_api_script" docs create --title "Draft" --body "First paragraph..."
+@@ -274,2 +259,2 @@
+-$GAPI docs append DOC_ID --text "Additional content to append"
+-$GAPI docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the Doc has multiple tabs
++python "$google_api_script" docs append DOC_ID --text "Additional content to append"
++python "$google_api_script" docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the Doc has multiple tabs
+@@ -302 +287 @@
+-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
++1. **Use the authority already granted by the user or responsibility.** Before writes outside that authority, show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+@@ -304 +289 @@
+-3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
++3. **Use the Gmail search syntax reference** for complex queries — read `references/gmail-search-syntax.md`.
+@@ -314,2 +299,2 @@
+-| `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
+-| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
++| `HttpError 403: Insufficient Permission` | Missing API scope — `python "$google_setup_script" --revoke` then redo Steps 3-5 |
++| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `python "$google_setup_script" --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
+@@ -317 +302 @@
+-| `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
++| `ModuleNotFoundError` | Run `python "$google_setup_script" --install-deps` |
+@@ -323,2 +308,2 @@
+-$GSETUP --revoke
+-```
++python "$google_setup_script" --revoke
++```
+--- skills/email/himalaya/SKILL.md
++++ guides/connections/email/guide.md
+@@ -5 +5 @@
+-This skill is separate from the Hermes Email gateway adapter. The gateway
++This guide is separate from the Hermes Email gateway adapter. The gateway
+@@ -7 +7 @@
+-adapter; this skill lets the agent operate a mailbox from terminal tools and
++adapter; this guide lets the agent operate a mailbox from terminal tools and
+@@ -8,0 +9,4 @@
++
++Read `../guide.md` first. These examples target Himalaya 1.2.x; check
++`himalaya --version` and command help before using a different version.
++Official versioned docs: https://github.com/pimalaya/himalaya/tree/v1.2.0
+@@ -23,10 +27,8 @@
+-```bash
+-# Pre-built binary (Linux/macOS — recommended)
+-curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
+-
+-# macOS via Homebrew
+-brew install himalaya
+-
+-# Or via cargo (any platform with Rust)
+-cargo install himalaya --locked
+-```
++Use the installed CLI when compatible. For the version used by these examples:
++
++```bash
++cargo install himalaya --version 1.2.0 --locked
++```
++
++Alternatively use the official release binaries for your platform. Do not
++replace an existing installation without checking its version and use.
+@@ -39 +41 @@
+-himalaya account configure
++himalaya account configure work
+@@ -92 +94 @@
+-- The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
++- The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure work", pty=true)`
+@@ -224 +226 @@
+-himalaya flag add 42 --flag seen
++himalaya flag add 42 seen
+@@ -230 +232 @@
+-himalaya flag remove 42 --flag seen
++himalaya flag remove 42 seen
+@@ -244 +246 @@
+-himalaya --account work envelope list
++himalaya envelope list --account work
+@@ -289,0 +292,18 @@
++
++## Verify and document
++
++List the configured accounts and folders for the selected account:
++
++```bash
++himalaya account list
++himalaya folder list --account work
++himalaya envelope list --account work --page-size 1 --output json
++```
++
++This checks reading, not SMTP delivery. Do not send a test email without user
++authority. Record the chosen account, configuration path, folder aliases,
++credential-source names and working command patterns in the connection manual.
++Use explicit `--account` selection on mailbox commands. Configuration defaults
++are Himalaya's own; `$HERMES_HOME` does not automatically isolate its accounts.
++If a separate config is needed, use native `--config /path/to/config.toml` and
++record that path. Never store reusable secrets in the manual or helper scripts.
+--- skills/email/himalaya/references/configuration.md
++++ guides/connections/email/references/configuration.md
+@@ -20 +20 @@
+-backend.auth.raw = "your-password"
++backend.auth.cmd = "pass show email/imap"
+@@ -29 +29 @@
+-message.send.backend.auth.raw = "your-password"
++message.send.backend.auth.cmd = "pass show email/smtp"
+@@ -40,6 +39,0 @@
+-
+-### Raw password (testing only, not recommended)
+-
+-```toml
+-backend.auth.raw = "your-password"
+-```
+@@ -179 +173 @@
+-himalaya --account work envelope list
++himalaya envelope list --account work
+--- skills/software-development/github/SKILL.md
++++ guides/connections/github/guide.md
+@@ -3,5 +3,2 @@
+-Work GitHub end to end with the `gh` CLI (REST fallback where noted): auth,
+-issues, the PR lifecycle, issue-to-PR delivery, code review, and repo
+-management. This skill consolidates six former skills; each workflow lives
+-complete in its reference file — ALWAYS read the matching reference before
+-starting that workflow, the body below only routes.
++Read `../guide.md` first. Use Git and the official `gh` CLI for repository and
++GitHub access. Use native authentication and remote operations.
+@@ -9 +6 @@
+-## Routing
++## Check existing access
+@@ -11,8 +8,6 @@
+-| Task | Read first |
+-|---|---|
+-| Auth broken / new machine / token or SSH setup / gh login | `references/auth.md` |
+-| Create, triage, label, assign, close issues | `references/issues.md` |
+-| Branch, commit, open PR, watch CI, merge | `references/pr-workflow.md` |
+-| Carry an ISSUE to a verified PR (full delivery loop) | `references/issue-to-pr.md` |
+-| Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
+-| Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
++```bash
++gh --version
++gh auth status --hostname github.com
++gh api --hostname github.com user --jq .login
++gh repo view OWNER/REPO --json nameWithOwner,viewerPermission
++```
+@@ -20,4 +15,5 @@
+-Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
+-(auth helpers), `templates/` (PR bodies, bug report, feature request),
+-`references/ci-troubleshooting.md`, `references/conventional-commits.md`,
+-`references/github-api-cheatsheet.md`, `references/review-output-template.md`.
++Match the authenticated account and repository to the requested work. Use
++explicit `--repo OWNER/REPO` on commands that support it; do not infer the target
++from an unrelated current checkout. For Enterprise, use its hostname and
++`HOST/OWNER/REPO` where supported. Never print tokens with `gh auth token` or
++`gh auth status --show-token`.
+@@ -25 +21 @@
+-## Core discipline (applies to every workflow)
++## Connect
+@@ -27,10 +23,2 @@
+-- Preflight once per session: `gh auth status` — if it fails, go to
+-  `references/auth.md` before anything else.
+-- Prefer `gh` over raw REST; drop to `gh api` only for endpoints the
+-  porcelain lacks (the cheatsheet lists them).
+-- Never report CI green without checking `gh pr checks` yourself; never
+-  claim merged without verifying `state,mergedAt`.
+-- Read full context before writing: `gh issue view --comments` /
+-  `gh pr view --comments` — decisions live in threads, not titles.
+-- Sweep for duplicates before creating anything:
+-  `gh pr list --search` / `gh issue list --search`.
++Install `gh` using its official platform instructions if absent:
++https://cli.github.com/manual/installation
+@@ -38 +26 @@
+-## Verification
++For a user login, run the native flow on the Hermes host:
+@@ -40,3 +28,58 @@
+-- The workflow's own reference file defines done for that task.
+-- Cross-cutting: every claim about remote state (CI, merge, release,
+-  issue state) is backed by a fresh `gh` read, never memory.
++```bash
++gh auth login --hostname github.com --git-protocol https --web
++```
++
++Let the user finish the displayed browser/device authorization. On a headless
++host they can open the URL on their own device; the CLI handles the exchange.
++Use an existing appropriately scoped `GH_TOKEN` supplied through native secrets
++or the deployment environment when that is the intended access method. Do not
++copy the token into chat, manuals, scripts or Git remote URLs.
++
++For HTTPS Git access through the selected gh account:
++
++```bash
++gh auth setup-git --hostname github.com
++```
++
++Keep an already-working SSH setup if that is the intended method. Do not
++overwrite SSH keys or change remotes merely to standardize authentication.
++If several gh accounts exist, use `gh auth switch --hostname github.com --user LOGIN`
++when changing the active account is intended, then verify again. Environment
++tokens take precedence over stored logins; resolve that before switching.
++
++`gh` uses its own credential/configuration storage, not `$HERMES_HOME` by
++default. Record the actual account, host and credential source used.
++
++## Verify and keep operating patterns
++
++Repeat the account and repository checks above. For an existing checkout:
++
++```bash
++git remote -v
++git ls-remote origin HEAD
++```
++
++A successful read does not prove push access. Record the verified scope without
++pushing a test commit. If a remote embeds credentials, remove them from the URL
++and use native credential storage; never copy that URL to the manual.
++
++Useful patterns to adapt into `$HERMES_HOME/connections/github/manual.md`:
++
++```bash
++gh issue list --repo OWNER/REPO
++gh pr list --repo OWNER/REPO
++gh pr view NUMBER --repo OWNER/REPO
++gh run list --repo OWNER/REPO
++```
++
++Record repository/account selection, Git authentication method, any required
++host/config environment-variable names, and helper paths. Link this guide for
++reconnecting instead of copying login instructions. Respect user or
++responsibility authority for writes, reviews and pushes.
++
++## Native references
++
++- https://cli.github.com/manual/gh_auth_login
++- https://cli.github.com/manual/gh_auth_setup-git
++- https://cli.github.com/manual/gh_auth_switch
++- https://cli.github.com/manual/gh_auth_status

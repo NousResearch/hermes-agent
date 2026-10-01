@@ -1037,6 +1037,9 @@ async def video_analyze_tool(
         debug_call_data["video_size_bytes"] = video_size_bytes
         messages = _media_messages(prompt, "video_url", video_data_url)
         call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
+        video_config = _cfg_auxiliary("video", default={}) or {}
+        call_kwargs.update(task="video", provider="openrouter",
+                           model=model or video_config.get("model") or "google/gemini-3.1-flash-lite")
         analysis = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
         return analysis, None
     return await _run_analysis("video", video_url, user_prompt, model, stage)

@@ -100,7 +100,7 @@ describe('the pane follows the roster hydrating after mount', () => {
     expect(screen.getByText('Scheduled jobs')).toBeTruthy()
   })
 
-  it('offers a create affordance once the owner resolves', async () => {
+  it('directs schedule authoring to responsibilities once the owner resolves', async () => {
     request.mockResolvedValue({ jobs: [], scoped: 'research' })
     renderPane()
 
@@ -110,15 +110,9 @@ describe('the pane follows the roster hydrating after mount', () => {
     // owner is stuck unresolved the pane never offers any create control.
     expect(await screen.findByText('No scheduled jobs yet')).toBeTruthy()
 
-    // Both doors: the header action and the empty state's own call to action.
-    const create = screen.getAllByRole('button', { name: 'New cron' })
-
-    expect(create).toHaveLength(2)
-
-    act(() => create[0].click())
-
-    // The dialog opens naming the resolved owner, not a placeholder.
-    expect((await screen.findByRole('dialog')).textContent).toMatch(/research/i)
+    expect(screen.queryAllByRole('button', { name: 'New cron' })).toHaveLength(0)
+    expect(screen.getByText('Author schedules in responsibility files.')).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
 

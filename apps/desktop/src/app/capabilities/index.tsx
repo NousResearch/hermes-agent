@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { employeePolicy } from '@/lib/employee-policy'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -28,7 +29,9 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 
 // Skills Hub browsing lives inside the Skills tab. Legacy `?tab=hub`
 // links fall back to 'skills' via useRouteEnumParam.
-const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins'] as const
+const CAPABILITY_MODES = (['skills', 'toolsets', 'connectors', 'plugins'] as const).filter(
+  mode => employeePolicy.skills || mode !== 'skills'
+)
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
@@ -65,8 +68,8 @@ export function CapabilitiesView({
   const { t } = useI18n()
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
-  const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
-  const localTab = useState<CapabilityMode>('skills')
+  const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, employeePolicy.skills ? 'skills' : 'toolsets')
+  const localTab = useState<CapabilityMode>(employeePolicy.skills ? 'skills' : 'toolsets')
   const [mode, setMode] = embedded ? localTab : routeTab
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
@@ -113,16 +116,15 @@ export function CapabilitiesView({
 
   // MCP and Plugins load independently of the installed Skills/Tools lists.
   const gated = mode === 'toolsets'
-  const pending = gated && !(skills && toolsets)
+  const pending = gated && !toolsets
 
-  const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
+  const loadGate = !pending ? null : toolsetsFailed ? (
     <PanelEmpty
       action={
         <Button onClick={() => void refreshCapabilities()} size="sm">
           {t.skills.refresh}
         </Button>
       }
-      description={skillsError instanceof Error ? skillsError.message : undefined}
       icon="error"
       title={t.skills.skillsLoadFailed}
     />
@@ -187,7 +189,7 @@ export function CapabilitiesView({
       }
       searchValue={query}
       tabs={[
-        { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
+        ...(employeePolicy.skills ? [{ id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null }] : []),
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
         { id: 'connectors', label: t.connectorsPage.title },
         { id: 'plugins', label: t.skills.tabPlugins }

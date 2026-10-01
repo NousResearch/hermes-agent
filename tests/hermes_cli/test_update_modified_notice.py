@@ -1,5 +1,6 @@
 """Skill sync keeps user edits and tells the updater's user how to inspect them."""
 
+import pytest
 from tools import skills_sync
 from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
 
@@ -28,3 +29,7 @@ def test_kept_skill_edits_have_an_actionable_update_report(tmp_path, monkeypatch
     assert "1 user-modified (kept)" in out
     assert "hermes skills list-modified" in out
     assert user_skill.read_text(encoding="utf-8") == "My local instructions\n"
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

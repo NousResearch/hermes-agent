@@ -334,3 +334,14 @@ The architecture is intentionally optimized to:
 - [Context Compression & Prompt Caching](./context-compression-and-caching.md)
 - [Session Storage](./session-storage.md)
 - [Gateway Internals](./gateway-internals.md)
+
+## Fork additions
+
+The native identity and guidance assembly remains. `agent/employee_prompt.py`
+supplies service-manual/file-keeping guidance and the unchanged full responsibility section
+in the native skills-index slot; the Hermes help pointer loads the shipped guide.
+Native memory guidance remains. No separate Hindsight guidance is added; its
+tool description explains recall.
+Shared memory stays in the prefix. `agent/people.py` loads person memory after
+current user content, before recalled memory, through native turn composition.
+String sidecars, multimodal history, persistence and provider replay stay native.

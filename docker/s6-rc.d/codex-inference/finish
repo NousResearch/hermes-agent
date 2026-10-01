@@ -1,0 +1,3 @@
+#!/command/with-contenv sh
+[ -n "${HINDSIGHT_INFERENCE_KEY:-}" ] || exit 125
+exit 0

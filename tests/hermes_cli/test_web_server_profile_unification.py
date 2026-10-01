@@ -793,3 +793,8 @@ class TestProfileScopedAudio:
         assert resp.status_code == 404
         resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
         assert resp.status_code == 404
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise retained upstream handlers; employee endpoint exclusions have separate coverage."""

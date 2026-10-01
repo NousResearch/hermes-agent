@@ -186,7 +186,7 @@ class TestCheckFnTransientFailureSuppression:
         assert reg._check_fn_cached(probe) is False
 
     def test_profile_scoped_availability_does_not_cross_multiplex_profiles(
-        self, tmp_path
+        self, tmp_path, native_tool_surface
     ):
         """Both availability caches must use the active profile as a key."""
         import tools.registry as reg

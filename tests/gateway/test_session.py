@@ -175,6 +175,7 @@ class TestBuildSessionContextPrompt:
     def test_prompt_quotes_untrusted_metadata_labels(self):
         """User-controlled gateway metadata must stay inert inside the prompt."""
         config = GatewayConfig(
+            group_sessions_per_user=True,
             platforms={
                 Platform.DISCORD: PlatformConfig(
                     enabled=True,
@@ -1532,5 +1533,3 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
-

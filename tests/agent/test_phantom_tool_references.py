@@ -11,6 +11,8 @@ Covers:
     them from persisted disabled lists.
 """
 
+import pytest
+
 from pathlib import Path
 
 
@@ -105,3 +107,8 @@ class TestEssentialOnlySync:
         assert result["copied"] == ["hermes-agent"]
         assert (home / "skills" / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
         assert not (home / "skills" / "media").exists()
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

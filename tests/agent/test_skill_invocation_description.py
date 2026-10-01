@@ -131,3 +131,9 @@ class TestSqlLikePattern:
         # literal part must not contain '%' or '_'.
         assert "%" not in SKILL_SCAFFOLD_SQL_LIKE[:-1]
         assert "_" not in SKILL_SCAFFOLD_SQL_LIKE[:-1]
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # Employee exclusion is covered separately; preserve upstream implementation tests.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

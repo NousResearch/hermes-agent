@@ -422,10 +422,10 @@ def _apply_default_agent_settings(config: dict):
     # a stale .env entry silently shadowing it caused the 60-vs-500 bug, so drop it.
     remove_env_value("HERMES_MAX_ITERATIONS")
     config.setdefault("compression", {})["enabled"] = True
-    config["compression"]["threshold"] = 0.50
+    config["compression"]["threshold"] = 0.85
     save_config(config)
     print_success("Applied recommended defaults:")
-    _info("  Max iterations: 150", "  Compression threshold: 0.50",
+    _info("  Max iterations: 150", "  Compression threshold: 0.85",
           "  Run `hermes setup agent` later to customize.")
 
 
@@ -495,11 +495,11 @@ def setup_agent_settings(config: dict):
     _info("Automatically summarizes old messages when context gets too long.",
           "Higher threshold = compress later (use more context). Lower = compress sooner.")
     config.setdefault("compression", {})["enabled"] = True
-    current_threshold = cfg_get(config, "compression", "threshold", default=0.50)
+    current_threshold = cfg_get(config, "compression", "threshold", default=0.85)
     threshold = _prompt_number("Compression threshold (0.5-0.95)", current_threshold, float)
     if threshold is not None and 0.5 <= threshold <= 0.95:
         config["compression"]["threshold"] = threshold
-    print_success(f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}")
+    print_success(f"Context compression threshold set to {config['compression'].get('threshold', 0.85)}")
 
     save_config(config)
 

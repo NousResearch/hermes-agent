@@ -164,7 +164,7 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
             {
-                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "display": {"tool_progress": "off", "interim_assistant_messages": False, "platforms": {"telegram": {"streaming": True}}},
                 "streaming": {
                     "enabled": True,
                     "edit_interval": 0.01,
@@ -294,7 +294,7 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
             {
-                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "display": {"tool_progress": "off", "interim_assistant_messages": False, "platforms": {"telegram": {"streaming": True}}},
                 "streaming": {
                     "enabled": True,
                     "edit_interval": 0.01,

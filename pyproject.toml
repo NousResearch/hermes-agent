@@ -211,6 +211,7 @@ dependencies = [
   "nemo-relay>=0.8.3,<0.9; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
 
 [project.optional-dependencies]
+hindsight = ["hindsight-client>=0.9.1,<0.11"]
 # High-performance event loop — uvloop replaces the stdlib asyncio loop with
 # a libuv-backed implementation for ~2-4x throughput on uvicorn.  Gated as an
 # optional extra because libuv's ./configure does not run on Android/Termux
@@ -798,6 +799,10 @@ youtube-transcript-api = false
 
 [tool.setuptools.packages.find]
 include = [
+  "responsibilities",
+  "deploy",
+  "deploy.*",
+  "guides",
   "agent",
   "agent.*",
   "tools",
@@ -824,6 +829,8 @@ include = [
 ]
 
 [tool.setuptools.package-data]
+guides = ["**/*.md", "**/scripts/*.py", "**/templates/*.js", "**/templates/*.mjs", "**/templates/*.yaml"]
+deploy = ["railway/*.yaml", "railway/*.toml"]
 hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",

@@ -70,11 +70,12 @@ class PatchResult:
     # Success-shaped no-op: the edit was already present, nothing written; ``note`` says why.
     no_change: bool = False
     note: Optional[str] = None
+    warning: Optional[str] = None
 
     # Emission order is part of the output contract.
     _DICT_FIELDS: ClassVar[tuple] = (
         "diff", "files_modified", "files_created", "files_deleted",
-        "lint", "lsp_diagnostics", "error",
+        "lint", "lsp_diagnostics", "error", "warning",
     )
 
     def to_dict(self) -> dict:

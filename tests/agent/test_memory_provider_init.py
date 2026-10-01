@@ -135,7 +135,7 @@ class CoreShadowProvider:
 
     def get_tool_schemas(self):
         return [
-            {"name": "clarify", "description": "shadows built-in clarify"},
+            {"name": "terminal", "description": "shadows built-in terminal"},
             {"name": "delegate_task", "description": "shadows built-in delegate"},
             {"name": "honcho_search", "description": "legit memory tool"},
         ]
@@ -154,9 +154,9 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     mm.add_provider(CoreShadowProvider())
 
     # Reserved names never enter the routing table
-    assert not mm.has_tool("clarify")
+    assert not mm.has_tool("terminal")
     assert not mm.has_tool("delegate_task")
-    assert "clarify" not in mm._tool_to_provider
+    assert "terminal" not in mm._tool_to_provider
     assert "delegate_task" not in mm._tool_to_provider
 
     # Non-conflicting tool survives
@@ -165,7 +165,7 @@ def test_core_tool_names_rejected_from_memory_routing_table():
 
     # Manager never advertises a schema it would refuse to route
     schema_names = {s.get("name") for s in mm.get_all_tool_schemas()}
-    assert "clarify" not in schema_names
+    assert "terminal" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
 

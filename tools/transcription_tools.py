@@ -250,15 +250,6 @@ def _get_provider(stt_config: dict) -> str:
     # The managed "Nous Subscription" selection is the OpenAI backend routed via the managed gateway.
     if isinstance(provider, str) and provider.strip().lower() == "nous":
         provider = "openai"
-    if explicit and provider == "local":
-        # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every install, so only a
-        # raw config.yaml selection counts as explicit; otherwise autodetect (local-first anyway).
-        try:
-            from tools.tool_backend_helpers import read_selection
-            if read_selection("stt") is None:
-                explicit = False
-        except Exception:  # pragma: no cover — helpers are in-repo
-            pass
     if explicit:
         return _resolve_explicit_provider(provider)
     backend = _detect_local_backend()

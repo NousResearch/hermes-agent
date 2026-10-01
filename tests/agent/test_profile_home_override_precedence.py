@@ -18,6 +18,7 @@ any single call-site wire breaks this test.
 """
 
 import re
+import pytest
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -173,3 +174,8 @@ def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
     t.join()
 
     assert result["info"]["profile_name"] == "mybot"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    pass

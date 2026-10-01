@@ -789,3 +789,9 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "gone" in msg
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # These tests exercise retained upstream code; employee tests enforce the gate.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

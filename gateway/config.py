@@ -420,7 +420,7 @@ class PlatformConfig:
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
     reply_to_mode: str = "first"  # "off" never threads, "first" only the first chunk, "all" every chunk
-    gateway_restart_notification: bool = True  # "♻️ Gateway online/restarted" pings; noise on end-user platforms
+    gateway_restart_notification: bool = False  # "♻️ Gateway online/restarted" pings; noise on end-user platforms
     typing_indicator: bool = True  # drives _keep_typing; False where unwanted (Slack setStatus blocks compose)
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
     typing_status_text: Optional[str] = None
@@ -475,7 +475,7 @@ class PlatformConfig:
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
+            gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), False),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion
             channel_overrides=channel_overrides,
@@ -584,7 +584,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 # Top-level bool-ish keys read verbatim (no nested ``gateway.`` fallback) with their defaults.
 _TOPLEVEL_BOOL_DEFAULTS = {
     "write_sessions_json": True, "always_log_local": True, "filter_silence_narration": True,
-    "group_sessions_per_user": True, "thread_sessions_per_user": False,
+    "group_sessions_per_user": False, "thread_sessions_per_user": False,
 }
 
 
@@ -605,8 +605,8 @@ class GatewayConfig:
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
-    stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
-    group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
+    stt_echo_transcripts: bool = False  # Echo raw STT transcripts back to the user
+    group_sessions_per_user: bool = False  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
     # The default profile's gateway serves every profile on the host (profiles stamped into session
@@ -789,7 +789,7 @@ class GatewayConfig:
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
-            stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
+            stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), False),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,

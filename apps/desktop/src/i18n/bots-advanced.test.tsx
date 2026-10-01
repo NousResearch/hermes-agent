@@ -128,3 +128,6 @@ it('localizes MCP setup actions while retaining the profile, preset and environm
   })
   expect(mocks.request.mock.calls.some(([method]) => method === 'mcp.servers.set_api_key')).toBe(false)
 })
+
+// Exercise retained upstream editors; employee exclusions have separate tests.
+vi.mock('../plugins/hermes-bots/employee-policy', () => ({ employeePolicy: { skills: true, soulEditor: true } }))

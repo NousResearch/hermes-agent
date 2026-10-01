@@ -80,3 +80,11 @@ def test_explicit_skills_dir_monkeypatch_still_wins(tmp_path, monkeypatch):
 
     assert result["success"] is True
     assert Path(result["skill_dir"]) == patched_skill_dir
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

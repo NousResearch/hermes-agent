@@ -145,20 +145,20 @@ def _session_tool_names(enabled_toolsets, *, connectors, disabled_toolsets=None)
 
 
 
-def test_cli_session_gets_the_tool_outside_a_code_workspace(tmp_path, monkeypatch):
+def test_cli_session_excludes_hosted_connections(tmp_path, monkeypatch):
     """The path a plain `hermes` run takes: _get_platform_tools, no git cwd."""
     from hermes_cli.tools_config import _get_platform_tools
 
     monkeypatch.chdir(tmp_path)
     enabled = sorted(_get_platform_tools({}, "cli", include_default_mcp_servers=True))
 
-    assert "connections" in enabled
-    assert "manage_connections" in _session_tool_names(enabled, connectors=True)
+    assert "connections" not in enabled
+    assert "manage_connections" not in _session_tool_names(enabled, connectors=True)
 
 
 
 
-def test_tui_and_desktop_sessions_get_the_tool(monkeypatch):
+def test_tui_and_desktop_exclude_hosted_connections(monkeypatch):
     """The path the TUI/desktop gateway takes to build its selection."""
     from tui_gateway.server import _load_enabled_toolsets
 
@@ -166,11 +166,11 @@ def test_tui_and_desktop_sessions_get_the_tool(monkeypatch):
     for platform in ("tui", "desktop"):
         selection = _load_enabled_toolsets(platform)
         names = _session_tool_names(selection, connectors=True)
-        assert "manage_connections" in names, platform
+        assert "manage_connections" not in names, platform
 
 
-def test_focus_mode_coding_posture_gets_the_tool(monkeypatch):
-    """An engineer pinned to the coding posture still sees their accounts."""
+def test_coding_posture_excludes_hosted_connections(monkeypatch):
+    """Coding posture cannot reintroduce the hosted connection manager."""
     from pathlib import Path
 
     from agent.coding_context import coding_selection
@@ -181,7 +181,7 @@ def test_focus_mode_coding_posture_gets_the_tool(monkeypatch):
         platform="cli", cwd=str(repo), config={"agent": {"coding_context": "focus"}}
     )
     assert selection == ["coding"]  # posture collapse still collapses
-    assert "manage_connections" in _session_tool_names(selection, connectors=True)
+    assert "manage_connections" not in _session_tool_names(selection, connectors=True)
 
 
 def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, monkeypatch):
@@ -209,13 +209,8 @@ def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, mo
     assert "not available in this session" in out["error"]
 
 
-def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):
-    """`agent.disabled_toolsets: [connections]` wins; a bundle name does not.
-
-    The name is added before the disabled subtraction, so the toolset behaves
-    like any other. Naming a platform composite instead must NOT strip it —
-    that branch preserves core tools on purpose (#33924).
-    """
+def test_disabled_bundle_cannot_reintroduce_connections(tmp_path, monkeypatch):
+    """Both leaf and bundle deny selections preserve the employee exclusion."""
     from hermes_cli.tools_config import _get_platform_tools
 
     monkeypatch.chdir(tmp_path)
@@ -224,14 +219,6 @@ def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):
     assert "manage_connections" not in _session_tool_names(
         enabled, connectors=True, disabled_toolsets=["connections"]
     )
-    assert "manage_connections" in _session_tool_names(
+    assert "manage_connections" not in _session_tool_names(
         enabled, connectors=True, disabled_toolsets=["hermes-cli"]
     )
-
-
-def test_tool_is_never_deferrable():
-    from tools.tool_search import is_deferrable_tool_name
-
-    # Core names short-circuit before the toolset check, so listing
-    # "connections" in _DIRECT_SURFACE_TOOLSETS would be redundant.
-    assert is_deferrable_tool_name("manage_connections") is False

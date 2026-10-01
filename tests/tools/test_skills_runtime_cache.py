@@ -159,3 +159,8 @@ def test_hash_filter_is_skill_relative(tmp_path):
     _write(src, "scripts/helper.py", "ANSWER = 1\n")
     assert ss._dir_hash(src) == _legacy_hash(src)
     assert set(_skill_file_list(src)) == {"SKILL.md", "scripts/helper.py"}
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

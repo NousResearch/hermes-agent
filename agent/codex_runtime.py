@@ -650,7 +650,9 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
             original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
+    if (turn.final_text and not turn.interrupted and turn.error is None
+            and not getattr(agent, "skip_background_review", False)
+            and (should_review_memory or should_review_skills)):
         _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
             messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
         ))

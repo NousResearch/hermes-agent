@@ -6,6 +6,8 @@ output, while normal typed text is left intact.  The raw value is always sent
 to the browser backend regardless.
 """
 
+import pytest
+
 import json
 from unittest.mock import patch
 
@@ -72,3 +74,8 @@ def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
     assert "sk-pro" in raw_result
     mock_run.assert_called_once()
     assert mock_run.call_args.args[2] == ["@apikey", secret]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_browser_tools):
+    """Exercise the retained native implementation, not employee surface policy."""

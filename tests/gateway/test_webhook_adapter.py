@@ -1108,7 +1108,7 @@ class TestMultiplexProfileWebhookAuthentication:
 
     @pytest.mark.asyncio
     async def test_routed_profile_skills_resolve_under_that_profile(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, native_skills
     ):
         """A /p/<profile>/ route's ``skills:`` must load from that profile's
         skills/ dir (#67277). Before the fix the lookup ran with no profile

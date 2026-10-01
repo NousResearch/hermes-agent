@@ -140,12 +140,12 @@ def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_tok
     monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
 
     cron_enabled = _get_platform_tools({}, "cron")
-    assert "homeassistant" in cron_enabled
+    assert "homeassistant" not in cron_enabled
     # moa must stay off — the original goal of #14798
     assert "moa" not in cron_enabled
 
     cli_enabled = _get_platform_tools({}, "cli")
-    assert "homeassistant" in cli_enabled
+    assert "homeassistant" not in cli_enabled
 
 
 def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
@@ -155,8 +155,8 @@ def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch)
     secret_scope.set_multiplex_active(True)
     token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
     try:
-        assert "homeassistant" in _get_platform_tools({}, "cron")
-        assert "homeassistant" in _get_platform_tools({}, "cli")
+        assert "homeassistant" not in _get_platform_tools({}, "cron")
+        assert "homeassistant" not in _get_platform_tools({}, "cli")
     finally:
         secret_scope.reset_secret_scope(token)
         secret_scope.set_multiplex_active(False)

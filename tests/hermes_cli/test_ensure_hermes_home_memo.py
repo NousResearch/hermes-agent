@@ -31,6 +31,7 @@ def test_distinct_home_paths_each_get_the_skeleton(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_HOME", str(first))
     cfg.ensure_hermes_home()
+    (first / "documents" / "contract.txt").write_text("keep me")
 
     # Profile switch: HERMES_HOME moves → the new path is ensured too.
     monkeypatch.setenv("HERMES_HOME", str(second))
@@ -38,3 +39,11 @@ def test_distinct_home_paths_each_get_the_skeleton(tmp_path, monkeypatch):
 
     assert (first / "logs").is_dir()
     assert (second / "logs").is_dir()
+
+    for home in (first, second):
+        assert (home / "documents").is_dir()
+        assert (home / "repos").is_dir()
+    monkeypatch.setenv("HERMES_HOME", str(first))
+    cfg.ensure_hermes_home()
+    assert (first / "documents" / "contract.txt").read_text() == "keep me"
+    assert not (second / "documents" / "contract.txt").exists()

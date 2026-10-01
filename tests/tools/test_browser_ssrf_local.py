@@ -350,3 +350,8 @@ class TestAllowPrivateUrlsConfig:
         expected = {"allowed": True, "blocked": False}
         for profile in profile_order:
             assert under_profile(homes[profile]) is expected[profile]
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_browser_tools):
+    """Exercise the retained native implementation, not employee surface policy."""

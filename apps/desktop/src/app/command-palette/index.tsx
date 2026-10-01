@@ -22,6 +22,7 @@ import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { employeePolicy } from '@/lib/employee-policy'
 import {
   Activity,
   AppWindow,
@@ -1135,13 +1136,17 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     result.push({
       heading: capLabel,
       items: [
-        {
-          icon: Wrench,
-          id: 'cap-skills',
-          keywords: ['skills', 'capabilities'],
-          label: `${capLabel}: ${t.skills.tabSkills}`,
-          run: go(`${CAPABILITIES_ROUTE}?tab=skills`)
-        },
+        ...(employeePolicy.skills
+          ? [
+              {
+                icon: Wrench,
+                id: 'cap-skills',
+                keywords: ['skills', 'capabilities'],
+                label: `${capLabel}: ${t.skills.tabSkills}`,
+                run: go(`${CAPABILITIES_ROUTE}?tab=skills`)
+              }
+            ]
+          : []),
         {
           icon: SlidersHorizontal,
           id: 'cap-toolsets',

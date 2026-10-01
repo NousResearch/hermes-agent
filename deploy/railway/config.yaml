@@ -1,0 +1,47 @@
+# Seeded once. Edit operational settings through the hosted settings page.
+employee:
+  owner: "" # e.g. telegram:123456789; explicit local-user identity link
+model:
+  provider: openai-codex
+  default: gpt-6-astra
+browser:
+  backend: browser-use
+  cloud_provider: browser-use
+  use_gateway: false
+web:
+  backend: parallel
+  keyless_fallback: false
+  keyless_rescue: false
+  provider_tier: {parallel: paid}
+image_gen:
+  provider: openai-codex
+  model: gpt-image-2-high
+  quality: high
+stt:
+  provider: local
+  echo_transcripts: false
+  local:
+    model: base
+memory:
+  provider: hindsight
+hindsight:
+  url: http://hindsight.railway.internal:8888
+terminal:
+  backend: local
+  cwd: /opt/data/workspace
+webhook:
+  public_url: ""
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: "::"
+      port: 8648
+auxiliary:
+  compression: {provider: openai-codex}
+  title_generation: {provider: openai-codex}
+  memory_query_rewrite: {provider: openai-codex}
+  video: {provider: openrouter, model: google/gemini-3.1-flash-lite, timeout: 180}
+
+telegram:
+  require_mention: true

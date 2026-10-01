@@ -18,7 +18,7 @@ import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture
-def client(_isolate_hermes_home):
+def client(_isolate_hermes_home, manual_approvals):
     try:
         from starlette.testclient import TestClient
     except ImportError:

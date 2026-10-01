@@ -80,18 +80,18 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
 
 
 def compose_multimodal_context_part(
-    ext_prefetch_cache: str, plugin_user_context: str,
+    ext_prefetch_cache: str, plugin_user_context: str, personal_context: str = "",
 ) -> Optional[str]:
     """The ephemeral context of one turn (memory prefetch + ``pre_llm_call``) as one text
     block; ``None`` when nothing is injected. The string sidecar appends it to ``content``;
     a multimodal (list) turn carries it as a durable text part (#71998)."""
     fenced = build_memory_context_block(ext_prefetch_cache) if ext_prefetch_cache else ""
-    injections = [part for part in (fenced, plugin_user_context) if part]
+    injections = [part for part in (personal_context, fenced, plugin_user_context) if part]
     return "\n\n".join(injections) if injections else None
 
 
 def compose_user_api_content(
-    content: Any, ext_prefetch_cache: str, plugin_user_context: str
+    content: Any, ext_prefetch_cache: str, plugin_user_context: str, personal_context: str = ""
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's string user message.
 
@@ -100,7 +100,7 @@ def compose_user_api_content(
     content is not a string (list content takes the text-part path)."""
     if not isinstance(content, str):
         return None
-    injection = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
+    injection = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context, personal_context)
     return None if injection is None else content + "\n\n" + injection
 
 
@@ -717,7 +717,8 @@ def _tick_memory_nudge(agent: Any) -> bool:
             and agent._memory_store):
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
-            agent._turns_since_memory = 0
+            # Stay due until a review starts; interrupted/failed turns must not lose it.
+            agent._turns_since_memory = agent._memory_nudge_interval
             return True
     return False
 
@@ -897,7 +898,7 @@ def _stamp_api_content_sidecar(
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
     durable_content, _api_content = durable_user_row_content(
         agent, _turn_user_msg, live_content,
-        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context),
+        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context, getattr(agent, "_personal_context", "")),
     )
     if _api_content is None or _api_content == durable_content:
         return
@@ -946,7 +947,7 @@ def _append_multimodal_context(
     message, so without this a resumed session replays a view the model never saw. Same
     ``_row_id``-under-lock protocol as the string sidecar backfill; the row keeps its writer's
     shape (compaction inserted the raw parts, a flush the text projection)."""
-    _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
+    _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context, getattr(agent, "_personal_context", ""))
     if not append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx):
         return
     from agent.session_persistence import _durable_content, _persist_lock
@@ -1011,6 +1012,8 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    from agent.people import bind_turn
+    bind_turn(agent, turn_author)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
@@ -1242,7 +1245,7 @@ def build_api_messages(
             else:
                 # Callers that bypass the prologue stamping: compose live.
                 _composed = compose_user_api_content(
-                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context, getattr(agent, "_personal_context", "")
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed

@@ -567,7 +567,7 @@ def _ensure_default_soul_md(home: Path) -> None:
 _HERMES_HOME_ENSURED: set = set()
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
-    "pairing", "hooks", "image_cache", "audio_cache", "skills")
+    "pairing", "hooks", "image_cache", "audio_cache", "skills", "documents", "repos")
 
 
 def ensure_hermes_home():
@@ -2982,7 +2982,7 @@ def _show_compression_section(config: Dict[str, Any]) -> None:
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if not enabled:
         return
-    print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+    print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
     tt = compression.get('threshold_tokens')
     try:
         if tt is not None and int(tt) > 0:

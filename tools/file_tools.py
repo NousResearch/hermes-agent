@@ -692,6 +692,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)
 
+        if _file_ops_uses_host_paths(file_ops):
+            from responsibilities.files import read_extras
+            result_dict.update(read_extras(resolved_str))
+
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully
         # with a next_offset instead of rejecting.
@@ -897,7 +901,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.write_file(_resolved or path, content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -916,6 +921,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     # same-task writes stay unblocked. patch never does this.
                     _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
                 _note_edited(task_id, [path], path_to_resolved, session_id)
+        if not result_dict.get("error") and _file_ops_uses_host_paths(file_ops):
+            from responsibilities.files import mutation_receipt
+            result_dict.update(mutation_receipt(_resolved or path))
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1039,6 +1047,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text.")
+        if not result_dict.get("error") and _file_ops_uses_host_paths(file_ops):
+            from responsibilities.files import mutation_receipt
+            for changed in result_dict.get("files_modified", []) + result_dict.get("files_created", []):
+                result_dict.update(mutation_receipt(changed))
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))

@@ -382,3 +382,9 @@ class TestCronBuilder:
         assert first_blocks[0] == second_blocks[0]
         assert "could not be found" in first_blocks[0]["text"]
         assert first_blocks[1]["text"].endswith("ticket=one")
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Real invocation builders exercise the retained skill path.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

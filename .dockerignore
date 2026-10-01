@@ -64,6 +64,7 @@ htmlcov/
 *.md
 !skills/**/*.md
 !optional-skills/**/*.md
+!guides/**/*.md
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
@@ -125,3 +126,6 @@ plans/
 /*.png.bak
 *.tar.gz
 *.tgz
+
+# Local agent work and disposable test environments
+.context/

@@ -872,61 +872,22 @@ class TestBatchRefusesToEmptyNonEmptyStore:
 # Background-review delete gate (#105921)
 # =========================================================================
 
-class TestBackgroundReviewDeleteGate:
-    """An unattended background-review fork may append, never delete: the near-limit
-    'consolidate now' hint is otherwise an instruction to decide what to forget,
-    executed with no human in the loop. Denied ops are staged as pending proposals
-    (surfaced via /memory pending) instead of silently dropped — the fork's own review
-    summary is never published back."""
+class TestBackgroundReviewConsolidation:
+    """Employee review can consolidate durable authored memory in place."""
 
-    def test_remove_staged_not_applied(self, store, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        store.add("memory", "never create records without permission")
-        token = set_current_write_origin("background_review")
-        try:
-            result = json.loads(memory_tool(action="remove", old_text="without permission", store=store))
-        finally:
-            reset_current_write_origin(token)
-        assert result["success"] is True
-        assert result["staged"] is True
-        assert result["proposal_staged"] is True
-        assert result["pending_id"]
-        # Fail-closed: the standing rule is still on disk.
-        assert "never create records without permission" in store._entries_for("memory")
-        # The proposal itself landed in the pending store for the user to approve or discard.
-        from tools.write_approval import MEMORY, get_pending
-        record = get_pending(MEMORY, result["pending_id"])
-        assert record["payload"]["action"] == "remove"
-        assert record["origin"] == "background_review"
-
-    def test_replace_staged_in_background_review(self, store, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        store.add("memory", "entry the fork must not rewrite")
-        token = set_current_write_origin("background_review")
-        try:
-            result = json.loads(memory_tool(
-                action="replace", old_text="entry the fork", content="rewritten by fork", store=store))
-        finally:
-            reset_current_write_origin(token)
-        assert result["staged"] is True
-        assert result["proposal_staged"] is True
-        # Fail-closed: the original entry is untouched.
-        assert "entry the fork must not rewrite" in store._entries_for("memory")
-
-    def test_batch_containing_remove_staged_whole_batch(self, store, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        store.add("memory", "rule one")
+    def test_review_consolidates_atomically(self, store):
+        store.add("memory", "old ownership")
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(operations=[
-                {"action": "remove", "old_text": "rule one"},
-                {"action": "add", "content": "fork consolidation"},
+                {"action": "remove", "old_text": "old ownership"},
+                {"action": "add", "content": "confirmed new ownership"},
             ], store=store))
         finally:
             reset_current_write_origin(token)
-        assert result["staged"] is True
-        # Atomic: the batch is only a proposal — its add must not land either.
-        assert "fork consolidation" not in store._entries_for("memory")
+        assert result["success"]
+        assert "old ownership" not in store._entries_for("memory")
+        assert "confirmed new ownership" in store._entries_for("memory")
 
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")

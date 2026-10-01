@@ -309,6 +309,15 @@ def is_write_denied(path: str) -> bool:
 def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = False) -> Optional[str]:
     """Return a user/model-facing error when writes to ``path`` are blocked
     (``entry``: see :func:`_classify_write_denial`)."""
+    from tools.skill_provenance import is_background_review
+    if is_background_review():
+        from hermes_constants import get_hermes_home
+        candidate = Path(path).resolve()
+        home = get_hermes_home().resolve()
+        if not any(candidate.is_relative_to(home / name) for name in ("responsibilities", "connections")):
+            return "Reviews can edit only responsibility records and service manuals. Use memory for authored facts."
+        if candidate.is_relative_to(home / "responsibilities") and any(part in {"schedules", "webhooks"} for part in candidate.relative_to(home / "responsibilities").parts):
+            return "Reviews cannot edit schedule or webhook declarations. Record the proposed change in STATE.md."
     denial = _classify_write_denial(path, entry=entry)
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))

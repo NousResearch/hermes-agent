@@ -276,3 +276,9 @@ def test_closed_runtime_secret_request_is_refused(two_profiles, monkeypatch):
     assert _saved_tokens(launch) == []
     done = [frame["params"] for frame in frames if (frame.get("params") or {}).get("type") == "background.complete"]
     assert [(event["session_id"], event["payload"]["text"]) for event in done] == [("session-A", "setup_needed")]
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

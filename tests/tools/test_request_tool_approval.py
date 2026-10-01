@@ -247,3 +247,8 @@ class TestRequestToolApproval:
         )
         res = request_tool_approval("computer_use", "click", rule_key="cua")
         assert res == {"approved": True, "message": None}
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

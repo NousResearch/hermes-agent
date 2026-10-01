@@ -1012,3 +1012,23 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     human = _group_message("hermes, hello")
     assert adapter._should_process_message(human) is True
     assert adapter._should_observe_unmentioned_group_message(human) is False
+
+
+def test_hosted_silent_topic_is_chat_scoped_and_blocks_mentions_commands_and_observation(tmp_path, monkeypatch):
+    from hermes_cli.web_settings import save_group
+    from hermes_cli.config import save_config
+    save_config({'telegram': {'require_mention': True, 'observe_unmentioned_group_messages': True}})
+    save_group('-100', 'all', 'Group instructions', [{'id': '5', 'mode': 'silent'}])
+    config = load_gateway_config()
+    adapter = _make_adapter(require_mention=True, observe_unmentioned_group_messages=True)
+    adapter.config = config.platforms[Platform.TELEGRAM]
+    assert adapter.config.extra['channel_prompts']['-100'] == 'Group instructions'
+    text = '/status@hermes_bot'
+    muted = _group_message(text, chat_id=-100, thread_id=5, entities=[_mention_entity(text)])
+    assert not adapter._should_process_message(muted, is_command=True)
+    assert not adapter._should_observe_unmentioned_group_message(muted)
+    assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=6))
+    mentioned = '@hermes_bot hello'
+    other = _group_message(mentioned, chat_id=-200, thread_id=5, entities=[_mention_entity(mentioned)])
+    assert adapter._should_process_message(other)
+    assert adapter._should_process_message(_dm_message())

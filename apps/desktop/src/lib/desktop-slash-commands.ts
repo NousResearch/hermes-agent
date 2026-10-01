@@ -581,6 +581,10 @@ export function isDesktopSlashSuggestion(command: string): boolean {
  */
 export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
+  if (['/skills', '/reload-skills', '/learn', '/bundles', '/curator', '/kanban', '/cron', '/blueprint', '/suggestions', '/personality'].includes(normalized)) {
+    return false
+  }
+
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
   if (isAliasCommand(normalized)) {

@@ -11,6 +11,8 @@ These tests exercise the full run_job path (real imports, mocked AIAgent +
 resolve_runtime_provider against a temp HERMES_HOME) and the job-store pin helpers.
 """
 
+import pytest
+
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -132,7 +134,7 @@ class TestPinnedLocksTheMainModel:
         monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}
         monkeypatch.setattr(jobs, "load_jobs", lambda: list(state["jobs"]), raising=True)
-        monkeypatch.setattr(jobs, "save_jobs", lambda j: state.__setitem__("jobs", list(j)), raising=True)
+        monkeypatch.setattr(jobs, "save_jobs", lambda j, **kwargs: state.__setitem__("jobs", list(j)), raising=True)
         monkeypatch.setattr(jobs, "resolve_job_ref", lambda ref: next(
             (j for j in state["jobs"] if j["id"] == ref), None), raising=True)
         resolver = MagicMock(return_value={"provider": main_provider})

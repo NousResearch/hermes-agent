@@ -41,6 +41,7 @@ describe('bundled Radio plugin', () => {
 
     discoverBundledPlugins()
     expect($pluginRecords.get().radio).toMatchObject({ kind: 'bundled', status: 'disabled' })
+    expect($pluginRecords.get().kanban).toBeUndefined()
     expect(registry.getArea('statusBar.right').some(item => item.source === 'plugin:radio')).toBe(false)
     expect(document.head.querySelectorAll('style').length).toBe(initialStyles)
 

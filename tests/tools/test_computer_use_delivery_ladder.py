@@ -364,3 +364,8 @@ def test_call_tool_restarts_a_dead_session(monkeypatch):
 
     sess.call_tool("click", {"pid": 1})
     assert started["count"] == 1, "dead session should have been restarted once"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

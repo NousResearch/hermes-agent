@@ -95,6 +95,8 @@ def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: Dic
         return tool_error(decision.message, success=False)
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
+    if payload.get("target") == "user" and store._user_path is not None:
+        payload["person"] = store._user_path.stem
     record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
@@ -163,47 +165,6 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
 
 
-def _background_delete_gate(store, action, operations, target="memory", content=None,
-                            old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
-    from tools.skill_provenance import is_unattended_review
-
-    if not is_unattended_review():
-        return None
-    payload = ({"action": "batch", "target": target, "operations": operations}
-               if operations is not None else
-               {"action": action, "target": target, "content": content, "old_text": old_text})
-    if not destructive_ops(payload):
-        return None
-    detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
-              else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
-    try:
-        if (unmatched := _pin_matched_entries(store, payload)) is not None:
-            return unmatched
-        from tools import write_approval as wa
-        record = wa.stage_write(
-            wa.MEMORY, payload,
-            summary=(f"background review consolidation ({'batch' if operations is not None else action} "
-                     f"on {target}): {detail}")[:200],
-            origin=wa.current_origin())
-        return json.dumps({
-            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
-        }, ensure_ascii=False)
-    except Exception:
-        logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
-        return tool_error(
-            "Background review may not delete memory entries ('replace'/'remove', including in a "
-            "batch); 'add' is still available.", success=False)
-
-
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
                 store: Optional[MemoryStore] = None) -> str:
@@ -223,9 +184,6 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        denied = _background_delete_gate(store, action, operations, target)
-        if denied is not None:
-            return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
         gate_result = _apply_write_gate(store, "batch", target, None, None, operations)
         if gate_result is not None:
@@ -234,7 +192,6 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if action not in _STORE_ACTIONS:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
-               or _background_delete_gate(store, action, None, target, content, old_text)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
         return invalid
@@ -288,6 +245,9 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     staged before pinning has no verifiable target, so it is refused rather than replayed by
     old_text (which could hit a newer entry the approver never saw)."""
     action, target = payload.get("action"), payload.get("target", "memory")
+    if target == "user" and payload.get("person"):
+        from agent.people import store_for_person
+        store = store_for_person(payload["person"])
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
@@ -305,28 +265,18 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to persistent memory that survive across sessions. Memory is "
-        "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
-        "checked only on the FINAL result — so a single call can remove/replace stale entries "
-        "to free room AND add new ones, even when an add alone would overflow. The response "
-        "reports current/limit chars and confirms completion; one batch call finishes the "
-        "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
-        "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
-        "is, stable environment facts, standing conventions with no task home. Anything "
-        "learned while doing a task (procedures, pitfalls, and the user's preferences and "
-        "corrections for that kind of work) belongs in the task's skill via skill_manage, "
-        "where it loads only when relevant; memory is injected into every turn and must "
-        "stay small.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        'Save durable facts to persistent memory that survive across sessions.\n\n'
+        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: {action, content?, "
+        'old_text?}). The batch applies atomically and the char limit is checked only on the FINAL result — '
+        'so a single call can remove/replace stale entries to free room AND add new ones, even when an add '
+        'alone would overflow. The response reports current/limit chars and confirms completion; one batch '
+        "call finishes the update, so don't repeat it. Use the bare action/content/old_text fields only for a "
+        'single lone change.\n\n'
+        'IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that removes or '
+        'shortens enough stale entries and adds the new one together.\n\n'
+        "TARGETS: 'user' (default) = the named person's individual profile (identity, role, preferences, "
+        "working style). 'memory' = shared workspace knowledge that applies regardless of who is speaking "
+        '(organization facts and environment details).'
     ),
     "parameters": {
         "type": "object",
@@ -336,11 +286,15 @@ MEMORY_SCHEMA = {
                 "enum": ["add", "replace", "remove"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
-            "target": {
-                "type": "string",
-                "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
-            },
+            "target": {'default': 'user',
+ 'description': "Memory scope: 'user' (default) for an individual's profile; 'memory' for "
+                'shared workspace knowledge.',
+ 'enum': ['memory', 'user'],
+ 'type': 'string'},
+            "user": {'description': 'Whose profile to write. Pass the complete sender label exactly as shown '
+                "between brackets. Required for target='user' in shared conversations; "
+                "ignored for target='memory'.",
+ 'type': 'string'},
             "content": {
                 "type": "string",
                 "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning)."
@@ -372,16 +326,15 @@ MEMORY_SCHEMA = {
                 },
             },
         },
-        "required": ["target"],
+        "required": [],
     },
 }
 
 
 # Schema text when only one built-in store is enabled: (target description, TARGETS replacement).
 _SINGLE_TARGET_TEXT = {
-    ("memory",): ("The enabled built-in store: 'memory' for personal notes.",
-                  "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
-                  "tool quirks, lessons)."),
+    ("memory",): ("The enabled built-in store: 'memory' for shared organization knowledge.",
+                  "TARGET: only 'memory' is enabled for shared organization facts and environment details."),
     ("user",): ("The enabled built-in store: 'user' for user profile.",
                 "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).")}
 
@@ -394,11 +347,12 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
     parameters = copy.deepcopy(MEMORY_SCHEMA["parameters"])
     target_schema, description = parameters["properties"]["target"], MEMORY_SCHEMA["description"]
     target_schema["enum"] = targets
+    if len(targets) == 1:
+        target_schema["default"] = targets[0]
     if narrowed := _SINGLE_TARGET_TEXT.get(tuple(targets)):
         target_schema["description"], replacement = narrowed
         description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).", replacement)
+            "TARGETS: 'user' (default) = the named person's individual profile (identity, role, preferences, working style). 'memory' = shared workspace knowledge that applies regardless of who is speaking (organization facts and environment details).", replacement)
     return {"description": description, "parameters": parameters}
 
 

@@ -6,11 +6,15 @@ import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
+import { employeePolicy } from '@/lib/employee-policy'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
 import { parseCatalog } from './catalog/catalog-data'
 import { $catalogCardView } from './catalog/store'
+
+// Keep upstream tab tests executable; the employee case below disables this gate.
+vi.mock('@/lib/employee-policy', () => ({ employeePolicy: { skills: true, soulEditor: false } }))
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -100,6 +104,7 @@ async function renderSkills() {
 }
 
 beforeEach(() => {
+  employeePolicy.skills = true
   $catalogCardView.set(true)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
@@ -502,4 +507,13 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
   })
+})
+
+it('loads Tools without requesting retired skills', async () => {
+  employeePolicy.skills = false
+  getSkills.mockRejectedValue(new Error('Skills endpoint removed'))
+  await renderSkills()
+  expect(await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })).toBeTruthy()
+  expect(getSkills).not.toHaveBeenCalled()
+  expect(screen.queryByRole('tab', { name: /Skills/ })).toBeNull()
 })

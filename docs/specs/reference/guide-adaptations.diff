@@ -1,0 +1,109 @@
+--- reference/file-keeping/guide.md
++++ guides/file-keeping/guide.md
+@@ -3,4 +3,8 @@
+-`{workdir}` is the organization's drive. `{workdir}/documents` is where lasting documents live.
+-`{workdir}/repos` holds git checkouts, one directory per repo.
+-`{workdir}/cache` is the read-only arrival area — entries expire after about
+-a day.
++`$HERMES_HOME/documents/` is the organization's drive for lasting documents, data and deliverables.
++`$HERMES_HOME/repos/` holds git checkouts, one directory per repo.
++Both belong to the active Hermes profile, independent of the current working directory.
++Use the native terminal environment's scratch directory for disposable work and send-only artifacts; follow its runtime path guidance.
++Incoming attachments use the paths in their message notices. Their retention follows the native channel; copy lasting material into documents.
++
++Before saying a file is unavailable, search `$HERMES_HOME/documents/`.
++Responsibility packages link to material here; they hold instructions and handoff state, not bulk data.
+@@ -19,2 +23 @@
+-- Copy out of the cache during the conversation it arrived in; the cache copy
+-  is gone within a day.
++- Copy lasting material during the conversation it arrived in; do not rely on attachment-cache retention.
+@@ -26 +29 @@
+-  `documents/` root until related files accumulate.
++  `$HERMES_HOME/documents/` root until related files accumulate.
+@@ -28,3 +31,3 @@
+-  paths. Your own artifacts might: before moving a file, grep the workspace
+-  for its path (schedules, responsibilities, scripts, stubs) and update any
+-  reference you find.
++  paths. Your own artifacts might: before moving a file, search documents, repos,
++  responsibilities and connections under `$HERMES_HOME` for its path
++  (including schedules, scripts and stubs), and update any reference you find.
+@@ -49 +52 @@
+-- Before creating a stub, grep `documents/` for the doc's URL or ID — update
++- Before creating a stub, grep `$HERMES_HOME/documents/` for the doc's URL or ID — update
+--- reference/responsibility-authoring/guide.md
++++ guides/responsibility-authoring/guide.md
+@@ -94 +94 @@
+-{profile_home}/responsibilities/<name>/
++$HERMES_HOME/responsibilities/<name>/
+@@ -254 +254 @@
+-Every unattended run bills the workspace like a full conversation, so a
++Every unattended run consumes model usage like a full conversation, so a
+@@ -264,2 +264,2 @@
+-Before creating or editing a declaration, read `{guides_root}/responsibility-authoring/references/schedules.md` or
+-`{guides_root}/responsibility-authoring/references/webhooks.md` — the format, cadence floors, guard contract, and
++Before creating or editing a declaration, read `references/schedules.md` or
++`../responsibility-authoring/references/webhooks.md` — the format, cadence floors, guard contract, and
+@@ -402 +402 @@
+-`{profile_home}/responsibilities/.archive/` is where packages retire. Move
++`$HERMES_HOME/responsibilities/.archive/` is where packages retire. Move
+--- reference/responsibility-authoring/references/schedules.md
++++ guides/responsibility-authoring/references/schedules.md
+@@ -62 +62 @@
+-report: "slack:channel_0123/C0123ABC"   # required — the run's reporting line
++report: "slack:C0123ABC"   # required — the run's reporting line
+@@ -145 +145 @@
+-cd {workdir}/repos/crunch || { echo "repo missing"; exit 1; }
++cd /path/to/crunch || { echo "repo missing"; exit 1; }
+--- reference/responsibility-authoring/references/webhooks.md
++++ guides/responsibility-authoring/references/webhooks.md
+@@ -10 +10 @@
+-world spend them for you — deliveries become billed runs at the
++world spend them for you — deliveries become model runs at the
+@@ -58 +58 @@
+-report: "slack:channel_0123/C0123ABC"         # required — same grammar as Schedules
++report: "slack:C0123ABC"         # required — same grammar as Schedules
+@@ -93,5 +93,5 @@
+-  secret: credential://<service>/<owner>/field     # keys the hmac; a connection-store reference
+-```
+-
+-The `secret` is never a literal value. It is a `credential://` reference
+-into the connection store, resolved by the platform each time the
++  secret: env:PROVIDER_WEBHOOK_SECRET     # keys the hmac; a native profile secret reference
++```
++
++The `secret` is never a literal value. It is a `env:VARIABLE_NAME` reference
++into native profile secrets, resolved by the platform each time the
+@@ -99,3 +99,3 @@
+-token as `{guides_root}/connections/guide.md` directs — request it when a person
+-holds it, store it when you obtained it yourself — and write the
+-returned reference into the file. The value never passes through chat
++token through native secret administration or the configured secret manager;
++the user enters reusable secrets there, never in chat. Write only the
++`env:VARIABLE_NAME` reference into the file. The value never passes through chat
+@@ -104,3 +104,3 @@
+-referenced connection is later removed, deliveries continue — only the
+-provider's next verification fails; repair by requesting the credential
+-again and updating the reference in place.
++referenced secret is later removed, deliveries continue — only the
++provider's next verification fails; repair through native secret administration
++and update the reference in place if its name changes.
+@@ -116 +116 @@
+-  secret: credential://<service>/<owner>/consumer_secret
++  secret: env:PROVIDER_WEBHOOK_SECRET
+@@ -157 +157 @@
+-  secret: credential://<service>/<owner>/webhook_secret
++  secret: env:PROVIDER_WEBHOOK_SECRET
+@@ -163 +163 @@
+-  secret: credential://<service>/<owner>/whsec
++  secret: env:PROVIDER_WEBHOOK_SECRET
+@@ -170 +170 @@
+-  secret: credential://<service>/<owner>/signing_secret
++  secret: env:PROVIDER_WEBHOOK_SECRET
+@@ -176,2 +176,2 @@
+-The `secret` follows the handshake rule exactly: a `credential://`
+-connection-store reference, never a literal. `encoding: base64` covers
++The `secret` follows the handshake rule exactly: a `env:VARIABLE_NAME`
++native profile secret reference, never a literal. `encoding: base64` covers
+@@ -231 +231 @@
+-- [ ] A handshake `secret` is a `credential://` connection-store
++- [ ] A handshake `secret` is a `env:VARIABLE_NAME` native profile secret

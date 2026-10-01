@@ -138,13 +138,19 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
+    from agent.people import select_store
+    try:
+        store, target = select_store(agent, args)
+    except (OSError, ValueError) as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+    args = {**args, "target": target}
     result = _call_tool(
         "tools.memory_tool", "memory_tool", args,
         (
             ("action", "action"), ("target", "target", "memory"), ("content", "content"),
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
-        store=agent._memory_store,
+        store=store,
     )
     # Mirror built-in memory writes to external providers; gating lives in
     # MemoryManager.notify_memory_tool_write.

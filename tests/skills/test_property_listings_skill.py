@@ -31,3 +31,11 @@ def test_optional_catalog_fetch_preserves_a_usable_property_recipe(tmp_path, mon
     listing = json.loads(example)
     assert listing["address"] and listing["links"]
     assert {"price", "beds", "baths", "size", "note", "facts", "catches", "images"} <= listing.keys()
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

@@ -1305,9 +1305,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             denied = get_write_denied_error(p, verb="Move", entry=True)
             if denied:
                 return WriteResult(error=denied)
+        content = None
+        if self.env.is_local:
+            from responsibilities.files import validate_move
+            try:
+                content, error = validate_move(src, dst)
+            except (OSError, ValueError) as exc:
+                error = str(exc)
+            if error:
+                return WriteResult(error=error)
         result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
+        if content is not None:
+            from responsibilities.files import finish_write
+            return WriteResult(warning=finish_write(dst, content))
         return WriteResult()
 
     # --- WRITE --------------------------------------------------------------
@@ -1472,6 +1484,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return WriteResult(error=denied)
+        from responsibilities.files import validate_write
+        if self.env.is_local:
+            try:
+                error = validate_write(path, content)
+            except (OSError, ValueError) as exc:
+                error = str(exc)
+            if error:
+                return WriteResult(error=error)
         refused = self._reject_unencodable(path, content)
         if refused is not None:
             return refused
@@ -1512,7 +1532,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         lsp_diagnostics: Optional[str] = None
         if lint_result.success or lint_result.skipped:
             lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
+        from responsibilities.files import finish_write
+        warning = finish_write(path, content) if self.env.is_local else None
         return WriteResult(
+            warning=warning,
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
             lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
@@ -1600,7 +1623,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
             # From the internal write_file call, whose baseline was the pre-patch content.
-            lsp_diagnostics=write_result.lsp_diagnostics)
+            lsp_diagnostics=write_result.lsp_diagnostics, warning=write_result.warning)
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /

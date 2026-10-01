@@ -128,3 +128,8 @@ def test_b_still_dispatches_after_the_polluter(monkeypatch):
     backend = _install_backend(cu_tool)
     result = cu_tool.handle_computer_use({"action": "click", "element": 3})
     assert [name for name, _ in backend.calls] == ["click"], f"leaked approval callback poisoned this test: {result!r}"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

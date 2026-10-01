@@ -753,6 +753,7 @@ def finalize_turn(
     if (
         final_response
         and not interrupted
+        and completed
         and not getattr(agent, "skip_background_review", False)
         and (_should_review_memory or _should_review_skills)
     ):

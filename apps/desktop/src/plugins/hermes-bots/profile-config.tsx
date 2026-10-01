@@ -1,3 +1,4 @@
+import * as sdk from '@hermes/plugin-sdk'
 /**
  * The advanced profile editor: skills, toolsets, MCP servers, model and SOUL,
  * backed by `profiles.describe` / `profiles.configure`.
@@ -7,8 +8,6 @@
  * before a profile exists — reads them from here rather than duplicating the
  * detection.
  */
-
-import * as sdk from '@hermes/plugin-sdk'
 import {
   Checkbox,
   GlyphSpinner,
@@ -22,6 +21,7 @@ import { useState } from 'react'
 
 import { $lastRoster, ROSTER_KEY } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
+import { employeePolicy } from './employee-policy'
 import { botsText, useBots } from './i18n'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
@@ -282,20 +282,21 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
             />
           </ResizableFrame>
         )}
-        {labeled(
-          b.editor.editSoul,
-          <Textarea
-            className="min-h-28 font-mono text-xs leading-5"
-            onChange={event =>
-              setState(prev => ({
-                ...prev,
-                dirtySoul: true,
-                soul: event.target.value
-              }))
-            }
-            value={state.soul}
-          />
-        )}
+        {employeePolicy.soulEditor &&
+          labeled(
+            b.editor.editSoul,
+            <Textarea
+              className="min-h-28 font-mono text-xs leading-5"
+              onChange={event =>
+                setState(prev => ({
+                  ...prev,
+                  dirtySoul: true,
+                  soul: event.target.value
+                }))
+              }
+              value={state.soul}
+            />
+          )}
       </div>
     )
   }
@@ -320,20 +321,21 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         <div className="rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-text-tertiary)">
           {b.editor.remoteCapabilitiesHint}
         </div>
-        {labeled(
-          b.editor.editSoul,
-          <Textarea
-            className="min-h-28 font-mono text-xs leading-5"
-            onChange={event =>
-              setState(prev => ({
-                ...prev,
-                dirtySoul: true,
-                soul: event.target.value
-              }))
-            }
-            value={state.soul}
-          />
-        )}
+        {employeePolicy.soulEditor &&
+          labeled(
+            b.editor.editSoul,
+            <Textarea
+              className="min-h-28 font-mono text-xs leading-5"
+              onChange={event =>
+                setState(prev => ({
+                  ...prev,
+                  dirtySoul: true,
+                  soul: event.target.value
+                }))
+              }
+              value={state.soul}
+            />
+          )}
       </div>
     )
   }
@@ -354,44 +356,45 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           model: state.model
         }}
       />
-      {labeled(
-        b.editor.skillsEnabled(enabledSkills, state.skills.length),
-        <div className="grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2">
-          <Input
-            className="h-7 text-xs"
-            onChange={event => setSkillFilter(event.target.value)}
-            placeholder={b.tools.filterSkills}
-            value={skillFilter}
-          />
-          <div
-            className="overflow-y-auto overscroll-contain"
-            style={{
-              maxHeight: 180
-            }}
-          >
-            <CheckList columns={2} items={visibleSkills} onToggle={toggleSkill} />
+      {employeePolicy.skills &&
+        labeled(
+          b.editor.skillsEnabled(enabledSkills, state.skills.length),
+          <div className="grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2">
+            <Input
+              className="h-7 text-xs"
+              onChange={event => setSkillFilter(event.target.value)}
+              placeholder={b.tools.filterSkills}
+              value={skillFilter}
+            />
+            <div
+              className="overflow-y-auto overscroll-contain"
+              style={{
+                maxHeight: 180
+              }}
+            >
+              <CheckList columns={2} items={visibleSkills} onToggle={toggleSkill} />
+            </div>
+            <HubSkillsSection
+              bot={bot}
+              onInstalled={name =>
+                setState(prev =>
+                  prev.skills.some(s => s.name === name)
+                    ? prev
+                    : {
+                        ...prev,
+                        skills: [
+                          ...prev.skills,
+                          {
+                            name,
+                            enabled: true
+                          }
+                        ]
+                      }
+                )
+              }
+            />
           </div>
-          <HubSkillsSection
-            bot={bot}
-            onInstalled={name =>
-              setState(prev =>
-                prev.skills.some(s => s.name === name)
-                  ? prev
-                  : {
-                      ...prev,
-                      skills: [
-                        ...prev.skills,
-                        {
-                          name,
-                          enabled: true
-                        }
-                      ]
-                    }
-              )
-            }
-          />
-        </div>
-      )}
+        )}
       {labeled(
         b.editor.toolsetsEnabled(enabledToolsets, state.toolsets.length),
         <div className="rounded-md border border-(--ui-stroke-secondary) p-2">
@@ -485,20 +488,21 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           )}
         </div>
       )}
-      {labeled(
-        b.editor.editSoul,
-        <Textarea
-          className="min-h-28 font-mono text-xs leading-5"
-          onChange={event =>
-            setState(prev => ({
-              ...prev,
-              dirtySoul: true,
-              soul: event.target.value
-            }))
-          }
-          value={state.soul}
-        />
-      )}
+      {employeePolicy.soulEditor &&
+        labeled(
+          b.editor.editSoul,
+          <Textarea
+            className="min-h-28 font-mono text-xs leading-5"
+            onChange={event =>
+              setState(prev => ({
+                ...prev,
+                dirtySoul: true,
+                soul: event.target.value
+              }))
+            }
+            value={state.soul}
+          />
+        )}
     </div>
   )
 }

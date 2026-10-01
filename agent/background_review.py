@@ -613,7 +613,7 @@ def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
 # Tool-call argument fields surfaced in action summaries, with their defaults.
 _CALL_DETAIL_DEFAULTS = (
     ("action", "?"), ("target", "memory"), ("content", ""), ("old_text", ""), ("name", ""),
-    ("old_string", ""), ("new_string", ""),
+    ("old_string", ""), ("new_string", ""), ("path", ""),
 )
 
 
@@ -621,7 +621,7 @@ def _collect_review_call_details(review_messages: List[Dict]) -> Tuple[set, dict
     """Map review-agent tool_call ids -> parsed call arguments for notify tools. Result JSON only
     says "Entry added"; the call arguments carry action, target and content previews. Restricting
     to notify tools keeps helper tools from surfacing as memory work just because they succeeded."""
-    notify_tools = {"memory", "skill_manage"}
+    notify_tools = {"memory", "skill_manage", "write_file", "patch"}
     all_tool_call_ids: set = set()
     call_details: dict = {}
     for msg in review_messages or []:
@@ -666,6 +666,13 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         # The fork's own review summary is never published back, so an unattended-review
         # consolidation proposal must surface here or it is silently lost (#105921).
         return [data["message"]] if data.get("proposal_staged") and data.get("message") else []
+    if detail.get("tool") in {"write_file", "patch"}:
+        if data.get("error") or data.get("no_change"):
+            return []
+        paths = list(dict.fromkeys(data.get("files_modified", []) + data.get("files_created", []) + data.get("files_deleted", [])))
+        if not paths and (path := data.get("resolved_path") or detail.get("path")):
+            paths = [path]
+        return ["Knowledge updated" + (": " + ", ".join(paths) if verbose and paths else "")]
     message = data.get("message", "")
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
@@ -703,7 +710,7 @@ def summarize_background_review_actions(
     review_messages: List[Dict], prior_snapshot: List[Dict], notification_mode: str = "on"
 ) -> List[str]:
     """Human-facing action summary for a background review pass: successful memory /
-    skill-management tool results from the review agent's messages, skipping tool messages already
+    skill-management / knowledge-file results from the review agent's messages, skipping tool messages already
     present in ``prior_snapshot`` so inherited results are not re-surfaced as fresh work.
     ``notification_mode``: ``off`` -> no actions; ``on`` -> generic "Memory updated"/tool messages;
     ``verbose`` -> content previews from the tool-call arguments.
@@ -730,9 +737,15 @@ def summarize_background_review_actions(
             continue
         # Wrapper MCP servers may return a top-level list/scalar; only dict payloads carry
         # ``success``/``_change``.
-        if not isinstance(data, dict) or not data.get("success"):
+        if not isinstance(data, dict):
             continue
-        actions.extend(_action_lines(data, call_details.get(tcid) or {}, verbose))
+        detail = call_details.get(tcid) or {}
+        # Native write_file reports bytes_written rather than a success flag.
+        file_written = (detail.get("tool") == "write_file" and not data.get("error")
+                        and type(data.get("bytes_written")) is int and data["bytes_written"] >= 0)
+        if not data.get("success") and not file_written:
+            continue
+        actions.extend(_action_lines(data, detail, verbose))
     return actions
 
 
@@ -790,14 +803,15 @@ def _record_review_usage_to_parent(parent_agent: Any, usage: Dict[str, Any]) -> 
 
 
 def _classify_review_result(actions: List[str]) -> str:
-    """Map a review action summary to ``none`` / ``skill`` / ``memory`` / ``skill+memory``.
+    """Map action summaries to the kinds of knowledge changed (or ``none``).
     Prefix-based on the formats :func:`summarize_background_review_actions` emits (``Skill …``,
     ``📝 Skill …``, ``Memory …``, ``User profile …``), so a free-text line like ``Skipped: no
     skill worth saving`` stays ``none``."""
     lowers = [str(action).lstrip().removeprefix("📝").lstrip().lower() for action in actions or []]
     has_skill = any(t.startswith("skill") for t in lowers)
     has_memory = any(t.startswith(("memory", "user profile")) for t in lowers)
-    return "+".join(kind for kind, hit in (("skill", has_skill), ("memory", has_memory)) if hit) or "none"
+    has_knowledge = any(t.startswith("knowledge updated") for t in lowers)
+    return "+".join(kind for kind, hit in (("skill", has_skill), ("memory", has_memory), ("knowledge", has_knowledge)) if hit) or "none"
 
 
 def _log_review_completion(usage: Dict[str, Any], result: str) -> None:
@@ -1085,42 +1099,12 @@ def _review_tool_whitelist(
 ) -> Tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
-    from model_tools import get_tool_definitions
-    # Gate the built-in memory tool on BOTH the profile's memory flags and the trigger that fired
-    # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
-    # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
-    memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
-    review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
-    whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
-    # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
-    # starved the loop (read_file also registers the read with the read-before-write guard).
-    # Write tools stay denied — autonomous maintenance goes through skill_manage's validation.
-    whitelist |= {"read_file", "search_files"}
-    # ``extra_tools`` admits named parent tools (e.g. a human-gated proposal tool). The whitelist
-    # can only admit, never advertise: a listed tool must already exist in the inherited schema.
-    # Read-only file tools are whitelisted too (#61521, #39996): the model naturally reaches for
-    # read_file/search_files to inspect a skill before patching it. Denying them caused a per-review denial
-    # storm (~142 denials + ~204 read-before-write refusals over 2 days on one deployment) that starved the
-    # self-improvement loop — the model never loaded SKILL.md the way the read-before-write guard requires,
-    # so almost no patch landed. This is a DISPATCH-side change only: the advertised ``tools[]`` stays
-    # byte-identical to the parent's, so prompt-cache parity is untouched. read_file registers the read with
-    # the read-before-write guard (tools/file_tools.py), so a read_file → skill_manage(patch) sequence now
-    # succeeds. Write tools (write_file/patch/terminal) stay denied — autonomous maintenance must go through
-    # skill_manage's validation, and the deny message below names that substitute so one denial redirects
-    # the model instead of a storm.
-    # Profile-configured opt-in tools (#44672, salvage #82146 by @BrinShadewater):
-    # ``auxiliary.background_review.extra_tools`` admits named parent tools to the review whitelist — e.g. a
-    # human-gated proposal tool or a memory-provider write surface. Read from task_cfg (the
-    # auxiliary.background_review block already loaded for this spawn) so no extra config I/O happens per
-    # review.
-    configured_extra_tools: set = set()
-    try:
-        extra_raw = _background_review_task_config(task_cfg).get("extra_tools", [])
-        if isinstance(extra_raw, list):
-            configured_extra_tools = {name.strip() for name in extra_raw if isinstance(name, str) and name.strip()}
-    except Exception:
-        logger.debug("background_review extra_tools parse failed", exc_info=True)
-    return whitelist | configured_extra_tools, configured_extra_tools
+    whitelist = {"read_file", "search_files", "write_file", "patch"}
+    if review_agent._memory_enabled or review_agent._user_profile_enabled:
+        whitelist.add("memory")
+    whitelist.intersection_update(review_agent.valid_tool_names)
+    return whitelist, set()
+
 
 
 @dataclass
@@ -1142,7 +1126,7 @@ def _release_fork_clients(review_agent: Any) -> None:
 def _run_review_fork(
     agent: Any, messages_snapshot: List[Dict], prompt: str, task_cfg: Optional[Dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
-    explicit: bool = False,
+    explicit: bool = False, person_snapshot=None,
 ) -> None:
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
@@ -1152,6 +1136,10 @@ def _run_review_fork(
     st.review_agent, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
+    st.review_agent._is_knowledge_review = True
+    st.review_agent._person_participants = person_snapshot or {}
+    st.review_agent._current_person = None
+    st.review_agent._personal_context = ""
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
@@ -1160,14 +1148,14 @@ def _run_review_fork(
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
     # tell the model that memory is available, or it will burn iterations on denied calls.
-    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
-    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
+    memory_phrase_deny = " and memory for authored facts" if "memory" in review_whitelist else ""
+    memory_phrase_prompt = "memory and file " if "memory" in review_whitelist else "file "
     set_thread_tool_whitelist(
         review_whitelist,
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
-            "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills"
+            "{tool_name}. Allowed here: read_file/search_files to read, "
+            "write_file/patch to improve service manuals and responsibility records"
             + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )
@@ -1214,7 +1202,7 @@ def _publish_review_summary(agent: Any, actions: List[str]) -> None:
 def _run_review_in_thread(
     agent: Any, messages_snapshot: List[Dict], prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
-    review_memory: bool = False, explicit: bool = False,
+    review_memory: bool = False, explicit: bool = False, person_snapshot=None,
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
@@ -1249,7 +1237,7 @@ def _run_review_in_thread(
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
+            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit, person_snapshot)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1317,18 +1305,21 @@ def spawn_background_review_thread(
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
-    name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
-    prompt = getattr(agent, name, globals()[name])
+    from agent.employee_review import PROMPT
+    from agent.knowledge import render
+    prompt = render(PROMPT)
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
             f"focus — prioritize it over the general instructions above:\n{focus}"
         )
 
+    person_snapshot = copy.deepcopy(getattr(agent, "_person_participants", {}))
+
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         _run_review_in_thread(
             agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory, explicit=explicit)
+            review_memory=review_memory, explicit=explicit, person_snapshot=person_snapshot)
 
     return _target, prompt
 

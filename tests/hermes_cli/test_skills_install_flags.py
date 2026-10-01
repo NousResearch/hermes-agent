@@ -7,6 +7,8 @@ Tests for --yes / --force flag separation in `hermes skills install`.
 Based on PR #1595 by 333Alden333 (salvaged).
 """
 
+import pytest
+
 import sys
 
 
@@ -56,3 +58,8 @@ def test_cli_skills_install_no_flags(monkeypatch):
 
     assert captured["force"] is False
     assert captured["yes"] is False
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

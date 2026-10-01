@@ -312,3 +312,8 @@ def test_persistent_focus_has_a_separate_approval_scope(monkeypatch):
     assert seen == ["click", "bring_to_front"]
     assert result["error"].startswith("BLOCKED: User denied")
     assert result["action"] == "bring_to_front"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

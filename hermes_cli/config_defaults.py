@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        "reasoning_effort": "medium",
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
@@ -562,7 +563,7 @@ DEFAULT_CONFIG = {
         # threshold: compress when context usage exceeds this ratio. Models with windows below 512K
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.
-        "threshold": 0.50,
+        "threshold": 0.85,
         # threshold_tokens: absolute token cap — compression triggers at the lower of the ratio
         # threshold and this count. Clamped to the model's context length. 256K bounds 1M-window
         # models (their 50% trigger sat at 500K, so compaction never fired) while every lower
@@ -580,7 +581,7 @@ DEFAULT_CONFIG = {
         "protect_last_n": 20,
         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
-        "min_tail_user_messages": 1,
+        "min_tail_user_messages": 3,
         # max_attempts: retry rounds before a turn gives up with "max compression attempts reached".
         # Raise (e.g. 6) for tool-schema-heavy sessions. Validated >= 1, cap 10.
         "max_attempts": 3,
@@ -931,11 +932,11 @@ DEFAULT_CONFIG = {
         # 0 = disabled.
         "ephemeral_system_ttl": 0,
         # Per-platform display/streaming overrides; unset keys fall through to the global. Telegram
-        # has smooth native draft streaming (on); Discord/Slack only edit-based streaming, which
+        # keeps completed replies by default; Discord/Slack only edit-based streaming, which
         # flickers (off). Gap-fillers only: explicit user values win, and the global
         # streaming.enabled master switch still gates everything.
         "platforms": {
-            "telegram": {"streaming": True},
+            "telegram": {"streaming": False},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
             # WeCom native streaming (msgtype "stream" via aibot_respond_msg).
@@ -1134,9 +1135,10 @@ DEFAULT_CONFIG = {
     "stt": {
         "enabled": True,
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
-        "echo_transcripts": True,
-        # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
-        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
+        "echo_transcripts": False,
+        "provider": "local",
+        # Local Whisper is the default; cloud transcription requires an explicit selection.
+        # Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
         # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
@@ -1601,6 +1603,7 @@ DEFAULT_CONFIG = {
     },
 
     "telegram": {
+        "silent_topics": [],  # chat_id:topic_id pairs excluded from dispatch and observation
         "reactions": False,  # add 👀/✅/❌ reactions to messages during processing
         # per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "channel_prompts": {},
@@ -1653,7 +1656,7 @@ DEFAULT_CONFIG = {
         # Shared by the CLI prompt and gateway/messaging waits. Messaging approvals arrive as a push
         # notification the user may not see immediately — 60s proved too tight on Telegram/Discord (the
         # prompt expired before the user reached their phone), so the default is 300.
-        "mode": "smart",
+        "mode": "off",
         "timeout": 300,
         "cron_mode": "deny",
         "single_query_mode": "deny",

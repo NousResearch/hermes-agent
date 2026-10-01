@@ -660,11 +660,11 @@ compression:
   # regardless of this setting. (#52995)
   progress_notices: false
   
-  # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
+  # Trigger compression at this % of model's context limit (default: 0.85 = 85%)
   # Lower values = more aggressive compression, higher values = compress later
   # Models with context windows below 512K are floored at 0.75 (raise-only) so
   # compaction doesn't fire with half the window still free; set above 0.75 to override.
-  threshold: 0.50
+  threshold: 0.85
 
   # Per-model threshold overrides: keys are substring-matched against the model
   # name (longest match wins). Useful when some models need different compaction
@@ -699,13 +699,12 @@ compression:
   protect_last_n: 20
 
   # Minimum number of REAL (actionable) user messages guaranteed to survive in
-  # the uncompressed tail (default: 1 = the existing single last-user anchor,
-  # behavior-preserving). Raise to e.g. 3 to keep the last 3 real user turns
+  # the uncompressed tail (default: 3). Keep the last 3 real user turns
   # verbatim even when bulky tool outputs fill the tail token budget — blank
   # platform echoes, compaction handoffs, and synthetic continuation rows never
   # count toward N. The tail can exceed the token budget when this pulls the
   # cut back; the guarantee wins over the budget by design.
-  min_tail_user_messages: 1
+  min_tail_user_messages: 3
 
   # Compression retry rounds before a turn gives up with "max compression
   # attempts reached" (default: 3, same as the previous hardcoded value).
@@ -1619,7 +1618,8 @@ platform_toolsets:
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
-  # provider: "local"          # auto-detected if omitted
+  provider: "local"
+  echo_transcripts: false
   # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
   # silence inflates upload time, per-audio-minute billing, and hallucination risk.
@@ -2287,3 +2287,8 @@ updates:
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
 #   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+
+# Native execution approval prompts are off by default for this employee.
+# Explicit operator choices still apply; unconditional command restrictions remain.
+approvals:
+  mode: "off"

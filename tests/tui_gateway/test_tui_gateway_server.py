@@ -2498,9 +2498,9 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"memory", "project"} <= set(result)
+    assert {"memory", "project", "messaging"} <= set(result)
     assert "kanban" not in result
-    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert set(result) - {"memory", "project", "messaging"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "mcp-off" in err
 
@@ -2523,9 +2523,9 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"memory", "project"} <= set(result)
+    assert {"memory", "project", "messaging"} <= set(result)
     assert "kanban" not in result
-    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert set(result) - {"memory", "project", "messaging"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert capsys.readouterr().err.strip()  # a fallback warning is printed
 
 
@@ -8458,7 +8458,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
 
 
-def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
+def test_config_get_approval_mode_uses_off_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
     import hermes_yaml as yaml
@@ -8475,7 +8475,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     response = server.handle_request(
         {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
     )
-    assert response["result"]["value"] == "smart"
+    assert response["result"]["value"] == "off"
 
 
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
@@ -22670,3 +22670,8 @@ def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch,
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
 
     assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise retained native command handlers independently of employee exclusions."""

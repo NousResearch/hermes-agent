@@ -123,3 +123,9 @@ class TestPathTraversalBlocked:
         assert result["success"] is False
         assert "sk-do-not-leak" not in result.get("content", "")
         assert "sk-do-not-leak" not in json.dumps(result)
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

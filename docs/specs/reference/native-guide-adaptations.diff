@@ -1,0 +1,855 @@
+--- skills/autonomous-ai-agents/hermes-agent/SKILL.md
++++ guides/employee/guide.md
+@@ -7 +7 @@
+-- **Self-improving through skills** — Hermes learns from experience by saving reusable procedures as skills that load into future sessions.
++- **Learning through knowledge** — responsibilities hold owned work; connection manuals hold reusable service procedures; memory stores durable facts.
+@@ -12 +12 @@
+-- **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, skills, and memory.
++- **Profiles** — run multiple independent Hermes instances with isolated configs, sessions, and memory.
+@@ -15 +15 @@
+-**This skill is a hub.** The body covers identity, quick start, spawning/orchestration, and hard invariants. Everything else lives in reference files — **load the matching reference (below) before answering**; do not answer detail questions from the body alone.
++**This guide is a hub.** The body covers identity, quick start, spawning/orchestration, and hard invariants. Everything else lives in reference files — **load the matching reference (below) before answering**; do not answer detail questions from the body alone.
+@@ -18,0 +19,18 @@
++## Fork runtime
++
++Skills are disabled. Use this guide for Hermes operation, responsibility packages
++for owned work and automation, and connection manuals for service procedures.
++Native CLI commands and configuration remain available; some administration
++controls are hidden in the dashboard, TUI and desktop. Do not infer tool
++availability from upstream documentation: the current tool schemas are authoritative.
++There is no `manage_connections`, `cronjob`, Kanban, or skill tool.
++Responsibility filesystem operations require Linux/WSL2 or macOS.
++
++For service connection work, read `../connections/guide.md` and the
++service's existing manual before operating. Document every connection, including
++its account, access method and verification, with useful scripts/references.
++For personal memory and Hindsight, read `references/memory-and-learning.md`.
++For Browser Use, read `references/browser.md`. Native filesystem, configuration,
++SOUL, session framing and messaging transport remain in use. Responsibility and
++connection paths below are provisional pending the layout decision.
++
+@@ -21 +39 @@
+-This skill is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here or in a reference, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
++This guide is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here or in a reference, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
+@@ -29 +47 @@
+-Never answer "Hermes can't do that" from memory. Hermes ships far more than this skill body describes, and the index exists so a negative answer is always checkable.
++Never answer "Hermes can't do that" from memory. Hermes ships far more than this guide body describes, and the index exists so a negative answer is always checkable.
+@@ -34,3 +51,0 @@
+-# Install (shell installer — bootstraps PM, Python, dependencies, and the launcher)
+-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+-
+@@ -59 +73,0 @@
+-$HERMES_HOME/skills/        Installed skills
+@@ -85 +99,2 @@
+-| Delegation, cron, curator, kanban | `references/background-systems.md` |
++| Delegation and background work | `references/background-systems.md` |
++| Connecting or operating any service | `../connections/guide.md` |
+@@ -87 +102,2 @@
+-| Webhook routes and event-driven runs | `references/webhooks.md` |
++| Keeping documents, cloud-document references and Git checkouts | `../file-keeping/guide.md` |
++| Responsibility packages, schedules and webhook runs | `../responsibility-authoring/guide.md` |
+@@ -96 +111,0 @@
+-| "Can app X use my Nous Portal subscription/OAuth?" | `references/portal-auth-for-third-party-apps.md` |
+@@ -182,3 +197,2 @@
+-- **For scheduled tasks**, use the `cronjob` tool instead of spawning — handles delivery and retry
+-- **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Three real cap paths in Hermes; if none fired, the model is self-limiting and rationalising it as "the runtime caps."
+-- **"Can $external_app use my Nous Portal subscription / OAuth?"** — see `references/portal-auth-for-third-party-apps.md`. Walk the user through three layers (plugin-vs-app, what Portal actually exposes, local-broker-proxy option).
++- **For scheduled work**, author declarations in responsibility packages; native cron executes them. Read `../responsibility-authoring/guide.md`.
++- **"delegate_task is capped at N" reports** — see `references/delegate-task-concurrency-diagnosis.md`. Check runtime limits and actual execution evidence before attributing a cap.
+--- skills/autonomous-ai-agents/hermes-agent/references/background-systems.md
++++ guides/employee/references/background-systems.md
+@@ -3 +3 @@
+-Four systems run alongside the main conversation loop. Quick reference
++These systems run alongside the main conversation loop. Quick reference
+@@ -13 +13 @@
+-  parallel, capped by `delegation.max_concurrent_children` (default 3).
++  parallel, capped by `delegation.max_concurrent_children` (read the effective configuration).
+@@ -16,0 +17,2 @@
++- **One-shot budget:** finite `hermes chat -q` sessions also have a total
++  `delegation.oneshot_max_children` budget across calls; when exhausted, finish inline.
+@@ -21,2 +23,2 @@
+-  the process, use `cronjob` or
+-  `terminal(background=True, notify_on_complete=True)`.
++  the process, use a responsibility schedule. Background terminal processes
++  are also process-local; they do not survive a runtime restart.
+@@ -26 +28 @@
+-### Cron (scheduled jobs)
++### Scheduled and event-driven work
+@@ -28,3 +30,6 @@
+-Durable scheduler — `cron/jobs.py` + `cron/scheduler.py`. Drive it via
+-the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
+-`pause`, `resume`, `run`, `remove`), or the `/cron` slash command.
++Author responsibility packages using `../../responsibility-authoring/guide.md`.
++Schedules are `schedules/*.yaml`; webhooks are `webhooks/*.yaml` inside the owning
++package. The scheduler and gateway retain native execution and restart behavior.
++Read the responsibility guide's schedules/webhooks references for declaration
++formats, lifecycle, guards and delivery. Inspect or run jobs with the retained
++`hermes cron` commands; do not create a second standalone job for a declaration.
+@@ -32,12 +37 @@
+-- **Schedules:** duration (`"30m"`, `"2h"`), "every" phrase
+-  (`"every monday 9am"`), 5-field cron (`"0 9 * * *"`), or ISO timestamp.
+-- **Per-job knobs:** `skills`, `model`/`provider` override, `script`
+-  (pre-run data collection; `no_agent=True` makes the script the whole
+-  job), `context_from` (chain job A's output into job B), `workdir`
+-  (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
+-  multi-platform delivery.
+-- **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
+-  prevents duplicate ticks across processes, cron sessions pass
+-  `skip_memory=True` by default, and cron deliveries are framed with a
+-  header/footer instead of being mirrored into the target gateway
+-  session (keeps role alternation intact).
++### Background review
+@@ -45,57 +39,3 @@
+-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
+-
+-### Curator (skill lifecycle)
+-
+-Background maintenance for agent-created skills. Tracks usage, marks
+-idle skills stale, archives stale ones, keeps a pre-run tar.gz backup
+-so nothing is lost.
+-
+-- **CLI:** `hermes curator <verb>` — `status`, `usage`, `run`, `pause`,
+-  `resume`, `pin`, `unpin`, `archive`, `restore`, `list-archived`, `prune`,
+-  `backup`, `rollback`.
+-- **Slash:** `/curator <subcommand>` mirrors the CLI.
+-- **Scope:** only touches skills with `created_by: "agent"` provenance.
+-  Bundled + hub-installed skills are off-limits. **Never deletes** —
+-  max destructive action is archive. Pinned skills are exempt from
+-  every auto-transition and every LLM review pass.
+-- **Cost:** the deterministic inactivity/prune sweep runs for free. The
+-  aux-model "consolidate overlapping skills into umbrellas" pass is
+-  **off by default** — opt in with `curator.consolidate: true` or
+-  `hermes curator run --consolidate`. Routine background curation costs
+-  zero tokens.
+-- **Telemetry:** sidecar at `~/.hermes/skills/.usage.json` holds
+-  per-skill `use_count`, `view_count`, `patch_count`,
+-  `last_activity_at`, `state`, `pinned`.
+-
+-Config: `curator.*` (`enabled`, `interval_hours`, `min_idle_hours`,
+-`stale_after_days`, `archive_after_days`, `backup.*`).
+-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curator
+-
+-### Kanban (multi-agent work queue)
+-
+-Durable SQLite board for multi-profile / multi-worker collaboration.
+-Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
+-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
+-orchestrator profiles can opt into the broader `kanban` toolset. Normal
+-sessions still have zero `kanban_*` schema footprint unless configured.
+-
+-- **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
+-  `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
+-  `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
+-  `log`, `dispatch`, `daemon`, `gc`.
+-- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
+-  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
+-  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+-  outside a dispatcher-spawned task also get `kanban_list` and
+-  `kanban_unblock` for board routing.
+-- **Dispatcher** runs inside the gateway by default
+-  (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
+-  promotes ready tasks, atomically claims, spawns assigned profiles.
+-  Auto-blocks a task after `failure_limit` consecutive spawn failures
+-  (default 2; configurable via `kanban.failure_limit` or per-task
+-  `max_retries`).
+-- **Isolation:** board is the hard boundary (workers get
+-  `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
+-  within a board for workspace-path + memory-key isolation.
+-
+-User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
++Native review cadence consolidates authored memory, responsibility knowledge and
++service manuals. It does not author skills, send messages, delegate work or edit
++schedule/webhook declarations. Read `references/memory-and-learning.md`.
+--- skills/autonomous-ai-agents/hermes-agent/references/cli-reference.md
++++ guides/employee/references/cli-reference.md
+@@ -97 +97 @@
+-Webhook payloads/routes: `references/webhooks.md`.
++Webhook payloads/routes: `../responsibility-authoring/references/webhooks.md`.
+--- skills/autonomous-ai-agents/hermes-agent/references/contributor-guide.md
++++ guides/employee/references/contributor-guide.md
+@@ -14 +14 @@
+-├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, skill dispatch
++├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, responsibility context
+@@ -34 +34 @@
+-its name appears in a toolset.
++its name appears in a toolset and the fixed employee policy permits it.
+--- skills/autonomous-ai-agents/hermes-agent/references/delegate-task-concurrency-diagnosis.md
++++ guides/employee/references/delegate-task-concurrency-diagnosis.md
+@@ -3,6 +3,4 @@
+-When a user reports `delegate_task` ran fewer subagents than they asked for
+-(e.g. "I set max_concurrent_children: 15 but only 9 ran"), there are exactly
+-**three** code paths in Hermes that cap a batch. If none of them fired, the
+-cap came from the **model itself** — not from Hermes — and the user's
+-narration of "the runtime caps at N" is the model rationalising its own
+-choice.
++When a user reports `delegate_task` ran fewer subagents than requested, inspect
++the actual tool result, session type and effective configuration before blaming
++model self-limiting. Missing log lines alone do not establish that the model
++chose the limit.
+@@ -10 +8 @@
+-## The three real caps in Hermes
++## Runtime limits and warnings
+@@ -12,4 +10,5 @@
+-All resolved through `tools.delegate_tool._get_max_concurrent_children()`,
+-which reads `delegation.max_concurrent_children` from `config.yaml`
+-(env fallback `DELEGATION_MAX_CONCURRENT_CHILDREN`, default 3). Floor of 1.
+-**No hard ceiling.**
++Batch concurrency is resolved by
++`tools.delegate_tool_config._get_max_concurrent_children()` from
++`delegation.max_concurrent_children` (or `DELEGATION_MAX_CONCURRENT_CHILDREN`,
++then the native default). It has a floor of 1 and no hard ceiling, but separate
++session budgets, depth limits and spawn controls still apply.
+@@ -17 +16 @@
+-1. **Per-call hard reject** — `tools/delegate_tool.py` (~line 1953).
++1. **Per-call hard reject** — `tools/delegate_tool_tasks.py::_normalize_task_list`.
+@@ -23,2 +22 @@
+-2. **Per-turn truncator** — `run_agent.py::AIAgent._cap_delegate_task_calls`
+-   (~line 5708). If the model emits *multiple separate* `delegate_task`
++2. **Per-turn truncator** — `run_agent.py::AIAgent._cap_delegate_task_calls`. If the model emits *multiple separate* `delegate_task`
+@@ -36,0 +35,13 @@
++4. **One-shot total budget** — `tools/delegate_tool.py::_oneshot_spawn_budget`
++   limits total spawned children across a finite `hermes chat -q` run through
++   `delegation.oneshot_max_children` (default 2; 0 disables this budget).
++   A rejected request returns `Delegation budget for this one-shot run is exhausted`
++   and names the setting. Neither batch-concurrency log pattern detects this.
++   Interactive and gateway sessions are not charged against this budget.
++   When exhausted, do the remaining work inline; splitting or retrying the batch
++   does not restore the budget.
++
++Also inspect returned errors for paused spawning and the configured depth/role
++limit. A full background pool can force synchronous execution; that is different
++from silently dropping requested children.
++
+@@ -43,0 +55,2 @@
++hermes config get delegation.oneshot_max_children
++hermes config get delegation.max_spawn_depth
+@@ -47 +60 @@
+-# If neither line appears, neither cap path executed.
++# Also inspect the actual delegate_task result for one-shot budget, depth or pause errors.
+@@ -50 +63 @@
+-python -c "from tools.delegate_tool import _get_max_concurrent_children; \
++python -c "from tools.delegate_tool_config import _get_max_concurrent_children; \
+@@ -54,2 +67,3 @@
+-If config and `_get_max_concurrent_children()` agree, and neither log line
+-appears, **the cap is the model**, not Hermes.
++Compare requested tasks with the actual tool call and returned result. Only
++consider model self-limiting after checking runtime errors, the effective
++one-shot budget (including children already spawned), depth and concurrency.
+@@ -66 +80 @@
+-The model will then narrate the choice as "the runtime caps at 9" or
++A model that chooses a smaller batch may narrate the choice as "the runtime caps at 9" or
+@@ -72 +86 @@
+-## How to actually force N parallel children
++## Requesting N parallel children
+@@ -74 +88,2 @@
+-Tell the model explicitly in the prompt:
++Only when the session budget, role/depth and concurrency allow N, tell the
++model explicitly in the prompt:
+@@ -80,5 +95,4 @@
+-If the model still trims, use `execute_code` to construct the `tasks`
+-list deterministically and call the tool with that exact list — the
+-model is then merely a courier and is far less likely to second-guess
+-the count. Or use a different model: smaller / less-reasoning-heavy
+-models trim less aggressively in practice.
++Submit the complete task list through a direct `delegate_task` call. Python can
++help construct the list, but `execute_code` cannot submit delegation: its tool
++allowlist excludes `delegate_task`. Inspect the direct call and its result;
++do not retry a rejected runtime budget through a different tool.
+@@ -94,3 +108,2 @@
+-- **The cost-warning log fires on every call** when the value is > 10.
+-  Don't take its presence as evidence that anything was capped — only
+-  the `Truncated...` and `Too many tasks` lines indicate actual capping.
++- **The cost-warning is emitted once for configured high concurrency.**
++  It does not indicate a cap. Inspect actual tool errors and session budgets.
+@@ -98,2 +111,2 @@
+-  user set it deliberately; the fix is to push back on the model, not
+-  the config.
++  user set it deliberately; diagnose the real constraint first. Do not alter
++  the user's configuration to work around a runtime budget.
+--- skills/autonomous-ai-agents/hermes-agent/references/desktop-plugins.md
++++ guides/employee/references/desktop-plugins.md
+@@ -10,3 +10,8 @@
+-There are TWO on-disk doors, same contract and hot reload:
+-
+-- `$HERMES_HOME/desktop-plugins/<id>/plugin.js` — standalone desktop plugin.
++Resolve the desktop application's local Plugins folder from Settings → Plugins
++(the Electron `desktopPluginsRoot` result). It is app-level, independent of the
++selected agent profile or remote gateway. Do not derive it from a remote agent's
++`$HERMES_HOME`.
++
++There are TWO local on-disk doors, same contract and hot reload:
++
++- `<desktop-plugins-root>/<id>/plugin.js` — standalone desktop plugin.
+@@ -14 +19 @@
+-- `$HERMES_HOME/plugins/<id>/desktop/plugin.js` — the desktop HALF of a
++- `<desktop-local-hermes-home>/plugins/<id>/desktop/plugin.js` — the desktop HALF of a
+@@ -38,2 +43,3 @@
+-- Write access to `$HERMES_HOME/desktop-plugins/` (usually
+-  `~/.hermes/desktop-plugins/`).
++- Write access on the desktop machine to its reported Plugins folder. If your
++  terminal runs on a remote gateway, prepare the plugin files and have the user
++  install them on the desktop machine; writing them remotely will not load them.
+@@ -43,4 +49,4 @@
+-1. Create `$HERMES_HOME/desktop-plugins/<name>/plugin.js` from
+-   `templates/plugin.js` (in this skill directory) — that's
+-   `~/.hermes/...` by default, or `~/.hermes/profiles/<profile>/...` under a
+-   named profile. Keep `<name>` equal to the plugin `id`.
++1. Resolve the local Plugins folder in the desktop app, then create
++   `<desktop-plugins-root>/<name>/plugin.js` from `templates/plugin.js`
++   (in this guide directory). Keep `<name>` equal to the plugin `id`.
++   Named profiles do not change this app-local installation directory.
+@@ -77 +83 @@
+-  skills, cron — everything the app uses).
++  cron inspection — the enabled app surfaces).
+@@ -114 +120 @@
+-  After registering one, TELL the model it exists (a bundled skill or the
++  After registering one, TELL the model it exists (a shipped guide or the
+--- skills/autonomous-ai-agents/hermes-agent/references/native-mcp.md
++++ guides/employee/references/native-mcp.md
+@@ -3,0 +4,4 @@
++
++Before any connection work, read `../../connections/guide.md`.
++Document working access patterns and verification in that service's manual, including its native
++MCP server name and credential location, never credential values.
+@@ -14 +18 @@
+-For ad-hoc, one-off MCP tool calls from the terminal without configuring anything, see the `mcporter` skill instead.
++Use the built-in client through `hermes mcp`; no bridge CLI or hosted connection tool is required.
+@@ -30,16 +34,54 @@
+-Add MCP servers to `~/.hermes/config.yaml` under the `mcp_servers` key:
+-
+-```yaml
+-mcp_servers:
+-  time:
+-    command: "uvx"
+-    args: ["mcp-server-time"]
+-```
+-
+-Restart Hermes Agent. On startup it will:
+-1. Connect to the server
+-2. Discover available tools
+-3. Register them with the prefix `mcp_time_*`
+-4. Inject them into all platform toolsets
+-
+-You can then use the tools naturally -- just ask the agent to get the current time.
++When the user asks to connect a service, use native commands. Inspect
++`hermes mcp --help` and the provider's current official instructions first.
++This is authorized service setup, not permission to change unrelated employee settings.
++
++```bash
++# Browse/install an entry from the native catalog
++hermes mcp catalog
++hermes mcp install NAME
++
++# A custom remote server with OAuth
++hermes mcp add NAME --url "https://mcp.example.com/mcp" --auth oauth
++
++# A local stdio server
++hermes mcp add time --command uvx --args mcp-server-time
++
++# Inspect, test, or complete/renew authorization
++hermes mcp list
++hermes mcp test NAME
++hermes mcp login NAME
++```
++
++The add command probes the server, selects tools, and saves the native server
++entry. If setup fails, it may offer to save a disabled entry; that is not a
++working connection. Confirm the reported result and verify a harmless service
++operation before saying access works.
++
++### Authorization on the machine running Hermes
++
++Run setup on the server that owns the employee's profile. The user completes
++provider authorization; do not request reusable tokens in chat. Native MCP
++stores and refreshes OAuth tokens itself. Do not read or hand-write token files.
++
++Some commands need an interactive terminal. Use the native dashboard's MCP
++setup/Authorize flow or an administrator's server terminal when the agent's
++terminal cannot complete that interaction. For remote browser OAuth, use the
++native callback flow: SSH port forwarding or a configured public callback URL.
++If the provider supports device authorization, `hermes mcp login NAME --flow device`
++prints a verification URL/code the user can use from another device. Do not
++assume every provider supports it, or that a loopback callback on the server
++is reachable from the user's browser.
++
++For API-key authentication, the user enters the key through native dashboard
++or CLI secret entry, or a configured secret manager. Config can reference
++`${VARIABLE}` without embedding the secret. Never put a reusable secret in a
++terminal command, guide, service manual or chat.
++
++Remote OAuth details: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh
++
++### When the tools become available
++
++Native discovery registers tools with names such as `mcp_time_get_current_time`.
++A running gateway reconciles MCP configuration automatically. Keep the current
++conversation's tool schema and prompt fixed: start a new conversation to use
++newly configured tools. Do not force `/reload-mcp` into a warm conversation.
+@@ -47,0 +90,2 @@
++
++The examples below describe the configuration produced by native setup. Use the native Config editor for options the CLI does not expose.
+@@ -59 +103 @@
+-      SOME_API_KEY: "value"
++      SOME_API_KEY: "${SOME_API_KEY}"
+@@ -71 +115 @@
+-      Authorization: "Bearer sk-..."
++      Authorization: "Bearer ${SERVICE_API_KEY}"
+@@ -118 +162 @@
+-After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
++After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). New conversations can use the configured tools; do not mutate a warm conversation's tool schema.
+@@ -155 +199 @@
+-      Authorization: "Bearer sk-..."
++      Authorization: "Bearer ${SERVICE_API_KEY}"
+@@ -178 +222 @@
+-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
++      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+@@ -202 +246 @@
+-No `mcp_servers` key in `~/.hermes/config.yaml`, or it's empty. Add at least one server.
++No configured MCP servers. Add one with `hermes mcp add` or install a catalog entry.
+@@ -229 +273 @@
+-The client retries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 60s). If the server is fundamentally unreachable, it gives up after 5 attempts. Check the server process and network connectivity.
++The client uses bounded retries with exponential backoff. Exhausted servers park and self-probe for recovery; they do not require a restart merely because the rapid retry budget was exhausted. Check the server process, network connectivity and authorization. Renew expired authorization with native MCP login or the dashboard.
+@@ -264 +308 @@
+-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
++      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+@@ -277 +321 @@
+-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
++      Authorization: "Bearer ${SERVICE_API_KEY}"
+@@ -299 +343 @@
+-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
++      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+@@ -304 +348 @@
+-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
++      Authorization: "Bearer ${SERVICE_API_KEY}"
+@@ -340 +383,0 @@
+-- The native MCP client is independent of `mcporter` -- you can use both simultaneously
+@@ -342 +385 @@
+-- Adding or removing servers requires restarting the agent (no hot-reload currently)
++- Native config reconciliation manages server connections; use a new conversation for a changed model tool surface.
+--- skills/autonomous-ai-agents/hermes-agent/references/petdex.md
++++ guides/employee/references/petdex.md
+@@ -6 +6 @@
+-the Hermes CLI, TUI, and desktop app. This skill drives the `hermes pets` CLI
++the Hermes CLI, TUI, and desktop app. This guide describes the `hermes pets` CLI
+--- skills/autonomous-ai-agents/hermes-agent/references/portal-auth-for-third-party-apps.md
++++ guides/employee/references/portal-auth-for-third-party-apps.md
+@@ -1,128 +0,0 @@
+-# Nous Portal — authenticating third-party apps against the subscription
+-
+-Recurring user question: "Can app X (Karakeep, OpenWebUI, LibreChat, OpenViking,
+-LangChain pipeline, n8n flow, etc.) use my Nous Portal subscription without me
+-copy-pasting an API key — ideally via the Portal login I already have?"
+-
+-The honest answer has three architectural layers people conflate. Walk through
+-them in order before proposing solutions.
+-
+----
+-
+-## Layer 1 — Is this thing a Hermes plugin, or a separate app?
+-
+-This is the question to answer FIRST. The "OpenViking" case in particular
+-trips agents up.
+-
+-| Surface | What it actually is | Auth path |
+-|---|---|---|
+-| **OpenViking memory plugin** (`plugins/memory/openviking/`) | Code that runs **inside the Hermes process**. Its LLM calls go through Hermes's already-configured provider. | Already uses Portal if user's Hermes is configured for Portal. Nothing extra needed. `OPENVIKING_API_KEY` is the OpenViking *server's* own auth, not LLM auth. |
+-| **OpenViking the standalone server** (separate container) | A separate context-DB service. If it ever calls an LLM on its own, that's a separate HTTP client. | Same as any external app — Layer 2/3 below. |
+-| **Karakeep, n8n, LibreChat, OpenWebUI, any self-hosted app** | Different process, often different machine. Makes its own HTTPS calls to `inference-api.nousresearch.com`. | Layer 2/3 below. |
+-
+-**Pitfall to avoid**: do not pitch "OAuth into Portal" as the solution for a
+-plugin that already runs inside Hermes. That LLM call is already authenticated
+-via Hermes's provider config. The plugin's own server auth (e.g.
+-`OPENVIKING_API_KEY` for talking to the OpenViking REST API) is unrelated to
+-Portal.
+-
+----
+-
+-## Layer 2 — For genuinely external apps, what does Portal actually expose?
+-
+-Portal at `https://inference-api.nousresearch.com/v1` is an OpenAI-compatible
+-inference endpoint. It accepts **bearer-token authentication only**: either
+-
+-1. **A static API key** from `portal.nousresearch.com → API Keys`, or
+-2. **An x402-protocol payment header** (Solana USDC, beta, anonymous, per-request).
+-
+-There is **no general OAuth 2.0 authorization server**. There is no
+-"Sign in with Nous Portal" SSO that third-party apps can register as clients
+-against. There is no shared cookie or session that browser-Portal-login
+-extends to other apps on the same machine.
+-
+-What Hermes Agent has that *feels* like OAuth — `hermes login --provider nous`
+-opening a browser, user signs in, token lands in `~/.hermes/auth.json` — is a
+-**Hermes-specific browser flow**. Under the hood it produces a credential
+-Hermes uses as a bearer. It is not a public OAuth provider that Karakeep et al.
+-can implement a client for, because it isn't an OAuth provider at all from the
+-outside.
+-
+----
+-
+-## Layer 3 — Can we bridge the gap without Portal changing anything?
+-
+-Yes. The pattern is a **local credential-broker proxy**. Even without a public
+-OAuth flow, an app on the user's machine can:
+-
+-1. Read Hermes's existing Portal credential out of `~/.hermes/auth.json`.
+-2. Expose a local OpenAI-compatible endpoint at `http://localhost:NNNN/v1`.
+-3. Forward incoming requests to `inference-api.nousresearch.com/v1` with that
+-   bearer attached.
+-
+-Karakeep/OpenWebUI/etc. then point at `http://localhost:NNNN/v1` with any
+-placeholder key. The user never copies their Portal key around — the proxy
+-rides on the credential Hermes already holds.
+-
+-Where this could live in Hermes:
+-
+-- `gateway/platforms/api_server.py` is the precedent — it exposes the agent
+-  over a local OpenAI-compatible endpoint, but routes through the full agent
+-  loop (tool calls and all). The proxy variant is **pure inference
+-  pass-through**: no agent loop, no tools, just forward `/chat/completions`
+-  upstream with the user's stored Portal bearer.
+-- ~150 lines as a new gateway adapter or a plugin under `plugins/`.
+-- Token refresh: if the browser-OAuth flow produces a refreshable token, the
+-  credential pool's refresh logic already exists. If it's a long-lived static
+-  bearer, even simpler.
+-
+-This is genuinely useful and worth shipping — it's the answer to "use my
+-Portal sub with $external_app without copy-pasting keys."
+-
+----
+-
+-## Real OAuth provider on Portal — when is it worth pitching?
+-
+-Only when the consumer is *another first-party Nous thing* (a future SDK, a
+-Nous-branded extension, a Discord-bot integration that needs per-user
+-delegation, etc.). Pitching it as the answer to "use my Portal sub with
+-Karakeep" is selling the user a thing that won't reach them: even if Portal
+-shipped OAuth tomorrow, Karakeep's LLM-provider config UI is `base_url +
+-bearer_token` with no OAuth client, no callback handler, no token refresh.
+-The OpenAI ecosystem standardized on static bearers and downstream apps
+-won't rebuild their config UX to accommodate a new auth flow.
+-
+-The features that would actually help users today, and that Portal could ship
+-without depending on third-party app changes:
+-
+-- **Scoped, named, revocable API keys** with last-used timestamps. Same UX
+-  benefits people want from OAuth (revoke a compromised key, see what's using
+-  the sub, scope a key to specific models), in a shape every existing app
+-  already supports.
+-- **Per-key rate limits** so a noisy app can be capped without eating the
+-  user's headroom for Hermes itself.
+-
+----
+-
+-## Talking-points cheatsheet (for next time)
+-
+-When the user asks "can $APP use my Portal subscription":
+-
+-1. First decide: Hermes plugin (runs inside Hermes) or separate app? If plugin,
+-   it already uses Portal via Hermes's provider config — done.
+-2. If separate app: today, paste the static API key from Portal → API Keys.
+-   Base URL `https://inference-api.nousresearch.com/v1`. Rate limits are
+-   subscription-tier based, applied per-key.
+-3. If the user pushes back with "but I don't want to paste a key" — that's
+-   the local-broker-proxy answer (Layer 3). Worth building. Not a Portal-side
+-   OAuth roadmap problem.
+-4. Mixed setup ("Portal for some things, OpenRouter/Ollama Cloud for the
+-   Hermes agent itself") is fully supported. Hermes treats agent
+-   provider/model and tool-side LLM calls as independent config; you can
+-   point each at a different endpoint.
+-
+-**Note on the Tool Gateway**: the "no separate accounts, no API key juggling"
+-pitch in the Tool Gateway announcement is specifically about Hermes Agent's
+-*tools* (web search, browser, image gen, TTS) flowing through the Portal
+-subscription when Hermes is configured to use Portal as its provider. It is
+-**not** a claim that arbitrary third-party apps inherit Portal auth.
+--- skills/autonomous-ai-agents/hermes-agent/references/security-privacy.md
++++ guides/employee/references/security-privacy.md
+@@ -67 +66,0 @@
+-
+--- skills/autonomous-ai-agents/hermes-agent/references/themes.md
++++ guides/employee/references/themes.md
+@@ -7 +7 @@
+-skill covers writing a good skin and activating it; it does not build GUI theme
++guide covers writing a good skin and activating it; it does not build GUI theme
+@@ -31 +31 @@
+-4. Activate it (see Procedure). Confirm the change landed.
++4. Have the administrator activate it (see Procedure). Confirm the change landed.
+@@ -70,2 +70 @@
+-3. **Apply it yourself — never hand-edit `config.yaml`.** Run the safe writer via
+-   `terminal`:
++3. **Administrator activation — never hand-edit `config.yaml`.** The administrator runs the native writer:
+@@ -77,2 +76 @@
+-   Appearance / `Cmd-K` / `/skin`. You apply it; do NOT tell the user to run
+-   `/skin` (they still can, but it's your job). The writer emits valid YAML — a
++   Appearance / `Cmd-K` / `/skin`. The writer emits valid YAML — a
+@@ -114,3 +112,2 @@
+-- **You apply it, not the user.** `hermes config set display.skin <name>` is
+-  enough — the gateway's watcher repaints every surface within ~a second. Don't
+-  defer to "type /skin yourself"; that's the old behavior.
++- **An administrator applies it.** `hermes config set display.skin <name>` is
++  enough — the gateway's watcher repaints every surface within ~a second.
+--- skills/autonomous-ai-agents/hermes-agent/references/troubleshooting.md
++++ guides/employee/references/troubleshooting.md
+@@ -9 +9 @@
+-1. `hermes tools` — check if toolset is enabled for your platform
++1. Check the actual tool schema and fixed employee exclusions before trying `hermes tools` — configuration cannot enable excluded tools
+@@ -20 +20 @@
+-- **Tools/skills:** `/reset` starts a new session with updated toolset
++- **Tools:** `/reset` starts a new session with updated toolset
+@@ -51,5 +50,0 @@
+-### Skills not showing
+-1. `hermes skills list` — verify installed
+-2. `hermes skills config` — check platform enablement
+-3. Load explicitly: `hermes -s name` (or the skill's own `/<name>` slash command)
+-
+@@ -81 +75,0 @@
+-
+--- skills/autonomous-ai-agents/hermes-agent/references/tui-widgets.md
++++ guides/employee/references/tui-widgets.md
+@@ -6 +6 @@
+-repo changes. This skill does not cover desktop-app or web-dashboard
++repo changes. This guide does not cover desktop-app or web-dashboard
+@@ -62 +62 @@
+-tool/skill sections use. `h(Accordion, { t, title: 'details', count: 3,
++tool sections use. `h(Accordion, { t, title: 'details', count: 3,
+--- skills/autonomous-ai-agents/hermes-agent/references/webhooks.md
++++ guides/employee/references/webhooks.md
+@@ -1,216 +0,0 @@
+-# Webhook Subscriptions
+-
+-Create dynamic webhook subscriptions so external services (GitHub, GitLab, Stripe, CI/CD, IoT sensors, monitoring tools) can trigger Hermes agent runs by POSTing events to a URL.
+-
+-## Setup (Required First)
+-
+-The webhook platform must be enabled before subscriptions can be created. Check with:
+-```bash
+-hermes webhook list
+-```
+-
+-If it says "Webhook platform is not enabled", set it up:
+-
+-### Option 1: Setup wizard
+-```bash
+-hermes gateway setup
+-```
+-Follow the prompts to enable webhooks, set the port, and set a global HMAC secret.
+-
+-### Option 2: Manual config
+-Add to `~/.hermes/config.yaml`:
+-```yaml
+-platforms:
+-  webhook:
+-    enabled: true
+-    extra:
+-      port: 8644
+-      secret: "your-webhook-secret-here"
+-```
+-
+-Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
+-Set a specific address only when you intentionally want to restrict the bind.
+-
+-### Option 3: Environment variables
+-Add to `${HERMES_HOME:-~/.hermes}/.env`:
+-```bash
+-WEBHOOK_ENABLED=true
+-WEBHOOK_PORT=8644
+-WEBHOOK_SECRET=your-webhook-secret-here
+-```
+-
+-After configuration, start (or restart) the gateway:
+-```bash
+-hermes gateway run
+-# Or if using systemd:
+-systemctl --user restart hermes-gateway
+-```
+-
+-Verify it's running:
+-```bash
+-curl http://localhost:8644/health
+-```
+-
+-## Commands
+-
+-All management is via the `hermes webhook` CLI command:
+-
+-### Create a subscription
+-```bash
+-hermes webhook subscribe <name> \
+-  --prompt "Prompt template with {payload.fields}" \
+-  --events "event1,event2" \
+-  --description "What this does" \
+-  --skills "skill1,skill2" \
+-  --deliver telegram \
+-  --deliver-chat-id "12345" \
+-  --secret "optional-custom-secret"
+-```
+-
+-Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
+-
+-### Filter or transform payloads before the agent runs
+-
+-Two mechanisms narrow broad event streams (e.g. Todoist/GitHub fire on every update) so only relevant payloads wake the agent:
+-
+-- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers — operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
+-- **Route scripts** (`--script` on subscribe, or `script:` on a config route): a script under `~/.hermes/scripts/` receives the payload as JSON on stdin. JSON stdout replaces the payload before prompt templating; empty stdout, `[SILENT]`, or a nonzero exit ignores the webhook. `.sh`/`.bash` run with bash, everything else with Python. Scripts cannot live outside `~/.hermes/scripts/` (path traversal is blocked).
+-
+-```bash
+-hermes webhook subscribe todoist-hermes \
+-  --prompt "Task changed: {payload.content}" \
+-  --script "todoist-hermes-label.py" \
+-  --deliver telegram --deliver-chat-id "12345"
+-```
+-
+-Full filter syntax: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks#payload-filters
+-
+-### List subscriptions
+-```bash
+-hermes webhook list
+-```
+-
+-### Remove a subscription
+-```bash
+-hermes webhook remove <name>
+-```
+-
+-### Test a subscription
+-```bash
+-hermes webhook test <name>
+-hermes webhook test <name> --payload '{"key": "value"}'
+-```
+-
+-## Prompt Templates
+-
+-Prompts support `{dot.notation}` for accessing nested payload fields:
+-
+-- `{issue.title}` — GitHub issue title
+-- `{pull_request.user.login}` — PR author
+-- `{data.object.amount}` — Stripe payment amount
+-- `{sensor.temperature}` — IoT sensor reading
+-
+-If no prompt is specified, the full JSON payload is dumped into the agent prompt.
+-
+-## Common Patterns
+-
+-### GitHub: new issues
+-```bash
+-hermes webhook subscribe github-issues \
+-  --events "issues" \
+-  --prompt "New GitHub issue #{issue.number}: {issue.title}\n\nAction: {action}\nAuthor: {issue.user.login}\nBody:\n{issue.body}\n\nPlease triage this issue." \
+-  --deliver telegram \
+-  --deliver-chat-id "-100123456789"
+-```
+-
+-Then in GitHub repo Settings → Webhooks → Add webhook:
+-- Payload URL: the returned webhook_url
+-- Content type: application/json
+-- Secret: the returned secret
+-- Events: "Issues"
+-
+-### GitHub: PR reviews
+-```bash
+-hermes webhook subscribe github-prs \
+-  --events "pull_request" \
+-  --prompt "PR #{pull_request.number} {action}: {pull_request.title}\nBy: {pull_request.user.login}\nBranch: {pull_request.head.ref}\n\n{pull_request.body}" \
+-  --skills "github-code-review" \
+-  --deliver github_comment
+-```
+-
+-### Stripe: payment events
+-```bash
+-hermes webhook subscribe stripe-payments \
+-  --events "payment_intent.succeeded,payment_intent.payment_failed" \
+-  --prompt "Payment {data.object.status}: {data.object.amount} cents from {data.object.receipt_email}" \
+-  --deliver telegram \
+-  --deliver-chat-id "-100123456789"
+-```
+-
+-### CI/CD: build notifications
+-```bash
+-hermes webhook subscribe ci-builds \
+-  --events "pipeline" \
+-  --prompt "Build {object_attributes.status} on {project.name} branch {object_attributes.ref}\nCommit: {commit.message}" \
+-  --deliver discord \
+-  --deliver-chat-id "1234567890"
+-```
+-
+-### Generic monitoring alert
+-```bash
+-hermes webhook subscribe alerts \
+-  --prompt "Alert: {alert.name}\nSeverity: {alert.severity}\nMessage: {alert.message}\n\nPlease investigate and suggest remediation." \
+-  --deliver origin
+-```
+-
+-### Direct delivery (no agent, zero LLM cost)
+-
+-For use cases where you just want to push a notification through to a user's chat — no reasoning, no agent loop — add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
+-
+-Use this for:
+-- External service push notifications (Supabase/Firebase webhooks → Telegram)
+-- Monitoring alerts that should forward verbatim
+-- Inter-agent pings where one agent is telling another agent's user something
+-- Any webhook where an LLM round trip would be wasted effort
+-
+-```bash
+-hermes webhook subscribe antenna-matches \
+-  --deliver telegram \
+-  --deliver-chat-id "123456789" \
+-  --deliver-only \
+-  --prompt "🎉 New match: {match.user_name} matched with you!" \
+-  --description "Antenna match notifications"
+-```
+-
+-The POST returns `200 OK` on successful delivery, `502` on target failure — so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
+-
+-Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
+-
+-### Let the user reply to a delivery
+-
+-Each event runs in its own session, so by default the agent in the target chat has no record of what a route delivered ("what are you referring to?"). Add `--mirror-to-session` and each delivered message is also written into that chat's session as `[Webhook delivery: <route>]` + the text. Off by default: the text enters the conversation as if the user had sent it (on `--deliver-only` routes it is the raw payload), so only use it for sources the user trusts. Skipped when the chat has no session yet.
+-
+-## Security
+-
+-- Each subscription gets an auto-generated HMAC-SHA256 secret (or provide your own with `--secret`)
+-- The webhook adapter validates signatures on every incoming POST
+-- Static routes from config.yaml cannot be overwritten by dynamic subscriptions
+-- Subscriptions persist to `~/.hermes/webhook_subscriptions.json`
+-
+-## How It Works
+-
+-1. `hermes webhook subscribe` writes to `~/.hermes/webhook_subscriptions.json`
+-2. The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
+-3. When a POST arrives matching a route, the adapter formats the prompt and triggers an agent run
+-4. The agent's response is delivered to the configured target (Telegram, Discord, GitHub comment, etc.)
+-
+-## Troubleshooting
+-
+-If webhooks aren't working:
+-
+-1. **Is the gateway running?** Check with `systemctl --user status hermes-gateway` or `ps aux | grep gateway`
+-2. **Is the webhook server listening?** `curl http://localhost:8644/health` should return `{"status": "ok"}`
+-3. **Check gateway logs:** `grep webhook ~/.hermes/logs/gateway.log | tail -20`
+-4. **Signature mismatch?** Verify the secret in your service matches the one from `hermes webhook list`. GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`.
+-5. **Firewall/NAT?** The webhook URL must be reachable from the service. For local development, use a tunnel (ngrok, cloudflared).
+-6. **Wrong event type?** Check `--events` filter matches what the service sends. Use `hermes webhook test <name>` to verify the route works.
+--- skills/autonomous-ai-agents/hermes-agent/references/windows-quirks.md
++++ guides/employee/references/windows-quirks.md
+@@ -3,5 +3 @@
+-Hermes runs natively on Windows (PowerShell, cmd, Windows Terminal, git-bash
+-mintty, VS Code integrated terminal). Most of it just works, but a handful
+-of differences between Win32 and POSIX have bitten us — document new ones
+-here as you hit them so the next person (or the next session) doesn't
+-rediscover them from scratch.
++Run this fork's backend in WSL2 on Windows: responsibility filesystem operations require POSIX. The notes below describe retained upstream Windows client/library behavior; they are not a claim that native Windows employee execution is supported.
+@@ -65 +60,0 @@
+-
+--- skills/autonomous-ai-agents/hermes-agent/templates/plugin.js
++++ guides/employee/templates/plugin.js
+@@ -3,4 +3,4 @@
+- *   <hermes home>/desktop-plugins/<id>/plugin.js   (folder name == id)
+- * where <hermes home> is ~/.hermes by default, or ~/.hermes/profiles/<name>
+- * when running a named profile (`hermes -p <name>`). Run `hermes doctor` (or
+- * check the app's Settings → Plugins folder path) if unsure which is active.
++ *   <desktop-plugins-root>/<id>/plugin.js   (folder name == id)
++ * Use the folder reported by the desktop app's Settings → Plugins.
++ * This is app-local, independent of named profiles and remote gateways.
++ * A file written on a remote gateway must be installed on the desktop machine.

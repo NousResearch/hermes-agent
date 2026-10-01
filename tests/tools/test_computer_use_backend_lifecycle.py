@@ -224,3 +224,8 @@ def test_backend_retry_preserves_the_original_human_lease_epoch(runtime, monkeyp
         resume.set()
         worker.join(timeout=10)
         assert not worker.is_alive()
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(manual_approvals):
+    """Exercise the retained native implementation, not employee surface policy."""

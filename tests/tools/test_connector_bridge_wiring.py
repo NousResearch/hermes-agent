@@ -344,8 +344,8 @@ def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
     assert len(matches) == 3  # limit is the per-query cap across BOTH legs
     assert all(m.startswith("connectors__") for m in matches)
     # total_available counts returned remote tools on top of the local catalog
-    # (empty here: the fake def is not registry-backed in this test env).
-    assert out["total_available"] == 3
+    # manage_connections is retained as a non-core tool in this library fixture.
+    assert out["total_available"] == 4
 
 
 def test_search_drops_remote_group_with_mismatched_use_case_echo():
@@ -763,3 +763,8 @@ def test_connector_describe_is_empty_on_unavailable_and_names_the_failure_reason
     assert connector_describe(
         ["connectors__g__T"], availability=lambda: True, client_factory=rejected
     ) == ConnectorLeg(failure="sign_in_expired")
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_tool_surface):
+    """Exercise the retained native implementation, not employee surface policy."""

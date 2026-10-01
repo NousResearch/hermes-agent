@@ -1,6 +1,6 @@
 # Background learning
 
-Status: behavior agreed; runtime implementation pending.
+Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
 
 ## Decision
 

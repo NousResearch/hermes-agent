@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 
 def _write_skill(root, name, body):
     skill_dir = root / name
@@ -104,3 +106,8 @@ class TestSharedPromptPath:
             no_skills.valid_tool_names = {"memory"}
             assert "ORIGINAL SKILL BYTES" not in no_skills._build_system_prompt()
             assert "ORIGINAL SKILL BYTES" in _bare_agent("full")._build_system_prompt()
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    pass

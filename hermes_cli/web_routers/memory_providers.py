@@ -24,7 +24,7 @@ from hermes_cli.web_server_memory import (
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
-    STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
+    STORAGE_HONCHO_HOST_BLOCK, STORAGE_CONFIG_YAML, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -178,6 +178,17 @@ def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str])
     _write_json_0600(_flat_json_path(provider), existing)
 
 
+def _write_provider_yaml(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    with _CONFIG_MUTATION_LOCK:
+        config = load_config()
+        section = config.get(provider.name)
+        if not isinstance(section, dict):
+            section = config[provider.name] = {}
+        _apply_field_values(provider, values, lambda field: section)
+        save_config(config)
+        _save_submitted_secrets(provider, values)
+
+
 def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     """Persist submitted fields to Honcho's real config for the active host (partial
     saves touch only submitted keys; blank text clears a key — see ``_apply_field_values``)."""
@@ -257,7 +268,11 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         def sources_for(field: ProviderField) -> tuple:
             return (host_block, raw) if field.scope == "host" else (raw,)
     else:
-        host, data = "", _read_flat_json(provider)
+        host = ""
+        data = (load_config().get(provider.name, {}) if provider.storage == STORAGE_CONFIG_YAML
+                else _read_flat_json(provider))
+        if not isinstance(data, dict):
+            data = {}
 
         def sources_for(field: ProviderField) -> tuple:
             return (data,)
@@ -306,7 +321,8 @@ def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
-    writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
+    writer = {STORAGE_HONCHO_HOST_BLOCK: _write_provider_honcho,
+              STORAGE_CONFIG_YAML: _write_provider_yaml}.get(provider.storage, _write_provider_flat)
     writer(provider, values)
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()

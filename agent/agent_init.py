@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -1469,7 +1468,7 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
     """Global threshold merged with the per-model override; stashes the autoraise notice.
     Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
     restores the global value, and the notice has its own display gate."""
-    threshold = float(cfg.get("threshold", 0.50))
+    threshold = float(cfg.get("threshold", DEFAULT_CONFIG["compression"]["threshold"]))
     autoraise = _cfg_flag(cfg, "codex_gpt55_autoraise", True)
     notice_enabled = _cfg_flag(cfg, "codex_gpt55_autoraise_notice", True)
     agent._compression_threshold_autoraised = None
@@ -1559,8 +1558,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         # "lean" keeps a clamped 2.5%/10K-25K verbatim tail (continuity rides the summary);
         # "legacy" restores the 0.20*threshold tail. Unknown → lean inside the compressor.
         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
-        # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
-        min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
+        # Actionable user messages guaranteed to survive in the tail (floor 1).
+        min_tail_users=max(1, _parse_config_int(
+            cfg.get("min_tail_user_messages"), DEFAULT_CONFIG["compression"]["min_tail_user_messages"])),
         max_attempts=min(max_attempts, 10),
         # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
         proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),

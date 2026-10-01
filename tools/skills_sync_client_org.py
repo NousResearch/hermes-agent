@@ -278,6 +278,9 @@ def maybe_pull_org_skills() -> Optional[Dict[str, Any]]:
     """Best-effort org pull if all gates hold; never raises, None when inert. Marker hygiene: a token
     that VERIFIABLY lacks the org claim clears the active-org marker (org skills stop resolving); an
     unresolvable identity (offline, logged out) leaves it alone so pulled org skills keep working."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return None
     ssc = _ssc()
     try:
         identity = resolve_org_identity()

@@ -73,3 +73,8 @@ def test_parallel_provider_search_applies_per_source_limit_after_filter(catalog)
     assert [m.identifier for m in results] == [m.identifier for m in wanted[:2]]
     assert counts[source.source_id()] == len(results)
     assert not timed_out
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    """Exercise the retained native implementation, not employee surface policy."""

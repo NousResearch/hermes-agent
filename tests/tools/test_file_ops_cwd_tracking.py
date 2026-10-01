@@ -61,6 +61,8 @@ class _FakeEnv:
 
 
 class _WrapperEnv:
+    is_local = False
+
     """Backend whose command wrapper does ``builtin cd -- <cwd> || exit 126`` (the
     real terminal backends' shape), so a bad cwd kills every command before it runs."""
 

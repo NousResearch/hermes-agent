@@ -713,7 +713,7 @@ class TestManagerAutoDetection:
             assert [b.name for b in base.enabled_backends()] == ["local"]
 
 
-def test_every_vault_tool_is_in_the_browser_toolset():
+def test_vault_tools_are_not_in_employee_browser_toolset():
     """toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
     (live: browser_vault_save_login was registered, tested, and never offered)."""
     import toolsets
@@ -721,7 +721,8 @@ def test_every_vault_tool_is_in_the_browser_toolset():
     from tools.registry import registry
 
     registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
-    assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])
+    assert registered
+    assert registered.isdisjoint(toolsets.TOOLSETS["browser"]["tools"])
 
 
 class TestTwoFactor:
@@ -826,3 +827,8 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_browser_tools):
+    """Exercise the retained native implementation, not employee surface policy."""

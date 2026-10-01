@@ -1169,3 +1169,8 @@ class TestSystemPromptGateParity:
         assert added == 1
         names = {t["function"]["name"] for t in agent.tools}
         assert "mnemosyne_remember" in names
+
+
+@pytest.fixture(autouse=True)
+def _retained_native_contract(native_skills):
+    pass

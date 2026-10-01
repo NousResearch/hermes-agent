@@ -455,6 +455,24 @@ def _process_has_no_new_privs() -> bool:
 _TRUSTED_SYSTEMD_RUN = "/usr/bin/systemd-run"
 _NNP_SUDO_UNIT_RE = re.compile(r"--unit=(hermes-nnp-sudo-[0-9]+-[0-9a-f]+\.service)")
 
+# execute() hands _run_bash a snapshot script whose command line is
+# ``eval '<command with '\'' escapes>'`` (_wrap_command_script). The sudo
+# scanner is quote-aware, so the embedded sudo word is invisible there and
+# the wrap never fired on the real execute() path — only raw _run_bash
+# callers (the NOPASSWD probe) wrapped. Unescape the wrapper's OWN embed
+# for the detection pass: a line starting ``eval '`` and ending ``'`` is our
+# shape; a user's ``echo 'sudo x'`` does not match it, so quoted data stays
+# data and cannot trigger a spurious wrap.
+_EVAL_EMBED_RE = re.compile(r"(?m)^eval '(.*)'$")
+
+
+def _eval_exposed(command: str) -> str:
+    """Detection view of *command* with the wrapper's ``eval '...'`` embed
+    lines unescaped, so command words the quoting buried are scannable."""
+    if "eval '" not in command:
+        return command
+    return _EVAL_EMBED_RE.sub(lambda m: m.group(1).replace("'\\''", "'"), command)
+
 
 def _is_trusted_helper_stat(st) -> bool:
     """Root-owned regular file, not group/world-writable."""
@@ -610,7 +628,7 @@ def _wrap_local_command_for_no_new_privs(
         return command
     if not _process_has_no_new_privs():
         return command
-    if _rewrite_real_sudo_invocations(command)[1] == 0:
+    if _rewrite_real_sudo_invocations(_eval_exposed(command))[1] == 0:
         return command
     binary = _trusted_systemd_run_binary()
     if not binary:

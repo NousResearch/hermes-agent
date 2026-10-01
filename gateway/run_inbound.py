@@ -590,11 +590,25 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Coalesce compatible busy input or queue it behind earlier events."""
         from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
+
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return
+        existing = adapter._pending_messages.get(_quick_key)
+        if (
+            existing is None
+            or self._overflow_queue(_quick_key)
+            or existing.message_type not in {MessageType.TEXT, MessageType.PHOTO}
+            or not _can_join_pending_event(existing, event)
+            or is_pending_redispatch(adapter, _quick_key, event)
+        ):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        event._gateway_accepted = True
 
     async def _hm_busy_slash_or_photo(
         self, event: MessageEvent, source: SessionSource, _quick_key: str

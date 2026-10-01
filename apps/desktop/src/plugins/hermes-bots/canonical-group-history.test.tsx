@@ -131,3 +131,27 @@ it('labels Bot messages with the actor the gateway sends, and leaves user and ga
   expect(Array.from(screen.getByRole('log').querySelectorAll('strong'), node => node.textContent))
     .toEqual(['Helper Bot: ', 'm-critic: '])
 })
+
+it('hides empty bookkeeping rows, but keeps unknown kinds and bookkeeping that carries text', async () => {
+  const events = [
+    { seq: 1, event_id: 'said', kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'hello' } },
+    { seq: 2, event_id: 'settled', kind: 'turn.settled', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} },
+    { seq: 3, event_id: 'activity', kind: 'room.activity', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} },
+    { seq: 4, event_id: 'noted', kind: 'turn.settled', actor: { kind: 'gateway', id: 'gw-1' }, payload: { text: 'Stopped by you' } },
+    { seq: 5, event_id: 'novel', kind: 'room.future_kind', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} }
+  ]
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' } }}
+
+    if (method === 'groups.log') {return { events }}
+    throw new Error(`Unexpected method ${method}`)
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const history = within(screen.getByRole('log'))
+  await waitFor(() => expect(history.getByText('hello')).toBeTruthy())
+  expect(history.getByText('Stopped by you')).toBeTruthy()
+  expect(history.getByText('room.future_kind')).toBeTruthy()
+  expect(history.queryByText('turn.settled')).toBeNull()
+  expect(history.queryByText('room.activity')).toBeNull()
+})

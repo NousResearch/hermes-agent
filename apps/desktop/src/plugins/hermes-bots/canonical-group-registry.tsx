@@ -6,10 +6,22 @@ import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
+/** Display names stay outside the bindings, so a rename never touches a room's routing identity. */
+export const $canonicalGroupNames = atom<Record<string, string>>({})
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id } })
+  const bindings = $canonicalGroupBindings.get()
+
+  if (!bindings[key]) {
+    $canonicalGroupBindings.set({ ...bindings, [key]: { connectionId: route.connectionId, profile: route.profile, roomId: room.room_id } })
+  }
+
+  const names = $canonicalGroupNames.get()
+
+  if (names[key] !== room.name) {
+    $canonicalGroupNames.set({ ...names, [key]: room.name })
+  }
 
   return key
 }
@@ -20,6 +32,7 @@ export function forgetCanonicalGroup(binding: CanonicalGroupBinding) {
     bound.connectionId !== binding.connectionId || bound.profile !== binding.profile || bound.roomId !== binding.roomId))
 
   $canonicalGroupBindings.set(remaining)
+  $canonicalGroupNames.set(Object.fromEntries(Object.entries($canonicalGroupNames.get()).filter(([key]) => key in remaining)))
 }
 
 export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }) {

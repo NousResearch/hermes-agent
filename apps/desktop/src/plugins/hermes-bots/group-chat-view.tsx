@@ -44,7 +44,7 @@ import { groupCreationSource } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { CanonicalGroupRoomActions } from './canonical-group-header'
 import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
-import { $canonicalGroupBindings, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, $canonicalGroupNames, forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupEligibility, createCanonicalGroup, isCanonicalGroupCreateRefusal, knownGroupExecutionMode, readGroupExecutionMode } from './canonical-groups'
 import {
@@ -1612,7 +1612,10 @@ export function openGroupChat(group: string): void {
   if (typeof host.openWorkspace === 'function') {
     try {
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
-        title: group,
+        // A gateway room's key is an internal address; its tab shows the room's name.
+        title: $canonicalGroupBindings.get()[group]
+          ? $canonicalGroupNames.get()[group] || botsText().canonical.loadingGroup
+          : group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

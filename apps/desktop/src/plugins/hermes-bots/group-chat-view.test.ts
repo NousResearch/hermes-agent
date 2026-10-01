@@ -137,6 +137,34 @@ describe('opening a room', () => {
   })
 })
 
+describe('gateway room tabs', () => {
+  it('names a gateway room tab after the room, and keeps its binding through a rename', async () => {
+    const room = await loadRoom()
+    const { $canonicalGroupBindings, $canonicalGroupNames, forgetCanonicalGroup, registerCanonicalGroup } = await import('./canonical-group-registry')
+    const open = vi.fn((_id: string, _options: { title: string }) => () => undefined)
+    host.openWorkspace = open
+    const firstRoute = { connectionId: 'first-owner', profile: 'team' }
+    const secondRoute = { connectionId: 'second-owner', profile: 'team' }
+    const first = registerCanonicalGroup(firstRoute, { room_id: 'same-room', name: 'Planning', members: [] })
+    const second = registerCanonicalGroup(secondRoute, { room_id: 'same-room', name: 'Review', members: [] })
+    const originalBinding = $canonicalGroupBindings.get()[first]
+
+    room.view.openGroupChat(first)
+    room.view.openGroupChat(second)
+    expect(open.mock.calls.map(call => (call[1] as { title: string }).title)).toEqual(['Planning', 'Review'])
+    expect(originalBinding).toEqual({ ...firstRoute, roomId: 'same-room' })
+
+    expect(registerCanonicalGroup(firstRoute, { room_id: 'same-room', name: 'Renamed planning', members: [] })).toBe(first)
+    room.view.openGroupChat(first)
+    expect((open.mock.calls.at(-1)?.[1] as { title: string }).title).toBe('Renamed planning')
+    expect($canonicalGroupBindings.get()[first]).toBe(originalBinding)
+
+    forgetCanonicalGroup(originalBinding)
+    expect($canonicalGroupNames.get()[first]).toBeUndefined()
+    expect($canonicalGroupNames.get()[second]).toBe('Review')
+  })
+})
+
 describe('disband', () => {
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()

@@ -2448,6 +2448,8 @@ DEFAULT_CONFIG = {
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
+        # Chat relay is off by default; only short-lived OTPs may use it.
+        "relay_one_time_codes": {"enabled": False, "max_age_seconds": 300},
         "onepassword": {
             # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.

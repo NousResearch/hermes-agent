@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import secrets
 import logging
+import time
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -332,7 +333,8 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
-def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
+def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None,
+                             code: Optional[str] = None, relayed_at: Optional[float] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
@@ -370,6 +372,20 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
             code = None
         if code:
             source = backend.name
+    if not code:
+        from hermes_cli.config import load_config_readonly
+        relay = (load_config_readonly().get("vault") or {}).get("relay_one_time_codes") or {}
+        if code is not None and not relay.get("enabled", False):
+            return json.dumps({"success": False, "error_type": "relay_disabled",
+                               "error": "Relaying one-time codes from chat is disabled for this profile."})
+        if code is not None:
+            now = time.time()
+            max_age = float(relay.get("max_age_seconds", 300))
+            if relayed_at is None or now - float(relayed_at) > max_age or float(relayed_at) > now + 30:
+                return json.dumps({"success": False, "error_type": "stale_relay",
+                                   "error": "The relayed one-time code is missing a fresh timestamp or has expired."})
+            code = str(code).strip().replace(" ", "").replace("-", "")
+            source = "chat_relay"
     if not code:
         prompt = get_code_prompt_callback()
         if prompt is None or not can_prompt_here():
@@ -673,7 +689,11 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {"handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."}},
+        "properties": {
+            "handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."},
+            "code": {"type": "string", "description": "Optional single-use SMS/email code; accepted only when vault.relay_one_time_codes.enabled is true."},
+            "relayed_at": {"type": "number", "description": "Unix timestamp for the relay; required for the opt-in chat path."},
+        },
         "required": [],
     },
 }
@@ -699,7 +719,7 @@ def _fenced_page_op(task_id: Optional[str], fn) -> str:
 
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
-    return _fenced_page_op(tid, lambda: browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=tid))
+    return _fenced_page_op(tid, lambda: browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=tid, code=args.get("code"), relayed_at=args.get("relayed_at")))
 
 
 def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:

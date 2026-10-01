@@ -9,6 +9,13 @@ import contextlib
 import sys
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .compute_host_bridge import _session_uses_compute_host
+    from .methods_tools_config import _tools_slash_request
+    from .server import _err
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -1129,6 +1136,9 @@ def _(rid, params: dict) -> dict:
     base = (parts[0] if parts else "").lower()
     arg = parts[1] if len(parts) > 1 else ""
     sid = params.get("session_id", "")
+    if base == "tools" and _session_uses_compute_host(session):
+        if response := _tools_slash_request(rid, sid, session, arg):
+            return response
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})

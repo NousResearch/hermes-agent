@@ -589,7 +589,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     return agent
 
 
-def _reset_session_agent(sid: str, session: dict) -> dict:
+def _reset_session_agent(sid: str, session: dict, *, defer_build: bool = False) -> dict:
     updates = dict(
         attached_images=[], queued_prompt=None,
         _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
@@ -602,10 +602,14 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # resurrect them. Global process state is never touched (see _apply_model_switch).
         for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
-        new_agent = _rebuild_session_agent(
-            sid, session, session_id=session["session_key"],
-            platform_override=_session_source(session),
-            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
+        if defer_build:
+            new_agent = None
+            session.pop("_metadata_mirror", None)
+        else:
+            new_agent = _rebuild_session_agent(
+                sid, session, session_id=session["session_key"],
+                platform_override=_session_source(session),
+                context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
     session.update(updates)

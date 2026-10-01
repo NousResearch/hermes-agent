@@ -1,7 +1,10 @@
 """Busy-text debounce state and processing for BasePlatformAdapter."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 import time
 from dataclasses import dataclass
 
@@ -10,6 +13,9 @@ from gateway.platforms.base_pending_merge import (
     _append_text,
     merge_pending_message_event,
 )
+
+if TYPE_CHECKING:
+    from gateway.platforms.base import BasePlatformAdapter
 
 logger = logging.getLogger("gateway.platforms.base")
 
@@ -28,12 +34,14 @@ class TextDebounceState:
 
 
 class BaseTextDebounceMixin:
-    def _text_debounce_store(self) -> dict[str, TextDebounceState]:
+    def _text_debounce_store(self: BasePlatformAdapter) -> dict[str, TextDebounceState]:
         from gateway.platforms.base import _lazy_attr
 
         return _lazy_attr(self, "_text_debounce", dict)
 
-    def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
+    def _is_queue_text_debounce_candidate(
+        self: BasePlatformAdapter, event: MessageEvent
+    ) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
             getattr(self, "_busy_text_mode", "interrupt") == "queue"
@@ -52,7 +60,7 @@ class BaseTextDebounceMixin:
         return result
 
     def _can_merge_text_debounce_events(
-        self, existing: MessageEvent, event: MessageEvent
+        self: BasePlatformAdapter, existing: MessageEvent, event: MessageEvent
     ) -> bool:
         """Return True when two text debounce events came from the same sender and do not reply
         to different messages."""
@@ -60,7 +68,7 @@ class BaseTextDebounceMixin:
             existing, event
         ) and not existing.reply_context_conflicts(event)
 
-    def _text_debounce_delay(self, session_key: str) -> float:
+    def _text_debounce_delay(self: BasePlatformAdapter, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
         state = self._text_debounce_store().get(session_key)
         if state is None:
@@ -71,7 +79,9 @@ class BaseTextDebounceMixin:
         )
         return max(0.0, deadline - time.monotonic())
 
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
+    async def _queue_text_debounce(
+        self: BasePlatformAdapter, session_key: str, event: MessageEvent
+    ) -> None:
         """Buffer normal queue-mode busy text and schedule a bounded flush."""
         store = self._text_debounce_store()
         state = store.get(session_key)
@@ -128,7 +138,9 @@ class BaseTextDebounceMixin:
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
 
-    async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
+    async def _flush_text_debounce(
+        self: BasePlatformAdapter, session_key: str, delay: float
+    ) -> None:
         """Timer task that flushes the debounced text buffer."""
         try:
             await asyncio.sleep(delay)
@@ -141,7 +153,9 @@ class BaseTextDebounceMixin:
             if state is not None and state.task is current:
                 state.task = None
 
-    async def _flush_text_debounce_now(self, session_key: str) -> bool:
+    async def _flush_text_debounce_now(
+        self: BasePlatformAdapter, session_key: str
+    ) -> bool:
         """Force-flush one debounced busy-text burst into the pending slot."""
         store = self._text_debounce_store()
         state = store.get(session_key)
@@ -160,7 +174,7 @@ class BaseTextDebounceMixin:
         )
         return True
 
-    def _discard_text_debounce(self, session_key: str) -> None:
+    def _discard_text_debounce(self: BasePlatformAdapter, session_key: str) -> None:
         """Cancel and drop pending text debounce state for control commands."""
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:

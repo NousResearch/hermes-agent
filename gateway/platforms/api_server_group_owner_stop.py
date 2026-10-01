@@ -44,7 +44,7 @@ def _authorize_owner(adapter, request):
         if store.durable is not True or not isinstance(store._db_path, str):
             raise ValueError("durable owner store unavailable")
         if not all(callable(getattr(store, name, None)) for name in (
-            "freeze_room_scope", "room_stop_snapshot", "is_scope_frozen", "group_control_open",
+            "freeze_room_scope", "room_stop_snapshot", "is_scope_frozen", "group_control_open", "list_room_scopes",
         )):
             raise ValueError("owner control is unsupported by this store")
         if Path(store._db_path).expanduser().resolve() != root / "runs_idempotency.db":
@@ -124,6 +124,22 @@ def _public_snapshot(adapter, snapshot):
     }
 
 
+def _public_participants(listing):
+    return {
+        "object": "list",
+        "data": [{
+            "object": "hermes.group_participant", "participant": item["identity"],
+            "first_admitted_at": item["first_admitted_at"], "last_admitted_at": item["last_admitted_at"],
+            "admissions_frozen": item["frozen_at"] is not None, "frozen_at": item["frozen_at"],
+            "counts": item["counts"],
+        } for item in listing["participants"]],
+        "truncated": listing["truncated"],
+        "coverage": "default_profile_participants_in_this_runs_store",
+        "limitations": ["named_profiles_not_listed", "scopes_without_retained_runs_not_listed",
+                        "unrecorded_work_not_listed"],
+    }
+
+
 def http_routes(adapter):
     async def operate(request, *, stop):
         denied = _authorize_owner(adapter, request)
@@ -160,6 +176,20 @@ def http_routes(adapter):
         except (OSError, RuntimeError, sqlite3.Error):
             return _error("Owner control could not be confirmed. Check this operation again.", "group_stop_unconfirmed", 503)
 
+    async def participants(request):
+        # Read-only: the exact identities a Stop needs, while the home is unreachable.
+        denied = _authorize_owner(adapter, request)
+        if denied is not None:
+            return denied
+        try:
+            listing = await asyncio.to_thread(
+                adapter._run_idempotency_store.list_room_scopes, target_install_id=rooms.local_authority_gateway_id())
+            return web.json_response(_public_participants(listing))
+        except GroupRunFreezeError as exc:
+            return _error(str(exc), exc.code, exc.status)
+        except (OSError, RuntimeError, sqlite3.Error):
+            return _error("Owner control could not be confirmed. Check this operation again.", "group_stop_unconfirmed", 503)
+
     async def stop(request):
         return await operate(request, stop=True)
 
@@ -167,6 +197,7 @@ def http_routes(adapter):
         return await operate(request, stop=False)
 
     return [
+        ("GET", "/v1/group-participants", participants),
         ("POST", "/v1/group-participants/stop", stop),
         ("GET", "/v1/group-participants/stop/{command_id}", status),
     ]

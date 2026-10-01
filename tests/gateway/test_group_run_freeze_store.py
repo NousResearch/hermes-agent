@@ -209,6 +209,7 @@ def test_memory_store_does_not_claim_a_durable_stop():
             lambda: memory.freeze_room_scope(IDENTITY, "stop"),
             lambda: memory.room_stop_snapshot("stop"),
             lambda: memory.is_scope_frozen(room_run_scope_key(IDENTITY)),
+            lambda: memory.list_room_scopes(target_install_id=IDENTITY["target_install_id"]),
         ):
             with pytest.raises(storage.GroupStopStorageUnavailable):
                 operation()
@@ -227,3 +228,79 @@ def test_oversized_or_invalid_legacy_summary_cannot_expose_body_or_claim_termina
     assert snapshot["runs"] == [{"run_id": "large-run", "status": "unknown", "owner_pid": 0, "owner_started": 0}]
     assert len(json.dumps(snapshot)) < 2000
     assert "PRIVATE" not in json.dumps(snapshot) and "/private" not in json.dumps(snapshot)
+
+
+def admit(store, run_id, identity=IDENTITY, *, status="running"):
+    return store.reserve(room_run_scope_key(identity), "key-" + run_id, "fingerprint-" + run_id, run_id,
+                         {"status": status, "output": "PRIVATE"}, identity=identity)
+
+
+def listed(store, identity=IDENTITY):
+    return store.list_room_scopes(
+        target_install_id=identity["target_install_id"], target_profile=identity["target_profile"])
+
+
+def test_new_room_runs_record_their_exact_scope_for_one_local_target(store):
+    assert admit(store, "run-one")[0] == "created"
+    admit(store, "run-two", status="completed")
+    admit(store, "run-profile", IDENTITY | {"target_profile": "other"})
+    admit(store, "run-install", IDENTITY | {"target_install_id": "elsewhere"})
+    # A run admitted without its identity stays stoppable by exact identity, but isn't listed.
+    store.reserve(room_run_scope_key(IDENTITY | {"room_id": "unrecorded"}), "plain", "fp", "run-plain",
+                  {"status": "running"})
+    listing = listed(store)
+    assert listing["truncated"] is False
+    [item] = listing["participants"]
+    assert item["identity"] == IDENTITY and item["frozen_at"] is None
+    assert item["counts"] == {"total": 2, "terminal": 1, "nonterminal": 1, "unknown": 0}
+    assert item["first_admitted_at"] <= item["last_admitted_at"]
+    assert "PRIVATE" not in json.dumps(listing)
+    with closing(storage.RunIdempotencyStore(str(store.path))) as restarted:
+        assert listed(restarted) == listing
+
+
+def test_recorded_identity_must_match_its_runs_scope(store):
+    with pytest.raises(ValueError):
+        store.reserve(room_run_scope_key(IDENTITY), "key", "fp", "run", {"status": "queued"},
+                      identity=IDENTITY | {"member_id": "someone-else"})
+    assert store.lookup(room_run_scope_key(IDENTITY), "key", "fp")[0] == "missing"
+    assert listed(store)["participants"] == []
+
+
+def test_listed_scopes_follow_freeze_and_retention(store, monkeypatch):
+    frozen = IDENTITY | {"room_id": "room-frozen"}
+    admit(store, "run-open", status="completed")
+    admit(store, "run-frozen", frozen, status="completed")
+    stopped = store.freeze_room_scope(frozen, "stop-frozen")
+    by_room = {item["identity"]["room_id"]: item for item in listed(store)["participants"]}
+    assert by_room["room-frozen"]["frozen_at"] == stopped["frozen_at"]
+    assert by_room[IDENTITY["room_id"]]["frozen_at"] is None
+    # Once terminal records age out, an unfrozen scope can't be stopped, so it isn't listed.
+    monkeypatch.setattr(store, "RETENTION_SECONDS", -1)
+    store.lookup(room_run_scope_key(IDENTITY), "absent", "fp")
+    [item] = listed(store)["participants"]
+    assert item["identity"] == frozen and item["frozen_at"] == stopped["frozen_at"]
+    assert item["counts"] == {"total": 1, "terminal": 1, "nonterminal": 0, "unknown": 0}
+    with closing(sqlite3.connect(store.path)) as raw:
+        assert raw.execute("SELECT count(*) FROM group_run_scopes").fetchone()[0] == 1
+
+
+def test_scope_list_is_bounded_newest_first_and_reports_unreadable_rows(store, monkeypatch):
+    rooms = [IDENTITY | {"room_id": f"room-{index}"} for index in range(3)]
+    for index, identity in enumerate(rooms):
+        admit(store, f"run-{index}", identity)
+    with closing(sqlite3.connect(store.path)) as raw, raw:
+        for index, identity in enumerate(rooms):
+            raw.execute("UPDATE group_run_scopes SET last_admitted_at=? WHERE scope=?",
+                        (100.0 + index, room_run_scope_key(identity)))
+    monkeypatch.setattr(store, "GROUP_SCOPE_LIST_LIMIT", 2)
+    listing = listed(store)
+    assert [item["identity"]["room_id"] for item in listing["participants"]] == ["room-2", "room-1"]
+    assert listing["truncated"] is True
+    monkeypatch.setattr(store, "GROUP_SCOPE_LIST_LIMIT", 10)
+    with closing(sqlite3.connect(store.path)) as raw, raw:
+        raw.execute("UPDATE group_run_scopes SET identity_json=? WHERE scope=?",
+                    (json.dumps(IDENTITY | {"room_id": "forged"}), room_run_scope_key(rooms[0])))
+    listing = listed(store)
+    assert [item["identity"]["room_id"] for item in listing["participants"]] == ["room-2", "room-1"]
+    assert listing["truncated"] is True

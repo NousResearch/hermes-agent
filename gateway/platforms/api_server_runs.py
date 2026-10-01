@@ -26,7 +26,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import GroupRunFreezeError, GroupRunFrozen, TERMINAL_STATUSES
-from gateway.platforms.api_server_run_scope import room_run_scope_key
+from gateway.platforms.api_server_run_scope import ROOM_RUN_SCOPE_FIELDS, room_run_scope_key, validate_room_run_scope
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -77,6 +77,9 @@ def _submit_api_worker(loop, fn):
 _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float) if RequestKey is not None
     else "hermes.room_run_retention_until")
+_ROOM_IDENTITY_REQUEST_KEY = (
+    RequestKey("hermes.room_run_identity", object) if RequestKey is not None
+    else "hermes.room_run_identity")
 # Forwarded subagent lifecycle fields; free-text ones are secret-redacted.
 _SUBAGENT_EVENT_KEYS = (
     "goal", "task_count", "task_index", "subagent_id", "child_session_id", "delegation_id", "parent_id",
@@ -169,6 +172,25 @@ def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> 
         request[_ROOM_RETENTION_REQUEST_KEY] = value
     except (AttributeError, TypeError):
         setattr(request, "_hermes_room_run_retention_until", value)
+
+
+def _remember_room_identity(request: "web.Request", claims: dict[str, Any]) -> None:
+    """Keep the verified grant's exact scope so a new run can record it for the owner."""
+    try:
+        identity = validate_room_run_scope({key: claims.get(key) for key in ROOM_RUN_SCOPE_FIELDS})
+    except (TypeError, ValueError):
+        identity = None
+    try:
+        request[_ROOM_IDENTITY_REQUEST_KEY] = identity
+    except (AttributeError, TypeError):
+        setattr(request, "_hermes_room_run_identity", identity)
+
+
+def _room_identity(request: "web.Request") -> dict[str, Any] | None:
+    try:
+        return request.get(_ROOM_IDENTITY_REQUEST_KEY)
+    except AttributeError:
+        return getattr(request, "_hermes_room_run_identity", None)
 
 
 def _room_retention_until(request: "web.Request") -> float:
@@ -378,6 +400,7 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
+        _remember_room_identity(request, claims)
         return room_run_scope_key(claims)
     else:
         parts = (_api_server._api_request_profile.get() or "default",
@@ -745,7 +768,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             outcome, record = self._run_idempotency_store.reserve(
                 idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
                 owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-                retention_until=_room_retention_until(request))
+                retention_until=_room_retention_until(request), identity=_room_identity(request))
         except GroupRunFreezeError as exc:
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,

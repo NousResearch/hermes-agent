@@ -22,6 +22,7 @@ logger = logging.getLogger("gateway.platforms.api_server")
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _FREEZES = "group_run_freezes"
 _COMMANDS = "group_run_stop_commands"
+_SCOPES = "group_run_scopes"
 _TERMINAL_SQL = "'completed','failed','cancelled','interrupted'"
 _KNOWN_SQL = _TERMINAL_SQL + ",'queued','running','waiting_for_approval','stopping'"
 _STATUS_SQL = f"""CASE WHEN length(CAST(status_json AS BLOB)) <= 1048576 AND json_valid(status_json)
@@ -120,6 +121,7 @@ class RunIdempotencyStore:
     MAX_GROUP_FREEZES = 512
     MAX_GROUP_STOP_COMMANDS = 4096
     GROUP_STOP_RUN_LIMIT = 128
+    GROUP_SCOPE_LIST_LIMIT = 128
 
     @property
     def durable(self) -> bool:
@@ -215,6 +217,11 @@ class RunIdempotencyStore:
             missing_runs INTEGER NOT NULL DEFAULT 0)""")
         self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {_COMMANDS} (
             command_id TEXT PRIMARY KEY, scope TEXT NOT NULL, created_at REAL NOT NULL)""")
+        # The exact identity behind each hashed room scope, so the owner can list
+        # what this participant holds while the group's home is unreachable.
+        self._conn.execute(f"""CREATE TABLE IF NOT EXISTS {_SCOPES} (
+            scope TEXT PRIMARY KEY, identity_json TEXT NOT NULL,
+            first_admitted_at REAL NOT NULL, last_admitted_at REAL NOT NULL)""")
         # REPLACE can delete a different frozen row without firing DELETE triggers
         # on legacy connections. Fence victims of both unique keys before conflict resolution.
         frozen_victim = f"""SELECT 1 FROM run_idempotency AS victim
@@ -371,12 +378,64 @@ class RunIdempotencyStore:
             "truncated": len(runs) < total - terminal + missing, "missing_runs": missing,
         }
 
+    def list_room_scopes(self, *, target_install_id: str, target_profile: str = "default") -> dict[str, Any]:
+        """List the room scopes one local target holds here, most recently admitted first.
+
+        A scope is listed while it still has a run record or a freeze, because only
+        those can be stopped. Exact identities and counts only, never status bodies.
+        Bounded; an unreadable identity is skipped and reported as truncation.
+        """
+        with self._group_stop_txn():
+            rows = self._conn.execute(f"""WITH known AS (
+                    SELECT scope,identity_json,first_admitted_at,last_admitted_at FROM {_SCOPES}
+                    UNION ALL SELECT scope,identity_json,frozen_at,frozen_at FROM {_FREEZES}
+                    WHERE scope NOT IN (SELECT scope FROM {_SCOPES}))
+                SELECT k.scope,k.identity_json,k.first_admitted_at,k.last_admitted_at,
+                    f.frozen_at,COALESCE(f.retired_terminal,0),COALESCE(f.missing_runs,0)
+                FROM known k LEFT JOIN {_FREEZES} f ON f.scope=k.scope
+                WHERE json_valid(k.identity_json)
+                  AND json_extract(k.identity_json,'$.target_install_id')=?
+                  AND json_extract(k.identity_json,'$.target_profile')=?
+                  AND (f.scope IS NOT NULL OR EXISTS (SELECT 1 FROM run_idempotency r WHERE r.scope=k.scope))
+                ORDER BY k.last_admitted_at DESC,k.scope LIMIT ?""",
+                (target_install_id, target_profile, self.GROUP_SCOPE_LIST_LIMIT + 1)).fetchall()
+            truncated = len(rows) > self.GROUP_SCOPE_LIST_LIMIT
+            participants = []
+            for scope, encoded, first_at, last_at, frozen_at, retired, missing in rows[:self.GROUP_SCOPE_LIST_LIMIT]:
+                try:
+                    identity = validate_room_run_scope(json.loads(encoded))
+                    if room_run_scope_key(identity) != scope:
+                        raise ValueError("stored scope differs")
+                except (TypeError, ValueError):
+                    truncated = True
+                    continue
+                total, terminal, unknown = self._conn.execute(f"""SELECT COUNT(*),
+                    COALESCE(SUM(run_status IN ({_TERMINAL_SQL})),0),COALESCE(SUM(run_status='unknown'),0)
+                    FROM (SELECT {_STATUS_SQL} AS run_status FROM run_idempotency WHERE scope=?)""",
+                    (scope,)).fetchone()
+                participants.append({
+                    "identity": identity, "first_admitted_at": first_at, "last_admitted_at": last_at,
+                    "frozen_at": frozen_at, "counts": {
+                        "total": total + retired + missing, "terminal": terminal + retired,
+                        "nonterminal": total - terminal - unknown, "unknown": unknown + missing},
+                })
+            return {"participants": participants, "truncated": truncated}
+
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
-        """Atomically reserve a key; return ``(outcome, stored_record)``."""
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                identity: dict | None = None):
+        """Atomically reserve a key; return ``(outcome, stored_record)``.
+
+        ``identity`` is the exact room scope behind ``scope``. A new run records it
+        in the same transaction, so the owner can list the scopes this store holds.
+        """
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
         encoded = _encode_status(status)
+        if identity is not None:
+            identity = validate_room_run_scope(identity)
+            if room_run_scope_key(identity) != scope:
+                raise ValueError("room scope identity does not match its Runs scope")
         with self._immediate_txn():
             self._prune_stale_terminal_locked(now)
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
@@ -394,6 +453,11 @@ class RunIdempotencyStore:
                 ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now))
+            if identity is not None:
+                self._conn.execute(
+                    f"""INSERT INTO {_SCOPES}(scope,identity_json,first_admitted_at,last_admitted_at)
+                        VALUES (?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_admitted_at=excluded.last_admitted_at""",
+                    (scope, json.dumps(identity, sort_keys=True, separators=(",", ":")), now, now))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
@@ -420,6 +484,7 @@ class RunIdempotencyStore:
                    OR (retention_until <= 0 AND updated_at < ?)""",
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
+        pruned = False
         for stale_scope, stale_key, stale_status in stale:
             try:
                 terminal = json.loads(stale_status).get("status") in TERMINAL_STATUSES
@@ -428,6 +493,11 @@ class RunIdempotencyStore:
             if terminal:
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
+                pruned = True
+        if pruned:
+            # Without a run record or a freeze, a scope can no longer be stopped or listed.
+            self._conn.execute(f"""DELETE FROM {_SCOPES} WHERE scope NOT IN (SELECT scope FROM run_idempotency)
+                AND scope NOT IN (SELECT scope FROM {_FREEZES})""")
 
     def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:
         """Load one durable run status inside its authenticated scope."""

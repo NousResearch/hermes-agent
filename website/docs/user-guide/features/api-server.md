@@ -648,6 +648,41 @@ cannot use this operation.
 Stop.** Other participants, other groups and ordinary API conversations are not
 stopped. There is no unfreeze or takeover endpoint.
 
+To find the participant, send `GET /v1/group-participants` with the same owner
+credentials. It lists the default-profile group scopes this gateway's Runs store
+holds, most recently admitted first:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "hermes.group_participant",
+      "participant": {
+        "room_id": "group-123",
+        "home_install_id": "install:home",
+        "authority_gateway_id": "install:home",
+        "authority_epoch": 1,
+        "member_id": "writer",
+        "target_install_id": "install:participant",
+        "target_profile": "default"
+      },
+      "first_admitted_at": 1759300000.0,
+      "last_admitted_at": 1759300420.5,
+      "admissions_frozen": false,
+      "frozen_at": null,
+      "counts": {"total": 2, "terminal": 1, "nonterminal": 1, "unknown": 0}
+    }
+  ],
+  "truncated": false
+}
+```
+
+A scope is listed while the store still keeps a run record for it, or once it is
+frozen. When its last run record ages out of retention, it can no longer be stopped
+and is no longer listed. The list is read-only, shows at most 128 scopes and reports
+truncation, and never includes prompts, outputs or credentials.
+
 Send `POST /v1/group-participants/stop` with this exact shape:
 
 ```json
@@ -666,8 +701,8 @@ Send `POST /v1/group-participants/stop` with this exact shape:
 }
 ```
 
-Use the exact participant identity from its existing RoomLink dispatch, not a
-newly invented group/member identity. `target_install_id` must identify the
+Use the exact `participant` identity from that list, or from its existing RoomLink
+dispatch, not a newly invented group/member identity. `target_install_id` must identify the
 gateway receiving the request. The durable Runs store must already know this
 scope; an unknown participant returns `404`, not a successful empty Stop.
 This API-first increment does not add a participant selector to Desktop or messaging.

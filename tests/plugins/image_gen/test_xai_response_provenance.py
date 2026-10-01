@@ -4,8 +4,9 @@ from unittest.mock import Mock
 import pytest
 
 
+@pytest.mark.parametrize("is_edit", [False, True])
 @pytest.mark.parametrize("branch", ["b64_json", "url", "file_output"])
-def test_image_result_preserves_response_identity(monkeypatch, tmp_path, branch):
+def test_image_result_preserves_response_identity(monkeypatch, tmp_path, branch, is_edit):
     import plugins.image_gen.xai as xai
     import plugins.image_gen._common as common
 
@@ -24,7 +25,26 @@ def test_image_result_preserves_response_identity(monkeypatch, tmp_path, branch)
     response = Mock()
     response.json.return_value = {"model": "other-model", "data": [first], "usage": {"images": 1}}
     monkeypatch.setattr(xai.requests, "post", Mock(return_value=response))
-    result = xai.XAIImageGenProvider().generate("An apple", model="grok-imagine-image-quality")
+    from agent import image_gen_registry
+    from hermes_cli import plugins
+    from tools import image_generation_tool
+    import json
+
+    (tmp_path / "config.yaml").write_text(
+        "image_gen:\n  provider: xai\n  model: grok-imagine-image-quality\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    image_gen_registry._reset_for_tests()
+    image_gen_registry.register_provider(xai.XAIImageGenProvider())
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda **kwargs: None)
+    args = {"prompt": "An apple"}
+    if is_edit:
+        args["image_url"] = "https://fixture.invalid/source.png"
+    try:
+        result = json.loads(image_generation_tool._handle_image_generate(args))
+    finally:
+        image_gen_registry._reset_for_tests()
+    assert xai.requests.post.call_args.kwargs["json"]["model"] == "grok-imagine-image-quality"
+    assert result["modality"] == ("image" if is_edit else "text")
     assert result["success"] is True
     assert result["model"] == "grok-imagine-image-quality"
     assert result.get("requested_model") == result["model"]

@@ -136,6 +136,8 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
         if input_custody is not None:
             from hermes_state_input_custody import accept_prepared_input
             accept_prepared_input(conn, epoch=epoch, admission=row, handle=input_custody)
+        from hermes_state_logical_attempts import project_admission
+        project_admission(conn, row)
         return _row(row)
     return db._execute_write(write)
 
@@ -339,6 +341,8 @@ def _import_legacy_row(conn, row, epoch, principal_id):
         target_session_id,lineage_json,payload_json,payload_digest,intent,status,outcome,owner_epoch,generation)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (row['admission_id'], row['admission_id'], principal_id,
         target, json.dumps(chain), encoded, digest, intent, status, row['outcome'], epoch, generation))
+    from hermes_state_logical_attempts import project_admission
+    project_admission(conn, _admission(conn, row['admission_id']), migrating=True)
     if generation is not None:
         conn.execute('UPDATE sessions SET runtime_generation=MAX(runtime_generation,?) WHERE id=?', (generation, target))
 

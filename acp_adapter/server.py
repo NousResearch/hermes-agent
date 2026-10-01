@@ -257,6 +257,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
         self._background = BackgroundNotifier(self.session_manager)
+        self._background_supported = False
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -533,6 +534,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> InitializeResponse:
         from hermes_cli.version_info import get_version_info
 
+        meta = getattr(client_capabilities, "field_meta", None) or {}
+        self._background_supported = meta.get("hermes.backgroundNotifications") == 1
         auth_methods = build_auth_methods()
         logger.info(
             "Initialize from %s (protocol v%s)", client_info.name if client_info else "unknown",
@@ -604,11 +607,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
+        if replay_verb and self._background_supported:
+            self._schedule_soon(lambda: self._resume_background())
         return {
             "models": self._build_model_state(state),
             "modes": self._session_modes(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
+
+    async def _resume_background(self) -> None:
+        if self._conn is not None:
+            self._background.turn_ended(self._conn, asyncio.get_running_loop())
 
     async def _attach_session_mcp(self, state: SessionState, mcp_servers: list | None, log: str, *log_args) -> None:
         await self._register_session_mcp_servers(state, mcp_servers)
@@ -776,6 +785,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
                 tokens = set_session_vars(
                     session_key=session_id, session_id=session_id, cwd=state.cwd, cron_session="",
+                    async_delivery=self._background_supported,
                 )
                 return lambda: clear_session_vars(tokens)
 
@@ -882,7 +892,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
-        return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+        meta = kwargs.get("field_meta") or kwargs.get("_meta") or {}
+        receipts = meta.get("hermes.notificationIds", []) if isinstance(meta, dict) else []
+        if not isinstance(receipts, list) or not all(isinstance(receipt, str) for receipt in receipts):
+            receipts = []
+        return await self._finish_turn(
+            state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed, receipts=receipts,
+        )
 
     def _flush_turn_tool_calls(
         self, cbs: _TurnCallbacks, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
@@ -949,7 +965,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def _finish_turn(
         self, state: SessionState, session_id: str, conn: Any, result: dict, pre_turn_hermes_id: Any,
-        streamed_message: bool,
+        streamed_message: bool, *, receipts: list[str] | None = None,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
         try:
@@ -957,7 +973,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # only a result without the key leaves the history untouched.
             if "messages" in result and isinstance(result["messages"], list):
                 state.history = result["messages"]
-                self.session_manager.save_session(session_id)
+                saved = (self.session_manager.save_session(session_id, verify_history=True)
+                         if receipts else self.session_manager.save_session(session_id))
+                if saved and receipts and not result.get("interrupted") and not (
+                    state.cancel_event and state.cancel_event.is_set()
+                ):
+                    self._background.acknowledge(session_id, receipts)
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.
             post_turn_hermes_id = getattr(state.agent, "session_id", None)
@@ -996,7 +1017,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.is_running = False
                 state.current_prompt_text = ""
             await self._drain_queued_prompts(state, session_id, conn)
-            if conn and (background := getattr(self, "_background", None)) is not None:
+            if getattr(self, "_background_supported", False) and conn and (background := getattr(self, "_background", None)) is not None:
                 # Background work that finished during the turn is reported now it is idle.
                 background.turn_ended(conn, asyncio.get_running_loop())
 

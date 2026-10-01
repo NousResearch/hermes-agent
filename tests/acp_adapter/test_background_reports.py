@@ -11,6 +11,62 @@ import pytest
 from acp_adapter.background import NOTIFICATION_METHOD, PROCESS_METHOD, BackgroundNotifier, track_background_process
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved,interrupted,cancelled,has_messages,accepted", [
+    (True, False, False, True, True),
+    (False, False, False, True, False),
+    (True, True, False, True, False),
+    (True, False, True, True, False),
+    (True, False, False, False, False),
+])
+async def test_completion_receipt_requires_saved_uninterrupted_history(saved, interrupted, cancelled, has_messages, accepted):
+    from unittest.mock import AsyncMock, Mock
+    from acp_adapter.server import HermesACPAgent
+
+    server = HermesACPAgent.__new__(HermesACPAgent)
+    server.session_manager = Mock()
+    server.session_manager.save_session.return_value = saved
+    server._background = Mock()
+    server._drain_queued_prompts = AsyncMock()
+    server._send_usage_update = AsyncMock()
+    cancel = threading.Event()
+    if cancelled:
+        cancel.set()
+    state = SimpleNamespace(agent=SimpleNamespace(session_id="parent"), history=[], cancel_event=cancel,
+                            runtime_lock=threading.Lock(), is_running=True, current_prompt_text="wake")
+    result = {"interrupted": interrupted}
+    if has_messages:
+        result["messages"] = [{"role": "user", "content": "sentinel result"}]
+    await server._finish_turn(state, "parent", None, result, "parent", False, receipts=["receipt"])
+    if accepted:
+        server._background.acknowledge.assert_called_once_with("parent", ["receipt"])
+    else:
+        server._background.acknowledge.assert_not_called()
+
+
+@pytest.mark.parametrize("stored,accepted", [("sentinel result", True), ("earlier prompt", False), (None, False)])
+def test_owning_agent_receipt_checks_durable_user_message(tmp_path, stored, accepted):
+    from acp_adapter.session import SessionManager, SessionState
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session(session_id="parent", source="acp")
+        if stored is not None:
+            db.replace_messages("parent", [{"role": "user", "content": stored}])
+        manager = SessionManager(db=db)
+        agent = SimpleNamespace(session_id="parent", _session_db=db, _session_db_created=True)
+        state = SessionState(session_id="parent", agent=agent, cwd="",
+                             history=[{"role": "user", "content": "sentinel result"}])
+        manager._sessions["parent"] = state
+        assert manager.save_session("parent", verify_history=True) is accepted
+        # Checking a receipt must not rewrite the owning agent's transcript.
+        history = db.get_messages_as_conversation("parent")
+        assert [m["content"] for m in history] == ([] if stored is None else [stored])
+    finally:
+        db.close()
+
+
 class _Client:
     """Records extension notifications on a real event loop thread."""
 
@@ -75,7 +131,12 @@ def _completion(registry, session_key, *, proc_id="proc_aaaa1111", exit_code=1):
 
 
 @pytest.mark.platforms("posix")
-def test_background_terminal_reports_running_then_exit(client, registry, tmp_path):
+def test_background_terminal_reports_running_then_exit(client, registry, tmp_path, monkeypatch):
+    from tools.environments import local
+
+    # The installed interpreter may live under the real Hermes home. This fixture
+    # does not need its private command directory when spawning a disposable shell.
+    monkeypatch.setattr(local, "_HERMES_BIN_DIR", None)
     proc = registry.spawn_local("exit 3", cwd=str(tmp_path), task_id="acp-1", session_key="acp-1")
     result = json.dumps({"output": "Background process started", "session_id": proc.id, "pid": proc.pid})
 
@@ -154,3 +215,36 @@ def test_completion_the_agent_already_read_is_not_resent(client, registry):
     [(_method, params)] = client.wait_for(1)
     assert "proc_fresh0002" in params["text"]
     assert "proc_consumed1" not in params["text"]
+
+
+def test_delegation_notification_waits_for_owning_parent_receipt(client, registry, monkeypatch):
+    from tools import async_delegation
+
+    completed = []
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", lambda event, consumer: "claim-1")
+    monkeypatch.setattr(async_delegation, "complete_event_delivery", lambda *args: completed.append(args))
+    notifier = BackgroundNotifier(_Sessions("acp-1", "acp-2"))
+    notifier._conn, notifier._loop = client, client.loop
+    event = {"type": "async_delegation", "delegation_id": "deleg-test", "task_count": 1}
+    notifier._send("acp-1", [(event, "child sentinel result")], registry)
+
+    assert client.wait_for(1)[0][1]["notificationIds"] == ["deleg-test"]
+    assert completed == []
+    notifier.acknowledge("acp-2", ["deleg-test"])
+    assert completed == []
+    notifier.acknowledge("acp-1", ["deleg-test"])
+    notifier.acknowledge("acp-1", ["deleg-test"])
+    assert completed == [(event, "claim-1")]
+
+
+@pytest.mark.asyncio
+async def test_background_delivery_requires_explicit_client_capability(monkeypatch):
+    from acp.schema import ClientCapabilities
+    from acp_adapter.server import HermesACPAgent
+
+    server = HermesACPAgent(session_manager=SimpleNamespace())
+    await server.initialize(protocol_version=1)
+    assert not server._background_supported
+    await server.initialize(protocol_version=1, client_capabilities=ClientCapabilities(
+        **{"_meta": {"hermes.backgroundNotifications": 1}}))
+    assert server._background_supported

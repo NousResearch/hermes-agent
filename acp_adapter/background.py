@@ -108,11 +108,29 @@ class BackgroundNotifier:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._turn_ended = threading.Event()
         self._thread: threading.Thread | None = None
+        self._pending: dict[str, dict[str, tuple[dict, str]]] = {}
+        self._pending_lock = threading.Lock()
+
+    def acknowledge(self, session_id: str, ids: list[str]) -> None:
+        """Settle only receipts this connection offered to this exact ACP session."""
+        from tools.async_delegation import complete_event_delivery
+
+        with self._pending_lock:
+            pending = self._pending.get(session_id, {})
+            for receipt in ids:
+                item = pending.get(receipt)
+                if item is not None:
+                    complete_event_delivery(*item)
+                    pending.pop(receipt, None)
 
     def turn_ended(self, conn: acp.Client, loop: asyncio.AbstractEventLoop) -> None:
         """Start the pump on the first finished turn, then retry held events after each one."""
         self._conn, self._loop = conn, loop
         if self._thread is None:
+            from tools.async_delegation import restore_undelivered_completions
+            from tools.process_registry import process_registry
+
+            restore_undelivered_completions(process_registry.completion_queue)
             self._thread = threading.Thread(target=self._run, daemon=True, name="acp-background-notifier")
             self._thread.start()
         self._turn_ended.set()
@@ -203,8 +221,23 @@ class BackgroundNotifier:
             text = claimed[0][1]
             title = (async_delegation_display_text(first) if kind == "async_delegation"
                      else heartbeat_display_text(first) if kind == "heartbeat" else text)
+        receipts = [str(event["delegation_id"]) for event, _text, claim in claimed
+                    if claim and event.get("delegation_id")]
+        # A successful notification write is not host admission. Keep durable results
+        # pending until a client-driven prompt persists them in the parent history.
+        with self._pending_lock:
+            pending = self._pending.setdefault(session_id, {})
+            for event, _text, claim in claimed:
+                if claim and event.get("delegation_id"):
+                    pending[str(event["delegation_id"])] = (event, claim)
         sent = text is None or _notify(self._conn, self._loop, NOTIFICATION_METHOD, {
             "sessionId": session_id, "kind": kind, "title": title, "text": text,
+            "notificationIds": receipts,
         })
         for event, _text, claim in claimed:
-            (complete_event_delivery if sent else release_event_delivery)(event, claim)
+            if not sent:
+                with self._pending_lock:
+                    self._pending.get(session_id, {}).pop(str(event.get("delegation_id") or ""), None)
+                release_event_delivery(event, claim)
+            elif not claim or text is None:
+                complete_event_delivery(event, claim)

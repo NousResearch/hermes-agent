@@ -440,9 +440,17 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute(
-            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
+            "SELECT delivery_state, delivery_claim FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
         if row is None:
             return True  # legacy event created before durable dispatch
+        previous_claim = str(row[1] or "")
+        if previous_claim.startswith("acp:"):
+            alive = _owner_liveness()
+            parts = previous_claim.split(":")
+            if alive is not None and len(parts) == 3 and parts[1].isdigit() and not alive(int(parts[1]), None):
+                conn.execute("""UPDATE async_delegations SET delivery_claim=NULL, delivery_claimed_at=NULL
+                    WHERE delegation_id=? AND delivery_claim=? AND delivery_state='pending'""",
+                    (delegation_id, previous_claim))
         cur = conn.execute("""UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
                       delivery_attempts=delivery_attempts+1, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'

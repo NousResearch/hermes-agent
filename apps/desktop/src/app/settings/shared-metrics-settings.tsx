@@ -35,7 +35,7 @@ export function SharedMetricsSettings() {
 
   const request = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
+      requestGatewayForAgent<T>(connectionId, scopeProfile, method, { ...params, profile: scopeProfile ?? 'default' }, undefined, undefined, {
         spawnPriority: 'foreground'
       }),
     [connectionId, scopeProfile]

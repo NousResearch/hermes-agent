@@ -107,7 +107,7 @@ class MultiplexDecision:
 
 def _standalone_launcher() -> bool:
     from hermes_constants import get_hermes_home, profile_name_for_home
-    from hermes_cli.profiles import profile_is_standalone
+    from gateway.profile_serving import profile_is_standalone
 
     home = get_hermes_home()
     return profile_name_for_home(home) not in (None, "default") and profile_is_standalone(home)
@@ -139,7 +139,7 @@ def implicit_multiplex_blocker() -> Optional[str]:
     whose only gateway runs under a named profile permanently standalone — and every lifecycle
     verb built on "the default's multiplexer" blind to the process actually serving the host.
     """
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
     if _standalone_launcher():
         return STANDALONE_PROFILE_REASON
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
@@ -291,7 +291,7 @@ def log_multiplex_decision(decision: MultiplexDecision) -> None:
 def unserved_profiles() -> list[str]:
     """Named profiles a standalone gateway leaves without a bot (the whole point of the warning)."""
     from hermes_constants import get_hermes_home, profile_name_for_home
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
     me = profile_name_for_home(get_hermes_home()) or "default"
     return [name for name, _home in profiles_to_serve(multiplex=True, include_parked=True) if name != me]
 

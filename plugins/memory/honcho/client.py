@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 from agent.memory_provider import spawn_context_thread as _spawn_context_thread
 from agent.secret_scope import get_secret
-from hermes_cli.profiles import _get_default_hermes_home
+from profiles.paths import _get_default_hermes_home
 from hermes_constants import get_hermes_home
 from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 
@@ -81,7 +81,7 @@ def resolve_active_host() -> str:
     if explicit:
         return explicit
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         profile_host = profile_host_key(get_active_profile_name())
     except Exception:
         profile_host = HOST

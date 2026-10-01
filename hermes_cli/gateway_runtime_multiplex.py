@@ -58,7 +58,7 @@ def multiplexer_serves_home(home: Path) -> Path | None:
     if flag is False:
         return None
     from gateway.status import read_runtime_status
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
     served = (read_runtime_status(root / "gateway_state.json") or {}).get("served_profiles")
     if not isinstance(served, list):
         return None

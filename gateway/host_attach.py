@@ -59,7 +59,7 @@ REPLACE_HOST = "replace-host"
 
 def _normalize(name: str) -> str:
     try:
-        from hermes_cli.profiles import normalize_profile_name
+        from profiles.names import normalize_profile_name
 
         return normalize_profile_name(name or "default")
     except Exception:
@@ -302,7 +302,7 @@ def _coexisting_gateways(owner: Optional[HostGateway]):
     record, to ask every running profile gateway what it actually serves.
     """
     from gateway.status import live_gateway_pid_for_home
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
 
     seen = {os.getpid()}
     if owner is not None:
@@ -326,7 +326,7 @@ def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> 
 
     Shared by the initial attach check and the lock-losing race check.
     """
-    from hermes_cli.profiles import profile_is_standalone
+    from gateway.profile_serving import profile_is_standalone
 
     if not profile_is_standalone(our_home):
         return None

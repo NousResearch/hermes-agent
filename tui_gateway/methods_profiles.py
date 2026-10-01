@@ -71,7 +71,7 @@ def _resolve_profile(rid, params):
     name = str(params.get("name") or "").strip()
     if not name:
         return name, None, _err(rid, 4063, "name required")
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     try:
         profile_dir = Path(get_profile_dir(name))
     except ValueError:

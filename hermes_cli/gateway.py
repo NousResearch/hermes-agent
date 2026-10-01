@@ -1656,7 +1656,7 @@ def _print_unserved_shared_ingress(profile: str | None) -> None:
 def _print_other_profiles_gateway_status() -> None:
     """Print other profiles' running gateways at the bottom of ``hermes gateway status``."""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         current = get_active_profile_name()
         other_processes = [p for p in find_profile_gateway_processes() if p.profile != current]
         if not other_processes:
@@ -1684,7 +1684,8 @@ def _print_duplicate_credential_warnings() -> None:
 def _gateway_list() -> None:
     """List every profile and whether its gateway is running."""
     try:
-        from hermes_cli.profiles import list_profiles, get_active_profile_name
+        from profiles.current import get_active_profile_name
+        from hermes_cli.profiles import list_profiles
     except Exception:
         print("Unable to list profiles.")
         return
@@ -4111,7 +4112,7 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
         if live_default_gateway_pid() is None:
             return False
-        from hermes_cli.profiles import normalize_profile_name
+        from profiles.names import normalize_profile_name
         # The live gateway's own record wins: the CLI process cannot see an env-only opt-in on the
         # default profile (`hermes -p X` loads X's .env) and a config edit after start is not live yet.
         # Only a record without the key (pre-multiplex writer) falls through to config derivation.
@@ -4138,7 +4139,7 @@ def _served_profile_needs_no_service() -> bool:
         # Not served (yet): a named profile still gets no service of its own — same rule and text
         # as `gateway install`, so `hermes -p X setup` cannot grow a fleet member the verb refuses.
         return _named_profile_refused_under_multiplexer()
-    from hermes_cli.profiles import profile_is_standalone
+    from gateway.profile_serving import profile_is_standalone
     if profile_is_standalone(get_hermes_home()):
         from gateway.host_attach import standalone_rescan_message
         print_info(standalone_rescan_message(_current_profile_name()))
@@ -4169,7 +4170,7 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
     try:
         suffix = _current_profile_name()
         from hermes_constants import profile_name_for_home
-        from hermes_cli.profiles import profile_is_standalone
+        from gateway.profile_serving import profile_is_standalone
         # A profile that authored gateway.standalone: true opted out of the host multiplexer: it is
         # allowed a gateway of its own without --force. Only a RUNNING host record that still lists
         # it (the host has not rescanned since the key was set) is refused with the rescan remedy.
@@ -5500,7 +5501,8 @@ def _cmd_status(args):
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
-    from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
+    from profiles.current import get_active_profile_name
+    from gateway.profile_serving import profile_is_standalone
 
     active_standalone = ((get_active_profile_name() or "default") != "default"
                          and profile_is_standalone(get_hermes_home()))
@@ -5551,7 +5553,8 @@ def _cmd_status(args):
 def _print_standalone_by_config() -> None:
     """Default-profile status: name the profiles that opted out of the host multiplexer by config,
     so the served set the host gateway reports is not mistaken for the installed roster."""
-    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+    from profiles.current import get_active_profile_name
+    from gateway.profile_serving import profiles_to_serve
     if (get_active_profile_name() or "default") != "default":
         return
     roster = {name for name, _home in profiles_to_serve(True, include_standalone=True)}

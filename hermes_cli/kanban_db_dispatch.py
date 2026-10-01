@@ -1698,7 +1698,8 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
     """
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from profiles.names import normalize_profile_name
+        from profiles.registry import profile_exists
     except Exception:
         return None
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
@@ -1772,7 +1773,7 @@ def dispatch_profile_allowlist_summary() -> str:
     the sorted allowed names, or ``none (fail-closed: ...)``.
     """
     try:
-        from hermes_cli.profiles import normalize_profile_name
+        from profiles.names import normalize_profile_name
     except Exception as exc:
         return f"none (fail-closed: profiles unavailable: {exc})"
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
@@ -2798,7 +2799,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from profiles.names import normalize_profile_name
+    from profiles.paths import resolve_profile_env
 
     profile_arg = normalize_profile_name(task.assignee)
 

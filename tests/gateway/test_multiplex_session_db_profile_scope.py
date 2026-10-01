@@ -675,7 +675,7 @@ def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
     def _boom(_name):
         raise OSError("profile lookup failed")
 
-    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
+    monkeypatch.setattr("profiles.registry.profile_exists", _boom)
 
     assert store._db_for_key(key) is None
     assert _session_ids(root / "state.db") == set()

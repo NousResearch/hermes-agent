@@ -93,10 +93,9 @@ class TestProfileEnvIsNotThePrimaryClaim:
         started = []
 
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             lambda multiplex, **_kw: [("default", default_home), ("worker", worker_home)],
         )
-        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "worker")
 
         async def fake_start(profile_name, profile_home, claimed):
             started.append(profile_name)

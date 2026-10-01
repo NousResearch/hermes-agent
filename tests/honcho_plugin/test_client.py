@@ -8,7 +8,7 @@ import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from hermes_cli.profiles import _get_default_hermes_home
+from profiles.paths import _get_default_hermes_home
 
 import pytest
 
@@ -590,7 +590,7 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         }))
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+             patch("profiles.current.get_active_profile_name", return_value="default"), \
              patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
             cfg = HonchoClientConfig.from_global_config(config_path=config_file)
 

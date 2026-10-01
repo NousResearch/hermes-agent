@@ -67,7 +67,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     authority.authorize(actor, ref, 'session:read')
     name, arg = _parse(params, dispatch)
     from hermes_cli.commands import resolve_command
-    from hermes_cli.profiles import profile_matches_home
+    from profiles.registry import profile_matches_home
     home = Path(authority.profile_id)
     if params.get('profile') and not profile_matches_home(params['profile'], home):
         raise RuntimeStoreError('profile_mismatch')

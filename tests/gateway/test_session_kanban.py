@@ -16,7 +16,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
+    monkeypatch.setattr('profiles.paths.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     from contextlib import closing
@@ -107,7 +107,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
+    monkeypatch.setattr('profiles.paths.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     with closing(connect(board='owned')) as conn:

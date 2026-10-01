@@ -422,7 +422,7 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
     the migrate preflight reports). ``None`` when the copy is allowed. Shared by CLI, REST and TUI
     through :func:`hermes_cli.profiles.create_profile`."""
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
     served = recorded_served_profiles()
     if not served or len(served) < 2 or normalize_profile_name(source_label) not in {
         normalize_profile_name(p) for p in served

@@ -120,8 +120,8 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
-            from hermes_cli.profiles import (
-                _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
+            from gateway.profile_serving import profiles_to_serve
+            from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
 
             # Same served set as the multiplexer: default + every live profile under profiles/.
             # The ticker re-enumerates this callable every cycle. Passing a

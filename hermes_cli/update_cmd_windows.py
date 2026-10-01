@@ -979,7 +979,8 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
     with _best_effort("Could not evaluate per-profile attested cold-starts before update: %s"):
         if not _desktop_owns_gateway_lifecycle():
             return
-        from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+        from profiles.current import get_active_profile_name
+        from gateway.profile_serving import profiles_to_serve
         active = get_active_profile_name() or "default"
         cold: dict[str, str] = {}
         # An activation list, not inventory: parked profiles stay offline.
@@ -997,7 +998,7 @@ def _cold_start_attested_profiles(token: dict) -> None:
     """Spawn each ``cold_start_profiles`` entry under its own HERMES_HOME and consume exactly the
     generation that authorized it; one profile's failure never aborts the others (#110959)."""
     from hermes_cli import gateway_windows
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     pending = dict(token.get("cold_start_profiles") or {})
     if not pending:
         return

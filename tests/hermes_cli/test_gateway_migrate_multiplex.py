@@ -179,7 +179,7 @@ def test_migration_removes_parked_footprint_without_waiting_for_it_to_serve(flee
     def boot_unparked_profiles(kind, system, verb, home, **kwargs):
         service_op(kind, system, verb, home, **kwargs)
         if _name(home) == "default" and verb in ("start", "restart"):
-            from hermes_cli.profiles import profiles_to_serve
+            from gateway.profile_serving import profiles_to_serve
             path = fleet.root / "gateway_state.json"
             runtime = json.loads(path.read_text())
             runtime["served_profiles"] = [name for name, _ in profiles_to_serve(True)]

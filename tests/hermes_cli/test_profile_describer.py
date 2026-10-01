@@ -53,14 +53,11 @@ def _patch_aux_client(content: str):
 
 def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     # Pretend "myprof" is a registered profile pointing at profile_env.
-    monkeypatch.setattr(
-        profiles_mod, "profile_exists", lambda n: n == "myprof",
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda n: n == "myprof",
     )
-    monkeypatch.setattr(
-        profiles_mod, "normalize_profile_name", lambda n: n,
+    monkeypatch.setattr("profiles.names.normalize_profile_name", lambda n: n,
     )
-    monkeypatch.setattr(
-        profiles_mod, "get_profile_dir", lambda n: profile_env,
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: profile_env,
     )
 
     payload = jsonlib.dumps({"description": "writes Python codebases"})
@@ -78,9 +75,9 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
 
 @pytest.fixture
 def registered_profile(profile_env, monkeypatch):
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
-    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr("profiles.names.normalize_profile_name", lambda n: n)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: profile_env)
     return profile_env
 
 
@@ -115,9 +112,9 @@ def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     profiles_mod.write_profile_meta(
         profile_env, description="curated", description_auto=False,
     )
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
-    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr("profiles.names.normalize_profile_name", lambda n: n)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: profile_env)
 
     outcome = describer.describe_profile("myprof")
     assert outcome.ok is False

@@ -17,7 +17,7 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("agent", "tools", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
+PACKAGES = ("agent", "tools", "hermes_cli", "profiles", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
 
 
 def _root_py_modules() -> set[str]:
@@ -61,6 +61,12 @@ def test_pyproject_has_no_static_py_modules_list():
         "root modules are derived in setup.py::_root_py_modules(); a static py-modules list drifts "
         "from the tree and breaks installed wheels. Do not add it back."
     )
+
+
+def test_profiles_package_is_in_wheel_discovery():
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    includes = set(cfg["tool"]["setuptools"]["packages"]["find"]["include"])
+    assert {"profiles", "profiles.*"} <= includes
 
 
 def test_every_root_module_imported_by_packaged_code_is_shipped():

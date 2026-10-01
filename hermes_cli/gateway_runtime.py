@@ -117,7 +117,7 @@ def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None
     parked = payload.get("parked_profiles")
     if not isinstance(parked, dict):
         return None
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
     name = normalize_profile_name(home.name)
     reason = next((r for n, r in parked.items() if normalize_profile_name(str(n)) == name), None)
     if reason is None:

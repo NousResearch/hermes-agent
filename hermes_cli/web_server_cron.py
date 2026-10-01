@@ -1,6 +1,10 @@
 """Dashboard cron helpers: per-profile scheduler I/O, job validation/normalisation, cron fire and
 gateway forwarding.
 """
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
+from gateway import profile_serving
 
 import contextlib
 import logging
@@ -83,11 +87,10 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
     from hermes_cli.web_server_profiles import _fallback_profile_dicts
-    from hermes_cli import profiles as profiles_mod
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
+            for name, home in profile_serving.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -102,7 +105,7 @@ def _cron_default_profile() -> str:
     profile-dir equivalent, so it keeps the legacy "default" fallback.
     """
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         name = get_active_profile_name()
     except Exception:
         return "default"
@@ -111,16 +114,15 @@ def _cron_default_profile() -> str:
 
 def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
-    from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:
-        canon = profiles_mod.normalize_profile_name(raw)
-        profiles_mod.validate_profile_name(canon)
+        canon = profile_names.normalize_profile_name(raw)
+        profile_names.validate_profile_name(canon)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(canon):
+    if not profile_registry.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
-    return canon, profiles_mod.get_profile_dir(canon)
+    return canon, profile_paths.get_profile_dir(canon)
 
 
 def _annotate_cron_job(

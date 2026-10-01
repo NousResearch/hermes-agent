@@ -15,16 +15,15 @@ import pytest
 
 from cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
 from hermes_cli.config import ensure_hermes_home
+from gateway.profile_serving import profiles_to_serve
+from profiles.current import set_active_profile
+from profiles.paths import resolve_profile_env
+from profiles.registry import list_profile_names, profile_exists
 from hermes_cli.profiles import (
     backfill_profile_envs,
     create_profile,
     delete_profile,
-    list_profile_names,
     list_profiles,
-    profile_exists,
-    profiles_to_serve,
-    resolve_profile_env,
-    set_active_profile,
 )
 from hermes_constants import (
     named_profile_home,

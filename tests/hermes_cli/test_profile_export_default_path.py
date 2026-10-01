@@ -138,7 +138,7 @@ def test_slash_export_uses_the_same_managed_destination(
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr("profiles.current.get_active_profile_name", lambda: "default")
     calls = []
     monkeypatch.setattr(
         profiles,

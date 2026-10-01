@@ -152,7 +152,7 @@ class MigrationPlan:
 
     @property
     def expected_served_names(self) -> set[str]:
-        from hermes_cli.profiles import profile_is_parked
+        from gateway.profile_serving import profile_is_parked
         return {p.name for p in self.profiles if p.is_default or not profile_is_parked(p.home)}
 
     @property
@@ -228,7 +228,7 @@ def _default_home() -> Path:
 
 
 def _profile_homes() -> list[tuple[str, Path]]:
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
     return list(profiles_to_serve(multiplex=True, include_parked=True))
 
 
@@ -604,7 +604,7 @@ def build_migration_plan() -> MigrationPlan:
         live_served=recorded_served_profiles(default_home),
         manifest=_read_manifest(default_home),
     )
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
     foldable = {name for name, _home in _profile_homes()}
     plan.standalone_by_config = tuple(
         name for name, _home in profiles_to_serve(True, include_standalone=True)
@@ -804,7 +804,7 @@ def _manifest_not_yet_served(manifest: Optional[dict], live_served: Optional[lis
     Profiles created after the migration are not in the manifest, so they cannot flag it as interrupted."""
     if manifest is None:
         return False
-    from hermes_cli.profiles import profile_is_parked
+    from gateway.profile_serving import profile_is_parked
     recs = [r for r in (manifest.get("default"), *(_manifest_secondaries(manifest) or [])) if isinstance(r, dict)]
     migrated = {str(r.get("profile") or "default") for r in recs
                 if not r.get("home") or not profile_is_parked(Path(r["home"]))} | {"default"}

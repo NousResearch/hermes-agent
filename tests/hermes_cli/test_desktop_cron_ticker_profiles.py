@@ -61,7 +61,7 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
     ]
     import hermes_cli.profiles as profiles_mod
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda **_kw: list(homes))
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", lambda **_kw: list(homes))
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=7)
 
@@ -84,7 +84,7 @@ def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gatewa
 
     home = tmp_path / "root"
     home.mkdir()
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda **_kw: [("default", home)])
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", lambda **_kw: [("default", home)])
     monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda _home: gateway_running)
     monkeypatch.setattr(
         "cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler
@@ -110,7 +110,7 @@ def test_enumeration_failure_fails_open(monkeypatch, _providers):
     def _boom(**_kw):
         raise RuntimeError("profiles dir unreadable")
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", _boom)
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", _boom)
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=11)
 
@@ -126,9 +126,7 @@ def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
 
     import hermes_cli.profiles as profiles_mod
 
-    monkeypatch.setattr(
-        profiles_mod,
-        "profiles_to_serve",
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve",
         lambda **_kw: [("default", tmp_path / "a"), ("b", tmp_path / "b")],
     )
 
@@ -153,8 +151,8 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
         (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker: served
     (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: root)
-    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: root / "profiles")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: root)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr(
         profiles_mod, "_check_gateway_running", lambda home: home == root / "profiles" / "solo")
     monkeypatch.setattr(profiles_mod, "_served_by_running_multiplexer", lambda name: name == "worker")

@@ -366,8 +366,8 @@ _BINARY_MAGICS = (
 # --- profile identity -------------------------------------------------------------------------
 
 def _current_profile_name() -> Optional[str]:
-    """Profile running the guard (``hermes_cli.profiles.current_profile_name``); ``None`` if none."""
-    from hermes_cli.profiles import current_profile_name
+    """Profile running the guard (``profiles.current.current_profile_name``); ``None`` if none."""
+    from profiles.current import current_profile_name
 
     return current_profile_name()
 

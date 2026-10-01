@@ -39,7 +39,7 @@ def test_live_delivery_retry_keeps_receipt_across_owner_loss(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(source))
     subprocess_run = Mock(side_effect=AssertionError("live owner must not spawn CLI"))
     monkeypatch.setattr(subprocess, "run", subprocess_run)
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
 
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)

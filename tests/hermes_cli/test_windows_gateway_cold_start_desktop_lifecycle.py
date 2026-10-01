@@ -22,6 +22,9 @@ import json
 
 import pytest
 
+import gateway.profile_serving as profile_serving
+import profiles.current as profile_current
+import profiles.paths as profile_paths
 from hermes_cli import gateway as hermes_gateway
 from hermes_cli import gateway_windows
 from hermes_cli import main as cli_main
@@ -95,7 +98,6 @@ def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
 def _running_beta_pause_fixture(monkeypatch, tmp_path):
     """Windows update with ``beta`` (PID 777) running and the default profile home at ``tmp_path``."""
     from types import SimpleNamespace
-    import hermes_cli.profiles as profiles_mod
 
     homes = {"default": tmp_path, "beta": tmp_path / "profiles" / "beta"}
     homes["beta"].mkdir(parents=True)
@@ -107,9 +109,9 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({"beta": 777}, [777], []))
     monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, timeout: set())
-    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **_kw: [(n, h) for n, h in homes.items() if n in ("default", "beta")])
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: homes[name])
+    monkeypatch.setattr(profile_current, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(profile_serving, "profiles_to_serve", lambda multiplex, **_kw: [(n, h) for n, h in homes.items() if n in ("default", "beta")])
+    monkeypatch.setattr(profile_paths, "get_profile_dir", lambda name: homes[name])
     # Resume side.
     monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
     monkeypatch.setattr(hermes_gateway, "launch_detached_profile_gateway_restart", lambda p, o: True)

@@ -7,6 +7,11 @@ names to keep the prompt bounded.
 
 from __future__ import annotations
 
+from profiles import metadata as profile_metadata
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
+
 import logging
 import re
 from dataclasses import dataclass
@@ -115,18 +120,18 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
 
     ``overwrite`` allows replacing a user-authored (``description_auto: false``) description;
     auto-generated ones are always replaceable."""
-    canon = profiles_mod.normalize_profile_name(profile_name)
-    if not profiles_mod.profile_exists(canon):  # handles the virtual "default" name
+    canon = profile_names.normalize_profile_name(profile_name)
+    if not profile_registry.profile_exists(canon):  # handles the virtual "default" name
         return DescribeOutcome(canon, False, "profile not found")
     try:
         if canon == "default":
             from hermes_constants import get_hermes_home  # type: ignore
             profile_dir = Path(get_hermes_home())
         else:
-            profile_dir = profiles_mod.get_profile_dir(canon)
+            profile_dir = profile_paths.get_profile_dir(canon)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"cannot resolve profile dir: {exc}")
-    existing = profiles_mod.read_profile_meta(profile_dir)
+    existing = profile_metadata.read_profile_meta(profile_dir)
     if existing.get("description") and not existing.get("description_auto") and not overwrite:
         return DescribeOutcome(
             canon, False, "profile already has a user-authored description (use --overwrite to replace)"
@@ -186,7 +191,7 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
             return DescribeOutcome(canon, False, "LLM response missing 'description' field")
         description = val.strip()[:280]
     try:
-        profiles_mod.write_profile_meta(profile_dir, description=description, description_auto=True)
+        profile_metadata.write_profile_meta(profile_dir, description=description, description_auto=True)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"failed to write profile.yaml: {exc}")
     return DescribeOutcome(canon, True, "described", description=description)

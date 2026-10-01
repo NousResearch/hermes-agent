@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import gateway.profile_serving as _profile_serving
+import profiles.current as _profile_current
 from hermes_cli import web_server
 import gateway.status as _gw_status
 import hermes_cli.web_server_gateway as _web_server_gateway
@@ -59,7 +61,7 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
     import hermes_cli.profiles as profiles_mod
     import gateway.status as status_mod
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **kw: homes)
+    monkeypatch.setattr(_profile_serving, "profiles_to_serve", lambda multiplex, **kw: homes)
     monkeypatch.setattr(
         profiles_mod, "_check_gateway_running",
         lambda home: next(n for n, h in homes if h == home) in running,
@@ -257,7 +259,7 @@ class TestCollectProfileGatewayTopology:
         def _boom(multiplex):
             raise RuntimeError("no profiles root")
 
-        monkeypatch.setattr(profiles_mod, "profiles_to_serve", _boom)
+        monkeypatch.setattr(_profile_serving, "profiles_to_serve", _boom)
         topo = _collect_profile_gateway_topology()
         assert topo == {
             "profiles": [],
@@ -455,7 +457,7 @@ class TestStatusEndpointTopology:
             lambda: {"telegram"},
         )
         monkeypatch.setattr(
-            profiles_mod, "get_active_profile_name", lambda: "default"
+            _profile_current, "get_active_profile_name", lambda: "default"
         )
         monkeypatch.setattr(
             _web_server_gateway, "_collect_profile_gateway_topology",
@@ -525,7 +527,7 @@ class TestStatusEndpointTopology:
             lambda: {"telegram"},
         )
         monkeypatch.setattr(
-            profiles_mod, "get_active_profile_name", lambda: "default"
+            _profile_current, "get_active_profile_name", lambda: "default"
         )
         monkeypatch.setattr(
             _web_server_gateway, "_collect_profile_gateway_topology",

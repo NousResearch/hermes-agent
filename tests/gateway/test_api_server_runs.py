@@ -654,6 +654,39 @@ class TestRunEvents:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_failed_sse_prepare_releases_subscriber(self, adapter):
+        """A failed HTTP prepare must not leave an orphan fanout queue subscribed forever."""
+        from gateway.platforms import api_server as api_server_module
+        from gateway.platforms import api_server_runs
+
+        run_id = "run_prepare_failure"
+        stream = _RunStream()
+        adapter._run_streams[run_id] = stream
+        adapter._run_streams_created[run_id] = time.time()
+        _claim_run(adapter, run_id)
+
+        request = MagicMock()
+        request.match_info = {"run_id": run_id}
+        request.headers = {}
+        request.path = f"/v1/runs/{run_id}/events"
+        request.method = "GET"
+
+        class FailingResponse:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def prepare(self, _request):
+                raise RuntimeError("prepare failed")
+
+        with patch.object(api_server_runs.web, "StreamResponse", FailingResponse):
+            with pytest.raises(RuntimeError, match="prepare failed"):
+                await api_server_runs._handle_run_events(
+                    adapter, request, _api_server=api_server_module)
+
+        assert stream.subscribers == set()
+        assert adapter._run_streams[run_id] is stream
+
+    @pytest.mark.asyncio
     async def test_two_subscribers_each_receive_every_event_and_survive_one_disconnect(self, adapter):
         """/events is fanout, not a work queue: every subscriber sees the whole ordered stream,
         and one client's disconnect never tears down the stream another client still reads."""

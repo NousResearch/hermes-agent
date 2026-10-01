@@ -82,7 +82,7 @@ def _payload_fields(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         cwd = str(Path.cwd())
     except OSError:
         cwd = ""
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     return {
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,

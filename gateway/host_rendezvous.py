@@ -596,7 +596,7 @@ def served_profiles(*, multiplex: Optional[bool] = None) -> tuple[str, ...]:
     and a second profile's supervised unit then stood down against a set nobody serves.
     """
     try:
-        from hermes_cli.profiles import profiles_to_serve
+        from gateway.profile_serving import profiles_to_serve
 
         enabled = _multiplex_profiles_enabled() if multiplex is None else bool(multiplex)
         return tuple(name for name, _ in profiles_to_serve(multiplex=enabled))

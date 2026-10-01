@@ -265,7 +265,7 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
+# Mirrors profiles._PROFILE_ID_RE -- duplicated so gateway identity code
 # stays import-light (hermes_constants + stdlib only).
 _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 

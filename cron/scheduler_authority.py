@@ -77,8 +77,12 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
         error = f'{type(exc).__name__}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 
-def reconcile_pending():
-    """Observe prepared fires; never submit missing or interrupted work."""
+def reconcile_pending(*, allow_connect=True):
+    """Observe prepared fires; never submit missing or interrupted work.
+
+    With allow_connect=False, a headless tick leaves durable receipts for the next
+    live owner instead of ensuring or spawning a gateway.
+    """
     from gateway.session_cron import owner_for_home, operation
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
@@ -95,6 +99,8 @@ def reconcile_pending():
             if journal != journal_path(params['job_id'], params['request_id']):
                 raise ValueError('cron journal identity conflict')
             owner = owner_for_home(get_hermes_home())
+            if owner is None and not allow_connect:
+                continue
             async def observe():
                 if owner is not None:
                     return await operation(owner[0], 'recover', params)

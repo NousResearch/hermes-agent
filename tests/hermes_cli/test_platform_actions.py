@@ -278,7 +278,7 @@ class TestMultiplexProfileRouting:
                 default={Platform.TELEGRAM: default_adapter},
                 profiles={"team-b": {Platform.TELEGRAM: team_b_adapter}},
             ),
-            patch("hermes_cli.profiles.get_active_profile_name", return_value="team-b"),
+            patch("profiles.current.get_active_profile_name", return_value="team-b"),
         ):
             result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
         assert result["ok"] is True
@@ -299,7 +299,7 @@ class TestMultiplexProfileRouting:
         with (
             _grant(True),
             _multiplex_runner_with(default={Platform.TELEGRAM: default_adapter}, profiles={}),
-            patch("hermes_cli.profiles.get_active_profile_name", **resolver),
+            patch("profiles.current.get_active_profile_name", **resolver),
         ):
             result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
         assert result["error"] == "adapter_not_registered"

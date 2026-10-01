@@ -33,10 +33,37 @@ def setup_route(raft=False):
 
 
 async def drain(adapter):
-    # gather() returns without yielding when every task is already done, and a finished
-    # task stays in the set until its discard callback runs, so wait only for live tasks.
-    while tasks := [task for task in adapter._background_tasks if not task.done()]:
+    while tasks := list(adapter._background_tasks):
         await asyncio.gather(*tasks)
+        # Done callbacks may not have run when gather() returns for finished tasks.
+        if all(task.done() for task in adapter._background_tasks):
+            return
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("helper", ["kanban", "completion"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_drain_returns_for_finished_tasks_and_preserves_failures(helper, fails):
+    from types import SimpleNamespace
+    from tests.gateway.test_completion_admission import drain as completion_drain
+
+    async def work():
+        if fails:
+            raise ValueError("background failure")
+
+    task = asyncio.create_task(work())
+    await asyncio.sleep(0)
+    assert task.done()
+    adapter = SimpleNamespace(_background_tasks={task})
+    selected = drain if helper == "kanban" else completion_drain
+    try:
+        if fails:
+            with pytest.raises(ValueError, match="background failure"):
+                await selected(adapter)
+            return
+        await selected(adapter)
+    finally:
+        task.exception()
 
 
 @pytest.mark.asyncio

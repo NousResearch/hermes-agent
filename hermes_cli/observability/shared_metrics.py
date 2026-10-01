@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.sqlite_util import add_column_if_missing, write_txn
+from storage.sqlite_util import add_column_if_missing, write_txn
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
     """Transfer an identified manual runtime to its own durable restart reminder."""
-    from hermes_cli.process_identity import _pid_alive_matches
+    from runtime.process_identity import _pid_alive_matches
 
     if runtime.get("kind") not in ("serve", "dashboard") or runtime.get("supervisor") != "manual-serve" or runtime.get("restart_via") != "respawn-argv":
         return False
@@ -74,7 +74,7 @@ def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
 
 def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[dict] | None = None) -> None:
     """Warn about manual debt independently of gateway evidence; optionally reuse a snapshot's failed transfers."""
-    from hermes_cli.process_identity import _pid_alive_matches
+    from runtime.process_identity import _pid_alive_matches
     from hermes_cli.update_receipt import read_latest_receipt
 
     stream = sys.stderr if startup else sys.stdout

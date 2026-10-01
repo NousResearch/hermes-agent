@@ -175,7 +175,7 @@ def check_resume_policy(args, snapshot):
 def _register_terminal_process() -> None:
     """The chat client is still a terminal on this HERMES_HOME: record it in the process ledger
     (purpose ``cli`` is never update-reapable) and warn once when another install shares the home."""
-    from hermes_cli.process_identity import register_self
+    from runtime.process_identity import register_self
     from hermes_cli.shared_profile_warning import shared_profile_warning
 
     register_self("cli")

@@ -1,4 +1,4 @@
-"""Invariants for the canonical SQLite connect/transaction layer (``hermes_cli/sqlite_util.py``).
+"""Invariants for the canonical SQLite connect/transaction layer (``storage/sqlite_util.py``).
 
 Every small store used to carry its own connect + PRAGMA + ``with conn:`` stack, so the #69567 fd-leak
 fix and the WAL fallback rules had to be re-pasted per module (and at least one copy missed each).
@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from hermes_cli import sqlite_util
+from storage import sqlite_util
 
 
 def test_transaction_closes_the_connection_even_when_the_body_raises(tmp_path):

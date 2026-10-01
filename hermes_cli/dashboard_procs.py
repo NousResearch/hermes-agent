@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+from runtime.desktop_identity import is_desktop_ssh_backend_argv
 
 # Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
 # spawns; reaped on update for the same reason).
@@ -48,7 +48,7 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # join indefinitely (#87134). It also passes CREATE_NO_WINDOW: this scan can run from the windowless
         # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
         # window.
-        from hermes_cli._subprocess_compat import bounded_probe_run
+        from runtime.subprocess_compat import bounded_probe_run
         result = bounded_probe_run(
             ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
             timeout=10, errors="ignore")
@@ -98,7 +98,7 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
         # (pid, create_time), so ledger rows are positive identity, not argv guessing. Add any live ledger
         # serve/dashboard the scan missed; prefer the ledger's recorded argv (full launch args) over the
         # scan's truncated view. See #81564.
-        from hermes_cli.process_identity import ledger_entries
+        from runtime.process_identity import ledger_entries
         seen = {pid for pid, _ in found} | skip
         for entry in ledger_entries():
             pid = entry.get("pid")
@@ -116,7 +116,7 @@ def _ledger_serve_binds() -> dict[int, tuple[str, int]]:
     """
     binds: dict[int, tuple[str, int]] = {}
     with contextlib.suppress(Exception):
-        from hermes_cli.process_identity import ledger_entries
+        from runtime.process_identity import ledger_entries
         for entry in ledger_entries():
             pid, port = entry.get("pid"), entry.get("port")
             if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
@@ -427,8 +427,8 @@ def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
 
 def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
     """``taskkill /F`` each PID after re-verifying its identity."""
-    from gateway.status import get_process_start_time
-    from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
+    from runtime.process_identity import get_process_start_time, pid_is_hermes
+    from runtime.subprocess_compat import windows_hide_flags
     # Identity captured right after discovery: a PID reused before the kill fails the check.
     pid_start_times = {pid: get_process_start_time(pid) for pid in pids}
     for pid in pids:
@@ -500,7 +500,7 @@ def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
     Windows #98814 hazard). The start-time fingerprint is the PID-reuse guard (same one
     ``_kill_pids_windows`` uses). Empty on scan failure → root-only kill, the historical behaviour.
     """
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     try:
         result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -554,7 +554,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     """
     import signal as _signal
 
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
 
     descendants = _posix_descendants(pids)
 
@@ -1001,7 +1001,7 @@ def _reap_orphaned_desktop_local_serves(
     # keep the deleted state.db-wal inode open (#112631). The boot-path budget leaves no second
     # grace, and these trees already lost their Electron and their backend.
     # A root whose own kill raised (EPERM: not ours) keeps its subtree — do not orphan it half-way.
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     for pid, (root, start) in descendants.items():
         if root not in failed and start is not None and get_process_start_time(pid) == start:
             with contextlib.suppress(OSError):

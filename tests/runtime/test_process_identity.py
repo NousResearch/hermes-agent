@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.process_identity — spawn tags, the machine spawn
+"""Tests for runtime.process_identity — spawn tags, the machine spawn
 ledger, and the updater's ledger-identified reap rung.
 
 Layer context (Aug 2026, after the 12-minute Windows update hang): reapers
@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import process_identity as pi
+from runtime import process_identity as pi
 
 
 class _FakeNoSuchProcess(Exception):
@@ -135,6 +135,7 @@ def test_register_self_writes_and_prunes_dead(tmp_path):
     assert me["create_time"] == pytest.approx(50.0, abs=0.01)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="surrogate-escaped argv is POSIX-specific")
 def test_register_self_survives_non_utf8_argv(tmp_path):
     ledger = tmp_path / "spawn-ledger.json"
     fake = _fake_psutil({999: 50.0})
@@ -293,19 +294,3 @@ def test_updater_ledger_rung_never_raises():
 
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200)) == []
-
-
-def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
-    """Desktop's SSH spawn is ``env HERMES_DESKTOP=1 hermes serve --isolated ... --ssh-session-token-file F``
-    with NO token env var (its tests assert the var name never appears on the wire). Missing that
-    shape made the SSH child claim ROLE_SERVE on the remote host (the #119824 shape there)."""
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-    ssh_argv = ["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
-                "--ssh-session-token-file", "/home/u/.hermes/desktop-ssh/abc.token"]
-
-    assert pi.is_desktop_owned_backend(ssh_argv) is True
-    monkeypatch.setattr(sys, "argv", ["hermes", *ssh_argv])
-    assert pi.is_desktop_owned_backend() is True
-    # The bare inherited flag (a Desktop terminal pane running `hermes serve`) is still not ownership.
-    assert pi.is_desktop_owned_backend(["serve", "--host", "127.0.0.1", "--port", "0"]) is False

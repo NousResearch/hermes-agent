@@ -312,7 +312,7 @@ class MCPServerTransportMixin:
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
-                from hermes_cli.process_identity import register_child
+                from runtime.process_identity import register_child
                 register_child(_pid, "mcp-helper")
             except Exception:
                 logger.debug("spawn-ledger register_child failed for MCP helper pid %s", _pid, exc_info=True)
@@ -372,7 +372,7 @@ class MCPServerTransportMixin:
         # outlive us. Idempotent; BREAKAWAY_OK keeps deliberate breakaway children escaping.
         # Self-guards: a cheap no-op returning False on non-Windows.
         try:
-            from hermes_cli.process_identity import attach_self_to_kill_on_close_job
+            from runtime.processes import attach_self_to_kill_on_close_job
             attach_self_to_kill_on_close_job()
         except Exception:
             logger.debug("job-object self-attach failed before stdio spawn", exc_info=True)

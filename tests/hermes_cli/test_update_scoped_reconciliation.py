@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from hermes_cli import process_identity, update_cmd_fleet as fleet, update_inventory, update_receipt
+from hermes_cli import update_cmd_fleet as fleet, update_inventory, update_receipt
+from runtime import process_identity
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 from hermes_constants import get_hermes_home
 import hermes_cli.update_host_obligation as host_obligation

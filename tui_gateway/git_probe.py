@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-from hermes_cli._subprocess_compat import bounded_git_probe
+from runtime.git_subprocess import bounded_git_probe
 
 _GIT_TIMEOUT = 1.5
 _WARM_WORKERS = 8

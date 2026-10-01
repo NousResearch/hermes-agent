@@ -49,7 +49,7 @@ async def test_verdict_precedes_replacing_a_running_gateway(tmp_path, monkeypatc
     monkeypatch.setenv('HERMES_HOME', str(root / 'profiles' / 'foo'))
     import hermes_constants
     hermes_constants._default_hermes_root_memo = None
-    monkeypatch.setattr('hermes_cli.resource_limits.apply_nofile_soft_limit', lambda: None)
+    monkeypatch.setattr('runtime.resource_limits.apply_nofile_soft_limit', lambda config: None)
     monkeypatch.setattr('gateway.code_skew.record_boot_fingerprint', lambda: None)
     monkeypatch.setattr('gateway.status.get_running_pid', lambda: 4242)
     monkeypatch.setattr('gateway.run._write_runtime_status_quiet', lambda **kw: None)

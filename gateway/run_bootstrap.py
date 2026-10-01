@@ -10,7 +10,8 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
     Returns False when startup must abort (refused, permission denied, target still alive)."""
     from gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, logger, suppress)
-    from gateway.status import get_process_start_time, remove_pid_file, terminate_pid
+    from gateway.status import remove_pid_file, terminate_pid
+    from runtime.process_identity import get_process_start_time
     if not replace:
         hermes_home = str(get_hermes_home())
         logger.error(
@@ -528,8 +529,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
-    apply_nofile_soft_limit()
+    from hermes_cli.config import load_config_readonly
+    from runtime.resource_limits import apply_nofile_soft_limit
+
+    _best_effort(lambda: apply_nofile_soft_limit(load_config_readonly()))
 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
     from gateway.code_skew import record_boot_fingerprint

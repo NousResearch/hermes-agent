@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # split_command_line, not shlex: shlex eats Windows path backslashes.
-from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
+from runtime.processes import kill_popen_process_tree
+from runtime.subprocess_compat import IS_WINDOWS, split_command_line, windows_hide_flags
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
@@ -356,7 +357,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
     except BaseException as exc:
         # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
-        kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
+        kill_popen_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
             proc.communicate(timeout=1)
         if not isinstance(exc, Exception):

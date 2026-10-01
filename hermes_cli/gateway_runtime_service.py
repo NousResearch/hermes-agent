@@ -18,7 +18,7 @@ import time
 from xml.parsers.expat import ExpatError
 
 from gateway.runtime_contract import RuntimeState
-from hermes_cli._subprocess_compat import windows_hide_flags
+from runtime.subprocess_compat import windows_hide_flags
 
 
 class RuntimeStartError(RuntimeError):

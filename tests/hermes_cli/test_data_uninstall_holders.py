@@ -54,7 +54,7 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
     import sys
     from threading import Event, Thread
     from gateway.control_socket import GatewayControlServer
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
 
     home, _, data = layout
     # A disposable child is the declared process. Control dispatch is real;
@@ -107,7 +107,7 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
 
 @pytest.mark.parametrize("profile", ["", "sibling"])
 def test_backend_initial_profile_is_not_its_write_scope(layout, profile):
-    from hermes_cli.process_identity import register_self
+    from runtime.process_identity import register_self
 
     _, _, data = layout
     assert register_self("serve", project_root=uninstall.get_project_root(), detail={"profile": profile})

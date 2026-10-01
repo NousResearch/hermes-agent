@@ -39,7 +39,7 @@ def source_git_env() -> dict[str, str]:
     an upstream tip the clone never fetched would download its history, and the
     probe timeout kills only git itself, orphaning the fetch (see NO_LAZY_FETCH_ENV).
     """
-    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+    from runtime.git_subprocess import NO_LAZY_FETCH_ENV, noninteractive_git_env
 
     env = noninteractive_git_env()
     # Pathspec-mode overrides change how every probe's path arguments match
@@ -59,7 +59,7 @@ _GIT_TEXT_KW = {"text": True, "encoding": "utf-8", "errors": "replace"}
 def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, text: bool = True,
              git: str = "git"):
     """Read Git state without prompts, optional index writes, or inherited targeting."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
 
     kwargs: dict = {"creationflags": windows_hide_flags(), "env": source_git_env(), "stdin": subprocess.DEVNULL}
     try:

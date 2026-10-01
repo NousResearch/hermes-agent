@@ -111,7 +111,7 @@ def _split_line(line: str) -> list[str]:
     # Windows-safe splitter: plain shlex posix=True eats backslashes in paths.
     # See #78293.
     # See #83934.
-    from hermes_cli._subprocess_compat import split_command_line
+    from runtime.subprocess_compat import split_command_line
     try:
         return split_command_line(line)
     except ValueError as exc:

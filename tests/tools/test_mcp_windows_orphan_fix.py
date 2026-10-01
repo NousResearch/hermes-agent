@@ -41,7 +41,7 @@ def _run_stdio_with_mocks(os_name: str, attach_mock) -> None:
         return command, args
 
     with (
-        patch("hermes_cli.process_identity.attach_self_to_kill_on_close_job", attach_mock),
+        patch("runtime.processes.attach_self_to_kill_on_close_job", attach_mock),
         patch("tools.mcp_tool.StdioServerParameters"),
         patch("tools.mcp_tool.stdio_client", return_value=(mock_stdio_cm := MagicMock())),
         patch("tools.mcp_tool.ClientSession", return_value=(mock_session_cm := MagicMock())),
@@ -131,7 +131,7 @@ class TestWindowsTreeKillHelpers:
 
     def test_ledger_tree_kill_helper_swallows_errors(self):
         """_kill_process_tree_windows never raises, even for a vanished process."""
-        from hermes_cli.process_identity import _kill_process_tree_windows
+        from runtime.process_identity import _kill_process_tree_windows
 
         class Boom:
             def children(self, recursive=True):

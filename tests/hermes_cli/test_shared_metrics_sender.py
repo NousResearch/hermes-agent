@@ -22,7 +22,7 @@ from hermes_cli.observability.shared_metrics_sender import (
     SharedMetricsSender,
     reconcile_send_consent,
 )
-from hermes_cli.sqlite_util import write_txn
+from storage.sqlite_util import write_txn
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)

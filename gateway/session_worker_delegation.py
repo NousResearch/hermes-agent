@@ -67,7 +67,7 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
         # Exact network retries are resolved by worker_receipts before this handler.
         raise RuntimeStoreError('admission_conflict')
     import psutil
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     try:
         if psutil.Process(worker_pid).create_time() != worker_birth:
             raise RuntimeStoreError('permission_denied')

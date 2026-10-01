@@ -6,7 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs, _WINDOWS_GATEWAY_BREAKAWAY_ENV
+from gateway.windows_launch import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+from runtime.subprocess_compat import windows_detach_popen_kwargs
 from hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
 
 

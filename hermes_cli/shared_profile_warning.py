@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_cli.process_identity import install_id, ledger_entries
+from runtime.process_identity import install_id, ledger_entries
 from hermes_constants import hermes_home_key
 
 

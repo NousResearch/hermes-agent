@@ -1388,7 +1388,7 @@ _PLUGIN_COMPAT_LAZY = {
     'normalize_browser_cloud_provider': ('tools.tool_backend_helpers', 'normalize_browser_cloud_provider'),
     'reset_hermes_home_override': ('hermes_constants', 'reset_hermes_home_override'),
     'set_hermes_home_override': ('hermes_constants', 'set_hermes_home_override'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
+    'windows_hide_flags': ('runtime.subprocess_compat', 'windows_hide_flags'),
 }
 
 

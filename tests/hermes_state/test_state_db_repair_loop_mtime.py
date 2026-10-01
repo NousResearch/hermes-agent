@@ -267,7 +267,7 @@ def test_fingerprint_takes_no_raw_fd_while_a_connection_is_live(tmp_path):
     """
     import builtins
 
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from storage.sqlite_safe_read import connect_tracked
 
     db = tmp_path / "state.db"
     conn = sqlite3.connect(str(db))
@@ -315,7 +315,7 @@ def test_live_connection_keeps_its_write_lock_across_a_repair_pass(tmp_path):
     import sys
     import textwrap
 
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from storage.sqlite_safe_read import connect_tracked
 
     db = tmp_path / "state.db"
     conn = sqlite3.connect(str(db))
@@ -470,7 +470,7 @@ def test_budget_exhausts_when_liveness_alternates_across_passes(tmp_path):
     peer connecting and disconnecting between passes would reset the counter to
     1 forever — the exact unbounded loop this whole ledger exists to stop.
     """
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from storage.sqlite_safe_read import connect_tracked
 
     db = tmp_path / "state.db"
     conn = sqlite3.connect(str(db))
@@ -502,7 +502,7 @@ def test_budget_exhausts_when_liveness_alternates_across_passes(tmp_path):
 
 def test_fingerprint_returns_none_rather_than_a_mtime_shaped_key(tmp_path):
     """Never mint a second key SHAPE — the ledger compares for equality."""
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from storage.sqlite_safe_read import connect_tracked
 
     db = tmp_path / "state.db"
     conn = sqlite3.connect(str(db))

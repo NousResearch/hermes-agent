@@ -26,7 +26,8 @@ import time
 
 import pytest
 
-from hermes_cli._subprocess_compat import bounded_git_probe, bounded_probe_run
+from runtime.git_subprocess import bounded_git_probe
+from runtime.subprocess_compat import bounded_probe_run
 
 _PY = sys.executable
 
@@ -50,6 +51,13 @@ def test_nonzero_exit_is_returned_not_swallowed():
 def test_spawn_failure_returns_none():
     result = bounded_probe_run(["definitely-not-a-real-binary-87134"], timeout=5)
     assert result is None
+
+
+def test_spawn_failure_can_propagate():
+    with pytest.raises(OSError):
+        bounded_probe_run(
+            ["definitely-not-a-real-binary-87134"], timeout=5, raise_on_spawn_failure=True,
+        )
 
 
 def test_timeout_returns_none_within_bounded_time():

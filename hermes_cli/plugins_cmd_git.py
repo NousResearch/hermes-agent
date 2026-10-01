@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 from hermes_constants import get_hermes_home
 from utils import atomic_write_text
 

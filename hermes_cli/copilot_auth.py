@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from runtime.subprocess_compat import IS_WINDOWS, windows_hide_flags
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)

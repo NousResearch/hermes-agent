@@ -103,7 +103,7 @@ def _connect() -> sqlite3.Connection:
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
-    from hermes_cli.sqlite_util import open_db
+    from storage.sqlite_util import open_db
     # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
@@ -136,7 +136,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def _transaction():
-    from hermes_cli.sqlite_util import transaction
+    from storage.sqlite_util import transaction
 
     return transaction(_connect())
 
@@ -157,7 +157,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         return remote.dispatch(record)
     now = time.time()
     try:
-        from gateway.status import get_process_start_time
+        from runtime.process_identity import get_process_start_time
         owner_started_at = get_process_start_time(os.getpid())
     except Exception:
         owner_started_at = None
@@ -256,7 +256,8 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
     """``alive(owner_pid, owner_started_at)`` over the shared drift-tolerant start-time comparator,
     or None when the liveness probes cannot be imported."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+        from gateway.status import _pid_exists
+        from runtime.process_identity import get_process_start_time, start_time_fingerprints_match
     except Exception:
         return None
 

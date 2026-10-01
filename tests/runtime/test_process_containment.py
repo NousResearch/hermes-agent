@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -25,8 +26,8 @@ def record(name):
     temp.replace(target)
 record(role)
 if role == 'owner':
-    from hermes_cli.local_runtime.processes import spawn_server
-    proc, job = spawn_server([sys.executable, __file__, str(root), 'router'],
+    from runtime.processes import spawn_contained_process
+    proc, job = spawn_contained_process([sys.executable, __file__, str(root), 'router'],
                              close_fds=False)
     (root / 'ready').write_text('ready')
     while not (root / 'stop').exists():
@@ -95,8 +96,8 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
             for role in ('control', 'owner'):
                 cmd = [sys.executable, str(script), str(tmp_path), role]
                 if nested and role == 'owner':
-                    from hermes_cli.local_runtime.processes import spawn_server
-                    launcher, outer_job = spawn_server(cmd, env=env, stdout=log, stderr=log)
+                    from runtime.processes import spawn_contained_process
+                    launcher, outer_job = spawn_contained_process(cmd, env=env, stdout=log, stderr=log)
                 else:
                     launcher = subprocess.Popen(cmd, env=env, stdout=log, stderr=log)
                 launchers.append(launcher)
@@ -140,12 +141,121 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
                 launcher.wait(timeout=10)
 
 
+def test_spawn_contained_process_preserves_caller_kwargs_off_windows(monkeypatch):
+    """Non-Windows spawning is a transparent Popen pass-through."""
+    from runtime import processes
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return SimpleNamespace()
+
+    monkeypatch.setattr(processes, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(processes.subprocess, "Popen", fake_popen)
+    kwargs = {
+        "env": {"TOKEN": "keep", "PATH": "/bin"},
+        "cwd": "/tmp/work",
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+
+    proc, job = processes.spawn_contained_process(["git", "status"], **kwargs)
+
+    assert proc is not None
+    assert job is None
+    assert captured == {"cmd": ["git", "status"], "kwargs": kwargs}
+
+
+def test_windows_spawn_ors_creationflags_and_assigns_before_resume(monkeypatch):
+    """Caller flags survive, and a Windows child is resumed only after job assignment."""
+    from runtime import processes
+
+    events = []
+    captured = {}
+
+    class FakeProc:
+        pid = 123
+        stdin = stdout = stderr = None
+
+    class FakeJob:
+        def assign(self, proc):
+            events.append(("assign", proc.pid))
+
+        def close(self):
+            events.append(("close", None))
+
+    class FakePsProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def resume(self):
+            events.append(("resume", self.pid))
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        events.append(("popen", None))
+        return FakeProc()
+
+    fake_psutil = SimpleNamespace(Process=FakePsProcess)
+    monkeypatch.setattr(processes, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(processes, "_WindowsJob", FakeJob)
+    monkeypatch.setattr(processes.subprocess, "Popen", fake_popen)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    proc, job = processes.spawn_contained_process(
+        ["child"],
+        creationflags=0x08000000,
+        env={"X": "1"},
+    )
+
+    assert proc.pid == 123
+    assert isinstance(job, FakeJob)
+    assert captured["kwargs"]["creationflags"] == 0x08000004
+    assert captured["kwargs"]["env"] == {"X": "1"}
+    assert events == [("popen", None), ("assign", 123), ("resume", 123)]
+
+
+def test_importing_runtime_processes_does_not_import_psutil():
+    """The generic runtime module stays lightweight until a Windows child is spawned."""
+    repo_root = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys; "
+        "sys.modules.pop('psutil', None); "
+        "import runtime.processes; "
+        "assert 'psutil' not in sys.modules"
+    )
+    subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+@pytest.mark.platforms("windows")
+def test_windows_job_close_is_idempotent():
+    """Closing an owner-held child-containment job twice is harmless."""
+    from runtime.processes import _WindowsJob
+
+    job = _WindowsJob()
+    job.close()
+    job.close()
+    assert job._handle is None
+
+
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize('failure', ['assign', 'resume', 'popen', 'configure'])
 def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatch, failure):
     import ctypes
     from ctypes import wintypes
-    from hermes_cli.local_runtime import processes
+    from runtime import processes
 
     marker = tmp_path / 'child executed'
     jobs, children, handles = [], [], []
@@ -209,8 +319,9 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
             'Path(sys.argv[1]).write_text("ran")', str(marker)])
     try:
         with pytest.raises((OSError, KeyboardInterrupt)):
-            processes.spawn_server(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE)
+            processes.spawn_contained_process(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
         assert not marker.exists()
         assert jobs and jobs[0]._handle is None
         for proc in children:

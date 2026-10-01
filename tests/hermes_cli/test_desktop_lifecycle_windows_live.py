@@ -74,7 +74,7 @@ def sleeper():
 
 
 def _write_ledger(entries: list[dict]) -> None:
-    from hermes_cli import process_identity as pid_mod
+    from runtime import process_identity as pid_mod
 
     path = pid_mod._ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +84,7 @@ def _write_ledger(entries: list[dict]) -> None:
 def _entry(proc: subprocess.Popen, purpose: str = "serve") -> dict:
     import psutil
 
-    from hermes_cli import process_identity as pid_mod
+    from runtime import process_identity as pid_mod
 
     return {
         "install": pid_mod.install_id(None),

@@ -81,10 +81,10 @@ SQLITE3_CLI_GUIDANCE = (
 # generations. A salvage shell must therefore be version-gated, not just
 # capability-gated, before it is pointed at (a copy of) a Hermes database.
 #
-# The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
+# The predicate lives in runtime.sqlite_runtime (stdlib-only, shared with
 # the installer/update gates) so the embedded runtime and the salvage shell
 # can never disagree about which versions are safe.
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+from runtime.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
 
 _WAL_RESET_VULNERABLE_GUIDANCE = (
     "salvage against a Hermes database with the WAL-reset bug "

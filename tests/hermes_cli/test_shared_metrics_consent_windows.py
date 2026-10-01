@@ -20,7 +20,7 @@ from hermes_cli.observability.shared_metrics_sender import (
     CONSENT_GATE_SQL,
     reconcile_send_consent,
 )
-from hermes_cli.sqlite_util import write_txn
+from storage.sqlite_util import write_txn
 
 T0 = datetime(2026, 8, 1, tzinfo=timezone.utc)
 

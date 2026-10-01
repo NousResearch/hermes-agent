@@ -18,7 +18,7 @@ def test_selected_sqlite_controls_completion_and_action_receipt(tmp_path, monkey
     probes = []
     monkeypatch.setattr(sys, 'executable', str(selected))
     monkeypatch.setattr('hermes_constants.project_venv_dir', lambda _: tmp_path / 'obsolete-venv')
-    monkeypatch.setattr('hermes_cli.sqlite_runtime.probe_sqlite_runtime', lambda python: probes.append(python) or info)
+    monkeypatch.setattr('runtime.sqlite_runtime.probe_sqlite_runtime', lambda python: probes.append(python) or info)
     monkeypatch.setattr(update_cmd, '_branch_head_suffix', lambda: '')
     monkeypatch.setenv('HERMES_ACTION_ID', action_id)
     assert update_cmd_maint._print_verified_update_completion(message) is (verdict != 'unsafe')

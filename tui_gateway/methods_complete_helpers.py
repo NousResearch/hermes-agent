@@ -24,7 +24,7 @@ _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 def _git_repo_files(root: str):
     """Yield ``git ls-files`` paths (tracked + untracked) relative to ``root``; empty outside a
     repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope)."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
     run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
     try:
         top_result = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], **run_kw)

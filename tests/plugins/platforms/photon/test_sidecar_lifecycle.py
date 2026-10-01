@@ -92,7 +92,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     spawned: Dict[str, Any] = {}
     hidden_flags = 0x08000000
     monkeypatch.setattr(
-        "hermes_cli._subprocess_compat.windows_hide_flags",
+        "runtime.subprocess_compat.windows_hide_flags",
         lambda: hidden_flags,
     )
 

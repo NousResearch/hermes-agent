@@ -134,7 +134,7 @@ class TestCronStatusMissingHeartbeat:
             patch("cron.jobs.TICKER_INTERVAL_SECONDS", 60),
             # Gateway started a few seconds ago, ticker hasn't had its first tick yet
             patch("gateway.status._read_pid_record", return_value={"pid": 4242, "start_time": int(now)}),
-            patch("gateway.status._get_process_start_time", return_value=int(now)),
+            patch("runtime.process_identity.get_process_start_time", return_value=int(now)),
             patch("time.time", return_value=now + 5),
             redirect_stdout(out),
         ):

@@ -22,8 +22,13 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from runtime.process_identity import pid_exists_stdlib
+from runtime import process_identity as _process_identity
 from utils import atomic_json_write
+
+# Frozen pre-PM updater ABI only. Current code imports runtime.process_identity directly.
+_get_process_start_time = _process_identity.get_process_start_time
+get_process_start_time = _process_identity.get_process_start_time
 
 if sys.platform == "win32":
     import msvcrt
@@ -406,7 +411,7 @@ def terminate_pid(
     if force and (_IS_WINDOWS or expected_start_time is not None):
         if expected_start_time is None:
             raise OSError(f"refusing to force-kill PID {pid} without a process start-time guard")
-        current_start_time = _get_process_start_time(pid)
+        current_start_time = _process_identity.get_process_start_time(pid)
         if current_start_time is None:
             raise OSError(f"refusing to force-kill PID {pid}; process start time is unavailable")
         try:
@@ -418,7 +423,7 @@ def terminate_pid(
         os.kill(pid, signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM))
         return
     # Hide flags: a bare taskkill spawn from windowless pythonw.exe would flash a conhost window.
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
 
     try:
         result = subprocess.run(
@@ -439,66 +444,12 @@ def _start_times_agree(current: Any, *recorded: Any) -> bool:
     return cur > 0 and all(r > 0 and abs(r - cur) <= 0.001 for r in map(float, recorded))
 
 
-# Same-host start-time readings can drift by ~1 s between the claim-time and a later liveness read
-# (macOS ``kern.boottime`` adjustment, #117505). Both fingerprint scales are ×100 (Linux /proc ticks,
-# psutil centiseconds), so 200 means 2 s on either platform — a recycled PID is essentially never
-# that close to the original's start time.
-START_TIME_DRIFT_TOLERANCE = 200
-
-
-def start_time_fingerprints_match(recorded: Any, current: Any, tolerance: int = START_TIME_DRIFT_TOLERANCE) -> bool:
-    """Liveness-reconciliation comparator for :func:`get_process_start_time` fingerprints: the
-    recorded owner and the current reading are the same incarnation when they agree within
-    ``tolerance``. Raises on junk; callers decide what an unreadable (``None``) side means."""
-    return abs(int(current) - int(recorded)) <= tolerance
-
-
 def _scope_hash(identity: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
 def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
-
-
-def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return a stable per-process start-time fingerprint, or None.
-
-    Used as a PID-reuse guard: a ``(pid, start_time)`` pair uniquely identifies
-    a process, so a recycled PID (same number, different process) yields a
-    different value and is never mistaken for the original.
-
-    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
-    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
-    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
-    timestamp — quantized to an int (centiseconds) for stable equality.
-
-    The two sources are never mixed on a single platform: ``/proc`` always
-    succeeds first on Linux, and always fails on macOS/Windows so psutil is
-    always used there.  Because the guard only compares the value recorded at
-    spawn against the live value *on the same host*, the differing units across
-    platforms are irrelevant — only same-source equality matters.
-    """
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
-
-    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
-    # cross-platform creation time.  Quantize to centiseconds so repeated reads
-    # of the same process compare equal without float-precision fragility.
-    try:
-        import psutil  # type: ignore
-        return int(round(psutil.Process(pid).create_time() * 100))
-    except Exception:
-        return None
-
-
-def get_process_start_time(pid: int) -> Optional[int]:
-    """Public wrapper for retrieving a process start time when available."""
-    return _get_process_start_time(pid)
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
@@ -885,7 +836,7 @@ def _record_matches_live_gateway_pid(
 def _build_pid_record() -> dict:
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": list(sys.argv),
-        "start_time": _get_process_start_time(os.getpid()),
+        "start_time": _process_identity.get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
@@ -986,7 +937,7 @@ def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
     pid = _pid_from_record(record)
     if pid is None or not _pid_exists(pid):
         return None
-    if _start_times_conflict(record.get("start_time"), _get_process_start_time(pid)):
+    if _start_times_conflict(record.get("start_time"), _process_identity.get_process_start_time(pid)):
         return None
     return pid
 
@@ -1604,7 +1555,7 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     if existing_pid is None or not _pid_exists(existing_pid):
         return True
     recorded_start = existing.get("start_time")
-    current_start = _get_process_start_time(existing_pid)
+    current_start = _process_identity.get_process_start_time(existing_pid)
     if _start_times_conflict(recorded_start, current_start):
         return True
     if not _looks_like_gateway_process(existing_pid):
@@ -1751,12 +1702,12 @@ def _read_live_pid_marker(path: Path, ttl_s: int) -> Optional[tuple[dict[str, An
 def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     """PID match with an optional start-time PID-reuse guard (watcher probe + consume). Both start
     times known -> must match; either unknown -> PID equality decides (bounded by the marker TTL):
-    ``_get_process_start_time`` is None without /proc (macOS, native Windows -- where the
+    ``runtime.process_identity.get_process_start_time`` is None without /proc (macOS, native Windows -- where the
     planned-stop watcher matters most) and requiring a match there would misclassify a legitimate
     ``hermes gateway stop`` as an unexpected exit revived by the service manager."""
     if target_pid != os.getpid():
         return False
-    our_start_time = _get_process_start_time(target_pid)
+    our_start_time = _process_identity.get_process_start_time(target_pid)
     return None in (target_start_time, our_start_time) or target_start_time == our_start_time
 
 
@@ -1793,7 +1744,7 @@ def write_takeover_marker(
     try:
         marker_home = _canonical_hermes_home(target_home or _get_process_hermes_home())
         if target_start_time is _UNSET:
-            target_start_time = _get_process_start_time(target_pid)
+            target_start_time = _process_identity.get_process_start_time(target_pid)
         return _write_marker(_get_takeover_marker_path(marker_home), {
             "target_pid": target_pid, "target_start_time": target_start_time,
             "target_hermes_home": str(marker_home), "replacer_pid": os.getpid(),
@@ -1863,7 +1814,7 @@ def _scoped_lock_owner_state(owner_pid: int, owner_start_time: int) -> str:
     """Return ``same``, ``exited``, or ``unknown`` for a validated owner."""
     if not _pid_exists(owner_pid):
         return "exited"
-    live_start_time = _get_process_start_time(owner_pid)
+    live_start_time = _process_identity.get_process_start_time(owner_pid)
     # A different start time means the PID was recycled; never signal the replacement.
     if live_start_time is None:
         return "unknown"
@@ -2010,7 +1961,7 @@ def write_planned_stop_marker(target_pid: int) -> bool:
     so service managers revive the gateway; the CLI writes this first so a deliberate stop exits
     cleanly."""
     return _write_marker(_get_planned_stop_marker_path(), {
-        "target_pid": target_pid, "target_start_time": _get_process_start_time(target_pid),
+        "target_pid": target_pid, "target_start_time": _process_identity.get_process_start_time(target_pid),
         "stopper_pid": os.getpid(), "written_at": _utc_now_iso(),
     })
 
@@ -2097,7 +2048,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")
-    current_start = _get_process_start_time(pid)
+    current_start = _process_identity.get_process_start_time(pid)
     starts = tuple(record.get("start_time") for record in records)
     if current_start is None or any(start is None for start in starts):
         raise RuntimeError("gateway creation time is unavailable")

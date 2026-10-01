@@ -70,9 +70,10 @@ data/
 .hermes-docker/
 .notebooklm-home/
 
-# Compose/profile runtime state (bind-mounted; avoid ownership/secret issues)
+# Compose/profile state remains excluded. The repository-root runtime/
+# directory is now a Python source package required by Docker, NOT runtime data.
+# Any generated runtime state must be excluded using its own concrete path.
 hermes-config/
-runtime/
 
 # ---------- Not needed inside the Docker image ----------
 

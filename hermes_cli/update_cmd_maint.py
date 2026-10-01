@@ -364,7 +364,7 @@ def _update_complete_message(pre_version: str | None) -> str:
 
 def _post_update_sqlite_runtime_status():
     """Return whether the interpreter used after update has safe SQLite."""
-    from hermes_cli.sqlite_runtime import probe_sqlite_runtime
+    from runtime.sqlite_runtime import probe_sqlite_runtime
     # Completion already runs on PM's selected Python, not the obsolete repo venv.
     info = probe_sqlite_runtime(Path(sys.executable))
     return info is not None and not info.wal_reset_vulnerable, info

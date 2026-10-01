@@ -1579,7 +1579,7 @@ class TestEdgeCases:
                     "pid": live_pid,
                     "kind": "hermes-gateway",
                     "argv": ["hermes", "gateway", "run"],
-                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "start_time": gw_status._process_identity.get_process_start_time(live_pid),
                     "gateway_state": "running",
                     "active_agents": 0,
                 }

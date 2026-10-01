@@ -87,7 +87,7 @@ def store(tmp_path):
     from hermes_cli.observability.shared_metrics_sender import (
         reconcile_send_consent,
     )
-    from hermes_cli.sqlite_util import write_txn
+    from storage.sqlite_util import write_txn
 
     with built._connection() as connection:
         with write_txn(connection):

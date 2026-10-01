@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 import pytest
 
-from hermes_cli import process_identity
+from runtime import process_identity
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan

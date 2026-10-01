@@ -120,7 +120,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/_subprocess_compat.py",
+    "path": "runtime/subprocess_compat.py",
     "symbol": "resolve_node_command",
     "kind": "bare_which"
   },
@@ -370,6 +370,16 @@
     "kind": "bare_which"
   },
   {
+    "path": "runtime/stdio.py",
+    "symbol": "_default_windows_editor",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/tools_config_cua.py",
+    "symbol": "_repair_cua_driver_autostart_windows",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/source_build.py",
     "symbol": "run_source_script",
     "kind": "bare_which"
@@ -377,11 +387,6 @@
   {
     "path": "hermes_cli/source_build.py",
     "symbol": "source_product_current",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/stdio.py",
-    "symbol": "_default_windows_editor",
     "kind": "bare_which"
   },
   {

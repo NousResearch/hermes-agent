@@ -24,8 +24,8 @@ from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
-from hermes_cli._subprocess_compat import (
-    _WINDOWS_GATEWAY_BREAKAWAY_ENV,
+from gateway.windows_launch import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+from runtime.subprocess_compat import (
     windows_detach_flags,
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
@@ -1080,7 +1080,7 @@ def _write_start_attestation(pids: list[int], via: str, home: Path | None = None
     try:
         path = _start_attestation_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
-        from hermes_cli.process_identity import _process_create_time
+        from runtime.process_identity import _process_create_time
 
         payload = {
             "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
@@ -1728,7 +1728,7 @@ def _gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:
     """``{pid: start_time}`` fingerprints, captured BEFORE any drain/wait so a later force-kill can
     detect that the PID was recycled meanwhile."""
     try:
-        from gateway.status import get_process_start_time
+        from runtime.process_identity import get_process_start_time
     except ImportError:
         return {pid: None for pid in pids}
     return {pid: get_process_start_time(pid) for pid in pids}

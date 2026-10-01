@@ -1323,7 +1323,7 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
 
 def test_sqlite_connect_closes_tracked_conn_on_setup_failure(tmp_path, monkeypatch):
     """A PRAGMA failure after connect must not abandon a tracked kanban fd."""
-    from hermes_cli import sqlite_safe_read
+    from storage import sqlite_safe_read
 
     db_path = tmp_path / "kanban.db"
     real_connect = sqlite3.connect
@@ -1492,7 +1492,7 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
     """
     import sqlite3
 
-    from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+    from storage.sqlite_util import add_column_if_missing as _add_column_if_missing
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -1927,7 +1927,7 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
     """
     import struct
     from hermes_cli.kanban_db_connect import connect
-    from hermes_cli.sqlite_safe_read import file_length_matches_header
+    from storage.sqlite_safe_read import file_length_matches_header
 
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)

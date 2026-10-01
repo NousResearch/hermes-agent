@@ -1706,7 +1706,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         still fails closed, but the error names that reason instead of claiming a lifecycle
         command the model then rewords and retries in a loop (#113944)."""
         import tools.terminal_tool as tt
-        from hermes_cli.sqlite_safe_read import connect_tracked
+        from storage.sqlite_safe_read import connect_tracked
 
         db = tmp_path / "state.db"
         conn = connect_tracked(db)

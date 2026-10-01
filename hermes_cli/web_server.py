@@ -23,7 +23,7 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
-from hermes_cli.process_identity import is_desktop_owned_backend
+from runtime.desktop_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -1179,7 +1179,7 @@ def _on_server_started(
         _reap_orphaned_desktop_local_serves()
 
     def _reap_mcp_helpers() -> None:
-        from hermes_cli.process_identity import reap_orphaned_mcp_helpers
+        from runtime.process_identity import reap_orphaned_mcp_helpers
 
         reap_orphaned_mcp_helpers()
 
@@ -1217,7 +1217,8 @@ def _on_server_started(
     # ACTUAL port — what lets `hermes update` relaunch a manually-started serve
     # on its real endpoint (#63206).
     def _register_identity() -> None:
-        from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
+        from runtime.processes import attach_self_to_kill_on_close_job
+        from runtime.process_identity import register_self
 
         register_self(
             "serve" if headless else "dashboard",
@@ -1385,9 +1386,13 @@ def start_server(
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    try:
+        from hermes_cli.config import load_config_readonly
+        from runtime.resource_limits import apply_nofile_soft_limit
 
-    apply_nofile_soft_limit()
+        apply_nofile_soft_limit(load_config_readonly())
+    except Exception:
+        _log.debug("Could not apply RLIMIT_NOFILE startup policy", exc_info=True)
 
     import uvicorn  # noqa: F401 — fail fast (before any side effects) when the dashboard extra is missing
 
@@ -1862,8 +1867,8 @@ _PLUGIN_COMPAT_LAZY = {
     'upsert_custom_endpoint': ('hermes_cli.web_routers.config_env', 'upsert_custom_endpoint'),
     'validate_custom_endpoint': ('hermes_cli.web_routers.config_env', 'validate_custom_endpoint'),
     'validate_provider_credential': ('hermes_cli.web_routers.config_env', 'validate_provider_credential'),
-    'windows_detach_flags': ('hermes_cli._subprocess_compat', 'windows_detach_flags'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
+    'windows_detach_flags': ('runtime.subprocess_compat', 'windows_detach_flags'),
+    'windows_hide_flags': ('runtime.subprocess_compat', 'windows_hide_flags'),
     'write_platform_config_field': ('hermes_cli.config', 'write_platform_config_field'),
 }
 

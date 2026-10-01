@@ -114,7 +114,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
 
     Identity is the psutil ``create_time`` the sentinel stamps at claim (epoch seconds, same
     producer on both sides). The sentinel's ``start_time`` is the ledger claim time and is NOT
-    comparable with ``gateway.status.get_process_start_time`` (proc ticks on Linux, centiseconds
+    comparable with ``runtime.process_identity.get_process_start_time`` (proc ticks on Linux, centiseconds
     elsewhere) — the old comparison never matched, so every ``--replace`` handover read as an
     unclean death. A pre-stamp sentinel (no ``create_time``) still has ``start_time`` in epoch
     seconds: the owner was born BEFORE it claimed, a PID reuser AFTER the owner died, so a birth
@@ -128,7 +128,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
             return False
     except Exception:
         return False
-    from hermes_cli.process_identity import _process_create_time
+    from runtime.process_identity import _process_create_time
 
     actual = _process_create_time(pid_int)
     if actual is None:
@@ -277,7 +277,7 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
-        from hermes_cli.process_identity import _process_create_time
+        from runtime.process_identity import _process_create_time
 
         create_time = _process_create_time(os.getpid())
         if create_time is not None:

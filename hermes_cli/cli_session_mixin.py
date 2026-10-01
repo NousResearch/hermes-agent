@@ -1029,7 +1029,7 @@ class CLISessionMixin:
             try:
                 import subprocess
 
-                from hermes_cli._subprocess_compat import windows_hide_flags
+                from runtime.subprocess_compat import windows_hide_flags
 
                 if os.name == "nt":
                     argv = ["cmd", "/c", "cls"]  # `cls` is a cmd builtin, not an exe

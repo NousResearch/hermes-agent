@@ -928,7 +928,7 @@ class VoiceReceiver:
     def pcm_to_wav(pcm_data: bytes, output_path: str, src_rate: int = 48000, src_channels: int = 2):
         """Convert raw PCM to 16kHz mono WAV via ffmpeg into *output_path* (not stdout: ffmpeg
         can't seek a pipe, so piped WAV carries placeholder RIFF sizes strict readers misreport)."""
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
         subprocess.run(
             [
                 resolve_ffmpeg_executable(), "-y", "-loglevel", "error", "-f", "s16le",

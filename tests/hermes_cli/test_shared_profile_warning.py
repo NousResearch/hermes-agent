@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import process_identity
+from runtime import process_identity
 from hermes_constants import hermes_home_key
 
 
@@ -31,7 +31,7 @@ def running_install(home: Path, install: Path):
     script = """
 import sys
 from pathlib import Path
-from hermes_cli.process_identity import register_self
+from runtime.process_identity import register_self
 assert register_self('serve', project_root=Path(sys.argv[1]))
 print('ready', flush=True)
 sys.stdin.readline()

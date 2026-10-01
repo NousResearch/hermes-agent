@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
-from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
+from runtime.desktop_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 

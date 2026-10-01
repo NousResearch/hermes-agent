@@ -7,7 +7,7 @@
 //
 // Nothing new has to be published for this. The backend already writes a
 // machine-root `spawn-ledger.json` entry AFTER its socket binds
-// (`hermes_cli/process_identity.py::register_self`, called from
+// (`runtime/process_identity.py::register_self`, called from
 // `web_server.py` with `detail={host, port, profile}`), and an ungated
 // loopback backend serves its session token at `GET /`
 // (`window.__HERMES_SESSION_TOKEN__`, `web_server_dashboard.py`). The ledger is

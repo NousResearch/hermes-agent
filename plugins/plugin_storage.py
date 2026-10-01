@@ -38,7 +38,7 @@ def plugin_db(name: str, filename: str = "data.db") -> sqlite3.Connection:
     ``check_same_thread=False`` for the threaded FastAPI/tool env — caller owns transactions."""
     if Path(filename).name != filename or not filename:
         raise ValueError(f"invalid plugin db filename: {filename!r}")
-    from hermes_cli.sqlite_util import open_db
+    from storage.sqlite_util import open_db
 
     # WAL via the shared fallback helper: network filesystems degrade to DELETE and WAL-reset-bug
     # builds never enable it, instead of every plugin DB bypassing those rules with a raw PRAGMA.

@@ -140,7 +140,7 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
     child = subprocess.Popen(["sleep", "60"])
     try:
-        stale_start = (status._get_process_start_time(child.pid) or 10**9) - 4242
+        stale_start = (status._process_identity.get_process_start_time(child.pid) or 10**9) - 4242
         for name in ("gateway.pid", "gateway_state.json"):
             (served_root / name).write_text(json.dumps({
                 "pid": child.pid, "hermes_home": str(served_root), "gateway_state": "running",

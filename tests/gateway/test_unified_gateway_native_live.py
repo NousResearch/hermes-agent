@@ -128,7 +128,7 @@ def websocket(home, desc, purpose='interactive'):
 
 
 def process_start_time(pid):
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     return get_process_start_time(pid)
 
 

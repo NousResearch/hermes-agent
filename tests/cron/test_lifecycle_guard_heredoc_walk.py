@@ -57,7 +57,7 @@ def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, m
     in 64+ remote-read misses (a markdown table of paths) or be a live SQLite database: each is
     "nothing to scan", never a block (#113944). The same file *executed* still fails closed."""
     import cron.lifecycle_guard as lifecycle_guard
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from storage.sqlite_safe_read import connect_tracked
 
     minified = tmp_path / "minified.json"
     minified.write_text("[" + "1," * 40000 + "1]", encoding="utf-8")
@@ -101,7 +101,7 @@ def test_unscannable_own_cron_script_raises_named_refusal(tmp_path, shape):
     """A cron job whose OWN script is oversized or a live SQLite database fails closed with the
     named "could not scan" refusal, never the misattributed "contains a gateway lifecycle command"."""
     from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from storage.sqlite_safe_read import connect_tracked
 
     if shape == "oversized":
         script, conn = _big_file(tmp_path), None

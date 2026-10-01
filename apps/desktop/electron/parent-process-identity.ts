@@ -2,7 +2,7 @@ export type ParentWatchdogEnv = {
   HERMES_PARENT_PID: string
   HERMES_PARENT_START_MARKER?: string
   HERMES_PARENT_NONCE?: string
-  /** Spawn tag consumed by hermes_cli.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
+  /** Spawn tag consumed by runtime.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
    *  Install is `-` (unknown) from the Desktop — the Python side scopes by
    *  venv membership, so the tag only needs lineage, not install identity. */
   HERMES_SPAWN?: string
@@ -89,7 +89,7 @@ export function parentWatchdogEnv(pid: number, startMarker: string | null, nonce
   return env
 }
 
-/** Build the `HERMES_SPAWN` tag mirrored by hermes_cli/process_identity.py.
+/** Build the `HERMES_SPAWN` tag mirrored by runtime/process_identity.py.
  *  The Desktop only ever spawns backend servers, so purpose is `serve`; the
  *  spawner create-time is derived from the same `winms:` marker the parent
  *  watchdog uses (seconds, 3 decimals), `-` when the marker probe failed. */

@@ -260,7 +260,7 @@ def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
     """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
     predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
     the pre-update serve the first update after this change inventories."""
-    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+    from runtime.desktop_identity import is_desktop_ssh_backend_argv
 
     try:
         return is_desktop_ssh_backend_argv(shlex.split(str(entry.get("argv") or "")))
@@ -276,7 +276,7 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
     detached argv respawn) — the spawner probe cannot see that (#116503)."""
     with _probe("Serve/dashboard ledger inventory"):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from runtime.process_identity import ledger_entries, spawner_is_dead
 
         launchd_jobs = _loaded_backend_launchd_jobs()
         for entry in ledger_entries():

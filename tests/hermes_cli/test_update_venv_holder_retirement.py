@@ -32,7 +32,7 @@ def test_historical_holder_hooks_hand_off_without_inspecting_or_killing(
     """A historical main's holder gates hand the update to the fresh child and exit with its
     status; the old parent never classifies, inspects or kills processes itself."""
     import hermes_cli.gateway as gateway
-    from hermes_cli import process_identity
+    from runtime import process_identity
     import psutil
 
     forbidden = Mock(side_effect=AssertionError("retired holder gate performed work"))

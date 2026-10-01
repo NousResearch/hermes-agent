@@ -16,7 +16,8 @@ _OWNER_STOP_HINTS = {
 
 def _drain_manual_gateway(home: Path) -> None:
     from gateway.control_socket import identify_gateway, pause_gateway_for_update
-    from gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
+    from gateway.status import get_running_pid_identity_strict, _pid_exists
+    from runtime.process_identity import get_process_start_time
 
     identity = identify_gateway(home)
     if identity is None:
@@ -52,7 +53,7 @@ def _drain_manual_gateway(home: Path) -> None:
 
 def _refuse_backend_writers(home: Path) -> None:
     from hermes_constants import get_default_hermes_root
-    from hermes_cli.process_identity import LEDGER_FILENAME, _pid_alive_matches, _read_ledger
+    from runtime.process_identity import LEDGER_FILENAME, _pid_alive_matches, _read_ledger
 
     root = get_default_hermes_root(home=home).resolve()
     rows = _read_ledger(root / LEDGER_FILENAME)
@@ -73,7 +74,8 @@ def _refuse_backend_writers(home: Path) -> None:
 def _refuse_cron_writers(home: Path) -> None:
     from contextlib import closing
     import sqlite3
-    from gateway.status import get_process_start_time, _pid_exists
+    from gateway.status import _pid_exists
+    from runtime.process_identity import get_process_start_time
 
     path = home / "cron" / "executions.db"
     try:

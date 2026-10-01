@@ -48,7 +48,7 @@ def complete_source_checkout(
 
     root = Path(root)
     try:
-        from hermes_cli._subprocess_compat import expose_pm_git
+        from runtime.git_subprocess import expose_pm_git
 
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.

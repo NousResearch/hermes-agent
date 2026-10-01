@@ -63,7 +63,7 @@ def _prepare_connection_retirement():
 # _read_sqlite_application_id runs on EVERY write (_raise_if_db_replaced) against the LIVE
 # state.db.  A bare open()/read()/close() there is the howtocorrupt §2.2 bug: close() cancels
 # every POSIX advisory lock this process holds on the file, dropping the writer's WAL-mode DMS
-# shared lock (see hermes_cli/sqlite_safe_read.py) so another process can treat this writer as
+# shared lock (see storage/sqlite_safe_read.py) so another process can treat this writer as
 # dead and rerun WAL-index recovery underneath it.  So the probe preads through a per-path fd
 # cached for the life of the process (opening never cancels locks).  When the path is re-pointed
 # at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
@@ -575,12 +575,12 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
     """``sqlite3.connect`` that registers the open fd so byte-level probes of a live file are
     refused (an ``open()``/``close()`` would cancel every POSIX lock, even a running VACUUM's
     EXCLUSIVE).  The ONLY tolerated fallback is the helper being absent (scaffold/embed installs
-    without hermes_cli); a real connection failure must propagate — a silent untracked retry
+    without the storage helper); a real connection failure must propagate — a silent untracked retry
     would disable the guard for that connection."""
     try:
-        from hermes_cli.sqlite_safe_read import connect_tracked
+        from storage.sqlite_safe_read import connect_tracked
     except ImportError:
-        logger.debug("hermes_cli.sqlite_safe_read unavailable; opening %s untracked "
+        logger.debug("storage.sqlite_safe_read unavailable; opening %s untracked "
                      "(byte-probe guard inactive in this install)", path)
         return sqlite3.connect(str(path), **kwargs)
     # Open through THIS module's sqlite3.connect so tests patching hermes_state.sqlite3.connect keep control.
@@ -596,7 +596,7 @@ def _preopen_header(path: Path, probe_bytes: int, force: bool) -> Optional[bytes
         if not path.is_file():
             return None
         path.stat()
-        from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+        from storage.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
         if not force and has_live_connection(path):
             return None
         return read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)

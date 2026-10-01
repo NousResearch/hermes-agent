@@ -1609,7 +1609,8 @@ def _wait_then_force_kill(pids: List[int], start_times: dict, *, wait: float = 1
     """After a graceful ``terminate_pid``, wait up to *wait* seconds (0.5s polls) for *pids*
     to exit, then force-kill stragglers. True when every pid exited gracefully.
     ``start_times`` pins each force kill to the same process incarnation (PID reuse guard)."""
-    from gateway.status import _pid_exists, get_process_start_time, terminate_pid
+    from gateway.status import _pid_exists, terminate_pid
+    from runtime.process_identity import get_process_start_time
     for _ in range(int(wait / 0.5)):
         time.sleep(0.5)
         if not any(_pid_exists(pid) for pid in pids):
@@ -1946,7 +1947,8 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
         # owner. A poisoned gateway.pid in this dir can point at another profile's live
         # gateway — killing it starts a mutual SIGTERM restart loop.
-        from gateway.status import get_process_start_time, recorded_gateway_home_conflicts, terminate_pid
+        from gateway.status import recorded_gateway_home_conflicts, terminate_pid
+        from runtime.process_identity import get_process_start_time
         if recorded_gateway_home_conflicts(data, expected_home=profile_dir):
             print(
                 f"✗ Refusing to stop PID {pid}: its recorded HERMES_HOME "

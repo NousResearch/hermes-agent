@@ -16,6 +16,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from plugins.platforms.matrix.followup_context import LogicalReplyContext, REPLY_EXCERPT_CHARS
 from plugins.platforms.matrix.turn_context import MatrixTurnContext
+from plugins.platforms.matrix.sync_transport import DurableSyncStore
 from plugins.platforms.matrix.reaction_followups import (
     FinalDeliveryEvents, PendingFollowupReactions, ReactionWatchStore,
     REGISTRATION_REPLAY_SECONDS, reaction_follows_delivery,
@@ -233,37 +234,47 @@ class MatrixFollowupMixin:
             return
         if getattr(self, "_message_handler", None) is None:
             return False
-        claimed = store.claim(
+        claim = store.claim(
             source.profile or "", room_id, target_event_id, sender, emoji,
+            reaction_event_id=reaction_event_id,
             verified_delivery_event_id=candidate["delivery_event_id"])
-        if claimed is None:
+        if claim is None:
             return
-        reply_text = claimed["text_content"]
-        if not reply_text:
-            target = await self._event_context_cache.resolve(
-                getattr(self, "_client", None), room_id, target_event_id)
-            reply_text = target.text if target else ""
-        context = (f"Matrix reaction by {sender}: {emoji} on reply {target_event_id} "
-                   f"(reaction event {reaction_event_id}).")
-        followup = MessageEvent(
-            text=context, source=source, message_id=reaction_event_id,
-            raw_message={"m.relates_to": {"rel_type": "m.annotation",
-                                          "event_id": target_event_id, "key": emoji}},
-            reply_to_message_id=target_event_id,
-            reply_to_text=reply_text[:REPLY_EXCERPT_CHARS] or None,
-            reply_to_is_own_message=True,
-            user_id=sender, allow_gateway_control=False, defer_until_idle=True,
-            metadata={
-                "gateway_session_key": claimed["session_key"],
-                "gateway_session_id": claimed["session_id"],
-                "gateway_session_strict": True,
-            },
-        )
-        if claimed["reply_excerpt"] is not None:
-            snapshot = MatrixTurnContext.capture(self, followup)
-            snapshot.logical_reply = LogicalReplyContext.capture(
-                self, room_id, reply_text[:REPLY_EXCERPT_CHARS], claimed["reply_excerpt"]
+        claimed = claim.watch
+        followup = None
+        consumed = False
+        try:
+            reply_text = claimed["text_content"]
+            if not reply_text:
+                target = await self._event_context_cache.resolve(
+                    getattr(self, "_client", None), room_id, target_event_id)
+                reply_text = target.text if target else ""
+            context = (f"Matrix reaction by {sender}: {emoji} on reply {target_event_id} "
+                       f"(reaction event {reaction_event_id}).")
+            followup = MessageEvent(
+                text=context, source=source, message_id=reaction_event_id,
+                raw_message={"m.relates_to": {"rel_type": "m.annotation",
+                                              "event_id": target_event_id, "key": emoji}},
+                reply_to_message_id=target_event_id,
+                reply_to_text=reply_text[:REPLY_EXCERPT_CHARS] or None,
+                reply_to_is_own_message=True,
+                user_id=sender, allow_gateway_control=False, defer_until_idle=True,
+                metadata={
+                    "gateway_session_key": claimed["session_key"],
+                    "gateway_session_id": claimed["session_id"],
+                    "gateway_session_strict": True,
+                },
             )
-            followup._inbound_context_dependencies = (snapshot,)
-        return await self._admit(followup)
-
+            if claimed["reply_excerpt"] is not None:
+                snapshot = MatrixTurnContext.capture(self, followup)
+                snapshot.logical_reply = LogicalReplyContext.capture(
+                    self, room_id, reply_text[:REPLY_EXCERPT_CHARS], claimed["reply_excerpt"]
+                )
+                followup._inbound_context_dependencies = (snapshot,)
+            consumed = await self._admit(followup)
+            return consumed
+        finally:
+            sync_store = getattr(self._client, "sync_store", None)
+            admitted = followup is not None and followup._gateway_accepted is True
+            acknowledged = isinstance(sync_store, DurableSyncStore) and sync_store.intake_accepted(reaction_event_id)
+            store.finish_claim(claim, consumed=consumed or admitted or acknowledged)

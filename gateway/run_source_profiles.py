@@ -19,7 +19,7 @@ class GatewaySourceProfilesMixin:
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime
         home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing
-        ``build_source``), then the active profile."""
+        ``build_source``), then the primary profile under multiplexing or the active profile."""
         from gateway.profile_routing import ProfileRouteRejected
         from gateway.session_identity import identity_of
         from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
@@ -32,7 +32,8 @@ class GatewaySourceProfilesMixin:
             name = (source.profile or "").strip() or self._profile_name_for_source(source)
             explicit_profile = name or None
             if not name:
-                name = get_active_profile_name() or "default"
+                name = ((getattr(self, "_primary_profile_name", None) or "default")
+                        if self.config.multiplex_profiles else get_active_profile_name() or "default")
             profile_dir = get_profile_dir(name)
             if explicit_profile and not profile_exists(name):
                 logger.warning(

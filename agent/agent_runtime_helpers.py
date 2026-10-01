@@ -898,6 +898,9 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
+    from agent.credential_pool_quota_window import QUOTA_EXHAUSTED_REASON
+    if error_context and error_context.get("reason") == QUOTA_EXHAUSTED_REASON:
+        usage_limit_reached = True  # a spent plan window: retrying the same account cannot succeed
     if not has_retried_429 and not usage_limit_reached:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
@@ -3514,6 +3517,12 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             context["reset_at"] = ratelimit_reset
         if "reset_at" not in context:
             _set_reset_from_vendor_headers(context, headers)
+        from agent.credential_pool_quota_window import QUOTA_EXHAUSTED_REASON, spent_quota_reset_at
+        quota_reset_at = spent_quota_reset_at(headers)
+        if quota_reset_at is not None:
+            # The spent subscription window, not the request bucket, decides when this account works again.
+            context["reset_at"] = quota_reset_at
+            context["reason"] = QUOTA_EXHAUSTED_REASON
     if "message" not in context and str(error).strip():
         context["message"] = str(error).strip()[:500]
     if "reset_at" not in context and isinstance(context.get("message") or "", str):

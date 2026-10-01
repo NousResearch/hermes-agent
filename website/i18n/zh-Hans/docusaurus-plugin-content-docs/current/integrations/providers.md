@@ -484,22 +484,51 @@ model:
 
 ### StepFun
 
-通过 [StepFun](https://platform.stepfun.com) 使用 Step 系列模型——OpenAI 兼容 API，API key 认证。
+通过 StepFun 使用 Step 系列模型——OpenAI 兼容 API，API key 认证。
+
+StepFun 有两套接口、两个地区，且**账号按地区隔离**：在
+[platform.stepfun.ai](https://platform.stepfun.ai) 申请的 key 调用 `api.stepfun.com` 会返回
+`401 Incorrect API key provided`，反之亦然。因此每种组合都是独立的 provider id，各自使用独立的
+key，与 `minimax` / `minimax-cn` 的做法一致：
+
+| Provider | 接口地址 | API key | Base URL 覆盖 |
+|---|---|---|---|
+| `stepfun` | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` | `STEPFUN_BASE_URL` |
+| `stepfun-cn` | `https://api.stepfun.com/v1` | `STEPFUN_CN_API_KEY` | `STEPFUN_CN_BASE_URL` |
+| `stepfun-plan` | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_API_KEY` | `STEPFUN_STEP_PLAN_BASE_URL` |
+| `stepfun-plan-cn` | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_CN_API_KEY` | `STEPFUN_CN_STEP_PLAN_BASE_URL` |
+
+同一地区内，两套接口共用同一个 key。别名：`step`、`stepfun-coding-plan`、`stepfun-step-plan`
+解析为 `stepfun-plan`；`stepfun-ai` 解析为 `stepfun`；`stepfun-china` 解析为 `stepfun-cn`。
+
+注意:`-plan` id(`stepfun-plan`、`stepfun-plan-cn`)走 StepFun 的 Step Plan 接口,**生成**能力仅对已订阅
+Step Plan 的账号开放——仅充值(credit-only)的账号首次请求会返回 `400 you have no active step plan
+subscription`。这些 id 上 key 认证(以及 `GET /models`)照常成功,因此 `/models` 返回 200 并不代表能正常
+生成。仅充值账号应改用 `stepfun` / `stepfun-cn`。
+
+四个 id 的默认模型均为 `step-5-preview`——StepFun 面向编程与 Agent 任务的旗舰基模：
+1,024,000 token 上下文，支持图片与视频输入、工具调用，以及推理强度（`low`/`medium`/`high`）。
+`step-router-v1` 仅在国内接口提供。
 
 ```bash
-# StepFun
-hermes chat --provider stepfun --model step-3.5-flash
+# StepFun 标准对话（国际）
+hermes chat --provider stepfun --model step-5-preview
 # 需要：~/.hermes/.env 中的 STEPFUN_API_KEY
+
+# StepFun Step Plan（国内）
+hermes chat --provider stepfun-plan-cn --model step-5-preview
+# 需要：~/.hermes/.env 中的 STEPFUN_CN_API_KEY
 ```
 
 或在 `config.yaml` 中永久设置：
 ```yaml
 model:
-  provider: "stepfun"
-  default: "step-3.5-flash"
+  provider: "stepfun"        # 或 stepfun-cn / stepfun-plan / stepfun-plan-cn
+  default: "step-5-preview"
 ```
 
-基础 URL 可通过 `STEPFUN_BASE_URL` 覆盖（默认：`https://api.stepfun.com/v1`）。
+**升级说明.** 拆分前的 `stepfun` 配置会自动迁移（config 版本 46）到与其实际使用接口对应的 id；
+国内配置的 key 会从 `STEPFUN_API_KEY` 迁移到 `STEPFUN_CN_API_KEY`，以保证鉴权不中断。
 
 ### Hugging Face 推理提供商
 

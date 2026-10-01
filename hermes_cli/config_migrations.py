@@ -631,6 +631,58 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
+def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
+    # 49 → 50: the single `stepfun` id became four, one per (region x endpoint family). The id is
+    # chosen by the endpoint the config ACTUALLY reached — model.base_url, else STEPFUN_BASE_URL,
+    # else the pre-split default of international Step Plan. A China config's key also moves to
+    # STEPFUN_CN_API_KEY (accounts are regional), or every request after the upgrade 401s.
+    _c = _cfg()
+    config = read_raw_config()
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict) or model_cfg.get("provider") != "stepfun":
+        return
+
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    env_override = str(_c.get_env_value("STEPFUN_BASE_URL") or "").strip()
+    # The pre-split default was international Step Plan, so an unset endpoint means exactly that.
+    effective = (base_url or env_override or "https://api.stepfun.ai/step_plan/v1").lower()
+    is_plan = "/step_plan/" in effective
+    is_cn = "api.stepfun.com" in effective
+    new_provider = ("stepfun-plan-cn" if is_cn else "stepfun-plan") if is_plan else (
+        "stepfun-cn" if is_cn else "stepfun")
+
+    model_cfg["provider"] = new_provider
+    config["model"] = model_cfg
+    notes: List[str] = []
+
+    # Re-home the base-url override onto the new id's own variable, but only when it carried a
+    # value (the default endpoint needs no override) and the target is still unset.
+    target_env = {
+        "stepfun": "STEPFUN_BASE_URL", "stepfun-cn": "STEPFUN_CN_BASE_URL",
+        "stepfun-plan": "STEPFUN_STEP_PLAN_BASE_URL",
+        "stepfun-plan-cn": "STEPFUN_CN_STEP_PLAN_BASE_URL"}[new_provider]
+    try:
+        if env_override and target_env != "STEPFUN_BASE_URL" and not _c.get_env_value(target_env):
+            _c.save_env_value(target_env, env_override)
+            _c.save_env_value("STEPFUN_BASE_URL", "")
+            notes.append(f"env STEPFUN_BASE_URL → {target_env}")
+        # A China config's key is a China account key; the new id reads STEPFUN_CN_API_KEY.
+        if is_cn:
+            existing_key = str(_c.get_env_value("STEPFUN_API_KEY") or "").strip()
+            if existing_key and not _c.get_env_value("STEPFUN_CN_API_KEY"):
+                _c.save_env_value("STEPFUN_CN_API_KEY", existing_key)
+                _c.save_env_value("STEPFUN_API_KEY", "")
+                notes.append("env STEPFUN_API_KEY → STEPFUN_CN_API_KEY (China account key)")
+    except Exception:
+        # Best effort: a failed .env write must not abort the provider rename.
+        pass
+
+    suffix = f" ({'; '.join(notes)})" if notes else ""
+    _commit(
+        config, results, quiet,
+        f"model.provider stepfun → {new_provider}{suffix}",
+        f"  ✓ StepFun config migrated to provider '{new_provider}' — same endpoint, explicit region"
+        + (f"\n    ✓ {chr(10) + '    ✓ '.join(notes)}" if notes else ""))
 def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
     # 47 → 48: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
     # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. A saved value
@@ -814,6 +866,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (48, _migrate_to_48),
     # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
     (49, _migrate_to_49),
+    # 49 → 50: `stepfun` splits into stepfun / stepfun-cn / stepfun-plan / stepfun-plan-cn (see _migrate_to_50).
+    (50, _migrate_to_50),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

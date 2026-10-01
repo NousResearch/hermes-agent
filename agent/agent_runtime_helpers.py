@@ -1296,15 +1296,18 @@ def _primary_quota_reopened_early(agent, primary_provider, primary_model, matche
     pool's throttled usage probe notices, but only on ``select()``, which a session pinned to its
     fallback never reaches. Fails closed: any doubt leaves both cooldowns in force.
 
-    At most one lift per probe interval per agent: the probe caches its verdict and nothing clears
+    At most one check per probe interval per agent: the probe caches its verdict and nothing clears
     it on the next 429, so a "restored" answer the endpoint got wrong would otherwise restore,
-    fail, and fall back again on every turn of the cached window.
+    fail, and fall back again on every turn of the cached window. Checks in between could only
+    replay that cached verdict, so they return before loading the pool.
     """
     if primary_provider != "openai-codex":
         return False
     from hermes_cli.auth_codex import CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS
-    if time.monotonic() - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
+    now = time.monotonic()
+    if now - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
         return False
+    agent._codex_reopen_checked_at = now
     try:
         pool = getattr(agent, "_credential_pool", None)
         if pool is None or not matches_primary(pool):
@@ -1315,7 +1318,6 @@ def _primary_quota_reopened_early(agent, primary_provider, primary_model, matche
         benched_until = pool.next_available_at(model=model)
         if benched_until is None or benched_until <= time.time():
             return False
-        agent._codex_reopen_checked_at = time.monotonic()
         return pool.lift_reopened_cooldowns(model=model)
     except Exception:
         logger.debug("Early quota-reopen check failed; keeping the cooldown", exc_info=True)

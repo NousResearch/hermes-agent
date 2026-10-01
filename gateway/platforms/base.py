@@ -430,7 +430,8 @@ from gateway.platforms.base_exec_approval import (
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.base_pending import (
-    _can_join_pending_event, pending_dispatch_scope, release_pending_dispatch, pending_dispatch_needs_snapshot, reserve_pending_dispatch,
+    _PendingDispatchReservation, _can_join_pending_event, pending_dispatch_scope, release_pending_dispatch, pending_dispatch_needs_snapshot,
+    reserve_pending_dispatch,
 )
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
@@ -4874,9 +4875,14 @@ class BasePlatformAdapter(ABC):
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
+        pending_reservations: dict[str, list[_PendingDispatchReservation]] = {}
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):
+            for key, reserved in getattr(self, "_pending_dispatch_reservations", {}).items():
+                recorded = pending_reservations.setdefault(key, [])
+                if not any(previous is reserved for previous in recorded):
+                    recorded.append(reserved)
             tasks = [task for task in self._background_tasks if not task.done()]
             if not tasks:
                 break
@@ -4892,18 +4898,22 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
-        with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
-            from gateway.shutdown_flush import flush_overflow_to_file, flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
-            flush_overflow_to_file({
-                key: [*state.earlier_events, state.event]
-                for key, state in self._text_debounce_store().items()
-            }, reason="adapter_shutdown")
+        from gateway.shutdown_pending import flush_adapter_pending
+        persisted = flush_adapter_pending(self, pending_reservations)
+        for key in persisted:
+            self._pending_messages.pop(key, None)
+            state = self._text_debounce_store().pop(key, None)
+            if state is not None:
+                state.cancel_timer()
+            getattr(self, "_pending_dispatch_reservations", {}).pop(key, None)
+        for key, records in pending_reservations.items():
+            for reserved in records:
+                if key not in persisted and pending_dispatch_needs_snapshot(self, reserved):
+                    self._pending_dispatch_reservations.setdefault(key, reserved)
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._requeue_counts,
-                       self._text_debounce_store(), getattr(self, "_pending_dispatch_reservations", {})):
+                       self._active_sessions, self._requeue_counts):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

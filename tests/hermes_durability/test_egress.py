@@ -5,7 +5,8 @@ import pytest
 from hermes_durability.egress import (EgressBlocked, guard_outbound_text,
                                       normalize_for_detection)
 
-GHP = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+# Synthetic fixtures, split so the source holds no token-shaped literal.
+GHP = "ghp" + "_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 
 
 def test_plain_text_passes_through():
@@ -20,13 +21,13 @@ def test_secret_redacted_at_egress():
 
 def test_ansi_glue_bypass_defeated():
     # secret body split by ANSI styling sequences hides it from a raw regex
-    glued = f"ghp_AbCdEfGh\x1b[31mIjKlMnOpQrStUvWxYz\x1b[0m0123456789"
+    glued = "ghp" f"_AbCdEfGh\x1b[31mIjKlMnOpQrStUvWxYz\x1b[0m0123456789"
     out = guard_outbound_text(f"token {glued}", platform="telegram")
     assert "IjKlMnOpQrStUvWxYz" not in out
 
 
 def test_zero_width_split_defeated():
-    glued = "ghp_AbCdEfGh​IjKlMnOpQrStUvWxYz‍0123456789"
+    glued = "ghp" "_AbCdEfGh​IjKlMnOpQrStUvWxYz‍0123456789"
     out = guard_outbound_text(f"token {glued}", platform="telegram")
     assert "IjKlMnOpQrStUvWxYz" not in out
 

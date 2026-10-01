@@ -21,7 +21,7 @@ def test_clean_text_allowed(g):
 
 
 def test_api_key_redacted(g):
-    v = g.evaluate(ev("my key is sk-abc123def456ghi789jkl012 ok"))
+    v = g.evaluate(ev("my key is sk" "-abc123def456ghi789jkl012 ok"))
     assert v.action == "redact"
     assert "sk-abc" not in v.envelope.payload["text"]
     assert "[REDACTED:" in v.envelope.payload["text"]
@@ -29,7 +29,7 @@ def test_api_key_redacted(g):
 
 
 def test_private_key_blocked(g):
-    v = g.evaluate(ev("-----BEGIN RSA PRIVATE KEY-----\nMIIE..."))
+    v = g.evaluate(ev("-----BEGIN RSA PRIVATE " "KEY-----\nMIIE..."))
     assert v.action == "block"
     assert v.envelope is None
 
@@ -79,7 +79,7 @@ def test_hot_reload_policies(g):
                           "action": "drop"}])
     assert g.evaluate(ev("say xyzzy")).action == "drop"
     # old rules replaced
-    assert g.evaluate(ev("sk-abc123def456ghi789jkl012")).action == "allow"
+    assert g.evaluate(ev("sk" "-abc123def456ghi789jkl012")).action == "allow"
 
 
 def test_audit_written_before_send(tmp_path):
@@ -91,7 +91,7 @@ def test_audit_written_before_send(tmp_path):
 
     rt = DurableRuntime(db, adapters={"mem": NeverSend()}, start_worker=False)
     with rt.transaction("s1") as txn:
-        txn.enqueue_outbound("mem", {"text": "-----BEGIN PRIVATE KEY-----"})
+        txn.enqueue_outbound("mem", {"text": "-----BEGIN PRIVATE " "KEY-----"})
     rt.worker.drain_once()
     rows = rt.journal._conn.execute(
         "SELECT action, policy_id FROM audit_log").fetchall()
@@ -115,7 +115,7 @@ def test_guardrail_runs_on_delivery_path(tmp_path):
     rt = DurableRuntime(db, adapters={"mem": Recv()}, start_worker=False)
     with rt.transaction("s1") as txn:
         oid = txn.enqueue_outbound(
-            "mem", {"text": "key=sk-abc123def456ghi789jkl012"})
+            "mem", {"text": "key=sk" "-abc123def456ghi789jkl012"})
     rt.worker.drain_once()
     assert "sk-abc" not in sent[oid]
     rt.close()

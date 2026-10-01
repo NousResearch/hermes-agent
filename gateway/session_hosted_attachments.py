@@ -46,6 +46,16 @@ def download(service, actor, params):
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
 
 
+def list_files(service, actor, params):
+    """``groups.attachment.list``: one catalog page of the files ``download`` serves."""
+    from gateway.hosted_room_attachment_catalog import list_published
+    room_id = _authorize(service, actor, params, 'session:read')
+    gateway_id, epoch = service._owned_authority(room_id)
+    return list_published(
+        service.db_path, room_id=room_id, authority_gateway_id=gateway_id, authority_epoch=epoch,
+        **{key: params[key] for key in ('cursor', 'limit', 'query', 'producer_member_id') if key in params})
+
+
 def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch):
     from gateway import hosted_rooms
     store = HostedRoomAttachmentStore(service.db_path)

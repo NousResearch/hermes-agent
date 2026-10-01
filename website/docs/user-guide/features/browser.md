@@ -539,7 +539,9 @@ entry point for selecting your external browser.
 A compatible external `agent-browser` on PATH is also supported. If you install
 its npm wrapper yourself, follow that package's Node.js engine requirements
 (Node.js 24 or newer for 0.34.0). Hermes checks the selected command's version
-and `--pin-tab` capability before dispatch; an older or incompatible command
+and `--pin-tab` capability before dispatch. With terminal sandbox placement,
+it checks the executable inside that sandbox; a compatible host executable
+does not authorize a different remote runtime. An older or incompatible command
 returns `pin_tab_unavailable` without starting a browser action. The native
 runtime is provisioned only through Hermes's package manager, with its existing
 lazy-install consent and checksum verification; there is no npx acquisition or

@@ -1225,3 +1225,69 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
     assert cleanup_result == [True]
     assert events == ["eval-start", "eval-end", "close"]
     assert task_id in bt._retired_browser_tasks
+
+
+@pytest.mark.parametrize("placement", ["gateway", "terminal"])
+def test_terminal_cleanup_preflight_survives_interrupt_without_resuming_actions(monkeypatch, placement):
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setattr(runtime, "tool_placement", lambda: placement)
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "agent-browser")
+    monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: True)
+
+    assert bt_session._browser_command_preflight(_allow_cleanup=True) == {"browser_cmd": "agent-browser"}
+    assert bt_session._browser_command_preflight() == {"success": False, "error": "Interrupted"}
+
+
+@pytest.mark.parametrize(
+    "version,help_flags,compatible",
+    [("0.33.0", "--session --cdp --pin-tab", False),
+     ("0.34.0", "--session --cdp", False),
+     ("0.34.0", "--session --cdp --pin-tab", True)],
+)
+def test_shared_cdp_sandbox_probes_actual_remote_runtime_before_page_access(monkeypatch, version, help_flags, compatible):
+    from tools.bot_desktop import runtime
+    from tools.environments import streams
+
+    task = "remote-pin-runtime"
+    remote = object()
+    session = {"session_name": "cdp_remote_pin", "cdp_url": "ws://shared/devtools/browser/test",
+               "bb_session_id": None, "features": {"cdp_override": True}}
+    monkeypatch.setattr(runtime, "tool_placement", lambda: "terminal")
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create: remote)
+    monkeypatch.setattr(bt_session, "_browser_in_sandbox", lambda: True)
+    monkeypatch.setattr(bt_session, "_get_session_info", lambda *_a, **_kw: session)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_get_browser_engine", lambda: "auto")
+    monkeypatch.setattr("tools.bot_desktop.sandbox_host._user_for", lambda _env: "pn")
+    host_lookup = MagicMock(side_effect=AssertionError("host runtime must not authorize remote page access"))
+    monkeypatch.setattr(bt_install, "_find_agent_browser", host_lookup)
+    commands = []
+
+    def _probe(env, argv, **kwargs):
+        assert env is remote and kwargs["user"] == "pn"
+        assert kwargs["timeout"] == 10
+        commands.append(argv)
+        stdout = f"agent-browser {version}" if argv[-1] == "--version" else help_flags
+        return bt_session.subprocess.CompletedProcess(argv, 0, stdout.encode(), b"")
+
+    monkeypatch.setattr(streams, "run_in", _probe)
+    supervisor = MagicMock()
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", supervisor)
+    spawn = MagicMock(return_value={"success": True, "data": {"snapshot": "owned"}})
+    monkeypatch.setattr(bt_session, "_spawn_and_collect", spawn)
+    result = bt_session._run_browser_command(task, "snapshot", ["-c"])
+
+    assert commands[0] == ["agent-browser", "--version"]
+    assert commands[1:] == ([["agent-browser", "--help"]] if version == "0.34.0" else [])
+    host_lookup.assert_not_called()
+    if compatible:
+        assert result["success"] is True
+        assert "--pin-tab" in spawn.call_args.args[2]
+        assert spawn.call_args.args[2][0] == "agent-browser"
+        supervisor.assert_called_once_with(task)
+    else:
+        assert result["code"] == "pin_tab_unavailable"
+        spawn.assert_not_called()
+        supervisor.assert_not_called()

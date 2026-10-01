@@ -796,7 +796,7 @@ def _browser_command_preflight(*, _allow_cleanup: bool = False) -> Dict[str, Any
         return {"success": False, "error": f"The browser cannot run here: {e}"}
     if where == placement.TERMINAL:
         from tools.interrupt import is_interrupted
-        if is_interrupted():
+        if not _allow_cleanup and is_interrupted():
             return {"success": False, "error": "Interrupted"}
         return {"browser_cmd": _SANDBOX_AGENT_BROWSER}  # resolved inside the sandbox, not on this host
     try:
@@ -966,6 +966,37 @@ def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
                                                  exclude_session=session_info["session_name"])
 
 
+def _find_shared_cdp_runtime() -> str:
+    """Verify the runtime at the chosen placement, never a different host's CLI."""
+    if not _browser_in_sandbox():
+        return _install._find_agent_browser(require_pin_tab=True)
+    from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
+    from tools.environments import streams
+
+    env = _bd_runtime._sandbox_env(create=False)
+    message = ("Shared-CDP page isolation requires agent-browser >=0.34.0 with --pin-tab support "
+               "inside the configured terminal sandbox. Update that sandbox's pinned browser runtime, "
+               "then retry. A host installation cannot authorize remote page access.")
+    if env is None:
+        raise _install.AgentBrowserCapabilityError(message)
+    try:
+        version = streams.run_in(env, [_SANDBOX_AGENT_BROWSER, "--version"],
+                                 user=sandbox_host._user_for(env), timeout=10)
+        match = _install._SEMVER_TRIPLE_RE.search(
+            (version.stdout + version.stderr).decode("utf-8", errors="replace"))
+        if (version.returncode != 0 or match is None
+                or tuple(int(part) for part in match.groups()) < _bt.AGENT_BROWSER_PIN_TAB_MIN_VERSION):
+            raise _install.AgentBrowserCapabilityError(message)
+        help_result = streams.run_in(env, [_SANDBOX_AGENT_BROWSER, "--help"],
+                                     user=sandbox_host._user_for(env), timeout=10)
+        help_text = (help_result.stdout + help_result.stderr).decode("utf-8", errors="replace")
+        if help_result.returncode != 0 or not all(flag in help_text for flag in ("--pin-tab", "--session", "--cdp")):
+            raise _install.AgentBrowserCapabilityError(message)
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+        raise _install.AgentBrowserCapabilityError(message) from exc
+    return _SANDBOX_AGENT_BROWSER
+
+
 def _dispatch_browser_command(
     task_id: str, session_info: Dict[str, Any], browser_cmd: str, command: str, args: List[str],
     timeout: int, _engine_override: Optional[str],
@@ -973,7 +1004,7 @@ def _dispatch_browser_command(
     """Build the agent-browser argv for ``session_info`` and run it once → ``(engine, result)``."""
     if _lifecycle._is_task_owned_shared_cdp_session(session_info):
         try:
-            browser_cmd = _install._find_agent_browser(require_pin_tab=True)
+            browser_cmd = _find_shared_cdp_runtime()
         except _install.AgentBrowserCapabilityError as exc:
             return "auto", {"success": False, "error": str(exc), "code": "pin_tab_unavailable",
                             "data": {"required_agent_browser": ">=0.34.0",
